@@ -34,6 +34,6 @@ node dist/src/cli.js list --demo --scenario fixed
 node dist/src/cli.js status RUN_ID --demo --scenario fixed
 ```
 
-`--lock` 도중 원본을 수정하면 입력 변경 ERROR가 됩니다. `--copy`가 준비된 뒤 원본을 수정해도 진행 중인 리뷰는 복사된 내용으로 계속 실행됩니다. 관찰 서버는 향후 추가 가능한 기능으로만 남깁니다.
+`--lock` 도중 원본을 수정하면 입력 변경 ERROR가 됩니다. `--copy`가 준비된 뒤 원본을 수정해도 진행 중인 리뷰는 복사된 내용으로 계속 실행됩니다. 시연 중 `ccdd monitor --repo <시나리오 폴더>`를 별도로 실행하면 요청 상태를 관찰할 수 있습니다. 모니터를 닫아도 리뷰는 계속됩니다.
 
 Artifact 도구의 이름은 `read_spec`, `list_tests`, `read_tests`입니다. 데모의 markdown/code 타입에 동작별 설명 템플릿이 들어 있으며 `{artifactName}`이 실제 ID로 치환됩니다. 예를 들어 `read_tests({path: "rank.test.mjs", startLine: 1, lineCount: 80})`으로 테스트 파일을 줄 단위로 읽습니다.

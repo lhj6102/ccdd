@@ -1,6 +1,6 @@
-# Implementation contracts — v0.5
+# Implementation contracts — v0.6
 
-One npm package, strict TypeScript compiled to Node 24 ESM, local SQLite persistence. Broker and Executors remain separate bounded contexts. A request-scoped worker runs one Run; there is no daemon, HTTP transport, observer UI, global broker-owner lock, or automatic queue scanner. An observer server may be added later as an optional adapter.
+One npm package, strict TypeScript compiled to Node 24 ESM, local SQLite persistence. Broker and Executors remain separate bounded contexts. A request-scoped worker runs one Run; no daemon, global broker-owner lock, or automatic queue scanner is required. The optional local monitor is an HTTP observation adapter and does not own review execution.
 
 ## Workspace contract
 
@@ -120,3 +120,15 @@ In v0.4, read calls replace byte-based offset/limit with startLine/lineCount. Cu
 v0.5 replaces the bundled Codex CLI with Pi libraries and builds TypeScript into `dist/`. The installed bin remains `ccdd`; source checkout commands use `npm run build` then `node dist/src/cli.js`. `--codex` and `CCDD_CODEX_PATH` no longer configure Agent execution. Agent profiles must use Pi IDs and exact catalog-supported models; pre-v0.5 pending Agent requests retain their original profiles and fail explicitly if unsupported. Human and Runtime records retain their broker lifecycle. Fresh demos use demo-v5.
 
 v0.5.1 updates Pi to 0.85.1 and creates fresh demos in demo-v5.1 using openai-codex / gpt-6-astra / medium. Existing demo directories and request profiles remain unchanged. Astra accepts exact low/medium/high/xhigh/max reasoning; off/minimal/ultra are rejected.
+
+## Local monitor
+
+`ccdd monitor` starts an optional loopback web server. It discovers existing stores under CCDD_STATE_HOME (or the standard local state home) and accepts explicitly selected stores. Project identity is based on the canonical state directory, so separate histories and projects sharing a repo label do not collide. Missing sources do not hide copied review history.
+
+The observation store opens SQLite read-only and never calls Broker getters that reconcile ownership. Stored status and process-liveness observations remain separate. A dead worker can be shown as missing without rewriting a request to ERROR. Human copy waiting without a worker is normal. No reviews, diagnoses, notifications, claims, or provider calls start when viewing the monitor.
+
+The overview returns bounded, paginated request summaries and project/filter counts. Request detail projects only the instruction, execution profile, result summary/evidence, safe lifecycle times, and Artifact references; it excludes credentials, worker ownership tokens, raw provider logs, and snapshot metadata dumps. Existing timestamps describe post-workspace-preparation acceptance; no missing timing is inferred.
+
+Artifact browsing reuses scoped Viewer tools and validates the recorded workspace before and after each read. Browser reads do not count as Agent or Human review observations. Changed lock inputs or missing copies fail explicitly instead of showing current source as the reviewed snapshot. File and directory pagination retain the Artifact contract.
+
+The server listens on 127.0.0.1 and validates request Host/origin. It serves local assets without external dependencies or CORS. Artifact and stored text are rendered as text. This first monitor exposes observation and Artifact reading only; Human actions and Provider configuration remain CLI workflows.
