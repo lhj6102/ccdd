@@ -1,7 +1,8 @@
-import { readWorkspaceConfig } from '../broker/config.mjs';
+import { readWorkspaceConfig } from '../broker/config.js';
+import type { ReviewEnvelope } from '../contracts.js';
 
 /** Repo-side adapter: prepare explicit envelopes from one prepared workspace definition. */
-export async function prepareReviewRequests({ repoPath, repoId = 'demo', snapshotHash, criticId }) {
+export async function prepareReviewRequests({ repoPath, repoId = 'demo', snapshotHash, criticId }: { repoPath: string; repoId?: unknown; snapshotHash: unknown; criticId?: unknown }): Promise<ReviewEnvelope[]> {
   if (typeof repoId !== 'string' || !repoId.trim() || repoId.length > 200) throw new Error('A registered repoId is required (maximum 200 characters).');
   if (typeof snapshotHash !== 'string' || !/^[a-f0-9]{64}$/.test(snapshotHash)) throw new Error('snapshotHash must be a full workspace SHA-256 content hash.');
   if (criticId !== undefined && (typeof criticId !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(criticId))) {

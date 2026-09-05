@@ -1,4 +1,4 @@
-import test from 'node:test';
+import test, { type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
@@ -6,14 +6,19 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { setTimeout as delay } from 'node:timers/promises';
 import { DatabaseSync } from 'node:sqlite';
-import { createBroker, readStateContext } from '../src/broker/index.mjs';
-import { prepareReviewRequests } from '../src/requester/index.mjs';
-import { fingerprintWorkspace, removeOwnedWorkspaceTree, prepareWorkspace, reopenWorkspace } from '../src/workspaces/index.mjs';
-import { createExecutorRegistry } from '../src/executors/index.mjs';
+import { createBroker, readStateContext, type BrokerOptions, type BrokerExecutors, type RunView } from '../src/broker/index.js';
+import { prepareReviewRequests } from '../src/requester/index.js';
+import { fingerprintWorkspace, removeOwnedWorkspaceTree, prepareWorkspace, reopenWorkspace } from '../src/workspaces/index.js';
+import { createExecutorRegistry } from '../src/executors/index.js';
+import type { RepoConfig, ReviewRequest, ExecutionContext, ReviewResult } from '../src/contracts.js';
 
-const green = { verdict: 'GREEN', summary: 'The workspace meets its criterion.', evidence: ['Checked the submitted artifact.'] };
-const red = { verdict: 'RED', summary: 'The criterion is not met.', evidence: ['The expected value differs.'] };
-const defaults = () => ({
+type Broker = ReturnType<typeof createBroker>;
+type ExecutionCall = { request: ReviewRequest; context: ExecutionContext & { signal: AbortSignal } };
+const present = <T>(value: T | null | undefined): T => { assert.ok(value != null); return value; };
+
+const green: ReviewResult = { verdict: 'GREEN', summary: 'The workspace meets its criterion.', evidence: ['Checked the submitted artifact.'] };
+const red: ReviewResult = { verdict: 'RED', summary: 'The criterion is not met.', evidence: ['The expected value differs.'] };
+const defaults = (): RepoConfig => ({
   artifacts: { why: { type: 'markdown', path: 'why.md' }, spec: { type: 'markdown', path: 'spec.md' }, tests: { type: 'code', path: 'tests' }, implementation: { type: 'code', path: 'implementation' } },
   artifactTypes: { markdown: { viewer: 'text' }, code: { viewer: 'files' } },
   critics: [
@@ -22,9 +27,9 @@ const defaults = () => ({
     { id: 'implementation-tests', title: 'Runtime', dependsOn: 'tests-spec', artifacts: ['tests', 'implementation'], profile: { kind: 'runtime', command: 'node', args: ['--test', 'tests/example.test.mjs'] }, payload: { instruction: 'Execute tests.' } },
   ],
 });
-const registry = execute => ({ canExecute: () => ({ ok: true }), execute });
+const registry = (execute: BrokerExecutors['execute']): BrokerExecutors => ({ canExecute: () => ({ ok: true }), execute });
 
-async function fixture(t, config = defaults()) {
+async function fixture(t: TestContext, config = defaults()) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'ccdd-broker-test-'));
   const repoPath = path.join(dir, 'repo');
   const stateDir = path.join(dir, 'state');
@@ -36,20 +41,28 @@ async function fixture(t, config = defaults()) {
   await fs.writeFile(path.join(repoPath, 'implementation/example.mjs'), 'export const answer = 42;');
   const setConfig = async (next = config) => fs.writeFile(path.join(repoPath, 'ccdd.config.json'), JSON.stringify(next));
   await setConfig();
-  const brokers = [];
-  const open = (executors, options = {}) => { const broker = createBroker({ repoPath, stateDir, executors, ...options }); brokers.push(broker); return broker; };
+  const brokers: Broker[] = [];
+  const open = (executors?: BrokerExecutors, options: Partial<BrokerOptions> = {}) => {
+    const broker = createBroker({ repoPath, stateDir, executors, ...options });
+    brokers.push(broker);
+    return { ...broker,
+      getRun: (id: string) => present(broker.getRun(id)),
+      getRequest: (id: string) => present(broker.getRequest(id)),
+      cancel: (id: string) => present(broker.cancel(id)),
+    };
+  };
   t.after(async () => { for (const broker of brokers) await broker.close(); await removeOwnedWorkspaceTree(dir); });
   return { dir, repoPath, stateDir, setConfig, open };
 }
 
-async function until(read, check, timeout = 10_000) {
+async function until<T>(read: () => T, check: (value: T) => unknown, timeout = 10_000): Promise<T> {
   const expires = Date.now() + timeout;
   while (Date.now() < expires) { const value = read(); if (check(value)) return value; await delay(10); }
   throw new Error(`Timed out waiting for broker state: ${JSON.stringify(read())}`);
 }
 
-function abortableGate(signal) {
-  return new Promise((resolve, reject) => {
+function abortableGate(signal: AbortSignal) {
+  return new Promise<never>((resolve, reject) => {
     if (signal.aborted) reject(signal.reason);
     else signal.addEventListener('abort', () => reject(signal.reason), { once: true });
   });
@@ -58,7 +71,7 @@ function abortableGate(signal) {
 test('submission persists a handle without executing; a separate broker runs the copied current workspace sequentially', async t => {
   const { repoPath, open } = await fixture(t);
   await fs.writeFile(path.join(repoPath, 'untracked.txt'), 'New input without any Git repository or commit.');
-  const calls = [];
+  const calls: ExecutionCall[] = [];
   const executors = registry(async (request, context) => {
     calls.push({ request, context });
     assert.equal(await fs.readFile(path.join(context.worktreePath, 'why.md'), 'utf8'), 'Current workspace purpose.');
@@ -92,9 +105,9 @@ test('submission persists a handle without executing; a separate broker runs the
 
 test('same content shares one copied workspace across concurrent reviews while requests and output directories remain independent', async t => {
   const { open } = await fixture(t);
-  const entered = [];
-  let release;
-  const gate = new Promise(resolve => { release = resolve; });
+  const entered: ExecutionCall[] = [];
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
   const executors = registry(async (request, context) => { entered.push({ request, context }); await gate; return green; });
   const first = open(executors);
   const second = open(executors);
@@ -116,10 +129,10 @@ test('same content shares one copied workspace across concurrent reviews while r
 
 test('selected Runtime Critic works without unrelated Agent availability and executes actual uncommitted changes', async t => {
   const { repoPath, open } = await fixture(t);
-  const actual = createExecutorRegistry({ codexPath: '/missing-codex' });
-  const checks = [];
+  const actual = createExecutorRegistry();
+  const checks: string[] = [];
   const broker = open({ canExecute: request => { checks.push(request.criticId); return actual.canExecute(request); }, execute: (request, context) => actual.execute(request, context) });
-  await assert.rejects(broker.submit({ requesterId: 'builder' }), /Provider is not registered/);
+  await assert.rejects(broker.submit({ requesterId: 'builder' }), /Cannot execute spec-why: .*Pi Provider/);
   assert.deepEqual(broker.listRuns(), []);
   checks.length = 0;
   const initial = await broker.submit({ requesterId: 'builder', criticId: 'implementation-tests' });
@@ -130,7 +143,7 @@ test('selected Runtime Critic works without unrelated Agent availability and exe
   assert.equal(completed.requests.length, 1);
   assert.equal(completed.requests[0].dependsOn, 'tests-spec');
   assert.equal(completed.requests[0].predecessorId, null);
-  assert.equal(completed.requests[0].result.exitCode, 0);
+  assert.equal(present(completed.requests[0].result).exitCode, 0);
   assert.deepEqual(checks, ['implementation-tests']);
   await fs.writeFile(path.join(repoPath, 'implementation/example.mjs'), 'export const answer = 41;');
   const broken = await broker.submit({ requesterId: 'builder', criticId: 'implementation-tests' });
@@ -142,7 +155,7 @@ test('selected Runtime Critic works without unrelated Agent availability and exe
 
 test('unknown selectors and changed explicit envelopes are rejected before capability checks and persistence', async t => {
   const { repoPath, open } = await fixture(t);
-  const checks = [];
+  const checks: string[] = [];
   const broker = open({ ...registry(async () => green), canExecute: request => { checks.push(request.criticId); return { ok: true }; } });
   await assert.rejects(broker.submit({ requesterId: 'legacy-client', snapshotCommit: 'a'.repeat(40) }), /snapshotCommit is no longer accepted/);
   const snapshotHash = await fingerprintWorkspace(repoPath);
@@ -163,7 +176,7 @@ test('unknown selectors and changed explicit envelopes are rejected before capab
 
 test('RED blocks the remaining chain and executor errors stay distinct from a verdict', async t => {
   const { open } = await fixture(t);
-  const calls = [];
+  const calls: string[] = [];
   const broker = open(registry(async request => { calls.push(request.criticId); return red; }));
   const record = await broker.submit({ requesterId: 'builder' });
   await broker.run(record.id);
@@ -171,13 +184,13 @@ test('RED blocks the remaining chain and executor errors stay distinct from a ve
   assert.equal(completed.status, 'RED');
   assert.deepEqual(calls, ['spec-why']);
   assert.deepEqual(completed.requests.map(request => request.status), ['RED', 'BLOCKED', 'BLOCKED']);
-  assert.match(completed.requests[2].blockedReason, /spec-why returned RED/);
+  assert.match(present(completed.requests[2].blockedReason), /spec-why returned RED/);
   const failed = open(registry(async () => { throw new Error('Provider unavailable.'); }));
   const next = await failed.submit({ requesterId: 'builder' });
   await failed.run(next.id);
   assert.equal(failed.getRun(next.id).status, 'ERROR');
   assert.equal(failed.getRun(next.id).requests[0].result, null);
-  assert.match(failed.getRun(next.id).requests[0].error, /Provider unavailable/);
+  assert.match(present(failed.getRun(next.id).requests[0].error), /Provider unavailable/);
 });
 
 test('a lock workspace change anywhere aborts execution and rejects GREEN, including an edit restored to its original content', async t => {
@@ -232,8 +245,8 @@ test('tampering with shared copied inputs invalidates all active reviews instead
 
 test('opening or closing a read-only broker leaves active work intact and a duplicate owner cannot execute it', async t => {
   const { open } = await fixture(t);
-  let release;
-  const gate = new Promise(resolve => { release = resolve; });
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
   let entered = false;
   const executors = registry(async () => { entered = true; await gate; return green; });
   const worker = open(executors);
@@ -253,8 +266,8 @@ test('opening or closing a read-only broker leaves active work intact and a dupl
 test('Human copy wait persists without a worker and separate clients claim, complete and resume the chain', async t => {
   const config = defaults(); config.critics[0].profile = { kind: 'human' };
   const { open } = await fixture(t, config);
-  const notifications = []; const executed = [];
-  const executors = { ...registry(async request => { executed.push(request.criticId); return green; }), notifyHuman: async request => notifications.push(request.id) };
+  const notifications: string[] = []; const executed: string[] = [];
+  const executors = { ...registry(async request => { executed.push(request.criticId); return green; }), notifyHuman: async (request: ReviewRequest) => notifications.push(request.id) };
   const worker = open(executors);
   const record = await worker.submit({ requesterId: 'builder' });
   await worker.run(record.id);
@@ -295,7 +308,7 @@ test('Human lock wait keeps its monitoring worker and rejects changes during the
   const running = worker.run(record.id);
   const waiting = await until(() => worker.getRun(record.id), value => value.requests[0].notifiedAt);
   assert.equal(waiting.status, 'WAITING_HUMAN');
-  assert.equal(waiting.owner.pid, process.pid);
+  assert.equal(present(waiting.owner).pid, process.pid);
   const reviewer = open(); reviewer.claimHuman(waiting.requests[0].id, 'alice');
   await fs.writeFile(path.join(repoPath, 'spec.md'), 'Changed while Human was reading.');
   await running;
@@ -326,7 +339,7 @@ test('Human alarm registration and actual delivery are required and failed deliv
   await worker.run(record.id);
   const failed = worker.getRun(record.id);
   assert.equal(failed.status, 'ERROR');
-  assert.match(failed.requests[0].error, /Alarm delivery failed/);
+  assert.match(present(failed.requests[0].error), /Alarm delivery failed/);
   assert.equal(failed.events.some(event => event.type === 'human.notified'), false);
 });
 
@@ -344,7 +357,7 @@ test('cancel from a separate client aborts the owner without affecting other Run
   assert.equal(client.getRun(first.id).requests[0].errorCode, 'REVIEW_CANCELED');
   assert.equal(client.getRun(second.id).status, 'QUEUED');
   client.failRun(second.id, new Error('Cannot launch the review worker.'));
-  assert.match(client.getRun(second.id).requests[0].error, /Cannot launch/);
+  assert.match(present(client.getRun(second.id).requests[0].error), /Cannot launch/);
 });
 
 test('closing the executing broker aborts only its owned Run and preserves unrelated queued work', async t => {
@@ -363,7 +376,7 @@ test('closing the executing broker aborts only its owned Run and preserves unrel
 
 test('a crashed separate worker is reconciled as ERROR while another client remains usable', async t => {
   const { repoPath, stateDir, open } = await fixture(t);
-  const moduleUrl = new URL('../src/broker/index.mjs', import.meta.url).href;
+  const moduleUrl = new URL('../src/broker/index.js', import.meta.url).href;
   const script = `import {createBroker} from ${JSON.stringify(moduleUrl)};
     const broker=createBroker({repoPath:${JSON.stringify(repoPath)},stateDir:${JSON.stringify(stateDir)},executors:{canExecute:()=>({ok:true}),execute:async(_request,{signal})=>{process.stdout.write('EXECUTING\\n');await new Promise((resolve,reject)=>signal.addEventListener('abort',()=>reject(signal.reason),{once:true}));}}});
     const record=await broker.submit({mode:'lock',requesterId:'crash-test'});
@@ -391,7 +404,7 @@ test('completed legacy scope-less records are readable without replay and nested
   const broker = open(registry(async () => green));
   const record = await broker.submit({ requesterId: 'builder' }); await broker.run(record.id); await broker.close();
   const db = new DatabaseSync(path.join(stateDir, 'broker.sqlite'));
-  const stored = JSON.parse(db.prepare('SELECT data FROM runs WHERE id = ?').get(record.id).data);
+  const stored = JSON.parse(String(present(db.prepare('SELECT data FROM runs WHERE id = ?').get(record.id)).data)) as Record<string, unknown>;
   delete stored.scope; delete stored.workspace;
   db.prepare('UPDATE runs SET data = ? WHERE id = ?').run(JSON.stringify(stored), record.id); db.close();
   const reader = open();
@@ -407,16 +420,16 @@ test('Human completion during copied-input validation keeps the original owner e
   const config = defaults(); config.critics[0].profile = { kind: 'human' };
   const { open } = await fixture(t, config);
   const reviewer = open();
-  let record;
+  let record!: RunView;
   let paused = false;
-  let entered;
-  const atValidation = new Promise(resolve => { entered = resolve; });
-  let release;
-  const gate = new Promise(resolve => { release = resolve; });
+  let entered!: () => void;
+  const atValidation = new Promise<void>(resolve => { entered = resolve; });
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
   const executors = { ...registry(async () => green), notifyHuman: async () => {} };
   const worker = open(executors, { workspaceAdapter: {
     prepareWorkspace,
-    async reopenWorkspace(...args) {
+    async reopenWorkspace(...args: Parameters<typeof reopenWorkspace>) {
       const workspace = await reopenWorkspace(...args);
       return { ...workspace, async assertUnchanged() {
         const state = record && reviewer.getRun(record.id);
@@ -446,16 +459,16 @@ test('copy wait releases ownership before asynchronous cleanup, so an immediate 
   const config = defaults(); config.critics[0].profile = { kind: 'human' };
   const { open } = await fixture(t, config);
   const reviewer = open();
-  let record;
+  let record!: RunView;
   let held = false;
-  let entered;
-  const atCleanup = new Promise(resolve => { entered = resolve; });
-  let release;
-  const gate = new Promise(resolve => { release = resolve; });
+  let entered!: () => void;
+  const atCleanup = new Promise<void>(resolve => { entered = resolve; });
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
   const executors = { ...registry(async () => green), notifyHuman: async () => {} };
   const worker = open(executors, { workspaceAdapter: {
     prepareWorkspace,
-    async reopenWorkspace(...args) {
+    async reopenWorkspace(...args: Parameters<typeof reopenWorkspace>) {
       const workspace = await reopenWorkspace(...args);
       return { ...workspace, async close() {
         if (!held && reviewer.getRun(record.id).status === 'WAITING_HUMAN') { held = true; entered(); await gate; }
@@ -493,4 +506,27 @@ test('copied Human review and its successor remain usable after the original bui
   const worker = open(executors); await worker.run(record.id);
   assert.equal(reviewer.getRun(record.id).status, 'GREEN');
   await assert.rejects(worker.submit({ requesterId: 'missing-source' }), { code: 'ENOENT' });
+});
+
+
+test('executor workspace validation rejects credentials in source before any snapshot is created', async t => {
+  const config = defaults();
+  config.critics[0].profile = { kind: 'agent', provider: 'openai-codex', model: 'gpt-5.6-sol', reasoning: 'medium' };
+  const { repoPath, stateDir, open } = await fixture(t, config);
+  const authFile = path.join(repoPath, 'auth.json');
+  const secret = 'test-credential-never-copied-to-review-state';
+  await fs.writeFile(authFile, JSON.stringify({ 'openai-codex': { type: 'api_key', key: secret } }));
+  const executors = createExecutorRegistry({ piOptions: { authFile } });
+  let prepared = false;
+  const broker = open(executors, { workspaceAdapter: {
+    async prepareWorkspace(...args: Parameters<typeof prepareWorkspace>) {
+      prepared = true;
+      return prepareWorkspace(...args);
+    },
+    reopenWorkspace,
+  } });
+  await assert.rejects(broker.submit({ requesterId: 'builder', criticId: 'spec-why' }), { code: 'AUTHENTICATION_IN_WORKSPACE' });
+  assert.equal(prepared, false);
+  assert.deepEqual(broker.listRuns(), []);
+  await assert.rejects(fs.stat(path.join(stateDir, 'workspaces')), { code: 'ENOENT' });
 });

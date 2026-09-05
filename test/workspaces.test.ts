@@ -1,4 +1,4 @@
-import test from 'node:test';
+import test, { type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 import { chmod, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rename, symlink, writeFile, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -6,9 +6,9 @@ import { tmpdir } from 'node:os';
 import { setTimeout as delay } from 'node:timers/promises';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { fingerprintWorkspace, prepareWorkspace, reopenWorkspace, removeOwnedWorkspaceTree, validateStateLocation } from '../src/workspaces/index.mjs';
+import { fingerprintWorkspace, prepareWorkspace, reopenWorkspace, removeOwnedWorkspaceTree, validateStateLocation } from '../src/workspaces/index.js';
 
-async function fixture(t) {
+async function fixture(t: TestContext) {
   const root = await mkdtemp(join(tmpdir(), 'ccdd-workspace-'));
   const repoPath = join(root, 'repo');
   const stateDir = join(root, 'state');
@@ -62,7 +62,7 @@ test('concurrent empty workspace copies cannot replace the first published direc
 
 test('independent processes publish and reuse one copy for the same hash', async t => {
   const data = await fixture(t);
-  const moduleUrl = new URL('../src/workspaces/index.mjs', import.meta.url).href;
+  const moduleUrl = new URL('../src/workspaces/index.js', import.meta.url).href;
   const source = `const {prepareWorkspace} = await import(process.argv[1]); const handle = await prepareWorkspace(JSON.parse(process.argv[2])); console.log(JSON.stringify(handle.descriptor)); await handle.close();`;
   const outputs = await Promise.all(Array.from({ length: 3 }, () => promisify(execFile)(process.execPath, ['--input-type=module', '-e', source, moduleUrl, JSON.stringify(data)])));
   const descriptors = outputs.map(output => JSON.parse(output.stdout));
@@ -101,7 +101,7 @@ test('lock retains original workspace and latches edited-then-restored contents'
   assert.equal(handle.descriptor.path, await realpath(data.repoPath));
   await writeFile(join(data.repoPath, 'why.md'), 'changed');
   await writeFile(join(data.repoPath, 'why.md'), 'Why\n');
-  await assert.rejects(handle.assertUnchanged(), error => error.code === 'WORKSPACE_CHANGED');
+  await assert.rejects(handle.assertUnchanged(), error => error instanceof Error && 'code' in error && error.code === 'WORKSPACE_CHANGED');
   assert.equal(handle.signal.aborted, true);
 });
 
@@ -113,7 +113,7 @@ test('lock detects create-delete and directory rename activity', async t => {
   await writeFile(join(data.repoPath, 'transient', 'file'), 'temporary');
   await rename(join(data.repoPath, 'transient'), join(data.repoPath, 'renamed'));
   await removeOwnedWorkspaceTree(join(data.repoPath, 'renamed'));
-  await assert.rejects(handle.assertUnchanged(), error => error.code === 'WORKSPACE_CHANGED');
+  await assert.rejects(handle.assertUnchanged(), error => error instanceof Error && 'code' in error && error.code === 'WORKSPACE_CHANGED');
 });
 
 test('persisted lock descriptors reject mutation and restoration between process lifetimes', async t => {
@@ -123,7 +123,7 @@ test('persisted lock descriptors reject mutation and restoration between process
   await handle.close();
   await writeFile(join(data.repoPath, 'why.md'), 'temporary');
   await writeFile(join(data.repoPath, 'why.md'), 'Why\n');
-  await assert.rejects(reopenWorkspace(descriptor), error => error.code === 'WORKSPACE_CHANGED');
+  await assert.rejects(reopenWorkspace(descriptor), error => error instanceof Error && 'code' in error && error.code === 'WORKSPACE_CHANGED');
 });
 
 test('copy remains usable after source deletion, and descriptor paths are validated', async t => {
@@ -146,8 +146,8 @@ test('cache tampering is rejected by active and future users of the same hash', 
   await chmod(file, 0o644);
   await writeFile(file, 'tampered');
   await chmod(file, 0o444);
-  await assert.rejects(handle.assertUnchanged(), error => error.code === 'WORKSPACE_CACHE_TAMPERED');
-  await assert.rejects(prepareWorkspace(data), error => error.code === 'WORKSPACE_CACHE_TAMPERED');
+  await assert.rejects(handle.assertUnchanged(), error => error instanceof Error && 'code' in error && error.code === 'WORKSPACE_CACHE_TAMPERED');
+  await assert.rejects(prepareWorkspace(data), error => error instanceof Error && 'code' in error && error.code === 'WORKSPACE_CACHE_TAMPERED');
 });
 
 test('internal relative symlinks are copied without referring back to the mutable source', async t => {
@@ -192,4 +192,16 @@ test('external cancellation closes without publishing a partial copy', async t =
   const controller = new AbortController();
   controller.abort(new Error('cancelled'));
   await assert.rejects(prepareWorkspace({ ...data, signal: controller.signal }), /cancelled/);
+});
+
+
+test('moving an observed workspace root classifies missing scan paths as input mutation', async t => {
+  for (const mode of ['lock', 'copy'] as const) {
+    const data = await fixture(t);
+    const handle = await prepareWorkspace({ ...data, mode });
+    t.after(() => handle.close());
+    await rename(handle.descriptor.path, `${handle.descriptor.path}-moved`);
+    await assert.rejects(handle.assertUnchanged(), { code: mode === 'lock' ? 'WORKSPACE_CHANGED' : 'WORKSPACE_CACHE_TAMPERED' });
+    assert.equal(handle.signal.aborted, true);
+  }
 });

@@ -5,16 +5,24 @@
 ## Language
 
 **Executor**:
-리뷰 요청의 실행 조건을 충족해 평가를 수행하는 주체다. Code Runner, Agent Provider, Human이 서로 다른 실행 방식이다.
+리뷰 요청의 실행 조건을 충족해 평가를 수행하는 주체다. Runtime Critic, Agent Critic, Human Critic이 서로 다른 실행 방식이다.
 _Avoid_: 브로커, 상태 관리자
 
-**Code Runner**:
+**Runtime Critic**:
 테스트 코드 등의 평가 절차를 실행하고 그 결과를 판정으로 돌려주는 실행기다.
 _Avoid_: Agent, 구현 생성기
 
-**Agent Provider**:
+**Agent Critic**:
 요청에서 지정한 Provider와 모델 등의 조건으로 Agent 리뷰를 수행하는 실행기다.
 _Avoid_: 기본 AI, 임의 모델
+
+**Provider**:
+Agent Critic이 요청한 모델의 추론을 수행하도록 연결하는 외부 제공자다.
+_Avoid_: 리뷰 실행기, Human Reviewer
+
+**Human Critic**:
+사람의 관측과 판정 제출을 통해 리뷰를 수행하는 실행 방식이다.
+_Avoid_: Agent 세션, 자동 승인
 
 **Human Reviewer**:
 알림을 통해 리뷰 요청을 전달받고, 담당한 요청에 판정과 근거를 제출하는 사람이다.

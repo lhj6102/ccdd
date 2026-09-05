@@ -6,15 +6,47 @@
 
 ## 시작하기
 
-Node.js 24 이상이 필요합니다. Agent 리뷰에는 요청한 모델을 사용할 수 있는 Codex 로그인이 필요합니다. 기존 로그인은 그대로 사용하며, 패키지는 Codex CLI 0.153.4를 포함합니다.
+Node.js 24 이상이 필요합니다. Agent 리뷰는 Pi Agent Core와 Pi AI 라이브러리로 실행하며, 요청한 Provider·모델을 사용할 인증이 필요합니다. 전체 소스와 테스트는 strict TypeScript로 작성하고 JavaScript로 빌드합니다.
 
 ```sh
 npm ci
-node src/cli.mjs doctor --repo /path/to/project --json
-node src/cli.mjs run --repo /path/to/project --copy --critic tests-spec --wait --json
+npm run build
+node dist/src/cli.js doctor --repo /path/to/project --json
+node dist/src/cli.js run --repo /path/to/project --copy --critic tests-spec --wait --json
 ```
 
-npm 패키지를 설치했다면 `node src/cli.mjs` 대신 `ccdd`를 사용합니다. 실제 Agent 진단과 리뷰는 계정 사용량을 소비합니다.
+npm 패키지를 설치했다면 `node dist/src/cli.js` 대신 `ccdd`를 사용합니다. 실제 Agent 진단과 리뷰는 계정 사용량을 소비합니다.
+
+## Agent Provider와 인증
+
+Agent profile은 Pi의 정확한 Provider·모델 ID와 reasoning을 명시합니다. 예:
+
+```json
+{"kind":"agent","provider":"openai-codex","model":"gpt-5.6-sol","reasoning":"medium"}
+```
+
+`@earendil-works/pi-agent-core`와 `@earendil-works/pi-ai` 0.85.0을 라이브러리로 사용합니다. Pi 의존성은 Agent 실행기 내부에 있고 Broker·Human·Runtime은 Pi 세션을 사용하지 않습니다. Provider 호출과 Agent 도구 루프를 Pi에 맡기며, CCDD가 판정 스키마·필수 Artifact 관측·workspace 무결성을 검증합니다.
+
+Provider API key 환경변수는 Pi의 Provider별 규칙을 따릅니다. 파일 인증은 명시적으로 연결합니다.
+
+```sh
+ccdd doctor --repo /path/to/project --pi-auth-file /outside/repo/pi-auth.json --json
+ccdd run --repo /path/to/project --copy --pi-auth-file /outside/repo/pi-auth.json --wait
+```
+
+Pi 파일 형식은 Provider ID별 credential 객체입니다. 예를 들어 API key는 `{"anthropic":{"type":"api_key","key":"..."}}`, OAuth는 `{"openai-codex":{"type":"oauth","access":"...","refresh":"...","expires":1234567890000}}` 형태입니다. 토큰은 해당 로그인 도구에서 발급받으며, repo와 리뷰 상태에 저장하지 않습니다.
+
+기존 Codex 인증을 사용할 때도 경로를 직접 지정합니다.
+
+```sh
+ccdd doctor --repo /path/to/project --codex-auth-file "$HOME/.codex/auth.json" --json
+```
+
+이 연결은 유효한 access token만 읽으며 공유 refresh token을 Pi에 전달하거나 파일을 변경하지 않습니다. Pi 인증 파일도 현재는 읽기 전용으로 연결합니다. 만료됐거나 5분 안에 만료될 OAuth는 거부하며, 발급 도구에서 인증을 갱신한 뒤 다시 실행해야 합니다. 인증을 자동 승계하거나 로그인·갱신을 대신하지 않습니다.
+
+환경변수 `CCDD_PI_AUTH_FILE`·`CCDD_CODEX_AUTH_FILE`로 경로를 지정할 수도 있습니다. worker에는 경로만 저장하고, Human 결과 제출이나 `resume`은 원래 실행 설정을 다시 사용합니다. Provider API key 환경변수는 실행·재개 프로세스에서 사용할 수 있어야 합니다.
+
+미지원 Provider·모델·reasoning을 다른 설정으로 대체하지 않습니다. 기존 `provider: "codex"`는 Pi의 `openai-codex`로 명시적으로 바꿔야 합니다. Pi 0.85.0 카탈로그에는 `gpt-6-astra`가 없으므로 기존 요청은 거부됩니다. 새 데모는 `openai-codex / gpt-5.6-sol / medium`을 명시합니다. 현재 지원 범위는 [Pi 공식 문서](https://github.com/earendil-works/pi/tree/main/packages/ai)를 참고하고, 실제 접근은 `doctor`로 확인하세요.
 
 ## 리뷰 입력 선택
 
@@ -107,10 +139,10 @@ ccdd human-result REQUEST_ID --reviewer reviewer-a --result-file /outside/repo/r
 
 ```sh
 npm run demo:prepare
-npm run demo
-node src/cli.mjs run --demo --scenario why-change --copy --critic spec-why --wait
-node src/cli.mjs run --demo --scenario runtime-failure --copy --critic implementation-tests --wait
-node src/cli.mjs run --demo --scenario fixed --copy --wait
+CCDD_CODEX_AUTH_FILE="$HOME/.codex/auth.json" npm run demo
+node dist/src/cli.js run --demo --scenario why-change --copy --critic spec-why --wait
+node dist/src/cli.js run --demo --scenario runtime-failure --copy --critic implementation-tests --wait
+node dist/src/cli.js run --demo --scenario fixed --copy --wait
 ```
 
 데모는 Git 없는 네 개의 수정 가능한 작업 폴더를 만듭니다. 기존 작업 폴더를 다시 초기화하지 않습니다. 별도 위치를 쓰려면 `--demo-dir PATH`를 지정합니다.
@@ -128,6 +160,7 @@ why.md → [Spec이 Why에 부합하는가] → spec.md
 ## 검증
 
 ```sh
+npm run typecheck
 npm test
 ```
 

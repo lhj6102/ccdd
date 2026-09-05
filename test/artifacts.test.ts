@@ -1,14 +1,21 @@
-import test from 'node:test';
+import test, {type TestContext} from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, readFile, writeFile, symlink, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, open, readFile, writeFile, symlink, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFileSync, spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
-import { createArtifactViewer, createArtifactTools, readArtifact } from '../src/artifacts/index.mjs';
+import { createArtifactViewer, createArtifactTools, createAuditedArtifactTools, readArtifact, type ArtifactToolDefinition, type ArtifactToolCall } from '../src/artifacts/index.js';
 
-async function fixture(t) {
+
+interface McpResponse {
+  id: number;
+  result: { serverInfo: { name: string }; tools: ArtifactToolDefinition[]; content: Array<{type: string; text: string}>; isError: boolean };
+  error: { code: number; message: string };
+}
+
+async function fixture(t: TestContext) {
   const dir = await mkdtemp(join(tmpdir(), 'ccdd-artifacts-'));
   t.after(() => rm(dir, { recursive: true, force: true }));
   const worktreePath = join(dir, 'snapshot');
@@ -71,21 +78,21 @@ test('declared artifacts and type adapters are checked before exposing tools', a
 
 test('actual stdio MCP process negotiates and serves scoped viewer calls with bounded errors', async t => {
   const data = await fixture(t);
-  data.auditPath = join(data.dir, 'audit.jsonl');
+  const auditPath = join(data.dir, 'audit.jsonl');
   const manifest = join(data.dir, 'manifest.json');
-  await writeFile(manifest, JSON.stringify(data));
-  const child = spawn(process.execPath, [fileURLToPath(new URL('../src/artifacts/mcp-server.mjs', import.meta.url)), manifest], { stdio: ['pipe', 'pipe', 'pipe'] });
+  await writeFile(manifest, JSON.stringify({...data, auditPath}));
+  const child = spawn(process.execPath, [fileURLToPath(new URL('../src/artifacts/mcp-server.js', import.meta.url)), manifest], { stdio: ['pipe', 'pipe', 'pipe'] });
   t.after(() => child.kill());
   const lines = createInterface({ input: child.stdout });
-  const pending = new Map();
-  lines.on('line', line => { const message = JSON.parse(line); pending.get(message.id)?.(message); pending.delete(message.id); });
+  const pending = new Map<number, (message: McpResponse) => void>();
+  lines.on('line', line => { const message = JSON.parse(line) as McpResponse; pending.get(message.id)?.(message); pending.delete(message.id); });
   let sequence = 0;
-  const call = (method, params) => new Promise(resolve => { const id = ++sequence; pending.set(id, resolve); child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id, method, params })}\n`); });
+  const call = (method: string, params?: unknown) => new Promise<McpResponse>(resolve => { const id = ++sequence; pending.set(id, resolve); child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id, method, params })}\n`); });
   assert.equal((await call('initialize', { protocolVersion: '2024-11-05' })).result.serverInfo.name, 'ccdd-artifact-runner');
   const toolList = (await call('tools/list')).result.tools;
   assert.equal(toolList.length, 3);
-  assert.match(toolList.find(tool => tool.name === 'read_tests').description, /^tests의 소스 텍스트를 읽는다\./);
-  assert.deepEqual(toolList.find(tool => tool.name === 'read_tests').inputSchema.required, ['path']);
+  assert.match(toolList.find(tool => tool.name === 'read_tests')!.description, /^tests의 소스 텍스트를 읽는다\./);
+  assert.deepEqual(toolList.find(tool => tool.name === 'read_tests')!.inputSchema.required, ['path']);
   assert.match((await call('tools/call', { name: 'read_why', arguments: {} })).result.content[0].text, /Pick two/);
   assert.equal((await call('tools/call', { name: 'read_tests', arguments: { path: '../private.md' } })).result.isError, true);
   for (const arguments_ of [{}, { path: '' }, { path: null }, { path: 'rank.test.mjs', limit: 30 }]) {
@@ -94,7 +101,7 @@ test('actual stdio MCP process negotiates and serves scoped viewer calls with bo
   assert.equal((await call('tools/call', { name: 'read_why', arguments: null })).result.isError, true);
   assert.equal((await call('tools/call', { name: 'list_tests', arguments: {} })).result.isError, false);
   assert.equal((await call('tools/call', { name: 'read_why', arguments: { startLine: 99 } })).result.isError, false);
-  const audit = (await readFile(data.auditPath, 'utf8')).trim().split('\n').map(line => JSON.parse(line));
+  const audit = (await readFile(auditPath, 'utf8')).trim().split('\n').map(line => JSON.parse(line) as ArtifactToolCall);
   assert.equal(audit.length, 3, 'Rejected calls must never be recorded as successful observations');
   assert.deepEqual(audit[0].observation, { artifactId: 'why', operation: 'read', startLine: 1, endLine: 2, lineCount: 2, totalLines: 2 });
   assert.deepEqual(audit[1].observation, { artifactId: 'tests', operation: 'list' });
@@ -261,4 +268,88 @@ test('direct directory viewers reject FIFO reads without waiting for a writer', 
   execFileSync('mkfifo', [join(data.worktreePath, 'tests', 'pipe')]);
   const viewer = await createArtifactViewer(data);
   await assert.rejects(viewer.read({ artifactId: 'tests', path: 'pipe' }), /requires a regular file/);
+});
+
+test('shared direct audit records only successful observations and cannot be changed by callers', async t => {
+  const data = await fixture(t);
+  const delivered: ArtifactToolCall[] = [];
+  const registry = createAuditedArtifactTools(await createArtifactViewer(data), { onCall: entry => {
+    delivered.push(structuredClone(entry));
+    entry.arguments.path = 'changed-by-callback';
+    entry.observation.artifactId = 'changed-by-callback';
+  } });
+  const args = { path: 'rank.test.mjs', startLine: 1, lineCount: 1 };
+  const first = await registry.call('read_tests', args);
+  assert.match(first.content, /expected = 2/);
+  args.path = 'changed-by-caller';
+  await registry.call('list_tests', {});
+  await registry.call('read_why', { startLine: 99 });
+  await assert.rejects(registry.call('read_tests', { path: '../private.md' }));
+  await assert.rejects(registry.call('read_why', null));
+  const calls = registry.toolCalls;
+  assert.equal(calls.length, 3);
+  assert.deepEqual(calls, delivered);
+  assert.equal(calls[0].arguments.path, 'rank.test.mjs');
+  assert.deepEqual(calls[0].observation, { artifactId: 'tests', operation: 'read', startLine: 1, endLine: 1, lineCount: 1, totalLines: 1 });
+  assert.deepEqual(calls[1].observation, { artifactId: 'tests', operation: 'list' });
+  assert.deepEqual(calls[2].observation, { artifactId: 'why', operation: 'read', startLine: 99, endLine: null, lineCount: 0, totalLines: 2 });
+  assert.doesNotMatch(JSON.stringify(calls), /export const|Pick two|PRIVATE/);
+  calls[0].observation.artifactId = 'changed-returned-copy';
+  assert.equal(registry.toolCalls[0].observation.artifactId, 'tests');
+});
+
+test('provider argument preflight rejects coercion and null stripping without reading or auditing', async t => {
+  const data = await fixture(t);
+  const registry = createAuditedArtifactTools(await createArtifactViewer(data));
+  await rm(join(data.worktreePath, 'why.md'));
+  assert.deepEqual(registry.validateArguments('read_why', { startLine: 2 }), { startLine: 2 });
+  assert.deepEqual(registry.validateArguments('read_tests', { path: 'rank.test.mjs' }), { path: 'rank.test.mjs' });
+  for (const args of [null, [], 'read', { lineCount: null }, { lineCount: '80' }, { lineCount: 0 }, { lineCount: 501 }, { startLine: '1' }, { startLine: 1.2 }, { path: '' }, { unknown: 1 }]) {
+    assert.throws(() => registry.validateArguments('read_why', args));
+  }
+  for (const args of [{}, { path: null }, { path: '' }, { path: 1 }]) assert.throws(() => registry.validateArguments('read_tests', args));
+  assert.throws(() => registry.validateArguments('list_tests', { offset: null }));
+  assert.throws(() => registry.validateArguments('unknown', {}));
+  assert.equal(registry.toolCalls.length, 0);
+  await assert.rejects(registry.call('read_why', {}));
+  assert.equal(registry.toolCalls.length, 0);
+});
+
+test('failed audit persistence is not returned as a successful tool observation', async t => {
+  const data = await fixture(t);
+  const registry = createAuditedArtifactTools(await createArtifactViewer(data), { onCall: () => { throw new Error('audit persistence unavailable'); } });
+  await assert.rejects(registry.call('read_why', {}), /audit persistence unavailable/);
+  assert.equal(registry.toolCalls.length, 0);
+});
+
+test('aborting a large skipped-line scan settles promptly and records no observation', async t => {
+  const data = await fixture(t);
+  const file = await open(join(data.worktreePath, 'why.md'), 'r+');
+  // A sparse file exercises real repeated I/O without writing gigabytes of data.
+  try { await file.truncate(4 * 1024 ** 3); } finally { await file.close(); }
+  const controller = new AbortController();
+  const persisted: ArtifactToolCall[] = [];
+  const registry = createAuditedArtifactTools(await createArtifactViewer({ ...data, signal: controller.signal }), { onCall: call => { persisted.push(call); } });
+  const reason = new Error('cancel scan');
+  let abortedAt = 0;
+  const timer = setTimeout(() => { abortedAt = performance.now(); controller.abort(reason); }, 30);
+  t.after(() => clearTimeout(timer));
+  await assert.rejects(registry.call('read_why', { startLine: 1000, lineCount: 1 }), error => error === reason);
+  assert.ok(abortedAt > 0);
+  const settleDelay = performance.now() - abortedAt;
+  assert.ok(settleDelay < 500, `Cancelled scan continued for ${settleDelay.toFixed(0)} ms after abort`);
+  assert.deepEqual(registry.toolCalls, []);
+  assert.deepEqual(persisted, []);
+  // Reusing the aborted viewer must not start another scan or directory read.
+  await assert.rejects(registry.call('read_why', { startLine: 1000 }), error => error === reason);
+  await assert.rejects(registry.call('list_tests', {}), error => error === reason);
+});
+
+test('viewer construction and the direct read adapter honor an already aborted signal', async t => {
+  const data = await fixture(t);
+  const controller = new AbortController();
+  const reason = new Error('cancel viewer setup');
+  controller.abort(reason);
+  await assert.rejects(createArtifactViewer({ ...data, signal: controller.signal }), error => error === reason);
+  await assert.rejects(readArtifact({ ...data, signal: controller.signal, artifactId: 'why' }), error => error === reason);
 });

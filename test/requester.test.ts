@@ -1,14 +1,15 @@
-import test from 'node:test';
+import test, { type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, readFile, writeFile, mkdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { prepareReviewRequests } from '../src/requester/index.mjs';
-import { createBroker } from '../src/broker/index.mjs';
-import { validateArtifactType, toolDescription } from '../src/artifacts/types.mjs';
-import { fingerprintWorkspace, prepareWorkspace, removeOwnedWorkspaceTree } from '../src/workspaces/index.mjs';
+import { prepareReviewRequests } from '../src/requester/index.js';
+import { createBroker } from '../src/broker/index.js';
+import { validateArtifactType, toolDescription } from '../src/artifacts/types.js';
+import { fingerprintWorkspace, prepareWorkspace, removeOwnedWorkspaceTree } from '../src/workspaces/index.js';
+import type { RepoConfig } from '../src/contracts.js';
 
-async function fixture(t) {
+async function fixture(t: TestContext) {
   const root = await mkdtemp(join(tmpdir(), 'ccdd-requester-'));
   const repoPath = join(root, 'repo');
   const stateDir = join(root, 'state');
@@ -17,7 +18,7 @@ async function fixture(t) {
   await writeFile(join(repoPath, 'why.md'), 'Why');
   await writeFile(join(repoPath, 'spec.md'), 'Spec');
   await writeFile(join(repoPath, 'tests', 'rank.test.mjs'), '');
-  const config = {
+  const config: RepoConfig = {
     artifacts: { why: { type: 'markdown', path: 'why.md' }, spec: { type: 'markdown', path: 'spec.md' }, tests: { type: 'code', path: 'tests' } },
     artifactTypes: { markdown: { viewer: 'text' }, code: { viewer: 'files' } },
     critics: [
@@ -39,10 +40,12 @@ test('requester sends explicit artifact metadata, workspace hash, payload and pr
   assert.ok(requests.every(x => x.repoId === 'focus-demo' && x.snapshotHash === data.snapshotHash && !('snapshotCommit' in x)));
   assert.deepEqual(requests[0].artifacts, [{ id: 'why', type: 'markdown', path: 'why.md' }, { id: 'spec', type: 'markdown', path: 'spec.md' }]);
   assert.match(requests[0].payload.instruction, /Basis: \{why\}. Target: \{spec\}/);
+  assert.equal(requests[0].profile.kind, 'agent');
+  assert.ok(requests[0].profile.kind === 'agent');
   assert.equal(requests[0].profile.provider, 'codex');
   assert.equal(requests[2].profile.kind, 'runtime');
   assert.ok(!('id' in requests[0]) && !('runId' in requests[0]) && !('status' in requests[0]));
-  requests[0].artifactTypes.markdown.viewer = 'changed';
+  requests[0].artifactTypes.markdown.viewer = 'files';
   assert.equal(requests[1].artifactTypes.markdown.viewer, 'text');
 });
 
@@ -102,8 +105,8 @@ test('repo-defined types preserve description templates in isolated request enve
   assert.equal(toolDescription(requests[0].artifactTypes.requirements, 'read', 'why'), 'why의 요구사항을 읽고 why에서 근거를 찾는다.');
   assert.equal(toolDescription(requests[1].artifactTypes.test_suite, 'list', 'tests'), 'tests의 테스트 파일 목록을 조회한다.');
   assert.match(toolDescription(requests[1].artifactTypes.test_suite, 'read', 'tests'), /tests.*line ranges/);
-  requests[0].artifactTypes.requirements.tools.read.description = 'Changed envelope';
-  assert.equal(requests[1].artifactTypes.requirements.tools.read.description, data.config.artifactTypes.requirements.tools.read.description);
+  requests[0].artifactTypes.requirements.tools!.read!.description = 'Changed envelope';
+  assert.equal(requests[1].artifactTypes.requirements.tools!.read!.description, data.config.artifactTypes.requirements.tools!.read!.description);
 });
 
 test('old type definitions keep built-in descriptions and template replacement is literal', () => {
@@ -119,7 +122,7 @@ test('old type definitions keep built-in descriptions and template replacement i
 
 test('malformed type tool definitions are rejected before Provider checks or request persistence', async t => {
   const data = await fixture(t);
-  const calls = [];
+  const calls: string[] = [];
   const broker = createBroker({ repoPath: data.repoPath, stateDir: data.stateDir, executors: {
     canExecute: request => { calls.push(request.criticId); return { ok: true }; },
     execute: async () => { throw new Error('Invalid configuration must not execute.'); },
@@ -144,7 +147,7 @@ test('malformed type tool definitions are rejected before Provider checks or req
     { viewer: 'text', tools: { read: { description: 'Read {{artifactName}}' } } },
   ];
   for (const definition of invalid) {
-    data.config.artifactTypes.markdown = definition;
+    Reflect.set(data.config.artifactTypes, 'markdown', definition);
     await writeFile(join(data.repoPath, 'ccdd.config.json'), JSON.stringify(data.config));
     await assert.rejects(broker.submit({ requesterId: 'builder', mode: 'copy' }), /artifact type|Artifact type|artifact tool|Artifact tool/);
   }

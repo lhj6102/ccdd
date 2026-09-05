@@ -3,7 +3,7 @@
 ## Contexts
 
 - [Broker](src/broker/CONTEXT.md): 평가 요청, 진행 상태, 담당과 반환할 결과의 기준이 되는 맥락.
-- [Executors](src/executors/CONTEXT.md): Code Runner, Agent Provider, Human이 실제 리뷰를 수행하는 맥락.
+- [Executors](src/executors/CONTEXT.md): Runtime Critic, Agent Critic, Human Critic이 실제 리뷰를 수행하는 맥락.
 
 ## Relationships
 
