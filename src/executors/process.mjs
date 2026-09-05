@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process';
 
 /** Spawn directly, never through a shell. Cancel the complete child process group. */
-export function runProcess(command, args, { cwd, env, input, signal, timeoutMs = 180_000, capture = true, maxOutputBytes = 128 * 1024, spawnImpl = spawn } = {}) {
+export function runProcess(command, args, { cwd, env, input, signal, timeoutMs = 180_000, capture = true, maxOutputBytes = 128 * 1024, onOutput, spawnImpl = spawn } = {}) {
   return new Promise((resolve, reject) => {
     if (signal?.aborted) { reject(new Error('Execution aborted')); return; }
     let child;
@@ -23,6 +23,7 @@ export function runProcess(command, args, { cwd, env, input, signal, timeoutMs =
     const timer = setTimeout(() => stop(`Execution timed out after ${timeoutMs} ms`), timeoutMs);
     timer.unref();
     const collect = key => chunk => {
+      onOutput?.(key, chunk);
       if (!capture) return;
       const text = chunk.toString('utf8');
       const current = key === 'stdout' ? stdout : stderr;

@@ -35,3 +35,7 @@ _Avoid_: 전체 파일을 미리 넣은 프롬프트, Repo 전체 접근
 **Review Result**:
 리뷰어가 관측한 Artifact에 대해 내린 GREEN 또는 RED 판정과 그 근거다. 실행 실패는 판정이 아니다.
 _Avoid_: 실행 성공, 추측한 통과
+
+**Readiness Diagnostic**:
+요청된 실행 조건으로 지금 리뷰를 시작할 준비가 되었는지 확인한 관측이다. Artifact에 대한 품질 판정이나 이후 실행의 성공 보장은 아니다.
+_Avoid_: Critic 통과, Health 응답, 영구 인증 보증

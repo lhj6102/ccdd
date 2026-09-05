@@ -9,10 +9,12 @@ const reviewRequests = await prepareReviewRequests({
   repoPath,
   repoId: 'demo',
   snapshotCommit,
+  // criticId: 'tests-spec', // omit to prepare the whole chain
 });
 
 // POST /api/runs
 const body = { snapshotCommit, requesterId: 'web-demo', reviewRequests };
+// A selected request also sends criticId, matching the prepareReviewRequests selection.
 ```
 
 `prepareReviewRequests`는 커밋을 읽기만 하며 작업 폴더를 바꾸거나 리뷰를 실행하지 않는다. 반환값은 Critic 의존 순서로 정렬된 다음 형태의 배열이다.
@@ -39,3 +41,5 @@ const body = { snapshotCommit, requesterId: 'web-demo', reviewRequests };
 데모에서는 `GET /api/demo`의 각 `scenario.reviewRequests`로 준비된 요청을 브라우저 Requester에 전달한다. 브라우저는 선택한 스냅샷의 요청 배열을 `POST /api/runs`로 제출한다. 브로커는 등록된 Repo의 같은 커밋 정의와 대조해 Repo·커밋·Artifact·payload·Profile·의존 관계가 일치하는지 확인한 뒤, Handle과 진행 상태를 추가해 보관한다. 이 데모에서는 커밋과 다른 임의의 요청 재정의를 허용하지 않는다.
 
 기존 커밋 전용 제출은 편의 경로로 유지할 수 있다. 그 경우도 같은 Repo Requester 어댑터를 거쳐 요청을 준비한다. 브로커와 실행기는 요청을 받은 뒤의 영속성·배정·평가를 각각 맡으며, 리뷰를 시작할 때 해당 스냅샷을 detached worktree로 재현한다.
+
+개별 Critic을 실행할 때는 `prepareReviewRequests({…, criticId})`가 선택한 요청 하나만 만들고, `POST /api/runs`에도 같은 `criticId`를 전달한다. 브로커는 이 범위에 해당하는 커밋 정의와 정확히 대조한다. 원래 `dependsOn`은 정의로 남고 실행 시 선행 Handle은 없다. 반환된 `scope`가 개별 실행임을 명시한다.

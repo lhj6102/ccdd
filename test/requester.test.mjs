@@ -49,3 +49,15 @@ test('preparing requests reads the named commit without depending on or rewritin
   await assert.rejects(prepareReviewRequests({ ...data, snapshotCommit: 'HEAD' }), /full immutable Git commit/);
   await assert.rejects(prepareReviewRequests({ ...data, repoId: '' }), /repoId/);
 });
+
+test('selecting one Critic preserves its committed definition and excludes predecessor and downstream envelopes', async t => {
+  const data = await fixture(t);
+  const chain = await prepareReviewRequests(data);
+  assert.deepEqual(await prepareReviewRequests({ ...data, criticId: 'tests-spec' }), [chain[1]]);
+  assert.equal(chain[1].dependsOn, 'spec-why');
+  assert.deepEqual(await prepareReviewRequests({ ...data, criticId: 'implementation-tests' }), [chain[2]]);
+  await assert.rejects(prepareReviewRequests({ ...data, criticId: 'missing' }), /Unknown Critic/);
+  for (const criticId of ['', ' ', '../spec-why', null, 1, ['spec-why']]) {
+    await assert.rejects(prepareReviewRequests({ ...data, criticId }), /criticId/);
+  }
+});

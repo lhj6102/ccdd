@@ -22,7 +22,7 @@
 
   <main class="workspace">
     <section class="intro" aria-labelledby="page-title">
-      <div><div class="eyebrow">하나의 의도, 세 번의 검증</div><h1 id="page-title">변경된 의도를 끝까지 확인합니다.</h1><p>평가 기준에서 구현까지. 같은 스냅샷에서, 앞선 검증을 통과한 뒤 다음 검증을 실행합니다.</p></div>
+      <div><div class="eyebrow">하나의 의도, 세 번의 검증</div><h1 id="page-title">변경된 의도를 끝까지 확인합니다.</h1><p>같은 스냅샷에서 전체 흐름을 검증하거나, 수정한 기능에 필요한 Critic만 실행합니다.</p></div>
       <div class="intro-aside"><span class="tiny-label">DEMO ARTIFACT</span><strong>할 일 우선순위 선택기</strong><span>문서 → 테스트 → 실행 가능한 코드</span></div>
     </section>
 
@@ -31,8 +31,10 @@
       <div id="scenarios" class="scenario-grid" aria-busy="true"><div class="loading-placeholder">데모 스냅샷을 불러오는 중입니다.</div></div>
       <div class="submit-bar">
         <div class="snapshot-info"><span class="snapshot-symbol" aria-hidden="true">⌘</span><span>선택한 커밋</span><code id="selected-commit">—</code><span class="snapshot-note">요청 후 독립된 worktree에서 리뷰</span></div>
-        <button id="submit-run" class="button primary" disabled data-testid="submit-run"><span class="button-icon" aria-hidden="true">↗</span>리뷰 요청 보내기</button>
+        <div class="request-actions"><label class="critic-select-label" for="critic-select">실행할 Critic<select id="critic-select" aria-describedby="scope-help" data-testid="critic-select"><option value="">전체 흐름 · Critic 3개</option></select></label><button id="diagnose" class="button secondary" disabled data-testid="diagnose">준비 진단</button><button id="submit-run" class="button primary" disabled data-testid="submit-run"><span class="button-icon" aria-hidden="true">↗</span>리뷰 요청 보내기</button></div>
       </div>
+      <p id="scope-help" class="scope-help">전체 흐름은 앞선 평가를 통과한 뒤 다음 Critic을 실행합니다.</p>
+      <div id="doctor-result" class="doctor-result" aria-live="polite" data-testid="doctor-result" hidden></div>
     </section>
 
     <div id="notice" class="notice" role="alert" hidden></div>
@@ -42,7 +44,7 @@
         <section class="graph-panel panel" aria-labelledby="graph-title">
           <div class="panel-heading"><div><span class="tiny-label">DEPENDENCY GRAPH</span><h2 id="graph-title">단방향 검증 흐름</h2></div><span id="run-status" class="status status-idle">요청 전</span></div>
           <div id="graph" class="artifact-graph" data-testid="artifact-graph"></div>
-          <div class="graph-footer"><span><i class="legend-dot"></i>앞선 결과가 GREEN일 때만 다음 검증 시작</span><span>4 Artifacts <span class="middle-dot">·</span> 3 Critics</span></div>
+          <div class="graph-footer"><span id="graph-scope"><i class="legend-dot"></i>앞선 결과가 GREEN일 때만 다음 검증 시작</span><span id="graph-count">4 Artifacts <span class="middle-dot">·</span> 3 Critics</span></div>
         </section>
 
         <section class="critics-panel panel" aria-labelledby="critics-title">

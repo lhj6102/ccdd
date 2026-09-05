@@ -2,10 +2,10 @@ const $ = (selector, root = document) => root.querySelector(selector);
 const escape = (value) => String(value ?? '').replace(/[&<>"']/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
 const json = value => JSON.stringify(value, null, 2);
 const terminal = new Set(['GREEN', 'RED', 'ERROR']);
-const statusLabels = {GREEN:'GREEN',RED:'RED',ERROR:'ERROR',RUNNING:'리뷰 중',QUEUED:'실행 대기',BLOCKED:'선행 평가 대기',WAITING_HUMAN:'사람 리뷰 대기',IDLE:'요청 전'};
+const statusLabels = {GREEN:'GREEN',RED:'RED',ERROR:'ERROR',RUNNING:'리뷰 중',QUEUED:'실행 대기',BLOCKED:'선행 평가 대기',WAITING_HUMAN:'사람 리뷰 대기',IDLE:'요청 전',EXCLUDED:'실행 대상 아님',REFERENCE:'평가 기준으로 읽음'};
 const classFor = status => String(status || 'IDLE').toLowerCase().replaceAll('_', '-');
 const shortCommit = commit => String(commit || '—').slice(0, 8);
-const state = {demo:null, selectedScenario:null, runs:[], run:null, selectedRequest:null, autoSelect:true, tab:'result', submitting:false, pollTimer:null, historyTimer:null, artifact:null, humanBusy:false, humanDrafts:{}, lastAnnouncement:''};
+const state = {demo:null, selectedScenario:null, selectedCritic:'', runs:[], run:null, selectedRequest:null, autoSelect:true, tab:'result', submitting:false, diagnosing:false, doctorReport:null, pollTimer:null, historyTimer:null, artifact:null, humanBusy:false, humanDrafts:{}, lastAnnouncement:''};
 const icons = {
   document:'<svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M14 3H6a1 1 0 0 0-1 1v16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V8l-5-5Z" stroke="currentColor" stroke-width="1.35"/><path d="M14 3v5h5M8 12h8M8 16h6" stroke="currentColor" stroke-width="1.35"/></svg>',
   test:'<svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M8 3h8M9 3v6l-5.5 9.2A2 2 0 0 0 5.2 21h13.6a2 2 0 0 0 1.7-2.8L15 9V3M7 14h10" stroke="currentColor" stroke-width="1.35" stroke-linecap="round"/><circle cx="10" cy="17" r="1" fill="currentColor"/></svg>',
@@ -16,9 +16,9 @@ const icons = {
 };
 const graphDefaults = [
   {id:'why',artifact:'why.md',title:'Why',icon:'document'},
-  {id:'spec',artifact:'spec.md',title:'Spec',criticTitle:'Spec이 Why에 부합하는가',icon:'document'},
-  {id:'tests',artifact:'tests',title:'Tests',criticTitle:'Tests가 Spec에 부합하는가',icon:'test'},
-  {id:'implementation',artifact:'implementation',title:'Implementation',criticTitle:'테스트 런타임 통과',icon:'code'}
+  {id:'spec',artifact:'spec.md',title:'Spec',criticId:'spec-why',criticTitle:'Spec이 Why에 부합하는가',icon:'document'},
+  {id:'tests',artifact:'tests',title:'Tests',criticId:'tests-spec',criticTitle:'Tests가 Spec에 부합하는가',icon:'test'},
+  {id:'implementation',artifact:'implementation',title:'Implementation',criticId:'implementation-tests',criticTitle:'테스트 런타임 통과',icon:'code'}
 ];
 
 async function api(path, options = {}) {
@@ -33,7 +33,7 @@ function notify(message, isError = true) {
   $('#notice').textContent = message || '';
   $('#notice').classList.toggle('notice-info', !isError);
 }
-function statusBadge(status) {return `<span class="status status-${classFor(status)}" data-status="${escape(status || 'IDLE')}">${escape(statusLabels[status] || status || '요청 전')}</span>`;}
+function statusBadge(status, label) {return `<span class="status status-${classFor(status)}" data-status="${escape(status || 'IDLE')}">${escape(label || statusLabels[status] || status || '요청 전')}</span>`;}
 function engineLabel(request) {
   const kind = request?.profile?.kind;
   if (kind === 'runtime' || kind === 'code-runner') return 'Runtime';
@@ -47,39 +47,81 @@ function scenarioFor(commit) {return state.demo?.scenarios?.find(s => s.commit =
 function selectedRequest() {return state.run?.requests?.find(r=>r.id === state.selectedRequest) || null;}
 function graphItems() {return graphDefaults.map((fallback, index) => ({...fallback, ...(state.demo?.graph?.[index] || {}), icon:fallback.icon}));}
 function requestError(request) {return typeof request?.error === 'string' ? request.error : request?.error?.message || (request?.error ? json(request.error) : '');}
+function selectedScenario() {return state.demo?.scenarios?.find(s=>s.id === state.selectedScenario);}
+function scopeFor(run = state.run) {return run ? run.scope || {kind:'chain'} : state.selectedCritic ? {kind:'critic',criticId:state.selectedCritic} : {kind:'chain'};}
+function criticTitle(criticId) {return graphItems().find(node=>node.criticId === criticId)?.criticTitle || selectedScenario()?.reviewRequests?.find(request=>request.criticId === criticId)?.title || criticId;}
+function scopeLabel(run) {const scope=scopeFor(run);return scope.kind === 'critic' ? `단독 · ${criticTitle(scope.criticId)}` : '전체 흐름';}
+function runStatusLabel(run) {return run?.status === 'GREEN' ? scopeFor(run).kind === 'critic' ? '선택 Critic 통과' : '전체 흐름 통과' : statusLabels[run?.status] || run?.status || '요청 전';}
+function excludedCritic(criticId) {const scope=scopeFor();return scope.kind === 'critic' && scope.criticId !== criticId;}
+function requestForCritic(criticId) {return state.run?.requests?.find(request=>request.criticId === criticId);}
+
+function renderControls() {
+  const scenario = selectedScenario();
+  const critics = scenario?.reviewRequests?.length ? scenario.reviewRequests.map(request=>({id:request.criticId,title:request.title})) : graphItems().filter(node=>node.criticId).map(node=>({id:node.criticId,title:node.criticTitle}));
+  if (state.selectedCritic && !critics.some(critic=>critic.id === state.selectedCritic)) state.selectedCritic='';
+  const selector=$('#critic-select');
+  selector.innerHTML=`<option value="">전체 흐름 · Critic ${critics.length}개</option>${critics.map(critic=>`<option value="${escape(critic.id)}">${escape(critic.title)}</option>`).join('')}`;
+  selector.value=state.selectedCritic;
+  selector.disabled=state.submitting || state.diagnosing;
+  $('#scope-help').textContent=state.selectedCritic ? '선택한 Critic 하나만 실행합니다. 선행 평가를 기다리지 않으며, 통과 결과도 이 Critic에만 적용됩니다.' : '전체 흐름은 앞선 평가를 통과한 뒤 다음 Critic을 실행합니다.';
+  $('#diagnose').disabled=!scenario || state.submitting || state.diagnosing;
+  $('#diagnose').innerHTML=state.diagnosing ? '<span class="spinner" aria-hidden="true"></span>진단 중' : '준비 진단';
+  renderDoctor();
+}
+
+function renderDoctor() {
+  const panel=$('#doctor-result');
+  panel.hidden=!state.diagnosing && !state.doctorReport;
+  if(state.diagnosing){panel.className='doctor-result';panel.innerHTML='<span class="spinner" aria-hidden="true"></span> 선택한 실행에 필요한 Provider와 Artifact 도구를 실제로 확인하고 있습니다. 진단에는 시간이 걸릴 수 있습니다.';return;}
+  if(!state.doctorReport)return;
+  const {report,commit,criticId}=state.doctorReport;
+  const ready=report.ok && report.status === 'READY';
+  panel.className=`doctor-result ${ready ? 'doctor-ready':'doctor-failed'}`;
+  panel.innerHTML=`<details open><summary><strong>${ready ? '실행 준비 확인됨':'실행 준비를 확인하지 못했습니다'}</strong><span>${escape(shortCommit(commit))} · ${escape(criticId ? criticTitle(criticId) : '전체 흐름')}</span></summary><ul class="doctor-checks">${(report.checks || []).map(check=>`<li class="check-${classFor(check.status)}"><span class="check-status">${escape({PASS:'확인',FAIL:'실패',SKIP:'미검사'}[check.status] || check.status)}</span><div><span>${escape(check.message || check.id)}</span>${check.remedy ? `<p>${escape(typeof check.remedy === 'string' ? check.remedy : json(check.remedy))}</p>`:''}</div></li>`).join('')}</ul><p class="doctor-note">이 결과는 진단 시점의 상태입니다. Critic 평가 결과와는 별개이며, 브로커 연결 표시만으로 Provider 준비 여부를 판단하지 않습니다.</p></details>`;
+}
 
 function renderScenarios() {
   const scenarios = state.demo?.scenarios || [];
   $('#scenarios').setAttribute('aria-busy', 'false');
-  $('#scenarios').innerHTML = scenarios.length ? scenarios.map((scenario, index) => `<button type="button" class="scenario-card ${state.selectedScenario === scenario.id ? 'selected' : ''}" aria-pressed="${state.selectedScenario === scenario.id}" data-scenario="${escape(scenario.id)}" data-testid="scenario-${escape(scenario.id)}"><span class="scenario-top"><span class="scenario-number">SNAPSHOT ${String(index + 1).padStart(2,'0')}</span><span class="scenario-radio" aria-hidden="true"></span></span><span class="scenario-title">${escape(scenario.label)}</span><span class="scenario-description">${escape(scenario.description)}</span></button>`).join('') : '<div class="loading-placeholder">등록된 데모 스냅샷이 없습니다.</div>';
+  $('#scenarios').innerHTML = scenarios.length ? scenarios.map((scenario, index) => `<button type="button" class="scenario-card ${state.selectedScenario === scenario.id ? 'selected' : ''}" aria-pressed="${state.selectedScenario === scenario.id}" ${state.submitting || state.diagnosing ? 'disabled':''} data-scenario="${escape(scenario.id)}" data-testid="scenario-${escape(scenario.id)}"><span class="scenario-top"><span class="scenario-number">SNAPSHOT ${String(index + 1).padStart(2,'0')}</span><span class="scenario-radio" aria-hidden="true"></span></span><span class="scenario-title">${escape(scenario.label)}</span><span class="scenario-description">${escape(scenario.description)}</span></button>`).join('') : '<div class="loading-placeholder">등록된 데모 스냅샷이 없습니다.</div>';
   const selection = scenarios.find(s=>s.id === state.selectedScenario);
   $('#selected-commit').textContent = shortCommit(selection?.commit);
   $('#selected-commit').title = selection?.commit || '';
-  $('#submit-run').disabled = !selection || state.submitting;
-  $('#submit-run').innerHTML = state.submitting ? '<span class="spinner" aria-hidden="true"></span>브로커에 요청 중' : '<span class="button-icon" aria-hidden="true">↗</span>리뷰 요청 보내기';
+  $('#submit-run').disabled = !selection || state.submitting || state.diagnosing;
+  $('#submit-run').innerHTML = state.submitting ? '<span class="spinner" aria-hidden="true"></span>브로커에 요청 중' : `<span class="button-icon" aria-hidden="true">↗</span>${state.selectedCritic ? '선택 Critic 실행':'리뷰 요청 보내기'}`;
+  renderControls();
 }
 
 function renderGraph() {
   const requests = state.run?.requests || [];
   const graph = graphItems();
   $('#graph').innerHTML = graph.map((node, index) => {
-    const request = index ? requests[index - 1] : requests[0];
-    const status = index ? request?.status || 'IDLE' : 'ROOT';
-    const active = index > 0 && request?.id === state.selectedRequest;
+    const requestForNode=requestForCritic(node.criticId);
+    const artifactRequest=requests.find(item=>item.artifacts?.some(artifact=>artifact.id === node.id));
+    const previewReference=scopeFor().kind === 'critic' && selectedScenario()?.reviewRequests?.find(item=>item.criticId === scopeFor().criticId)?.artifacts?.some(artifact=>artifact.id === node.id);
+    const excluded = node.criticId ? excludedCritic(node.criticId) : scopeFor().kind === 'critic' && !(artifactRequest || previewReference);
+    const reference=scopeFor().kind === 'critic' && (excluded || !node.criticId) && Boolean(artifactRequest || (!state.run && previewReference));
+    const request = requestForNode || (reference || !node.criticId ? artifactRequest : null);
+    const status = reference ? 'REFERENCE' : excluded ? 'EXCLUDED' : node.criticId ? request?.status || 'IDLE' : 'ROOT';
+    const active = !reference && index > 0 && request?.id === state.selectedRequest;
     const artifact = request?.artifacts?.find(a => a.id === node.id);
-    const name = ['Why','Spec','Tests','Implementation'][index];
+    const name = node.title;
     const label = status === 'ROOT' ? '의도의 출발점' : statusLabels[status] || status;
-    const action = index === 0 ? `data-open-artifact="why" data-request-id="${escape(request?.id || '')}"` : `data-select-request="${escape(request?.id || '')}"`;
-    const arrow = index ? `<div class="node-arrow ${classFor(status)}" aria-hidden="true"><span>${engineLabel(request || {profile:{kind:index === 3 ? 'runtime':'agent'}})}</span>${icons.arrow}</div>` : '';
-    return `${arrow}<button type="button" class="artifact-node node-${classFor(status)} ${active ? 'active' : ''}" ${action} ${request ? '' : 'disabled'} data-testid="artifact-${escape(node.id)}" aria-label="${escape(name)} ${escape(label)}${index === 0 ? ' 문서 보기' : ' 평가 상세'}"><span class="node-top">${icons[node.icon]}<span class="node-index">0${index+1}</span></span><strong class="node-name">${name}</strong><code class="node-path">${escape(artifact?.path || (typeof node.artifact === 'string' ? node.artifact : node.artifact?.path) || graphDefaults[index].artifact)}</code><span class="node-state ${classFor(status)}">${status === 'GREEN' ? '✓ ' : status === 'RED' ? '× ' : status === 'ERROR' ? '! ' : ''}${escape(label)}</span></button>`;
+    const viewerAction=index === 0 || reference;
+    const action = viewerAction ? `data-open-artifact="${escape(node.id)}" data-request-id="${escape(request?.id || '')}"` : `data-select-request="${escape(request?.id || '')}"`;
+    const arrow = index ? `<div class="node-arrow ${classFor(excluded ? 'EXCLUDED' : status)}" aria-hidden="true"><span>${excluded ? '—' : engineLabel(request || {profile:{kind:index === 3 ? 'runtime':'agent'}})}</span>${icons.arrow}</div>` : '';
+    return `${arrow}<button type="button" class="artifact-node node-${classFor(status)} ${active ? 'active' : ''}" ${action} ${request && (!excluded || reference) ? '' : 'disabled'} data-testid="artifact-${escape(node.id)}" aria-label="${escape(name)} ${escape(label)}${viewerAction ? ' 문서 보기' : ' 평가 상세'}"><span class="node-top">${icons[node.icon]}<span class="node-index">0${index+1}</span></span><strong class="node-name">${escape(name)}</strong><code class="node-path">${escape(artifact?.path || (typeof node.artifact === 'string' ? node.artifact : node.artifact?.path) || graphDefaults[index].artifact)}</code><span class="node-state ${classFor(status)}">${status === 'GREEN' ? '✓ ' : status === 'RED' ? '× ' : status === 'ERROR' ? '! ' : ''}${escape(label)}</span></button>`;
   }).join('');
-  $('#run-status').outerHTML = statusBadge(state.run?.status || 'IDLE').replace('<span ', '<span id="run-status" ');
+  $('#run-status').outerHTML = statusBadge(state.run?.status || 'IDLE',runStatusLabel(state.run)).replace('<span ', '<span id="run-status" ');
+  const scope=scopeFor();
+  $('#graph-scope').innerHTML=scope.kind === 'critic' ? `선택한 Critic만 실행 · 다른 평가는 이번 결과에 포함되지 않습니다` : '<i class="legend-dot"></i>앞선 결과가 GREEN일 때만 다음 검증 시작';
+  $('#graph-count').textContent=scope.kind === 'critic' ? '1 Critic' : '4 Artifacts · 3 Critics';
 }
 
 function waitingReason(request, index) {
   if (!request) return index === 2 ? '테스트 코드를 실행해 구현을 검증합니다' : index === 0 ? 'why.md와 spec.md를 독립적으로 비교합니다' : 'spec.md와 tests의 요구사항을 비교합니다';
   if (request.status === 'BLOCKED') {
-    const previous = state.run?.requests?.find(r=>r.id === request.predecessorId) || state.run?.requests?.[index-1];
+    const previous = state.run?.requests?.find(r=>r.id === request.predecessorId);
     if (previous?.status === 'RED') return '선행 평가가 RED여서 실행하지 않습니다';
     if (previous?.status === 'ERROR') return '선행 평가에 오류가 있어 실행하지 않습니다';
     return '선행 평가의 GREEN 결과를 기다립니다';
@@ -92,15 +134,15 @@ function waitingReason(request, index) {
 }
 
 function renderCritics() {
-  const requests = state.run?.requests || [];
-  $('#critics').innerHTML = graphDefaults.slice(1).map((node,index)=>{
-    const request = requests[index];
-    const status = request?.status || 'IDLE';
-    return `<button type="button" class="critic-row ${request?.id === state.selectedRequest && request ? 'selected':''}" ${request ? `data-select-request="${escape(request.id)}"` : 'disabled'} data-testid="critic-${index+1}" aria-pressed="${Boolean(request && request.id === state.selectedRequest)}"><span class="critic-step ${classFor(status)}">${status === 'GREEN' ? icons.check : status === 'RED' || status === 'ERROR' ? '!' : String(index + 1).padStart(2,'0')}</span><span class="critic-copy"><strong class="critic-title">${escape(request?.title || node.criticTitle)}</strong><span class="critic-subtitle">${escape(waitingReason(request,index))}</span></span><span class="critic-trailing"><span class="engine-label">${escape(engineLabel(request || {profile:{kind:index === 2 ? 'runtime':'agent'}}))}</span>${statusBadge(status)}<span class="critic-chevron" aria-hidden="true">›</span></span></button>`;
+  $('#critics').innerHTML = graphItems().filter(node=>node.criticId).map((node,index)=>{
+    const request = requestForCritic(node.criticId);
+    const excluded=excludedCritic(node.criticId);
+    const status = excluded ? 'EXCLUDED' : request?.status || 'IDLE';
+    return `<button type="button" class="critic-row ${excluded ? 'excluded':''} ${request?.id === state.selectedRequest && request ? 'selected':''}" ${request && !excluded ? `data-select-request="${escape(request.id)}"` : 'disabled'} data-critic-id="${escape(node.criticId)}" data-testid="critic-${index+1}" aria-pressed="${Boolean(request && request.id === state.selectedRequest)}"><span class="critic-step ${classFor(status)}">${status === 'GREEN' ? icons.check : status === 'RED' || status === 'ERROR' ? '!' : String(index + 1).padStart(2,'0')}</span><span class="critic-copy"><strong class="critic-title">${escape(request?.title || node.criticTitle)}</strong><span class="critic-subtitle">${escape(excluded ? '이번 실행 대상 아님' : waitingReason(request,index))}</span></span><span class="critic-trailing"><span class="engine-label">${escape(engineLabel(request || {profile:{kind:index === 2 ? 'runtime':'agent'}}))}</span>${statusBadge(status)}<span class="critic-chevron" aria-hidden="true">›</span></span></button>`;
   }).join('');
   $('#run-handle').textContent = state.run ? `HANDLE ${state.run.id}` : '요청을 보내면 실행 핸들이 생성됩니다';
   $('#run-handle').title = state.run?.id || '';
-  $('#run-meta').innerHTML = state.run ? `<span>리뷰 스냅샷 <code>${escape(shortCommit(state.run.snapshotCommit))}</code> <span class="middle-dot">·</span> ${escape(scenarioFor(state.run.snapshotCommit)?.label || '저장된 요청')}</span><span>${terminal.has(state.run.status) ? '소요' : '경과'} ${elapsed(state.run)}</span>` : '<span>Agent가 문서를 평가하고, Runtime이 실제 테스트를 실행합니다.</span>';
+  $('#run-meta').innerHTML = state.run ? `<span>리뷰 스냅샷 <code>${escape(shortCommit(state.run.snapshotCommit))}</code> <span class="middle-dot">·</span> ${escape(scopeLabel(state.run))}</span><span>${terminal.has(state.run.status) ? '소요' : '경과'} ${elapsed(state.run)}</span>` : '<span>Agent가 문서를 평가하고, Runtime이 실제 테스트를 실행합니다.</span>';
 }
 
 function eventDescription(event) {
@@ -157,8 +199,9 @@ function renderInspector() {
     $('#inspector-body').innerHTML = `<div class="inspector-empty"><div class="empty-symbol">${icons.eye}</div><strong>검증의 근거를 확인하는 곳</strong><p>스냅샷을 선택하고 리뷰를 요청하면<br>각 Critic의 판단과 사용한 Artifact를<br>이곳에서 확인할 수 있습니다.</p></div>`;
     return;
   }
-  const index = state.run.requests.findIndex(r=>r.id === request.id);
-  const header = `<div class="detail-heading"><span class="detail-index">CRITIC ${String(index+1).padStart(2,'0')} / 03</span>${statusBadge(request.status)}</div><h3 class="detail-title">${escape(request.title)}</h3>`;
+  const criticNodes=graphItems().filter(node=>node.criticId);
+  const index = criticNodes.findIndex(node=>node.criticId === request.criticId);
+  const header = `<div class="detail-heading"><span class="detail-index">${scopeFor().kind === 'critic' ? '선택 CRITIC · 단독 실행' : `CRITIC ${String(index+1).padStart(2,'0')} / ${String(criticNodes.length).padStart(2,'0')}`}</span>${statusBadge(request.status)}</div><h3 class="detail-title">${escape(request.title)}</h3>`;
   if (state.tab === 'request') {
     const snapshot = request.snapshotCommit || state.run.snapshotCommit;
     const profile = request.profile || {};
@@ -180,14 +223,14 @@ function renderInspector() {
 }
 
 function renderHistory() {
-  $('#history').innerHTML = state.runs.length ? state.runs.map(run=>`<button type="button" class="history-item ${run.id === state.run?.id ? 'selected':''}" data-open-run="${escape(run.id)}" data-testid="history-${escape(run.id)}"><span class="history-top"><strong class="history-name">${escape(scenarioFor(run.snapshotCommit)?.label || '리뷰 요청')}</strong>${statusBadge(run.status)}</span><span class="history-meta"><code>${escape(shortCommit(run.snapshotCommit))}</code><span>${timeLabel(run.createdAt)}</span></span></button>`).join('') : '<div class="quiet-empty">아직 요청 이력이 없습니다.</div>';
+  $('#history').innerHTML = state.runs.length ? state.runs.map(run=>`<button type="button" class="history-item ${run.id === state.run?.id ? 'selected':''}" data-open-run="${escape(run.id)}" data-testid="history-${escape(run.id)}"><span class="history-top"><strong class="history-name">${escape(scenarioFor(run.snapshotCommit)?.label || '리뷰 요청')}</strong>${statusBadge(run.status,runStatusLabel(run))}</span><span class="history-scope">${escape(scopeLabel(run))}</span><span class="history-meta"><code>${escape(shortCommit(run.snapshotCommit))}</code><span>${timeLabel(run.createdAt)}</span></span></button>`).join('') : '<div class="quiet-empty">아직 요청 이력이 없습니다.</div>';
 }
 
 function renderRun({inspector = true} = {}) {
   renderGraph(); renderCritics(); renderEvents(); if (inspector) renderInspector(); renderHistory();
   if (state.run) {
     const announcement = `${state.run.id} ${state.run.status}`;
-    if (announcement !== state.lastAnnouncement) {$('#live-status').textContent = `리뷰 요청 상태: ${statusLabels[state.run.status] || state.run.status}`;state.lastAnnouncement=announcement;}
+    if (announcement !== state.lastAnnouncement) {$('#live-status').textContent = `${scopeLabel(state.run)} 리뷰 요청 상태: ${runStatusLabel(state.run)}`;state.lastAnnouncement=announcement;}
   }
 }
 function applyRun(run) {
@@ -209,7 +252,7 @@ async function loadRun(id, {userSelected = false} = {}) {
   try {
     const data = await api(`/api/runs/${encodeURIComponent(id)}`);
     if (state.run?.id && state.run.id !== id && state.run.id !== previousId && !userSelected) return;
-    if (userSelected) {state.autoSelect=true; state.selectedRequest=null; const scenario = scenarioFor((data.run || data).snapshotCommit); if (scenario) state.selectedScenario=scenario.id; renderScenarios();}
+    if (userSelected) {state.autoSelect=true; state.selectedRequest=null; const run=data.run || data; const scenario = scenarioFor(run.snapshotCommit); if (scenario) state.selectedScenario=scenario.id;state.selectedCritic=scopeFor(run).kind === 'critic' ? scopeFor(run).criticId : '';state.doctorReport=null;renderScenarios();}
     applyRun(data.run || data);
     schedulePoll();
   } catch(error) {notify(error.message); schedulePoll(4000);}
@@ -225,22 +268,37 @@ async function loadHistory() {
   state.historyTimer = setTimeout(loadHistory, 7000);
 }
 async function checkConnection() {
-  try {await api('/api/health');$('#connection').className='connection online';$('#connection').innerHTML='<i></i>브로커 연결됨';}
+  try {await api('/api/health');$('#connection').className='connection online';$('#connection').innerHTML='<i></i>브로커 연결됨';$('#connection').title='브로커 응답 상태입니다. Provider 사용 가능 여부는 준비 진단으로 확인하세요.';}
   catch {$('#connection').className='connection offline';$('#connection').innerHTML='<i></i>브로커 연결 끊김';}
   setTimeout(checkConnection, 15000);
 }
 
 async function submitRun() {
-  const scenario = state.demo?.scenarios?.find(s=>s.id === state.selectedScenario);
-  if (!scenario || state.submitting) return;
+  const scenario = selectedScenario();
+  if (!scenario || state.submitting || state.diagnosing) return;
   state.submitting=true;renderScenarios();notify('');
   try {
-    const response = await api('/api/runs', {method:'POST',body:json({snapshotCommit:scenario.commit,requesterId:'web-demo',reviewRequests:scenario.reviewRequests})});
+    const criticId=state.selectedCritic;
+    const reviewRequests=criticId ? scenario.reviewRequests?.filter(request=>request.criticId === criticId) : scenario.reviewRequests;
+    const response = await api('/api/runs', {method:'POST',body:json({snapshotCommit:scenario.commit,requesterId:'web-demo',...(criticId ? {criticId}:{}),reviewRequests})});
     const run = response.run || response;
     if (!run.id) throw new Error('브로커 응답에 실행 핸들이 없습니다.');
     state.autoSelect=true;state.selectedRequest=null;state.tab='result';applyRun(run);schedulePoll(350);
   } catch(error) {notify(error.message);}
   finally {state.submitting=false;renderScenarios();}
+}
+
+async function diagnose() {
+  const scenario=selectedScenario();
+  if(!scenario || state.diagnosing || state.submitting)return;
+  const commit=scenario.commit,criticId=state.selectedCritic;
+  state.diagnosing=true;state.doctorReport=null;renderScenarios();notify('');
+  try {
+    const report=await api('/api/doctor',{method:'POST',body:json({snapshotCommit:commit,...(criticId ? {criticId}:{})})});
+    state.doctorReport={report,commit,criticId};
+  } catch(error) {
+    state.doctorReport={report:{ok:false,status:'NOT_READY',checks:[{id:'diagnosis',status:'FAIL',message:error.message}]},commit,criticId};
+  } finally {state.diagnosing=false;renderScenarios();}
 }
 
 // A small, escaped renderer: source HTML and link URLs are never inserted as HTML.
@@ -316,7 +374,7 @@ async function submitHuman(event) {
 }
 
 document.addEventListener('click', event=>{
-  const scenario=event.target.closest('[data-scenario]');if(scenario){state.selectedScenario=scenario.dataset.scenario;renderScenarios();return;}
+  const scenario=event.target.closest('[data-scenario]');if(scenario && !scenario.disabled){state.selectedScenario=scenario.dataset.scenario;state.doctorReport=null;renderScenarios();if(!state.run)renderRun();return;}
   const request=event.target.closest('[data-select-request]');if(request?.dataset.selectRequest){state.selectedRequest=request.dataset.selectRequest;state.autoSelect=false;renderGraph();renderCritics();renderInspector();return;}
   const tab=event.target.closest('[data-tab]');if(tab){state.tab=tab.dataset.tab;renderInspector();return;}
   const artifact=event.target.closest('[data-open-artifact]');if(artifact){openArtifact(artifact.dataset.requestId,artifact.dataset.openArtifact);return;}
@@ -327,6 +385,8 @@ document.addEventListener('submit',event=>{if(event.target.id === 'human-review-
 document.addEventListener('input',event=>{const form=event.target.closest('#human-review-form');if(form && state.selectedRequest)state.humanDrafts[state.selectedRequest]=Object.fromEntries(new FormData(form));});
 $('.tabs').addEventListener('keydown',event=>{if(!['ArrowLeft','ArrowRight','Home','End'].includes(event.key))return;event.preventDefault();state.tab=event.key === 'Home' ? 'result' : event.key === 'End' ? 'request' : state.tab === 'result' ? 'request' : 'result';renderInspector();$(`#tab-${state.tab}`).focus();});
 $('#submit-run').addEventListener('click',submitRun);
+$('#diagnose').addEventListener('click',diagnose);
+$('#critic-select').addEventListener('change',event=>{state.selectedCritic=event.target.value;state.doctorReport=null;renderScenarios();if(!state.run)renderRun();});
 $('#close-artifact').addEventListener('click',()=>$('#artifact-dialog').close());
 $('#artifact-dialog').addEventListener('click',event=>{if(event.target === $('#artifact-dialog')){const rect=event.target.getBoundingClientRect();if(event.clientX<rect.left || event.clientX>rect.right || event.clientY<rect.top || event.clientY>rect.bottom)event.target.close();}});
 $('#artifact-dialog').addEventListener('close',()=>{state.artifact=null;});
