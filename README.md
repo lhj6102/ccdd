@@ -31,6 +31,44 @@ npm 패키지를 설치했다면 `node src/cli.mjs` 대신 `ccdd`를 사용합�
 
 `--lock`은 쓰기를 강제로 막는 기능이 아닙니다. 파일 이벤트와 메타데이터, 내용 검증으로 변경을 감시합니다. 감시할 수 없는 환경에서는 실행을 거부합니다. 원본을 수정한 후 내용을 되돌려도 변경으로 검출되면 실패합니다. 자세한 범위와 제한은 [workspace 계약](docs/contracts.md)을 참고하세요.
 
+## Artifact 도구 설정
+
+도구 이름은 `{toolName}_{artifactName}`입니다. `artifactName`은 `artifacts`의 정의 키이며, 타입에 선언한 동작별 설명의 `{artifactName}`에 치환됩니다.
+
+```json
+"artifactTypes": {
+  "markdown": {
+    "viewer": "text",
+    "tools": {
+      "read": {"description": "{artifactName}의 문서 내용을 줄 단위로 읽는다."}
+    }
+  },
+  "code": {
+    "viewer": "files",
+    "tools": {
+      "list": {"description": "{artifactName}의 파일 목록을 조회한다."},
+      "read": {"description": "{artifactName}의 소스 텍스트를 줄 단위로 읽는다."}
+    }
+  }
+}
+```
+
+`tests`에 연결된 `read` 도구는 이름이 `read_tests`, 설명이 “tests의 소스 텍스트를 줄 단위로 읽는다.”가 됩니다. 타입 이름은 repo에서 자유롭게 정의하며, 실제 동작은 연결된 Viewer가 제공합니다. 설명을 생략한 기존 설정에는 기본 설명이 적용됩니다.
+
+```js
+read_spec({startLine: 1, lineCount: 80})
+list_tests({})
+read_tests({path: "rank.test.mjs", startLine: 10, lineCount: 30})
+```
+
+단일 파일은 `read`만 제공합니다. 디렉터리는 `list`·`read`를 제공하며, `read`에는 Artifact 내부의 파일 경로가 필요합니다. 단일 파일 `read`에는 `path`를 넣지 않습니다. 입력에 `tool` 구분자를 넣는 구조도 아닙니다.
+
+읽기는 1번 줄부터 시작하고 기본 80줄, 최대 500줄을 요청할 수 있습니다. 응답의 `nextStartLine`으로 이어 읽습니다. 한 번에 반환하는 내용은 64KiB 이내이며, 줄과 UTF-8 문자를 중간에서 자르지 않습니다. 한 줄 자체가 제한을 넘으면 오류를 반환합니다. 디렉터리 목록은 기존 `offset`·`limit` 방식으로 페이지를 넘깁니다.
+
+```sh
+ccdd artifact REQUEST_ID tests --file rank.test.mjs --start-line 10 --line-count 30
+```
+
 ## 실행과 기록
 
 ```sh

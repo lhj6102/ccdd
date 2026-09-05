@@ -120,13 +120,13 @@ async function probeAgent(request, { codexPath, worktreePath: inputPath, runDir,
       schema: { type: 'object', additionalProperties: false, required: ['ready', 'nonce'], properties: { ready: { type: 'boolean' }, nonce: { type: 'string' } } },
       makePrompt: () => [
         'You are performing a CCDD readiness diagnostic, not a critic review. Do not evaluate or modify the project, and do not produce GREEN or RED.',
-        `Call the ccdd_artifacts MCP tool read_${artifactId} with empty arguments to read the diagnostic artifact.`,
+        `Call the ccdd_artifacts MCP tool read_${artifactId} with {"startLine":1,"lineCount":1} to read the diagnostic artifact.`,
         'Its content is a randomly generated nonce. Return ready=true and that exact nonce with whitespace trimmed in the required JSON result.',
         'The nonce is available only through that artifact tool. Do not infer it from the filename. Do not inspect other artifacts or run any code.',
         'If the tool is unavailable or fails, return ready=false and an empty nonce. Do not invent success.',
       ].join('\n'),
     });
-    if (!toolCalls.some(call => call.name === `read_${artifactId}`) || final?.ready !== true || final.nonce !== nonce || Object.keys(final).some(key => !['ready', 'nonce'].includes(key))) {
+    if (!toolCalls.some(call => call.name === `read_${artifactId}` && call.observation?.lineCount > 0) || final?.ready !== true || final.nonce !== nonce || Object.keys(final).some(key => !['ready', 'nonce'].includes(key))) {
       throw diagnosticError('MCP_ROUNDTRIP_FAILED', 'Provider의 Artifact 도구 호출과 진단 내용의 왕복 확인을 완료하지 못했습니다.', 'Artifact MCP 연결과 요청 모델의 도구 호출 지원을 확인한 뒤 doctor를 재실행하세요.');
     }
     return { ok: true, message: '요청한 Provider·모델·reasoning으로 실제 응답과 Artifact MCP 읽기를 확인했습니다.', details: { operation: 'provider-mcp-roundtrip', toolCalls, authenticationVerified: true, modelAccessVerified: true, artifactToolsVerified: true } };
@@ -197,13 +197,17 @@ export function createExecutorRegistry({ codexPath = 'codex', alarmMethods = [],
           'Return only the final JSON schema result. Write a concise Korean summary and evidence with artifact paths and concrete observations; no hidden reasoning, logs, or speculative claims.',
           `Critic: ${request.title} (${request.criticId})`,
           `Workspace snapshot hash: ${request.snapshotHash}`,
-          `Artifacts: ${JSON.stringify(viewer.listArtifacts())}`,
-          `Viewer entry points: ${tools.map(x => x.name).join(', ')}`,
           `Review payload: ${JSON.stringify(request.payload)}`,
+          'Artifact roles and allowed observation scope follow. Interpret their role in the review payload; do not infer access to undeclared artifacts.',
+          `Artifacts: ${JSON.stringify(viewer.listArtifacts())}`,
+          'Each tool is named <operation>_<artifactName>. Read operations take 1-based startLine and lineCount (defaults: 1 and 80). Directory reads require a path inside that Artifact; file reads accept no path.',
+          'Read results preserve complete lines and report nextStartLine when more content remains. Continue reading relevant sections using that line number. Listing files alone or reading past EOF does not count as inspecting their contents.',
+          `Viewer entry points and type-defined descriptions: ${JSON.stringify(tools.map(({name,description})=>({name,description})))}`,
         ].join('\n') });
         const verdict = validateResult(final);
         for (const artifact of request.artifacts) {
-          if (!toolCalls.some(call => call.name === `read_${artifact.id}`)) throw new Error(`Provider did not inspect required artifact: ${artifact.id}`);
+          if (!toolCalls.some(call => call.name === `read_${artifact.id}` && call.observation?.artifactId === artifact.id &&
+              (call.observation.lineCount > 0 || call.observation.totalLines === 0))) throw new Error(`Provider did not inspect required artifact: ${artifact.id}`);
         }
         result = { ...verdict, provider: request.profile.provider, model: request.profile.model, toolCalls };
       }

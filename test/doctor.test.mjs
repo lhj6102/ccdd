@@ -81,6 +81,7 @@ test('Agent readiness requires a real subprocess MCP nonce roundtrip using the e
   assert.equal(result.details.modelAccessVerified, true);
   assert.equal(result.details.artifactToolsVerified, true);
   assert.equal(result.details.toolCalls.length, 1);
+  assert.equal(result.details.toolCalls[0].observation.lineCount, 1);
   assert.match(result.details.toolCalls[0].name, /^read_ccdd_probe_/);
   assert.equal(result.verdict, undefined);
   assert.doesNotMatch(JSON.stringify({ result, events }), /PRIVATE_REASONING|sk-secret/);
@@ -166,6 +167,7 @@ test('copy doctor diagnoses current files without Git, deduplicates profiles and
   assert.equal(report.mode, 'copy');
   assert.equal(report.snapshotHash, expectedHash);
   assert.equal(probes.length, 3);
+  assert.equal(report.checks.find(check => check.kind === 'artifacts').details.readLimitLinesPerFile, 80);
   assert.equal(new Set(paths).size, 1);
   assert.deepEqual(report.checks.find(check => check.kind === 'agent').criticIds, ['first', 'second']);
   assert.equal(events.filter(event => event.type === 'doctor.check').length, report.checks.length);

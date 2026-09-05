@@ -15,7 +15,7 @@ async function inspectViewers(request, worktreePath) {
   let inspectedFiles = 0;
   const inspectFile = async (artifactId, path) => {
     if (++inspectedFiles > 10_000) throw new Error('Artifact viewer readiness check exceeds 10000 files; narrow the Critic artifact scope.');
-    await registry.call(`read_${artifactId}`, { ...(path ? { path } : {}), limit: 65_536 });
+    await registry.call(`read_${artifactId}`, { ...(path ? { path } : {}), startLine: 1, lineCount: 80 });
   };
   const inspectDirectory = async (artifactId, path = '') => {
     let offset = 0;
@@ -33,7 +33,7 @@ async function inspectViewers(request, worktreePath) {
     if (artifact.directory) await inspectDirectory(artifact.id);
     else await inspectFile(artifact.id);
   }
-  return { toolNames: registry.tools.map(tool => tool.name), inspectedFiles, readLimitBytesPerFile: 65_536 };
+  return { toolNames: registry.tools.map(tool => tool.name), inspectedFiles, readLimitLinesPerFile: 80, readLimitBytesPerFile: 65_536 };
 }
 
 /** Ephemeral diagnostics: no broker, review history, verdict, test or notification. */

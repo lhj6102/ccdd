@@ -16,7 +16,7 @@ import {reopenWorkspace} from './workspaces/index.mjs';
 
 const terminal=new Set(['GREEN','RED','ERROR']);
 const booleanFlags=new Set(['--demo','--human-inbox','--wait','--json','--help','--lock','--copy']);
-const valueFlags=new Set(['--repo','--state-dir','--codex','--requester','--critic','--timeout-ms','--scenario','--demo-dir','--reviewer','--result-file','--file']);
+const valueFlags=new Set(['--repo','--state-dir','--codex','--requester','--critic','--timeout-ms','--scenario','--demo-dir','--reviewer','--result-file','--file','--start-line','--line-count','--offset','--limit']);
 function parse(argv){
   const options={},positional=[];
   for(let i=0;i<argv.length;i++){
@@ -85,7 +85,7 @@ export async function main(argv=process.argv.slice(2),{stdout=process.stdout,std
   ccdd status RUN_ID [--wait]
   ccdd list
   ccdd request REQUEST_ID
-  ccdd artifact REQUEST_ID ARTIFACT_ID [--file RELATIVE_PATH]
+  ccdd artifact REQUEST_ID ARTIFACT_ID [--file RELATIVE_PATH] [--start-line 1] [--line-count 80]
   ccdd human-claim REQUEST_ID --reviewer ID
   ccdd human-result REQUEST_ID --reviewer ID --result-file PATH
   ccdd resume RUN_ID [--wait]
@@ -106,6 +106,7 @@ Agent reviews require Node 24+ and model access through Codex login.`);return 0;
     }
     if(options['--lock']&&options['--copy'])throw new Error('--lock and --copy are mutually exclusive.');
     if(command==='run'&&!options['--lock']&&!options['--copy'])throw new Error('run requires exactly one of --copy (recommended) or --lock.');
+    if(command!=='artifact'&&['--start-line','--line-count','--offset','--limit'].some(key=>options[key]!==undefined))throw new Error('Artifact read/list options require the artifact command.');
     const allowed=new Set(['run','doctor','status','list','request','artifact','human-claim','human-result','resume','cancel','prepare-demo']);
     if(!allowed.has(command))throw new Error(`Unknown command: ${command}. No server is needed; use run --copy or run --lock.`);
     if(command==='prepare-demo'){print(await prepareDemo({...(get('--demo-dir')?{root:resolve(get('--demo-dir'))}:{})}));return 0;}
@@ -170,9 +171,17 @@ Agent reviews require Node 24+ and model access through Codex login.`);return 0;
       if(command==='request'){print(request);return 0;}
       if(command==='artifact'){
         if(!positional[1])throw new Error('artifact requires an Artifact ID.');
+        const paging={};
+        for(const [flag,key,min,max] of [['--start-line','startLine',1,Number.MAX_SAFE_INTEGER],['--line-count','lineCount',1,500],['--offset','offset',0,Number.MAX_SAFE_INTEGER],['--limit','limit',1,200]]){
+          if(options[flag]!==undefined){
+            const value=Number(options[flag]);
+            if(!Number.isSafeInteger(value)||value<min||value>max)throw new Error(`${flag} must be an integer from ${min} to ${max}.`);
+            paging[key]=value;
+          }
+        }
         const handle=await reopenWorkspace(request.workspace);
         try{
-          const artifact=await readArtifact({worktreePath:handle.descriptor.path,artifacts:request.artifacts,artifactTypes:request.artifactTypes,artifactId:positional[1],file:get('--file','')});
+          const artifact=await readArtifact({worktreePath:handle.descriptor.path,artifacts:request.artifacts,artifactTypes:request.artifactTypes,artifactId:positional[1],...(options['--file']?{file:options['--file']}:{}),...paging});
           await handle.assertUnchanged();print({...artifact,snapshotHash:request.snapshotHash});
         }finally{await handle.close();}
         return 0;

@@ -26,3 +26,5 @@ await broker.run(run.id);
 선택 Critic 요청은 하나의 envelope만 만들고 실제 선행 Handle을 갖지 않습니다. 전체 체인은 바로 앞 Critic의 GREEN에 따라 순서대로 실행합니다. 수정 후 재요청은 새로운 Handle과 입력 hash를 갖습니다. 같은 hash의 복사본은 공유할 수 있지만 결과는 별도로 평가합니다.
 
 Human copy 대기는 영속 상태이며 프로세스 상주를 요구하지 않습니다. 결과 제출 명령이 다음 실행을 이어갑니다. Human lock 대기는 입력 감시 worker가 살아 있어야 합니다.
+
+타입의 `tools.read.description`, `tools.list.description` 템플릿은 `artifactTypes`에 포함되어 입력 hash 및 요청과 함께 고정됩니다. Artifact Runner가 `{artifactName}`을 실제 Artifact ID로 치환하고 `read_spec`, `list_tests` 등의 MCP 도구 설명을 구성합니다. 도구 인자는 줄 단위 `startLine`·`lineCount`이며 디렉터리 읽기에는 내부 `path`가 필요합니다.
