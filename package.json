@@ -1,8 +1,8 @@
 {
   "name": "@lhj6102/ccdd",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
-  "description": "Snapshot-based critic broker and artifact runner demo",
+  "description": "Daemon-free critic broker and artifact runner with whole-workspace lock/copy",
   "type": "module",
   "engines": {
     "node": ">=24"
@@ -11,15 +11,18 @@
     "ccdd": "./src/cli.mjs"
   },
   "scripts": {
-    "start": "node src/cli.mjs serve",
     "test": "node --test test/*.test.mjs",
-    "demo:prepare": "node scripts/prepare-demo.mjs",
-    "demo": "node src/cli.mjs serve --demo"
+    "demo:prepare": "node src/cli.mjs prepare-demo",
+    "demo": "node src/cli.mjs run --demo --copy --wait"
   },
   "dependencies": {
     "@openai/codex": "0.153.4"
   },
-  "devDependencies": {
-    "playwright": "^1.58.0"
-  }
+  "files": [
+    "src/",
+    "scripts/prepare-demo.mjs",
+    "README.md",
+    "docs/",
+    "CONTEXT-MAP.md"
+  ]
 }

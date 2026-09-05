@@ -1,19 +1,19 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, writeFile, readFile, chmod, rm, readdir, access } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readFile, chmod, readdir, access } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createExecutorRegistry } from '../src/executors/index.mjs';
 import { diagnoseProject } from '../src/doctor/index.mjs';
-import { git } from '../src/broker/config.mjs';
+import { fingerprintWorkspace, removeOwnedWorkspaceTree } from '../src/workspaces/index.mjs';
 
 async function fixture(t) {
   const dir = await mkdtemp(join(tmpdir(), 'ccdd-doctor-test-'));
-  t.after(() => rm(dir, { recursive: true, force: true }));
+  t.after(() => removeOwnedWorkspaceTree(dir));
   const worktreePath = join(dir, 'repo');
   await mkdir(join(worktreePath, 'tests'), { recursive: true });
-  await writeFile(join(worktreePath, 'why.md'), 'Committed why.');
-  await writeFile(join(worktreePath, 'spec.md'), 'Committed spec.');
+  await writeFile(join(worktreePath, 'why.md'), 'Current why.');
+  await writeFile(join(worktreePath, 'spec.md'), 'Current spec.');
   await writeFile(join(worktreePath, 'tests/check.test.mjs'), "import {writeFileSync} from 'node:fs'; writeFileSync('SHOULD_NOT_RUN','bad'); throw new Error('doctor must not run this');");
   const profile = { kind: 'agent', provider: 'codex', model: 'test-model', reasoning: 'medium', timeoutMs: 3_000 };
   const config = {
@@ -27,12 +27,9 @@ async function fixture(t) {
     ],
   };
   await writeFile(join(worktreePath, 'ccdd.config.json'), JSON.stringify(config));
-  await git(worktreePath, ['init', '-b', 'main']);
-  await git(worktreePath, ['add', '.']);
-  await git(worktreePath, ['-c', 'user.name=CCDD Test', '-c', 'user.email=test@localhost', 'commit', '-m', 'fixture']);
-  const snapshotCommit = (await git(worktreePath, ['rev-parse', 'HEAD'])).trim();
-  const request = { id: 'doctor-test', criticId: 'first', snapshotCommit, profile, artifacts: [{ id: 'why', ...config.artifacts.why }], artifactTypes: config.artifactTypes };
-  return { dir, worktreePath, repoPath: worktreePath, runDir: join(dir, 'run'), snapshotCommit, request, config };
+  const snapshotHash = await fingerprintWorkspace(worktreePath);
+  const request = { id: 'doctor-test', criticId: 'first', snapshotHash, profile, artifacts: [{ id: 'why', ...config.artifacts.why }], artifactTypes: config.artifactTypes };
+  return { dir, worktreePath, repoPath: worktreePath, runDir: join(dir, 'run'), stateDir: join(dir, 'state'), snapshotHash, request, config };
 }
 
 async function fakeProvider(dir, mode = 'valid') {
@@ -146,26 +143,35 @@ test('Human readiness is explicitly registration-only and never sends a notifica
   assert.equal(notified, false);
 });
 
-test('project doctor diagnoses immutable snapshot, deduplicates full profiles and leaves no review state or worktree', async t => {
+test('copy doctor diagnoses current files without Git, deduplicates profiles and leaves no review state', async t => {
   const data = await fixture(t);
-  await writeFile(join(data.repoPath, 'why.md'), 'Dirty mutable checkout must not be used');
-  const probes = [];
-  const events = [];
+  await writeFile(join(data.repoPath, 'why.md'), 'Current edited why.');
+  await writeFile(join(data.repoPath, 'new-file.txt'), 'A new untracked file.');
+  const expectedHash = await fingerprintWorkspace(data.repoPath);
+  const probes = [], paths = [], events = [];
   const executors = { probe: async (request, options) => {
     probes.push(request);
-    assert.equal((await git(options.worktreePath, ['rev-parse', 'HEAD'])).trim(), data.snapshotCommit);
-    assert.equal(await readFile(join(options.worktreePath, 'why.md'), 'utf8'), 'Committed why.');
+    paths.push(options.workspacePath);
+    assert.equal(request.snapshotHash, expectedHash);
+    assert.notEqual(options.workspacePath, data.repoPath);
+    assert.equal(await readFile(join(options.workspacePath, 'why.md'), 'utf8'), 'Current edited why.');
+    assert.equal(await readFile(join(options.workspacePath, 'new-file.txt'), 'utf8'), 'A new untracked file.');
+    // Builders may edit the original after capture; the doctor sees one stable copy.
+    await writeFile(join(data.repoPath, 'why.md'), 'Builder continues.');
     return { ok: true, message: 'unit probe', details: { operation: 'unit-test-probe' } };
   } };
   const report = await diagnoseProject({ ...data, executors, onEvent: event => events.push(event) });
-  assert.equal(report.status, 'READY');
+  assert.equal(report.status, 'READY', JSON.stringify(report));
   assert.deepEqual(report.scope, { kind: 'chain' });
+  assert.equal(report.mode, 'copy');
+  assert.equal(report.snapshotHash, expectedHash);
   assert.equal(probes.length, 3);
+  assert.equal(new Set(paths).size, 1);
   assert.deepEqual(report.checks.find(check => check.kind === 'agent').criticIds, ['first', 'second']);
   assert.equal(events.filter(event => event.type === 'doctor.check').length, report.checks.length);
-  assert.equal((await git(data.repoPath, ['worktree', 'list', '--porcelain'])).match(/^worktree /gm).length, 1);
-  assert.equal(await readFile(join(data.repoPath, 'why.md'), 'utf8'), 'Dirty mutable checkout must not be used');
+  assert.equal(await readFile(join(data.repoPath, 'why.md'), 'utf8'), 'Builder continues.');
   assert.equal((await readdir(data.repoPath)).includes('.ccdd'), false);
+  assert.equal((await readdir(data.stateDir)).some(name => /sqlite|run|history/.test(name)), false);
   assert.equal(JSON.stringify(report).includes('verdict'), false);
 });
 
@@ -175,11 +181,11 @@ test('selected doctor scope probes only that Critic and returns actionable NOT_R
   const report = await diagnoseProject({ ...data, criticId: 'second', executors: { probe: async request => { probes.push(request.criticId); throw Object.assign(new Error('Authentication required'), { code: 'AUTHENTICATION_FAILED', remedy: 'Login again' }); } } });
   assert.equal(report.status, 'NOT_READY');
   assert.deepEqual(report.scope, { kind: 'critic', criticId: 'second' });
-  assert.deepEqual(probes, ['second']);
+  assert.deepEqual(probes, ['second'], JSON.stringify(report));
   assert.equal(report.checks.at(-1).details.code, 'AUTHENTICATION_FAILED');
   const missing = await diagnoseProject({ ...data, criticId: 'unknown', executors: { probe: () => { throw new Error('must not probe'); } } });
   assert.equal(missing.ok, false);
-  assert.match(missing.checks[0].message, /Unknown Critic/);
+  assert.match(missing.checks.find(check => check.id === 'workspace-config').message, /Unknown Critic/);
 });
 
 test('project doctor fails missing binaries and unsupported providers before attempting authentication', async t => {
@@ -198,32 +204,53 @@ test('identical runtime commands are checked for each Critic artifact scope', as
     { ...data.config.critics[1], profile, artifacts: ['why'] },
   ];
   await writeFile(join(data.repoPath, 'ccdd.config.json'), JSON.stringify(data.config));
-  await git(data.repoPath, ['add', 'ccdd.config.json']);
-  await git(data.repoPath, ['-c', 'user.name=CCDD Test', '-c', 'user.email=test@localhost', 'commit', '-m', 'runtime scopes']);
-  const snapshotCommit = (await git(data.repoPath, ['rev-parse', 'HEAD'])).trim();
-  const report = await diagnoseProject({ ...data, snapshotCommit, executors: createExecutorRegistry() });
+  const report = await diagnoseProject({ ...data, executors: createExecutorRegistry() });
   const runtimeChecks = report.checks.filter(check => check.kind === 'runtime');
-  assert.equal(runtimeChecks.length, 2);
+  assert.equal(runtimeChecks.length, 2, JSON.stringify(report));
   assert.equal(runtimeChecks[0].status, 'PASS');
   assert.equal(runtimeChecks[1].status, 'FAIL');
   assert.equal(runtimeChecks[1].details.code, 'RUNTIME_TEST_PATH_OUTSIDE_ARTIFACTS');
 });
 
-test('doctor checks the complete Agent profile and rejects changed worktree HEAD', async t => {
+test('lock doctor checks full Agent profiles and rejects workspace changes outside Artifact scope', async t => {
   const data = await fixture(t);
   data.config.critics[1].profile.timeoutMs = 2_500;
   await writeFile(join(data.repoPath, 'ccdd.config.json'), JSON.stringify(data.config));
-  await git(data.repoPath, ['add', 'ccdd.config.json']);
-  await git(data.repoPath, ['-c', 'user.name=CCDD Test', '-c', 'user.email=test@localhost', 'commit', '-m', 'different timeout']);
-  const snapshotCommit = (await git(data.repoPath, ['rev-parse', 'HEAD'])).trim();
   const probes = [];
-  const report = await diagnoseProject({ ...data, snapshotCommit, executors: { probe: async (request, options) => {
+  const report = await diagnoseProject({ ...data, mode: 'lock', executors: { probe: async (request, options) => {
     probes.push(request.criticId);
-    if (request.criticId === 'human') await git(options.worktreePath, ['checkout', '--detach', data.snapshotCommit]);
+    assert.equal(await readFile(join(options.workspacePath, 'why.md'), 'utf8'), 'Current why.');
+    if (request.criticId === 'human') await writeFile(join(options.workspacePath, 'unrelated-new-file.txt'), 'Changed during diagnosis.');
     return { ok: true, message: 'unit-test probe' };
   } } });
   assert.equal(probes.length, 4);
   assert.equal(report.status, 'NOT_READY');
-  assert.equal(report.checks.at(-1).details.code, 'SNAPSHOT_CHANGED');
-  assert.equal((await git(data.repoPath, ['worktree', 'list', '--porcelain'])).match(/^worktree /gm).length, 1);
+  assert.equal(report.checks.at(-1).details.code, 'WORKSPACE_CHANGED');
+});
+
+test('doctor nonce lives in private scratch and does not alter a readonly input', async t => {
+  const data = await fixture(t);
+  const before = await fingerprintWorkspace(data.worktreePath);
+  await chmod(data.worktreePath, 0o500);
+  const result = await createExecutorRegistry({ codexPath: await fakeProvider(data.dir) }).probe(data.request, data);
+  assert.equal(result.ok, true);
+  assert.equal(await fingerprintWorkspace(data.worktreePath), before);
+  const manifest = JSON.parse(await readFile(join(data.runDir, 'artifact-tools.json'), 'utf8'));
+  assert.notEqual(manifest.worktreePath, data.worktreePath);
+  assert.equal(manifest.artifacts.length, 1);
+  assert.match(manifest.artifacts[0].id, /^ccdd_probe_/);
+  await assert.rejects(access(manifest.worktreePath));
+});
+
+test('doctor cleans ephemeral copy and diagnostic outputs when no state directory is supplied', async t => {
+  const data = await fixture(t);
+  let input, output;
+  const report = await diagnoseProject({ repoPath: data.repoPath, criticId: 'first', executors: { probe: async (_request, options) => {
+    input = options.workspacePath;
+    output = options.runDir;
+    return { ok: true, message: 'unit-test probe' };
+  } } });
+  assert.equal(report.status, 'READY', JSON.stringify(report));
+  await assert.rejects(access(input));
+  await assert.rejects(access(output));
 });

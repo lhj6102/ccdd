@@ -1,17 +1,8 @@
-import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
 import path from 'node:path';
+import { lstat, readFile, readdir, realpath } from 'node:fs/promises';
 
-const exec = promisify(execFile);
 const identifier = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
 const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
-
-export async function git(repoPath, args, options = {}) {
-  const { stdout } = await exec('git', ['-C', repoPath, ...args], {
-    encoding: 'utf8', maxBuffer: 2 * 1024 * 1024, timeout: 30_000, ...options,
-  });
-  return stdout;
-}
 
 export function validateRelativePath(value) {
   if (typeof value !== 'string' || !value || value.length > 1024 ||
@@ -22,26 +13,40 @@ export function validateRelativePath(value) {
   return value;
 }
 
-export async function readSnapshotConfig(repoPath, snapshotCommit) {
-  if (typeof snapshotCommit !== 'string' || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/i.test(snapshotCommit)) {
-    throw new Error('snapshotCommit must be a full immutable Git commit hash.');
-  }
-  const resolved = (await git(repoPath, ['rev-parse', '--verify', `${snapshotCommit}^{commit}`])).trim();
-  if (resolved !== snapshotCommit.toLowerCase()) throw new Error('snapshotCommit must identify a commit directly.');
-  const tree = (await git(repoPath, ['ls-tree', '-rz', '--full-tree', resolved])).split('\0').filter(Boolean).map(line => {
-    const tab = line.indexOf('\t');
-    const [mode, type] = line.slice(0, tab).split(' ');
-    return { mode, type, path: line.slice(tab + 1) };
-  });
-  const configEntry = tree.find(entry => entry.path === 'ccdd.config.json');
-  if (!configEntry || configEntry.type !== 'blob' || configEntry.mode === '120000') {
-    throw new Error('Snapshot must contain a regular ccdd.config.json file.');
-  }
+export async function readWorkspaceConfig(repoPath) {
+  const root = await realpath(repoPath);
+  const configPath = path.join(root, 'ccdd.config.json');
+  const info = await lstat(configPath).catch(() => null);
+  if (!info?.isFile()) throw new Error('Workspace must contain a regular ccdd.config.json file.');
   let config;
-  try { config = JSON.parse(await git(repoPath, ['show', `${resolved}:ccdd.config.json`])); }
-  catch (error) { throw new Error(`Cannot read snapshot configuration: ${error.message}`); }
+  try { config = JSON.parse(await readFile(configPath, 'utf8')); }
+  catch (error) { throw new Error(`Cannot read workspace configuration: ${error.message}`); }
+  // Inspect only declared Artifact roots here. The workspace engine validates the entire input tree.
+  const tree = [];
+  const visited = new Set();
+  const walk = async relative => {
+    if (visited.has(relative)) return;
+    visited.add(relative);
+    const absolute = path.join(root, relative);
+    const entry = await lstat(absolute).catch(error => { if (error.code === 'ENOENT') return null; throw error; });
+    if (!entry) return;
+    const resolved = await realpath(absolute);
+    const sub = path.relative(root, resolved);
+    if (path.isAbsolute(sub) || sub === '..' || sub.startsWith(`..${path.sep}`)) throw new Error(`Artifact escapes the workspace: ${relative}`);
+    if (entry.isDirectory()) {
+      tree.push({ path: relative, type: 'tree', mode: '040000' });
+      for (const name of await readdir(absolute)) await walk(`${relative}/${name}`);
+    } else {
+      tree.push({ path: relative, type: entry.isFile() ? 'blob' : 'unsupported', mode: entry.isSymbolicLink() ? '120000' : '100644' });
+    }
+  };
+  if (object(config?.artifacts)) {
+    for (const artifact of Object.values(config.artifacts)) {
+      if (object(artifact)) { validateRelativePath(artifact.path); await walk(artifact.path); }
+    }
+  }
   validateConfig(config, tree);
-  return { config, snapshotCommit: resolved };
+  return { config };
 }
 
 export function validateConfig(config, tree) {
@@ -60,10 +65,10 @@ export function validateConfig(config, tree) {
     }
     validateRelativePath(artifact.path);
     const entries = tree.filter(entry => entry.path === artifact.path || entry.path.startsWith(`${artifact.path}/`));
-    if (entries.length === 0 || entries.some(entry => entry.type !== 'blob' || entry.mode === '120000')) {
-      throw new Error(`Artifact must contain snapshot files without symlinks/submodules: ${id}`);
+    if (entries.length === 0 || entries.some(entry => !['blob', 'tree'].includes(entry.type) || entry.mode === '120000')) {
+      throw new Error(`Artifact must contain workspace files or directories without symlinks: ${id}`);
     }
-    if (config.artifactTypes[artifact.type].viewer === 'text' && !entries.some(entry => entry.path === artifact.path)) {
+    if (config.artifactTypes[artifact.type].viewer === 'text' && !entries.some(entry => entry.path === artifact.path && entry.type === 'blob')) {
       throw new Error(`Text viewer requires a file artifact: ${id}`);
     }
   }

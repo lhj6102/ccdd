@@ -1,7 +1,7 @@
 import { constants } from 'node:fs';
-import { access, writeFile, realpath, stat, rm } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, writeFile, realpath, stat, rm } from 'node:fs/promises';
 import { randomBytes } from 'node:crypto';
-import { delimiter, join, resolve, relative, isAbsolute, sep } from 'node:path';
+import { delimiter, dirname, basename, join, resolve, relative, isAbsolute, sep } from 'node:path';
 import { invokeCodex, diagnosticError } from './codex.mjs';
 import { runProcess } from './process.mjs';
 
@@ -48,16 +48,46 @@ function contains(root, candidate) {
   return !isAbsolute(path) && path !== '..' && !path.startsWith(`..${sep}`);
 }
 
+async function prepareRunDirectory(workspacePath, runDir) {
+  const root = await realpath(workspacePath);
+  let ancestor = resolve(runDir);
+  const missing = [];
+  while (true) {
+    try { ancestor = await realpath(ancestor); break; }
+    catch (error) {
+      if (error.code !== 'ENOENT' || dirname(ancestor) === ancestor) throw error;
+      missing.unshift(basename(ancestor));
+      ancestor = dirname(ancestor);
+    }
+  }
+  const outputRoot = join(ancestor, ...missing);
+  if (contains(root, outputRoot)) throw new Error('Review output directory must be outside the review workspace');
+  await mkdir(outputRoot, { recursive: true, mode: 0o700 });
+  return { root, outputRoot };
+}
+
+async function runtimeEnvironment(workspacePath, runDir) {
+  const { root, outputRoot } = await prepareRunDirectory(workspacePath, runDir);
+  const output = join(outputRoot, 'output'), temporary = join(outputRoot, 'tmp');
+  const home = join(outputRoot, 'home'), cache = join(outputRoot, 'cache');
+  await Promise.all([output, temporary, home, cache].map(path => mkdir(path, { recursive: true, mode: 0o700 })));
+  return {
+    PATH: process.env.PATH ?? '', LANG: process.env.LANG ?? 'en_US.UTF-8', NODE_NO_WARNINGS: '1',
+    CCDD_WORKSPACE_DIR: root, CCDD_OUTPUT_DIR: output, CCDD_TMP_DIR: temporary,
+    TMPDIR: temporary, TMP: temporary, TEMP: temporary, HOME: home, XDG_CACHE_HOME: cache,
+  };
+}
+
 async function probeRuntime(request, { worktreePath, signal, spawnImpl }) {
   const root = await realpath(worktreePath);
   const roots = await Promise.all(request.artifacts.map(artifact => realpath(resolve(root, artifact.path))));
   for (const path of request.profile.args.slice(1)) {
     let target;
     try { target = await realpath(resolve(root, path)); await access(target, constants.R_OK); }
-    catch { throw diagnosticError('RUNTIME_TEST_PATH_UNAVAILABLE', `테스트 경로를 읽을 수 없습니다: ${path}`, '요청 스냅샷에 커밋된 테스트 경로와 읽기 권한을 확인하세요.'); }
+    catch { throw diagnosticError('RUNTIME_TEST_PATH_UNAVAILABLE', `테스트 경로를 읽을 수 없습니다: ${path}`, '현재 workspace의 테스트 경로와 읽기 권한을 확인하세요.'); }
     if (!contains(root, target) || !roots.some(artifact => contains(artifact, target))) throw diagnosticError('RUNTIME_TEST_PATH_OUTSIDE_ARTIFACTS', `테스트 경로가 선언된 Artifact 범위 밖입니다: ${path}`, 'Critic의 artifacts와 런타임 테스트 경로를 맞추세요.');
     const info = await stat(target);
-    if (!info.isDirectory() && !info.isFile()) throw diagnosticError('RUNTIME_TEST_PATH_UNAVAILABLE', `테스트 경로는 파일 또는 디렉터리여야 합니다: ${path}`, '커밋된 테스트 경로를 확인하세요.');
+    if (!info.isDirectory() && !info.isFile()) throw diagnosticError('RUNTIME_TEST_PATH_UNAVAILABLE', `테스트 경로는 파일 또는 디렉터리여야 합니다: ${path}`, '현재 workspace의 테스트 경로를 확인하세요.');
   }
   const run = await runProcess(process.execPath, ['--eval', 'process.stdout.write(JSON.stringify({version:process.versions.node}))'], {
     cwd: root, signal, timeoutMs: Math.min(timeout(request.profile, 30_000), 10_000), spawnImpl,
@@ -69,7 +99,10 @@ async function probeRuntime(request, { worktreePath, signal, spawnImpl }) {
   return { ok: true, message: 'Node 시작과 테스트 경로의 읽기 접근을 확인했습니다. 프로젝트 테스트는 실행하지 않았습니다.', details: { operation: 'runtime-startup', nodeVersion: version, testPaths: request.profile.args.slice(1), testsExecuted: false } };
 }
 
-async function probeAgent(request, { codexPath, worktreePath, runDir, signal, onEvent, spawnImpl }) {
+async function probeAgent(request, { codexPath, worktreePath: inputPath, runDir, signal, onEvent, spawnImpl }) {
+  // A diagnostic nonce must never alter the original or shared immutable input.
+  const { outputRoot } = await prepareRunDirectory(inputPath, runDir);
+  const worktreePath = await mkdtemp(join(outputRoot, 'diagnostic-input-'));
   const token = randomBytes(12).toString('hex');
   const nonce = randomBytes(32).toString('hex');
   const artifactId = `ccdd_probe_${token}`;
@@ -77,11 +110,11 @@ async function probeAgent(request, { codexPath, worktreePath, runDir, signal, on
   const artifactPath = resolve(worktreePath, path);
   const diagnosticRequest = {
     ...request,
-    artifacts: [...request.artifacts, { id: artifactId, type: artifactId, path }],
-    artifactTypes: { ...request.artifactTypes, [artifactId]: { viewer: 'text' } },
+    artifacts: [{ id: artifactId, type: artifactId, path }],
+    artifactTypes: { [artifactId]: { viewer: 'text' } },
   };
-  await writeFile(artifactPath, `${nonce}\n`, { flag: 'wx', mode: 0o600 });
   try {
+    await writeFile(artifactPath, `${nonce}\n`, { flag: 'wx', mode: 0o600 });
     const { final, toolCalls } = await invokeCodex({
       codexPath, request: diagnosticRequest, worktreePath, runDir, signal, onEvent, spawnImpl,
       schema: { type: 'object', additionalProperties: false, required: ['ready', 'nonce'], properties: { ready: { type: 'boolean' }, nonce: { type: 'string' } } },
@@ -97,7 +130,7 @@ async function probeAgent(request, { codexPath, worktreePath, runDir, signal, on
       throw diagnosticError('MCP_ROUNDTRIP_FAILED', 'Provider의 Artifact 도구 호출과 진단 내용의 왕복 확인을 완료하지 못했습니다.', 'Artifact MCP 연결과 요청 모델의 도구 호출 지원을 확인한 뒤 doctor를 재실행하세요.');
     }
     return { ok: true, message: '요청한 Provider·모델·reasoning으로 실제 응답과 Artifact MCP 읽기를 확인했습니다.', details: { operation: 'provider-mcp-roundtrip', toolCalls, authenticationVerified: true, modelAccessVerified: true, artifactToolsVerified: true } };
-  } finally { await rm(artifactPath, { force: true }); }
+  } finally { await rm(worktreePath, { recursive: true, force: true }); }
 }
 
 /** One package, three executor strategies. The broker alone persists workflow state. */
@@ -110,15 +143,16 @@ export function createExecutorRegistry({ codexPath = 'codex', alarmMethods = [],
         if (profile.kind === 'human') return alarms.length ? { ok: true } : { ok: false, code: 'HUMAN_ALARM_MISSING', reason: 'Human review requires at least one registered alarm method', remedy: 'Human 실행기에 최소 하나의 알림 방법을 등록하세요.' };
         if (profile.kind === 'runtime') { runtimeProfile(profile); return { ok: true }; }
         if (profile.kind !== 'agent') return { ok: false, reason: 'Unknown executor kind' };
-        if (profile.provider !== 'codex') return { ok: false, code: 'PROVIDER_NOT_REGISTERED', reason: `Provider is not registered: ${profile.provider}`, remedy: '등록된 Provider 실행기를 사용하도록 커밋된 Critic profile을 수정하세요.' };
+        if (profile.provider !== 'codex') return { ok: false, code: 'PROVIDER_NOT_REGISTERED', reason: `Provider is not registered: ${profile.provider}`, remedy: '등록된 Provider 실행기를 사용하도록 Critic profile을 수정하세요.' };
         if (typeof profile.model !== 'string' || !profile.model.trim() || !['minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra', undefined].includes(profile.reasoning)) return { ok: false, reason: 'Agent model and reasoning profile are invalid' };
         timeout(profile, 240_000);
         return await executable(codexPath) ? { ok: true } : { ok: false, code: 'PROVIDER_NOT_EXECUTABLE', reason: 'Codex CLI is not installed or executable', remedy: 'Codex를 설치하고 --codex로 올바른 실행 경로를 지정하세요.' };
       } catch (error) { return { ok: false, reason: error.message }; }
     },
-    async probe(request, { worktreePath, runDir, signal, onEvent = () => {} }) {
+    async probe(request, { worktreePath, workspacePath = worktreePath, runDir, signal, onEvent = () => {} }) {
+      worktreePath = workspacePath;
       const readiness = await this.canExecute(request);
-      if (!readiness.ok) throw diagnosticError(readiness.code ?? 'EXECUTOR_PROFILE_INVALID', readiness.reason, readiness.remedy ?? '커밋된 Critic의 실행기 설정을 확인하세요.');
+      if (!readiness.ok) throw diagnosticError(readiness.code ?? 'EXECUTOR_PROFILE_INVALID', readiness.reason, readiness.remedy ?? 'Critic의 실행기 설정을 확인하세요.');
       const started = Date.now();
       let result;
       if (request.profile.kind === 'human') result = { ok: true, message: 'Human 알림 방법 등록을 확인했습니다. 알림 전달과 사람의 응답 가능 여부는 검사하지 않았습니다.', details: { operation: 'human-registration', alarmMethods: alarms.map(x => x.id), notificationsSent: false, deliveryVerified: false } };
@@ -131,7 +165,8 @@ export function createExecutorRegistry({ codexPath = 'codex', alarmMethods = [],
       await Promise.all(alarms.map(method => method.notify(request)));
       return { alarmMethods: alarms.map(x => x.id) };
     },
-    async execute(request, { worktreePath, runDir, signal, onEvent = () => {} }) {
+    async execute(request, { worktreePath, workspacePath = worktreePath, runDir, signal, onEvent = () => {} }) {
+      worktreePath = workspacePath;
       const readiness = await this.canExecute(request);
       if (!readiness.ok) throw new Error(readiness.reason);
       if (request.profile.kind === 'human') throw new Error('Human reviews are completed through the broker claim/result flow');
@@ -139,9 +174,10 @@ export function createExecutorRegistry({ codexPath = 'codex', alarmMethods = [],
       await onEvent({ type: 'executor.started', kind: request.profile.kind, provider: request.profile.provider });
       let result;
       if (request.profile.kind === 'runtime') {
+        const env = await runtimeEnvironment(worktreePath, runDir);
         const run = await runProcess(process.execPath, request.profile.args, {
           cwd: worktreePath, signal, timeoutMs: timeout(request.profile, 30_000), spawnImpl,
-          env: { PATH: process.env.PATH ?? '', LANG: process.env.LANG ?? 'en_US.UTF-8', TMPDIR: process.env.TMPDIR ?? '/tmp', NODE_NO_WARNINGS: '1' },
+          env,
         });
         if (run.exitSignal || run.exitCode === null) throw new Error('Runtime process terminated without a test result');
         const stdout = cleanOutput(run.stdout), stderr = cleanOutput(run.stderr);
@@ -152,6 +188,7 @@ export function createExecutorRegistry({ codexPath = 'codex', alarmMethods = [],
           stdout, stderr, exitCode: run.exitCode,
         };
       } else {
+        await prepareRunDirectory(worktreePath, runDir);
         const { final, toolCalls } = await invokeCodex({ codexPath, request, worktreePath, runDir, signal, onEvent, spawnImpl, schema: RESULT_SCHEMA, makePrompt: ({ viewer, tools }) => [
           'You are a CCDD critic. Review only the supplied immutable snapshot; do not implement, repair, or execute code.',
           'Use the ccdd_artifacts MCP viewer tools to inspect EVERY supplied artifact. Directory artifacts require reading relevant source files, not merely listing.',
@@ -159,7 +196,7 @@ export function createExecutorRegistry({ codexPath = 'codex', alarmMethods = [],
           'Use GREEN when the downstream artifact satisfies the upstream criterion; RED for concrete contradictions or missing required behavior. Judge test coverage semantically without trying to execute tests or importing implementation.',
           'Return only the final JSON schema result. Write a concise Korean summary and evidence with artifact paths and concrete observations; no hidden reasoning, logs, or speculative claims.',
           `Critic: ${request.title} (${request.criticId})`,
-          `Snapshot: ${request.snapshotCommit}`,
+          `Workspace snapshot hash: ${request.snapshotHash}`,
           `Artifacts: ${JSON.stringify(viewer.listArtifacts())}`,
           `Viewer entry points: ${tools.map(x => x.name).join(', ')}`,
           `Review payload: ${JSON.stringify(request.payload)}`,

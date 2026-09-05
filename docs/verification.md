@@ -1,3 +1,5 @@
+> Historical verification of v0.1/v0.2. This file describes the previous commit/server demo; use README.md and contracts.md for v0.3.
+
 # 실제 시연 검증
 
 2026-09-05, Node.js 24.15.0, Codex CLI 0.153.4와 `gpt-6-astra`로 실행했다. 브라우저에서 네 요청을 직접 제출했으며 요청 배열에는 커밋·Artifact 타입과 상대경로·payload·Provider Profile이 포함됐다.

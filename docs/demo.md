@@ -1,34 +1,34 @@
-# CCDD 데모 시연
+# CCDD v0.3 CLI 시연
 
-이 데모는 «한 번에 집중할 일»을 골라 주는 작은 기능을 검증한다. 중요도·예상 시간·완료 여부·최대 개수가 Why에서 구현까지 일치하는지 살펴본다.
+Node 24 이상과 요청 모델을 사용할 수 있는 Codex 로그인을 준비합니다. 서버와 브라우저는 사용하지 않습니다.
 
-## 실행
+```sh
+node src/cli.mjs prepare-demo
+node src/cli.mjs doctor --demo --scenario fixed --json
+```
 
-Node.js 24 이상과 Git이 필요하다. `npm ci`, `npx codex login`, `npm run demo` 순으로 실행한 뒤 `http://127.0.0.1:4317`을 연다. Codex 계정에는 설정된 모델을 실행할 권한이 있어야 한다. 모델은 데모 저장소의 `ccdd.config.json`에 명시된다.
+데모 폴더는 기본적으로 `~/.local/share/ccdd/demo-v3`에 만들어집니다. `--demo-dir PATH`로 지정할 수도 있습니다. 네 시나리오는 Git 없는 별도 폴더이며 현재 파일을 직접 수정할 수 있습니다.
 
-`npm run demo:prepare`는 로컬 `.ccdd/demo/repo`에 실제 Git 저장소와 네 개의 커밋을 만든다. 이 저장소의 Artifact 정의도 각 커밋에 포함된다. 평가 요청은 선택한 커밋의 정의를 읽는다.
+| 시나리오 | Why / Spec / Tests / Implementation의 최대 개수 | 확인 |
+| --- | --- | --- |
+| baseline | 3 / 3 / 3 / 3 | 전체 정합성 |
+| why-change | 2 / 3 / 3 / 3 | Spec↔Why 불일치 |
+| runtime-failure | 2 / 2 / 2 / 3 | 실제 런타임 테스트 실패 |
+| fixed | 2 / 2 / 2 / 2 | 수정 후 전체 재평가 |
 
-## 시연 순서
+```sh
+node src/cli.mjs run --demo --scenario why-change --lock --critic spec-why --wait
+node src/cli.mjs run --demo --scenario runtime-failure --copy --critic implementation-tests --wait
+node src/cli.mjs run --demo --scenario fixed --copy --wait
+```
 
-1. **정상 기준**을 선택해 리뷰를 요청한다. Why↔Spec, Spec↔Tests는 Codex가 읽고 평가한다. 마지막 단계는 해당 스냅샷에서 실제 Node 테스트를 실행한다.
-2. 첫 평가의 **요청·도구**를 열어 커밋, Artifact 상대경로·타입, 요청 payload, 실제 호출된 Viewer 도구를 확인한다. 도구는 이 요청의 Artifact만 읽을 수 있다.
-3. **Why만 변경**을 선택한다. Why의 최대 개수는 2개지만 Spec은 3개다. 첫 critic의 RED와 후속 단계의 BLOCKED를 확인한다.
-4. **구현 불일치**를 선택한다. Why·Spec·Tests는 2개로 맞췄지만 구현은 아직 3개다. 문서와 테스트 검토는 통과하고, 실제 테스트 실행은 실패한다.
-5. **수정 완료**를 선택한다. 구현도 2개로 고친 커밋을 처음부터 평가해 세 단계의 GREEN을 확인한다.
-6. 과거 실행을 선택해 이전 결과와 커밋이 그대로 남아 있음을 확인한다. 이전 커밋의 결과가 새 커밋으로 복사되지는 않는다.
+Agent 판정은 실제 Provider 응답이며 표의 기대 결과를 하드코딩하지 않습니다. Runtime은 실제 Node 테스트를 실행합니다. `--critic` 단독 판정과 전체 체인 판정을 구분합니다.
 
-Agent의 요약과 실행 시간은 실제 평가에 따라 달라진다. 환경·인증·응답 형식 문제는 RED가 아니라 ERROR로 남는다. 데모는 평가 결과를 하드코딩하지 않는다.
+같은 fixed 폴더에 두 번 `run --copy`를 요청하면 서로 다른 Handle이 같은 `workspace.path`와 `snapshotHash`를 사용할 수 있습니다. 각 리뷰는 독립된 결과와 출력 디렉터리를 갖습니다.
 
-## Human 실행기
+```sh
+node src/cli.mjs list --demo --scenario fixed
+node src/cli.mjs status RUN_ID --demo --scenario fixed
+```
 
-Human 리뷰는 알림 방법을 최소 하나 등록해야 접수할 수 있다. 데모 서버의 `--human-inbox` 옵션은 로컬 알림함을 등록하고 요청을 `.ccdd/state/human-inbox.jsonl`에 남긴다. 실제 사람이 화면에서 요청을 인수하고 결과를 제출할 때까지 대기한다. 알림 파일 경로는 `--state-dir`을 지정하면 그 디렉터리를 따른다.
-
-이 옵션은 수신자가 직접 확인하는 로컬 알림함이다. 이메일·Slack 등의 외부 알림 어댑터는 포함되어 있지 않으며, `notify(request)` 구현을 등록해 연결할 수 있다. 기본 4개 시나리오는 사람의 개입 없이 Agent와 Code Runner로 재현한다.
-
-## 영상과 검증 자료
-
-녹화는 별도 Chrome 창의 실제 웹 화면만 캡처한다. 데스크톱 전체나 다른 앱을 녹화하지 않는다. 편집본은 평가를 기다리는 구간을 배속하고 해당 사실을 자막으로 표시한다. 결과 화면과 증거는 실제 브로커 기록에서 가져온다.
-
-`npm test`는 Git 스냅샷, 직렬 의존성, 영속 상태, Artifact 접근 범위, 실행기 실패 및 HTTP 경계를 검증한다. 단위 테스트의 테스트 대역은 실제 시연 평가와 구분한다. 영상 촬영은 `scripts/record-demo.mjs`, 편집은 `scripts/edit-video.mjs`를 사용한다. 서버 재시작 검증 뒤의 마지막 장면은 `scripts/record-ending.mjs`로 녹화한다.
-
-영상·스크린샷·원본 실행 기록은 `.ccdd/` 및 `output/`에 보관되며 Git에 포함하지 않는다. 배포용 영상과 재현 검증 요약은 [비공개 GitHub Release](https://github.com/lhj6102/ccdd/releases/tag/v0.1.0-demo)에서 제공한다. [실제 검증 결과](verification.md).
+`--lock` 도중 원본을 수정하면 입력 변경 ERROR가 됩니다. `--copy`가 준비된 뒤 원본을 수정해도 진행 중인 리뷰는 복사된 내용으로 계속 실행됩니다. 관찰 서버는 향후 추가 가능한 기능으로만 남깁니다.

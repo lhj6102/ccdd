@@ -1,45 +1,28 @@
 # Repo Requester → Broker
 
-Repo Requester는 저장소의 지정 커밋에서 `ccdd.config.json`을 읽어 명시적인 리뷰 요청을 만든다. 브로커에 전달하는 요청에는 Artifact의 타입과 Repo 상대경로, 리뷰 스냅샷 커밋, 리뷰 payload 및 실행 조건이 함께 들어간다.
+Requester는 현재 repo와 선택한 workspace 정책을 지정합니다. 브로커가 입력을 준비한 다음, 그 입력의 `ccdd.config.json`에서 명시적인 리뷰 요청을 구성합니다. Git commit을 요구하지 않습니다.
 
 ```js
-import { prepareReviewRequests } from '../src/requester/index.mjs';
-
-const reviewRequests = await prepareReviewRequests({
-  repoPath,
-  repoId: 'demo',
-  snapshotCommit,
-  // criticId: 'tests-spec', // omit to prepare the whole chain
-});
-
-// POST /api/runs
-const body = { snapshotCommit, requesterId: 'web-demo', reviewRequests };
-// A selected request also sends criticId, matching the prepareReviewRequests selection.
+const broker = createBroker({repoPath, stateDir, repoId: 'local', executors});
+const run = await broker.submit({mode: 'copy', requesterId: 'builder-feature-a', criticId: 'tests-spec'});
+// Separate request worker:
+await broker.run(run.id);
 ```
 
-`prepareReviewRequests`는 커밋을 읽기만 하며 작업 폴더를 바꾸거나 리뷰를 실행하지 않는다. 반환값은 Critic 의존 순서로 정렬된 다음 형태의 배열이다.
+`stateDir`는 repo 밖의 경로입니다. 제출과 실행은 분리되어 있고, CLI가 요청별 worker를 시작합니다. 상태 조회 클라이언트는 실행기를 소유하지 않습니다.
 
-```json
+입력이 준비된 후 `prepareReviewRequests({repoPath: workspace.path, repoId, snapshotHash: workspace.hash, criticId})`가 만드는 요청은 다음 필드를 포함합니다.
+
+```js
 {
-  "repoId": "demo",
-  "snapshotCommit": "<full commit hash>",
-  "criticId": "spec-why",
-  "title": "Spec이 Why에 부합하는가",
-  "artifacts": [
-    {"id": "why", "type": "markdown", "path": "why.md"},
-    {"id": "spec", "type": "markdown", "path": "spec.md"}
-  ],
-  "artifactTypes": {"markdown": {"viewer": "text"}, "code": {"viewer": "files"}},
-  "payload": {"instruction": "Compare {why} and {spec}."},
-  "profile": {"kind": "agent", "provider": "codex", "model": "gpt-6-astra", "reasoning": "medium"},
-  "dependsOn": null
+  repoId, snapshotHash, criticId, title,
+  artifacts: [{id, type, path}],
+  artifactTypes, payload, profile, dependsOn
 }
 ```
 
-`artifacts`는 요청에서 허용한 관측 범위다. `payload`는 그 범위에서 수행할 리뷰 지시이며 `{why}` 같은 표시는 Artifact ID를 가리킨다. Artifact Runner는 이 요청의 Artifact 메타데이터를 읽어 `read_why`, `read_spec` 같은 Viewer 도구를 만든다. 문서 전체를 미리 프롬프트에 넣는 방식이 아니다.
+`artifacts`는 리뷰어에게 허용한 관측 범위입니다. 복사본에 다른 파일이 있어도 Artifact Runner는 요청에 선언된 Viewer 도구만 제공합니다. payload의 `{why}` 등은 Artifact ID 참조입니다. 전체 문서를 미리 프롬프트에 넣지 않습니다.
 
-데모에서는 `GET /api/demo`의 각 `scenario.reviewRequests`로 준비된 요청을 브라우저 Requester에 전달한다. 브라우저는 선택한 스냅샷의 요청 배열을 `POST /api/runs`로 제출한다. 브로커는 등록된 Repo의 같은 커밋 정의와 대조해 Repo·커밋·Artifact·payload·Profile·의존 관계가 일치하는지 확인한 뒤, Handle과 진행 상태를 추가해 보관한다. 이 데모에서는 커밋과 다른 임의의 요청 재정의를 허용하지 않는다.
+선택 Critic 요청은 하나의 envelope만 만들고 실제 선행 Handle을 갖지 않습니다. 전체 체인은 바로 앞 Critic의 GREEN에 따라 순서대로 실행합니다. 수정 후 재요청은 새로운 Handle과 입력 hash를 갖습니다. 같은 hash의 복사본은 공유할 수 있지만 결과는 별도로 평가합니다.
 
-기존 커밋 전용 제출은 편의 경로로 유지할 수 있다. 그 경우도 같은 Repo Requester 어댑터를 거쳐 요청을 준비한다. 브로커와 실행기는 요청을 받은 뒤의 영속성·배정·평가를 각각 맡으며, 리뷰를 시작할 때 해당 스냅샷을 detached worktree로 재현한다.
-
-개별 Critic을 실행할 때는 `prepareReviewRequests({…, criticId})`가 선택한 요청 하나만 만들고, `POST /api/runs`에도 같은 `criticId`를 전달한다. 브로커는 이 범위에 해당하는 커밋 정의와 정확히 대조한다. 원래 `dependsOn`은 정의로 남고 실행 시 선행 Handle은 없다. 반환된 `scope`가 개별 실행임을 명시한다.
+Human copy 대기는 영속 상태이며 프로세스 상주를 요구하지 않습니다. 결과 제출 명령이 다음 실행을 이어갑니다. Human lock 대기는 입력 감시 worker가 살아 있어야 합니다.

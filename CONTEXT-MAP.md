@@ -7,9 +7,11 @@
 
 ## Relationships
 
-- **Requester → Broker**: Repo와 스냅샷, Artifact 참조, 리뷰 payload를 포함한 요청을 제출한다.
+- **Requester → Broker**: Repo와 workspace 정책을 지정하며, 준비된 입력의 Artifact 참조·리뷰 payload로 요청을 구성한다.
 - **Broker ↔ Executors**: 브로커가 리뷰를 맡기고 실행기가 판정과 근거를 돌려준다.
 - **Artifact Runner → Executors**: payload에 참조된 Artifact의 Viewer 진입점을 리뷰어가 사용할 도구로 제공한다.
 - **Broker → Requester**: 요청의 진행 상태와 결과를 원래 요청자에게 돌려준다.
 
 두 맥락은 하나의 CCDD 제품 안에 존재한다. Artifact Runner는 요청과 관측 도구를 연결하는 경계다.
+
+관찰 서버는 향후 추가 가능한 어댑터다. 현재 핵심과 데모에는 포함하지 않으며 리뷰 실행을 소유하지 않는다.

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, writeFile, readFile, chmod, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readFile, chmod, rm, access } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createExecutorRegistry } from '../src/executors/index.mjs';
@@ -13,7 +13,7 @@ async function fixture(t) {
   await writeFile(join(worktreePath, 'why.md'), '# Why\nSelect two tasks.');
   await writeFile(join(worktreePath, 'spec.md'), '# Spec\nSelect two tasks.');
   const request = {
-    id: 'request-1', criticId: 'spec-why', title: 'Spec이 Why에 부합하는가', snapshotCommit: 'a'.repeat(40),
+    id: 'request-1', criticId: 'spec-why', title: 'Spec이 Why에 부합하는가', snapshotHash: 'a'.repeat(64),
     artifacts: [{ id: 'why', type: 'markdown', path: 'why.md' }, { id: 'spec', type: 'markdown', path: 'spec.md' }],
     artifactTypes: { markdown: { viewer: 'text' }, code: { viewer: 'files' } },
     payload: { instruction: 'Compare {why} and {spec}.' },
@@ -67,6 +67,7 @@ test('Codex adapter starts a real provider process with scoped MCP and keeps onl
   const args = JSON.parse(await readFile(join(data.dir, 'provider-args.json')));
   assert.ok(args.includes('--ignore-user-config'));
   assert.ok(args.includes('--ephemeral'));
+  assert.ok(args.includes('--skip-git-repo-check'));
   assert.equal(args[args.indexOf('--sandbox') + 1], 'read-only');
   assert.equal(args[args.indexOf('--model') + 1], 'test-model');
   assert.ok(args.includes('shell_tool'));
@@ -115,4 +116,43 @@ test('Human executor requires an explicit alarm method and dispatches configured
   assert.deepEqual(received, ['human-1']);
   await assert.rejects(registry.execute(request, {}), /claim\/result/);
   assert.throws(() => createExecutorRegistry({ alarmMethods: ['email'] }), /alarm method/);
+});
+
+test('concurrent runtime reviews share input while writing to separate per-review output and temporary directories', async t => {
+  const data = await fixture(t);
+  await writeFile(join(data.worktreePath, 'tests/output.test.mjs'), `
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+test('isolated output', async () => {
+  assert.notEqual(process.cwd(), process.env.CCDD_OUTPUT_DIR);
+  assert.equal(tmpdir(), process.env.CCDD_TMP_DIR);
+  await writeFile(join(process.env.CCDD_OUTPUT_DIR, 'result.json'), JSON.stringify({cwd:process.cwd(), output:process.env.CCDD_OUTPUT_DIR, temporary:tmpdir(), home:process.env.HOME}));
+  await writeFile(join(tmpdir(), 'temporary.txt'), 'scratch');
+});
+`);
+  const request = { ...data.request, profile: { kind: 'runtime', command: 'node', args: ['--test', 'tests/output.test.mjs'] } };
+  const registry = createExecutorRegistry();
+  const dirs = [join(data.dir, 'review-one'), join(data.dir, 'review-two')];
+  const results = await Promise.all(dirs.map(runDir => registry.execute(request, { ...data, runDir })));
+  assert.deepEqual(results.map(result => result.verdict), ['GREEN', 'GREEN']);
+  const outputs = await Promise.all(dirs.map(runDir => readFile(join(runDir, 'output/result.json'), 'utf8').then(JSON.parse)));
+  assert.equal(outputs[0].cwd, outputs[1].cwd);
+  assert.notEqual(outputs[0].output, outputs[1].output);
+  assert.notEqual(outputs[0].temporary, outputs[1].temporary);
+  assert.notEqual(outputs[0].home, outputs[1].home);
+  await assert.rejects(readFile(join(data.worktreePath, 'result.json')));
+});
+
+test('executors reject output directories inside input before creating files', async t => {
+  const data = await fixture(t);
+  const registry = createExecutorRegistry({ codexPath: await fakeProvider(data.dir) });
+  const requests = [data.request, { ...data.request, profile: { kind: 'runtime', command: 'node', args: ['--test', 'tests/check.test.mjs'] } }];
+  for (const request of requests) {
+    const runDir = join(data.worktreePath, `should-not-exist-${request.profile.kind}`);
+    await assert.rejects(registry.execute(request, { ...data, runDir }), /outside the review workspace/);
+    await assert.rejects(access(runDir));
+  }
 });
