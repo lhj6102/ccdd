@@ -14,5 +14,5 @@
     "types": ["node"]
   },
   "include": ["src/**/*.ts", "scripts/**/*.ts", "test/**/*.ts"],
-  "exclude": ["node_modules", "dist", "output"]
+  "exclude": ["node_modules", "dist", "output", "src/monitor/ui"]
 }

@@ -6,6 +6,7 @@ import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { setTimeout as delay } from 'node:timers/promises';
 import { prepareReviewRequests } from '../requester/index.js';
+import { createHumanArtifactTools } from '../artifacts/human.js';
 import { prepareWorkspace, reopenWorkspace, type WorkspaceDescriptor, type WorkspaceHandle, type WorkspaceMode } from '../workspaces/index.js';
 import type { ReviewEnvelope, ReviewRequest, ReviewResult, ReviewStatus, ReviewToolCall, ExecutionContext, ExecutorReadiness } from '../contracts.js';
 
@@ -475,9 +476,57 @@ export function createBroker({ repoPath, stateDir, repoId = 'demo', executors, w
       });
       changed(); return requestData(requestId);
     },
+    async executeHumanTool(requestId: string, { reviewerId, toolName, arguments: args = {}, signal }: { reviewerId: unknown; toolName: string; arguments?: unknown; signal?: AbortSignal }) {
+      ensureOpen();
+      const first = requestData(requestId);
+      if (first) reconcile(first.runId);
+      const assertClaim = () => {
+        ensureOpen();
+        const current = requestData(requestId);
+        if (!current || current.profile.kind !== 'human' || current.status !== 'WAITING_HUMAN') throw new Error('Request is not waiting for a human review.');
+        if (!reviewerId || current.claimedBy !== reviewerId) throw new Error('Only the reviewer who claimed this request can use its tools.');
+        if (current.workspace.mode === 'lock' && !ownerAlive(ownerData(current.runId))) throw new Error('A lock review requires its monitoring worker to remain alive.');
+        return current;
+      };
+      const request = assertClaim();
+      let workspace: WorkspaceHandle | undefined;
+      let inputsValidated = false;
+      try {
+        workspace = await workspaceAdapter.reopenWorkspace(request.workspace, { signal });
+        await workspace.assertUnchanged(); workspace.signal.throwIfAborted();
+        inputsValidated = true;
+        const expected = (await prepareReviewRequests({ repoPath: workspace.descriptor.path, repoId: request.repoId, snapshotHash: request.snapshotHash, criticId: request.criticId, allowLegacyTools: true }))[0];
+        if (!expected || expected.profile.kind !== 'human' || !isDeepStrictEqual(expected.artifactTypes, request.artifactTypes) || !isDeepStrictEqual(expected.artifacts, request.artifacts)) {
+          throw codedError('Stored Artifact tools do not match the reviewed workspace configuration.', 'WORKSPACE_ARTIFACT_MISMATCH');
+        }
+        const registry = await createHumanArtifactTools({ worktreePath: workspace.descriptor.path, artifacts: request.artifacts, artifactTypes: request.artifactTypes, signal: workspace.signal, allowLegacy: true });
+        registry.validateArguments(toolName, args);
+        assertClaim();
+        const result = await registry.call(toolName, args);
+        await workspace.assertUnchanged(); workspace.signal.throwIfAborted();
+        assertClaim();
+        const tool = registry.tools.find(tool => tool.name === toolName)!;
+        transaction(() => {
+          assertClaim();
+          appendEvent(request.runId, requestId, 'human.tool.executed', 'The claimed reviewer executed a registered Artifact tool.', { name: tool.name, artifactId: tool.artifactId, operation: tool.operation });
+        });
+        changed();
+        return result;
+      } catch (error) {
+        const failure = workspace?.signal.aborted && !signal?.aborted ? workspace.signal.reason ?? error : error;
+        if (!signal?.aborted && (!inputsValidated || errorCode(failure)?.startsWith('WORKSPACE_'))) {
+          transaction(() => {
+            if (requestData(requestId)?.status === 'WAITING_HUMAN') finishWithin(requestId, { error: failure });
+          });
+          changed();
+        }
+        throw failure;
+      } finally { await workspace?.close(); }
+    },
     async completeHuman(requestId: string, { reviewerId, result }: { reviewerId: unknown; result: unknown }) {
       ensureOpen();
       const validated = validateResult(result);
+      if (!validated.evidence.length || validated.evidence.some(item => !item.trim())) throw new Error('Human review requires at least one nonempty evidence entry.');
       const first = requestData(requestId);
       if (first) reconcile(first.runId);
       const request = requestData(requestId);

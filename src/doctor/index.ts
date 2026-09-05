@@ -4,6 +4,7 @@ import { join, resolve } from 'node:path';
 import { prepareReviewRequests } from '../requester/index.js';
 import { prepareWorkspace, removeOwnedWorkspaceTree } from '../workspaces/index.js';
 import { createArtifactViewer, createArtifactTools, type ArtifactListResult } from '../artifacts/index.js';
+import { createHumanArtifactTools } from '../artifacts/human.js';
 import { errorCode, errorMessage } from '../executors/errors.js';
 import type { ReviewEnvelope, ExecutorRegistry, ExecutionEvent, WorkspaceHandle, WorkspaceMode } from '../contracts.js';
 
@@ -48,17 +49,28 @@ const bounded = (value: unknown): string => String(value).slice(0, 2_000);
 const remedyFor = (value: unknown): string | undefined => value && typeof value === 'object' && 'remedy' in value && typeof value.remedy === 'string' ? value.remedy : undefined;
 
 async function inspectViewers(request: ReviewEnvelope, worktreePath: string, signal?: AbortSignal) {
+  if (request.profile.kind === 'human') {
+    const registry = await createHumanArtifactTools({ worktreePath, artifacts: request.artifacts, artifactTypes: request.artifactTypes, signal });
+    const checks = await registry.preflight();
+    const failed = checks.filter(check => !check.ok);
+    if (failed.length) throw new Error(failed.map(check => `${check.toolName}: ${check.message}`).join('; '));
+    return { toolNames: registry.tools.map(tool => tool.name), checks, programsLaunched: false };
+  }
   const viewer = await createArtifactViewer({ worktreePath, artifacts: request.artifacts, artifactTypes: request.artifactTypes, signal });
-  const registry = createArtifactTools(viewer);
+  const registry = createArtifactTools(viewer, { audience: request.profile.kind === 'runtime' ? 'viewer' : 'agent' });
+  const hasTool = (name: string) => registry.tools.some(tool => tool.name === name);
   let inspectedFiles = 0;
   const inspectFile = async (artifactId: string, path?: string): Promise<void> => {
+    if (!hasTool(`read_${artifactId}`)) return;
     if (++inspectedFiles > 10_000) throw new Error('Artifact viewer readiness check exceeds 10000 files; narrow the Critic artifact scope.');
     await registry.call(`read_${artifactId}`, { ...(path ? { path } : {}), startLine: 1, lineCount: 80 });
   };
   const inspectDirectory = async (artifactId: string, path = ''): Promise<void> => {
     let offset: number | null = 0;
     do {
-      const listing: ArtifactListResult = await registry.call(`list_${artifactId}`, { path, offset });
+      const listing: ArtifactListResult = hasTool(`list_${artifactId}`)
+        ? await registry.call(`list_${artifactId}`, { path, offset })
+        : await viewer.list({ artifactId, path, offset });
       for (const entry of listing.entries) {
         if (entry.kind === 'directory') await inspectDirectory(artifactId, entry.path);
         else if (entry.kind === 'file') await inspectFile(artifactId, entry.path);
@@ -111,7 +123,7 @@ export async function diagnoseProject({ repoPath, repoId = 'demo', mode = 'copy'
       try {
         const details = await inspectViewers(request, worktreePath, workspace.signal);
         readyViewers.add(request.criticId);
-        await add({ id: `artifacts:${request.criticId}`, status: 'PASS', kind: 'artifacts', criticIds: [request.criticId], message: '스냅샷의 Artifact Viewer 목록·읽기 진입점을 확인했습니다.', details });
+        await add({ id: `artifacts:${request.criticId}`, status: 'PASS', kind: 'artifacts', criticIds: [request.criticId], message: request.profile.kind === 'human' ? 'Human Artifact 도구의 등록과 실행 준비를 확인했습니다. 프로그램은 실행하지 않았습니다.' : '스냅샷의 Artifact Viewer 목록·읽기 진입점을 확인했습니다.', details });
       } catch (error) {
         await add({ id: `artifacts:${request.criticId}`, status: 'FAIL', kind: 'artifacts', criticIds: [request.criticId], message: bounded(errorMessage(error)), remedy: 'Artifact 경로·유형·내용과 읽기 권한을 확인하세요.', details: { code: 'ARTIFACT_VIEWER_UNAVAILABLE' } });
       }

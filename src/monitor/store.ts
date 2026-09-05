@@ -6,7 +6,7 @@ import { basename, isAbsolute, join, resolve } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { promisify } from 'node:util';
 import type { ArtifactReference, CriticProfile, ReviewRequest, ReviewStatus } from '../contracts.js';
-import type { MonitorDetail, MonitorOverview, MonitorProject, MonitorQuery, MonitorRequest, MonitorSources } from './types.js';
+import type { MonitorDetail, MonitorLane, MonitorOverview, MonitorProject, MonitorQuery, MonitorRequest, MonitorSources } from './types.js';
 
 interface Source { id: string; stateDir: string; issue?: string }
 interface Identity { repoId: string; repoPath: string }
@@ -26,6 +26,12 @@ type ProcessCheck = { exists: boolean | null; identity: string | null };
 type ProcessChecks = Map<number, Promise<ProcessCheck>>;
 
 const statuses = new Set<string>(['BLOCKED', 'QUEUED', 'RUNNING', 'WAITING_HUMAN', 'GREEN', 'RED', 'ERROR']);
+export function monitorLane(request: Pick<MonitorRequest, 'status' | 'claimedBy'>): MonitorLane {
+  if (request.status === 'GREEN') return 'success';
+  if (request.status === 'RED' || request.status === 'ERROR') return 'failure';
+  if (request.status === 'RUNNING' || (request.status === 'WAITING_HUMAN' && request.claimedBy)) return 'running';
+  return 'requested';
+}
 const finished = new Set<string>(['GREEN', 'RED', 'ERROR']);
 const execute = promisify(execFile);
 const object = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -290,7 +296,7 @@ export function createMonitorStore(options: MonitorSources = {}) {
   return {
     async overview(query: MonitorQuery = {}): Promise<MonitorOverview> {
       const limit = query.limit ?? 50, offset = query.offset ?? 0, filter = query.filter ?? 'all';
-      if (!Number.isSafeInteger(limit) || limit < 1 || limit > 200 || !Number.isSafeInteger(offset) || offset < 0 || !['all', 'active', 'attention'].includes(filter)) throw new Error('목록 조회 조건이 올바르지 않습니다.');
+      if (!Number.isSafeInteger(limit) || limit < 1 || limit > 200 || !Number.isSafeInteger(offset) || offset < 0 || !['all', 'active', 'attention'].includes(filter) || (query.lane !== undefined && !['requested', 'running', 'success', 'failure'].includes(query.lane))) throw new Error('목록 조회 조건이 올바르지 않습니다.');
       const snapshots = await Promise.all((await discover()).map(source => readSnapshot(source)));
       const projects = snapshots.map(snapshot => snapshot.project).sort((a, b) => a.name.localeCompare(b.name, 'ko') || a.id.localeCompare(b.id));
       const checks: ProcessChecks = new Map();
@@ -301,7 +307,10 @@ export function createMonitorStore(options: MonitorSources = {}) {
       }))).flat();
       const counts = { all: rows.length, active: rows.filter(row => row.active).length, attention: rows.filter(row => row.attention).length };
       const filtered = rows.filter(row => filter === 'all' || row[filter]).sort((a, b) => Number(b.active || b.attention) - Number(a.active || a.attention) || Date.parse(b.request.createdAt) - Date.parse(a.request.createdAt) || a.request.projectId.localeCompare(b.request.projectId) || a.request.id.localeCompare(b.request.id));
-      return { projects, requests: filtered.slice(offset, offset + limit).map(row => row.request), total: filtered.length, counts, hasMore: offset + limit < filtered.length, observedAt: new Date().toISOString() };
+      const laneCounts: Record<MonitorLane, number> = { requested: 0, running: 0, success: 0, failure: 0 };
+      for (const row of filtered) laneCounts[monitorLane(row.request)] += 1;
+      const laneRows = query.lane === undefined ? filtered : filtered.filter(row => monitorLane(row.request) === query.lane);
+      return { projects, requests: laneRows.slice(offset, offset + limit).map(row => row.request), total: laneRows.length, counts, laneCounts, hasMore: offset + limit < laneRows.length, observedAt: new Date().toISOString() };
     },
     async detail(project: string, requestId: string): Promise<MonitorDetail | null> {
       const snapshot = await selected(project, requestId);

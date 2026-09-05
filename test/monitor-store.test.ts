@@ -265,3 +265,34 @@ test('pagination works on a substantial completed history without changing stabl
   assert.deepEqual(page.requests.map(request => request.id), ['history-1998', 'history-1999']);
   assert.equal(page.hasMore, false);
 });
+
+test('kanban lanes have independent counts and pagination with claimed Human requests in progress', async t => {
+  const f = await fixture(t);
+  const state = await f.state('kanban', [
+    f.request('queued'),
+    f.request('blocked', { status: 'BLOCKED', predecessorId: 'red', runId: 'run-red' }),
+    f.request('unclaimed', { status: 'WAITING_HUMAN', profile: { kind: 'human' }, notifiedAt: at(1) }),
+    f.request('claimed', { status: 'WAITING_HUMAN', profile: { kind: 'human' }, claimedBy: 'person', claimedAt: at(2), notifiedAt: at(1) }),
+    f.request('running', { status: 'RUNNING' }),
+    f.request('red', { status: 'RED', completedAt: at(3) }),
+    f.request('error', { status: 'ERROR', completedAt: at(4) }),
+    ...Array.from({ length: 55 }, (_, n) => f.request(`green-${n}`, { status: 'GREEN', createdAt: at(n + 10), completedAt: at(n + 11) })),
+  ]);
+  await f.state('other', [f.request('other-running', { status: 'RUNNING' })]);
+  const store = createMonitorStore({ stateHome: f.stateHome });
+  const requested = await store.overview({ project: state.id, lane: 'requested', limit: 2 });
+  assert.deepEqual(requested.laneCounts, { requested: 3, running: 2, success: 55, failure: 2 });
+  assert.equal(requested.total, 3);
+  assert.equal(requested.requests.length, 2);
+  assert.equal(requested.hasMore, true);
+  const remainder = await store.overview({ project: state.id, lane: 'requested', limit: 2, offset: 2 });
+  assert.equal(remainder.requests.length, 1);
+  assert.equal(remainder.hasMore, false);
+  assert.deepEqual(new Set([...requested.requests, ...remainder.requests].map(item => item.id)), new Set(['queued', 'blocked', 'unclaimed']));
+  const running = await store.overview({ project: state.id, lane: 'running' });
+  assert.deepEqual(new Set(running.requests.map(item => item.id)), new Set(['claimed', 'running']));
+  const secondSuccess = await store.overview({ project: state.id, lane: 'success', offset: 50 });
+  assert.equal(secondSuccess.requests.length, 5);
+  assert.equal(secondSuccess.total, 55);
+  await assert.rejects(store.overview({ lane: 'unknown' as 'requested' }));
+});

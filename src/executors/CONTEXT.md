@@ -40,6 +40,18 @@ _Avoid_: 테스트 실행기, Artifact 생성기
 특정 스냅샷의 Artifact에 대해 하나의 관측 동작을 제공하는 진입점이다. Artifact 타입에 정의된 설명을 바탕으로 리뷰어에게 관측 범위와 동작을 안내한다.
 _Avoid_: 전체 파일을 미리 넣은 프롬프트, Repo 전체 접근
 
+**Agent Tool**:
+Artifact 타입이 Agent 리뷰어에게 허용한 관측 동작이다. 해당 동작은 요청에 포함된 특정 Artifact에 연결된다.
+_Avoid_: Human Tool, Agent의 범용 도구
+
+**Human Tool**:
+Artifact 타입이 사람 리뷰어에게 제공하는 열람 수단이다. 열람 수단을 열었다는 사실은 사람의 검토나 판정 완료를 뜻하지 않는다.
+_Avoid_: 자동 판정, Human Claim
+
+**Tool Readiness**:
+지정한 리뷰어가 Artifact의 등록된 도구를 사용할 준비가 되어 있는지에 대한 확인이다. 도구의 실제 실행 확인과 Artifact의 품질 판정은 서로 다른 결과다.
+_Avoid_: Verdict, 리뷰 통과
+
 **Review Result**:
 리뷰어가 관측한 Artifact에 대해 내린 GREEN 또는 RED 판정과 그 근거다. 실행 실패는 판정이 아니다.
 _Avoid_: 실행 성공, 추측한 통과

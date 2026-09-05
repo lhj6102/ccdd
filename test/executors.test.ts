@@ -19,7 +19,7 @@ async function fixture(t: TestContext) {
   const request: ReviewEnvelope & { profile: AgentProfile } = {
     repoId: 'test', dependsOn: null, criticId: 'spec-why', title: 'Spec이 Why에 부합하는가', snapshotHash: 'a'.repeat(64),
     artifacts: [{ id: 'why', type: 'markdown', path: 'why.md' }, { id: 'spec', type: 'markdown', path: 'spec.md' }],
-    artifactTypes: { markdown: { viewer: 'text' }, code: { viewer: 'files' } },
+    artifactTypes: { markdown: { viewer: 'text', agentTools: { read: {} }, humanTools: { read: {} } }, code: { viewer: 'files', agentTools: { list: {}, read: {} }, humanTools: { list: {}, read: {} } } },
     payload: { instruction: 'Compare {why} and {spec}.' },
     profile: { kind: 'agent', provider: 'openai-codex', model: 'gpt-6-astra', reasoning: 'medium', timeoutMs: 5_000 },
   };
@@ -127,7 +127,7 @@ test('executors reject output inside input before creating files', async t => {
 
 test('Agent receives exact type descriptions and scope before operation guidance',async t=>{
   const data=await fixture(t);
-  data.request.artifactTypes.markdown.tools={read:{description:'{artifactName}의 명세 텍스트를 줄 단위로 읽는다.'}};
+  data.request.artifactTypes.markdown.agentTools={read:{description:'{artifactName}의 명세 텍스트를 줄 단위로 읽는다.'}};
   let inspected=false;
   const registry=createExecutorRegistry({streamFn:artifactStream({mode:'partial',onRequest:({context})=>{
     const tools=context.tools!;

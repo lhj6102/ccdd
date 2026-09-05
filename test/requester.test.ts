@@ -20,7 +20,7 @@ async function fixture(t: TestContext) {
   await writeFile(join(repoPath, 'tests', 'rank.test.mjs'), '');
   const config: RepoConfig = {
     artifacts: { why: { type: 'markdown', path: 'why.md' }, spec: { type: 'markdown', path: 'spec.md' }, tests: { type: 'code', path: 'tests' } },
-    artifactTypes: { markdown: { viewer: 'text' }, code: { viewer: 'files' } },
+    artifactTypes: { markdown: { viewer: 'text', agentTools: { read: {} }, humanTools: { read: {} } }, code: { viewer: 'files', agentTools: { list: {}, read: {} }, humanTools: { list: {}, read: {} } } },
     critics: [
       { id: 'spec-why', title: 'Spec fits Why', dependsOn: null, artifacts: ['why', 'spec'], profile: { kind: 'agent', provider: 'codex', model: 'gpt-6-astra', reasoning: 'medium' }, payload: { instruction: 'Basis: {why}. Target: {spec}' } },
       { id: 'tests-spec', title: 'Tests fit Spec', dependsOn: 'spec-why', artifacts: ['spec', 'tests'], profile: { kind: 'agent', provider: 'codex', model: 'gpt-6-astra', reasoning: 'medium' }, payload: { instruction: 'Compare tests and spec' } },
@@ -90,8 +90,8 @@ test('configuration rejects unsafe paths and preserves the strictly linear Criti
 test('repo-defined types preserve description templates in isolated request envelopes', async t => {
   const data = await fixture(t);
   data.config.artifactTypes = {
-    requirements: { viewer: 'text', tools: { read: { description: '{artifactName}의 요구사항을 읽고 {artifactName}에서 근거를 찾는다.' } } },
-    test_suite: { viewer: 'files', tools: { list: { description: '{artifactName}의 테스트 파일 목록을 조회한다.' } } },
+    requirements: { viewer: 'text', agentTools: { read: { description: '{artifactName}의 요구사항을 읽고 {artifactName}에서 근거를 찾는다.' } } },
+    test_suite: { viewer: 'files', agentTools: { read: {}, list: { description: '{artifactName}의 테스트 파일 목록을 조회한다.' } } },
   };
   data.config.artifacts.why.type = 'requirements';
   data.config.artifacts.spec.type = 'requirements';
@@ -101,12 +101,12 @@ test('repo-defined types preserve description templates in isolated request enve
   assert.deepEqual(requests[0].artifactTypes, data.config.artifactTypes);
   assert.deepEqual(requests[1].artifactTypes, data.config.artifactTypes);
   assert.equal(requests[0].artifacts[1].type, 'requirements');
-  assert.equal(toolDescription(requests[0].artifactTypes.requirements, 'read', 'spec'), 'spec의 요구사항을 읽고 spec에서 근거를 찾는다.');
-  assert.equal(toolDescription(requests[0].artifactTypes.requirements, 'read', 'why'), 'why의 요구사항을 읽고 why에서 근거를 찾는다.');
-  assert.equal(toolDescription(requests[1].artifactTypes.test_suite, 'list', 'tests'), 'tests의 테스트 파일 목록을 조회한다.');
+  assert.equal(toolDescription(requests[0].artifactTypes.requirements, 'read', 'spec', 'agent'), 'spec의 요구사항을 읽고 spec에서 근거를 찾는다.');
+  assert.equal(toolDescription(requests[0].artifactTypes.requirements, 'read', 'why', 'agent'), 'why의 요구사항을 읽고 why에서 근거를 찾는다.');
+  assert.equal(toolDescription(requests[1].artifactTypes.test_suite, 'list', 'tests', 'agent'), 'tests의 테스트 파일 목록을 조회한다.');
   assert.match(toolDescription(requests[1].artifactTypes.test_suite, 'read', 'tests'), /tests.*line ranges/);
-  requests[0].artifactTypes.requirements.tools!.read!.description = 'Changed envelope';
-  assert.equal(requests[1].artifactTypes.requirements.tools!.read!.description, data.config.artifactTypes.requirements.tools!.read!.description);
+  requests[0].artifactTypes.requirements.agentTools!.read!.description = 'Changed envelope';
+  assert.equal(requests[1].artifactTypes.requirements.agentTools!.read!.description, data.config.artifactTypes.requirements.agentTools!.read!.description);
 });
 
 test('old type definitions keep built-in descriptions and template replacement is literal', () => {
@@ -118,6 +118,33 @@ test('old type definitions keep built-in descriptions and template replacement i
   assert.equal(toolDescription(definition, 'read', '$&'), '$& / $&');
   assert.equal(toolDescription({ viewer: 'text', tools: { read: { description: 'Read the supplied document.' } } }, 'read', 'spec'), 'Read the supplied document.');
   assert.throws(() => toolDescription({ viewer: 'text' }, 'list', 'spec'), /Unsupported artifact tool/);
+});
+
+test('new requests require audience tools on every supplied Artifact while an independent runtime remains selectable', async t => {
+  const data = await fixture(t);
+  const save = () => writeFile(join(data.repoPath, 'ccdd.config.json'), JSON.stringify(data.config));
+  data.config.artifactTypes.markdown = { viewer: 'text', humanTools: { read: {} } };
+  await save();
+  await assert.rejects(prepareReviewRequests({ ...data, criticId: 'spec-why' }), /why has no agent tools/);
+  const runtime = await prepareReviewRequests({ ...data, criticId: data.config.critics[2].id });
+  assert.equal(runtime[0].profile.kind, 'runtime');
+  data.config.critics[0].profile = { kind: 'human' };
+  await save();
+  assert.equal((await prepareReviewRequests({ ...data, criticId: 'spec-why' }))[0].profile.kind, 'human');
+  data.config.artifacts.spec.type = 'disabled';
+  data.config.artifactTypes.disabled = { viewer: 'text', humanTools: {}, agentTools: { read: {} } };
+  await save();
+  await assert.rejects(prepareReviewRequests({ ...data, criticId: 'spec-why' }), /spec has no human tools/);
+  data.config.artifactTypes.disabled = { viewer: 'text', tools: { read: { description: 'Legacy description' } } };
+  await save();
+  await assert.rejects(prepareReviewRequests({ ...data, criticId: 'spec-why' }), /spec has no human tools/);
+});
+
+test('a configured list operation cannot make a file Artifact reviewable', async t => {
+  const data = await fixture(t);
+  data.config.artifactTypes.markdown = { viewer: 'files', agentTools: { list: {} } };
+  await writeFile(join(data.repoPath, 'ccdd.config.json'), JSON.stringify(data.config));
+  await assert.rejects(prepareReviewRequests({ ...data, criticId: 'spec-why' }), /no usable agent tools/);
 });
 
 test('malformed type tool definitions are rejected before Provider checks or request persistence', async t => {
@@ -149,7 +176,7 @@ test('malformed type tool definitions are rejected before Provider checks or req
   for (const definition of invalid) {
     Reflect.set(data.config.artifactTypes, 'markdown', definition);
     await writeFile(join(data.repoPath, 'ccdd.config.json'), JSON.stringify(data.config));
-    await assert.rejects(broker.submit({ requesterId: 'builder', mode: 'copy' }), /artifact type|Artifact type|artifact tool|Artifact tool/);
+    await assert.rejects(broker.submit({ requesterId: 'builder', mode: 'copy' }), /artifact (type|.*tool)/i);
   }
   assert.deepEqual(calls, []);
   assert.deepEqual(broker.listRuns(), []);

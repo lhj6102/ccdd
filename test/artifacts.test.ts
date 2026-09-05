@@ -7,6 +7,7 @@ import { execFileSync, spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
 import { createArtifactViewer, createArtifactTools, createAuditedArtifactTools, readArtifact, type ArtifactToolDefinition, type ArtifactToolCall } from '../src/artifacts/index.js';
+import { assertArtifactAudience } from '../src/artifacts/types.js';
 
 
 interface McpResponse {
@@ -45,6 +46,25 @@ test('request artifact types produce concrete read and directory viewer tools', 
   assert.match((await registry.call('read_tests', { path: listing.entries[0].path })).content, /expected = 2/);
   assert.equal((await readArtifact({ ...fixtureData, artifactId: 'tests' })).directory, true);
   assert.match((await readArtifact({ ...fixtureData, artifactId: 'tests', file: 'rank.test.mjs' })).content, /expected/);
+});
+
+test('explicit audience maps enable only named tools and legacy defaults never fill omitted audiences', async t => {
+  const data = await fixture(t);
+  const artifactTypes = {
+    markdown: { viewer: 'text', agentTools: { read: { description: 'Inspect {artifactName}.' } }, humanTools: {} },
+    code: { viewer: 'files', tools: { read: { description: 'Legacy description.' } }, humanTools: { read: {} } },
+  };
+  const viewer = await createArtifactViewer({ ...data, artifactTypes });
+  assert.deepEqual(createArtifactTools(viewer).tools.map(tool => tool.name), ['read_why']);
+  assert.equal(createArtifactTools(viewer).tools[0].description, 'Inspect why.');
+  assert.deepEqual(createArtifactTools(viewer, { audience: 'human' }).tools.map(tool => tool.name), ['read_tests']);
+  assert.deepEqual(createArtifactTools(viewer, { audience: 'viewer' }).tools.map(tool => tool.name), ['read_why', 'list_tests', 'read_tests']);
+  assert.throws(() => assertArtifactAudience({ ...data, artifactTypes, profile: { kind: 'agent' } }), /tests has no agent tools/);
+  assert.throws(() => assertArtifactAudience({ ...data, profile: { kind: 'agent' } }), /no agent tools/);
+  assert.doesNotThrow(() => assertArtifactAudience({ ...data, profile: { kind: 'agent' } }, { allowLegacy: true }));
+  assert.doesNotThrow(() => assertArtifactAudience({ ...data, artifactTypes, profile: { kind: 'runtime' } }));
+  const fileOnly = await createArtifactViewer({ ...data, artifacts: [{ id: 'source', type: 'code', path: 'tests/rank.test.mjs' }], artifactTypes: { code: { viewer: 'files', agentTools: { list: {} } } } });
+  assert.equal(createArtifactTools(fileOnly).tools.length, 0, 'A list-only type does not supply a usable tool for a file Artifact.');
 });
 
 test('bounded reads paginate and reject undeclared paths, traversal, absolute paths and symlink escapes', async t => {

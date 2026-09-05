@@ -1,14 +1,14 @@
 #!/usr/bin/env node
-import {resolve,join} from 'node:path';
-import {readFile,mkdir,writeFile} from 'node:fs/promises';
+import {resolve} from 'node:path';
+import {readFile} from 'node:fs/promises';
 import {realpathSync} from 'node:fs';
 import {fileURLToPath} from 'node:url';
-import {fork} from 'node:child_process';
 import {setTimeout as delay} from 'node:timers/promises';
 import {prepareDemo} from '../scripts/prepare-demo.js';
 import {packageVersion} from './runtime-paths.js';
 import {createExecutorRegistry} from './executors/index.js';
 import {diagnoseProject} from './doctor/index.js';
+import {diagnoseArtifactTools} from './artifacts/tool-check.js';
 import {createBroker,readStateContext} from './broker/index.js';
 import {localContext,createLocalAlarmMethods} from './local.js';
 import {readArtifact} from './artifacts/index.js';
@@ -16,15 +16,17 @@ import {reopenWorkspace} from './workspaces/index.js';
 import type { PiOptions } from './executors/pi.js';
 import { errorMessage, errorCode } from './executors/errors.js';
 import { startMonitor } from './monitor/server.js';
+import { ensureRunWorker } from './worker-client.js';
 type Broker = ReturnType<typeof createBroker>;
 type Run = NonNullable<ReturnType<Broker['getRun']>>;
-export interface WorkerOptions { runId: string; repoPath: string; repoId: string; stateDir: string; piOptions?: PiOptions; humanInbox: boolean }
+export { launchWorker } from './worker-client.js';
+export type { WorkerOptions } from './worker-client.js';
 type Output = { write(text: string): unknown };
 type Options = Record<string, string | boolean>;
 
 const terminal=new Set(['GREEN','RED','ERROR']);
-const booleanFlags=new Set(['--demo','--human-inbox','--wait','--json','--help','--lock','--copy']);
-const valueFlags=new Set(['--repo','--state-dir','--pi-auth-file','--codex-auth-file','--requester','--critic','--timeout-ms','--scenario','--demo-dir','--reviewer','--result-file','--file','--start-line','--line-count','--offset','--limit','--port']);
+const booleanFlags=new Set(['--demo','--human-inbox','--wait','--json','--help','--lock','--copy','--execute']);
+const valueFlags=new Set(['--repo','--state-dir','--pi-auth-file','--codex-auth-file','--requester','--critic','--timeout-ms','--scenario','--demo-dir','--reviewer','--result-file','--file','--start-line','--line-count','--offset','--limit','--port','--artifact','--for','--tool','--args']);
 function parse(argv: string[]){
   const options: Options={},positional: string[]=[];
   for(let i=0;i<argv.length;i++){
@@ -46,24 +48,6 @@ function timeoutValue(value: string | undefined,fallback=600000){
   return ms;
 }
 const exitForRun=(run:Run)=>run.status==='GREEN'?0:run.status==='RED'?1:2;
-
-export async function launchWorker({runId,...context}:WorkerOptions){
-  const worker=fork(fileURLToPath(new URL('./worker.js',import.meta.url)),[JSON.stringify({runId,...context})],{
-    detached:true,stdio:['ignore','ignore','ignore','ipc'],execArgv:[],
-    env:Object.fromEntries(Object.entries(process.env).filter(([key])=>key!=='NODE_TEST_CONTEXT')),
-  });
-  await new Promise<void>((ok,no)=>{
-    const timer=setTimeout(()=>finish(new Error('Review worker startup timed out.')),15000);
-    const finish=(error?:Error)=>{clearTimeout(timer);worker.off('error',fail);worker.off('exit',exit);worker.off('message',message);if(error){worker.kill('SIGTERM');no(error);}else ok();};
-    const fail=(error:Error)=>finish(error);
-    const exit=(code:number|null)=>finish(new Error(`Review worker exited during startup (${code}).`));
-    const message=(value: {type:string;message:string;code?:string})=>{if(value?.type==='ready')finish();else if(value?.type==='error')finish(Object.assign(new Error(value.message),{code:value.code}));};
-    worker.once('error',fail);worker.once('exit',exit);worker.on('message',message);
-  });
-  worker.unref();
-  worker.channel?.unref();
-  return worker.pid;
-}
 
 /** Waiting clients do not own execution; timeout never cancels the review worker. */
 export async function waitForRun({broker,run,timeoutMs=600000,pollMs=100,signal}: {broker:Broker;run:Run;timeoutMs?:number;pollMs?:number;signal?:AbortSignal}){
@@ -95,6 +79,8 @@ export async function main(argv: string[]=process.argv.slice(2),{stdout=process.
   ccdd status RUN_ID [--wait]
   ccdd list
   ccdd monitor [--repo PATH | --state-dir PATH] [--port 4318]
+  ccdd tools check [--repo PATH] [--artifact ID] [--for agent|human] [--tool NAME]
+    [--execute --args JSON] [--copy | --lock] [--json]
   ccdd request REQUEST_ID
   ccdd artifact REQUEST_ID ARTIFACT_ID [--file RELATIVE_PATH] [--start-line 1] [--line-count 80]
   ccdd human-claim REQUEST_ID --reviewer ID
@@ -107,7 +93,8 @@ export async function main(argv: string[]=process.argv.slice(2),{stdout=process.
 All review commands accept --repo PATH and --state-dir PATH (outside the repo).
 run requires exactly one workspace mode. --copy is recommended; doctor defaults to copy.
 No daemon, HTTP server, Git repository, or commit is required for reviews.
-monitor is an optional local read-only view; it does not start or own reviews.
+monitor is an optional local view with explicit Human claim, tool and result actions.
+Viewing the monitor does not start or own reviews; completion resumes a detached worker.
 --critic runs only that Critic; omission evaluates the full linear chain.
 Commands return JSON. --wait: 0=GREEN, 1=RED, 2=ERROR, 3=wait timed out.
 Without --wait, run returns 0 for acceptance; the independent review worker continues.
@@ -140,6 +127,18 @@ Only credential paths are saved for worker/resume; credentials are never copied 
       });
       return 0;
     }
+    if(command==='tools'){
+      const permitted=new Set(['--repo','--state-dir','--artifact','--for','--tool','--args','--execute','--copy','--lock','--json']);
+      if(positional.length!==1||positional[0]!=='check'||Object.keys(options).some(key=>!permitted.has(key)))throw new Error('Use tools check with --repo, --state-dir, --artifact, --for, --tool, --execute, --args, --copy, --lock or --json.');
+      if(options['--copy']&&options['--lock'])throw new Error('--lock and --copy are mutually exclusive.');
+      const audience=get('--for');
+      if(audience!==undefined&&audience!=='agent'&&audience!=='human')throw new Error('--for must be agent or human.');
+      if(options['--args']&&!options['--execute'])throw new Error('--args requires --execute.');
+      const args=get('--args');
+      const report=await diagnoseArtifactTools({repoPath:resolve(get('--repo',process.cwd())!),...(get('--state-dir')?{stateDir:resolve(get('--state-dir')!)}:{}),mode:options['--lock']?'lock':'copy',artifactId:get('--artifact'),audience,toolName:get('--tool'),execute:Boolean(options['--execute']),...(args===undefined?{}:{arguments:JSON.parse(args)})});
+      print(report);return report.ok?0:1;
+    }
+    if(['--artifact','--for','--tool','--args','--execute'].some(flag=>options[flag]!==undefined))throw new Error('Tool check options require tools check.');
     if(options['--port']!==undefined)throw new Error('--port requires the monitor command.');
     if(options['--lock']&&options['--copy'])throw new Error('--lock and --copy are mutually exclusive.');
     if(command==='run'&&!options['--lock']&&!options['--copy'])throw new Error('run requires exactly one of --copy (recommended) or --lock.');
@@ -186,18 +185,7 @@ Only credential paths are saved for worker/resume; credentials are never copied 
     const activeBroker=createBroker({...context,executors});
     broker=activeBroker;
     const needId=()=>{if(!positional[0])throw new Error(`${command} requires an ID.`);return positional[0];};
-    const launch=async (run:Run):Promise<Run>=>{
-      try{
-        const runDir=join(context.stateDir,'runs',run.id);
-        await mkdir(runDir,{recursive:true,mode:0o700});
-        const configPath=join(runDir,'worker.json');
-        try{await writeFile(configPath,JSON.stringify({piOptions,humanInbox}),{flag:'wx',mode:0o600});}catch(error){if(errorCode(error)!=='EEXIST')throw error;}
-        const config=JSON.parse(await readFile(configPath,'utf8'));
-        try{await launchWorker({...context,runId:run.id,...config});}
-        catch(error){if(errorCode(error)!=='RUN_ALREADY_OWNED')throw error;}
-      }catch(error){try{await activeBroker.failRun?.(run.id,error);}catch{}throw Object.assign(error instanceof Error?error:new Error(String(error)),{runId:run.id});}
-      const current=activeBroker.getRun(run.id);if(!current)throw new Error('Review handle not found.');return current;
-    };
+    const launch=(run:Run)=>ensureRunWorker({broker:activeBroker,context,run,initialConfig:{piOptions,humanInbox}});
     let result:Run|null;
     if(command==='run'){
       result=await activeBroker.submit({mode,requesterId:get('--requester','cli'),criticId:get('--critic')});

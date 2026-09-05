@@ -11,27 +11,34 @@ import { DatabaseSync } from 'node:sqlite';
 import { createBroker } from '../src/broker/index.js';
 import { removeOwnedWorkspaceTree } from '../src/workspaces/index.js';
 import { startMonitor } from '../src/monitor/server.js';
-import type { MonitorArtifactPage, MonitorDetail, MonitorOverview } from '../src/monitor/types.js';
+import type { MonitorArtifactPage, MonitorDetail, MonitorOverview, MonitorSession } from '../src/monitor/types.js';
 import type { RepoConfig, ReviewRequest, WorkspaceMode } from '../src/contracts.js';
 
-async function fixture(t: TestContext, mode: WorkspaceMode = 'copy') {
+async function fixture(t: TestContext, mode: WorkspaceMode = 'copy', options: { waiting?: boolean; chain?: boolean; command?: boolean; longTool?: boolean } = {}) {
   const dir = await realpath(await mkdtemp(join(tmpdir(), 'ccdd-monitor-test-')));
   const cleanup: Array<() => Promise<void>> = [];
   t.after(async () => { for (const close of cleanup.reverse()) await close(); await removeOwnedWorkspaceTree(dir); });
   const repoPath = join(dir, 'project'), stateDir = join(dir, 'state'), stateHome = join(dir, 'empty-state-home');
   await mkdir(join(repoPath, 'tests'), { recursive: true });
   await writeFile(join(repoPath, 'why.md'), '# 목적\n두 항목 선택\n');
-  await writeFile(join(repoPath, 'tests/example.test.mjs'), 'export const count = 2;\n');
+  await writeFile(join(repoPath, 'tests/example.test.mjs'), `${options.chain ? "await new Promise(resolve => setTimeout(resolve, 350));" : ''}export const count = 2;\n`);
   await writeFile(join(repoPath, 'private.md'), 'UNDECLARED_PRIVATE_CONTENT');
   const config: RepoConfig = {
     artifacts: { why: { type: 'markdown', path: 'why.md' }, tests: { type: 'code', path: 'tests' } },
-    artifactTypes: { markdown: { viewer: 'text', tools: { read: { description: '{artifactName}의 줄을 읽습니다.' } } }, code: { viewer: 'files', tools: { list: { description: '{artifactName}의 파일 목록입니다.' }, read: { description: '{artifactName}의 내부 파일을 읽습니다.' } } } },
+    artifactTypes: { markdown: { viewer: 'text', agentTools: { read: {} }, humanTools: { read: { description: '{artifactName}의 줄을 읽습니다.' } } }, code: { viewer: 'files', agentTools: { read: {}, list: {} }, humanTools: { list: { description: '{artifactName}의 파일 목록입니다.' }, read: { description: '{artifactName}의 내부 파일을 읽습니다.' } } } },
     critics: [{ id: 'human-check', title: '<script>unsafe title</script>', dependsOn: null, artifacts: ['why', 'tests'], profile: { kind: 'human' }, payload: { instruction: '두 항목 기준을 확인하세요.', authFile: 'DO_NOT_EXPOSE_AUTH_METADATA' } }],
   };
+  if (options.command) config.artifactTypes.markdown.humanTools = { ...config.artifactTypes.markdown.humanTools, [options.longTool ? 'o'.repeat(64) : 'open']: { description: '고정된 프로그램으로 입력을 확인합니다.', command: process.execPath, args: ['-e', `require('node:fs').writeFileSync(${JSON.stringify(join(dir, 'command-output.txt'))}, require('node:fs').readFileSync(process.argv[1], 'utf8'))`, '{artifactPath}'] } };
+  if (options.longTool) {
+    config.artifacts['a'.repeat(64)] = config.artifacts.why; delete config.artifacts.why;
+    config.critics[0].artifacts = config.critics[0].artifacts.map(name => name === 'why' ? 'a'.repeat(64) : name);
+  }
+  if (options.chain) config.critics.push({ id: 'runtime', title: '후속 Runtime', dependsOn: 'human-check', artifacts: ['tests'], profile: { kind: 'runtime', command: 'node', args: ['--test', 'tests/example.test.mjs'] }, payload: { instruction: '실제 테스트 실행' } });
   await writeFile(join(repoPath, 'ccdd.config.json'), JSON.stringify(config));
-  const broker = createBroker({ repoPath, stateDir, executors: { canExecute: () => ({ ok: true }), execute: async () => { throw new Error('Monitor must not execute reviews'); }, notifyHuman: async () => { throw new Error('Monitor must not send notifications'); } } });
+  const broker = createBroker({ repoPath, stateDir, executors: { canExecute: () => ({ ok: true }), execute: async () => { throw new Error('Monitor must not execute reviews'); }, notifyHuman: async () => { if (!options.waiting) throw new Error('Monitor must not send notifications'); } } });
   cleanup.push(() => broker.close());
   const run = await broker.submit({ mode, requesterId: 'monitor-test' });
+  if (options.waiting) { await broker.run(run.id); await mkdir(join(stateDir, 'runs', run.id), { recursive: true }); await writeFile(join(stateDir, 'runs', run.id, 'worker.json'), JSON.stringify({ humanInbox: true, piOptions: {} })); }
   await broker.close();
   await writeFile(join(stateDir, 'worker.json'), JSON.stringify({ piOptions: { authFile: 'DO_NOT_EXPOSE_AUTH_METADATA' }, secret: 'DO_NOT_EXPOSE_AUTH_SECRET' }));
   const monitor = await startMonitor({ stateDirs: [stateDir], stateHome, port: 0 });
@@ -76,15 +83,16 @@ test('monitor serves existing database state and scoped artifacts without execut
   assert.equal(detail.result, null);
   assert.doesNotMatch(JSON.stringify({ overview, detail }), /DO_NOT_EXPOSE_AUTH|piOptions|authFile|snapshotHash|workspace/);
   const read = await (await fetch(`${data.route}/artifacts/why?startLine=2&lineCount=1`)).json() as MonitorArtifactPage;
-  assert.equal(read.artifact.description, 'why의 줄을 읽습니다.');
+  assert.equal(read.artifact.description, 'Read text from why using 1-based line ranges.');
+  assert.equal(detail.tools?.find(tool => tool.name === 'read_why')?.description, 'why의 줄을 읽습니다.');
   assert.ok('content' in read.result);
   assert.equal(read.result.content, '두 항목 선택\n');
   const listing = await (await fetch(`${data.route}/artifacts/tests`)).json() as MonitorArtifactPage;
-  assert.equal(listing.artifact.description, 'tests의 파일 목록입니다.');
+  assert.equal(listing.artifact.description, 'List files within tests.');
   assert.ok('entries' in listing.result);
   assert.equal(listing.result.entries[0].path, 'example.test.mjs');
   const source = await (await fetch(`${data.route}/artifacts/tests?operation=read&path=example.test.mjs`)).json() as MonitorArtifactPage;
-  assert.equal(source.artifact.description, 'tests의 내부 파일을 읽습니다.');
+  assert.equal(source.artifact.description, 'Read text from tests using 1-based line ranges.');
   assert.ok('content' in source.result);
   assert.match(source.result.content, /count = 2/);
   assert.deepEqual(await readFile(join(data.stateDir, 'broker.sqlite')), before);
@@ -98,14 +106,16 @@ test('monitor blocks foreign browser access and all mutations; static resources 
   assert.match(home.headers.get('content-security-policy') ?? '', /script-src 'self'/);
   assert.equal(home.headers.get('access-control-allow-origin'), null);
   assert.equal(home.headers.get('x-content-type-options'), 'nosniff');
-  assert.match(await home.text(), /\/client\.js/);
-  assert.equal((await fetch(`${data.monitor.url}/style.css`)).status, 200);
-  assert.equal((await fetch(`${data.monitor.url}/client.js`)).status, 200);
+  const html = await home.text();
+  const scripts = [...html.matchAll(/(?:src|href)="([^"]+\.(?:js|css))"/g)].map(match => match[1]);
+  assert.ok(scripts.length >= 2, html);
+  for (const asset of scripts) assert.equal((await fetch(new URL(asset, data.monitor.url))).status, 200);
   const foreignHeaders: Record<string, string>[] = [{ host: 'attacker.example' }, { origin: 'https://attacker.example' }, { origin: 'null' }, { 'sec-fetch-site': 'cross-site' }, { 'sec-fetch-site': 'same-site' }];
   for (const headers of foreignHeaders) {
     assert.equal((await raw(`${data.monitor.url}/api/requests`, { headers })).status, 403);
   }
-  for (const method of ['POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS', 'HEAD']) assert.equal((await raw(data.route, { method })).status, 405);
+  for (const method of ['PUT', 'PATCH', 'DELETE', 'OPTIONS', 'HEAD']) assert.equal((await raw(data.route, { method })).status, 405);
+  assert.equal((await raw(data.route, { method: 'POST', headers: { origin: data.monitor.url } })).status, 405);
   assert.equal((await raw(data.route, { headers: { origin: data.monitor.url, 'sec-fetch-site': 'same-origin' } })).status, 200);
 });
 
@@ -203,4 +213,143 @@ test('monitor CLI rejects unrelated or conflicting flags before starting', async
     assert.equal(await main(args, { stdout: sink, stderr: sink }), 2, args.join(' '));
     assert.ok(output.length > 0);
   }
+});
+
+async function browserSession(url: string) {
+  const response = await fetch(`${url}/api/session`);
+  const cookie = response.headers.get('set-cookie')?.split(';')[0];
+  assert.ok(cookie);
+  assert.match(response.headers.get('set-cookie') ?? '', /HttpOnly; SameSite=Strict/);
+  const data = await response.json() as MonitorSession;
+  assert.match(data.reviewerId, /^browser-[a-f0-9]{24}$/);
+  return { cookie, ...data };
+}
+async function post(url: string, session: { cookie: string; csrfToken: string }, value: unknown = {}, extras: Record<string, string> = {}) {
+  return fetch(url, { method: 'POST', headers: { origin: new URL(url).origin, cookie: session.cookie, 'content-type': 'application/json', 'x-ccdd-csrf': session.csrfToken, ...extras }, body: JSON.stringify(value) });
+}
+
+test('Human actions require the browser claimant, valid CSRF and strict bounded JSON', async t => {
+  const data = await fixture(t, 'copy', { waiting: true, command: true });
+  const first = await browserSession(data.monitor.url), second = await browserSession(data.monitor.url);
+  assert.notEqual(first.reviewerId, second.reviewerId);
+  const detail = await (await fetch(data.route, { headers: { cookie: first.cookie } })).json() as MonitorDetail;
+  assert.equal(detail.human?.canClaim, true);
+  assert.ok(detail.tools?.some(tool => tool.name === 'open_why' && tool.operation === 'command'));
+  assert.equal((await post(`${data.route}/tools/open_why`, first, { arguments: {} })).status, 403);
+  await assert.rejects(access(join(data.dir, 'command-output.txt')));
+  assert.equal((await post(`${data.route}/claim`, first, {}, { 'x-ccdd-csrf': second.csrfToken })).status, 403);
+  assert.equal((await post(`${data.route}/claim`, first, {}, { origin: 'http://attacker.invalid' })).status, 403);
+  assert.equal((await post(`${data.route}/claim`, first, {}, { 'content-type': 'text/plain' })).status, 415);
+  assert.equal((await post(`${data.route}/claim`, first, { reviewerId: second.reviewerId })).status, 400);
+  assert.equal((await post(`${data.route}/claim`, first, { long: 'x'.repeat(33_000) })).status, 413);
+  const claimedResponse = await post(`${data.route}/claim`, first);
+  assert.equal(claimedResponse.status, 200, await claimedResponse.clone().text());
+  const claimed = await claimedResponse.json() as MonitorDetail;
+  assert.equal(claimed.request.claimedBy, first.reviewerId);
+  assert.equal(claimed.human?.claimedByMe, true);
+  assert.equal(claimed.human?.canComplete, true);
+  assert.equal((await post(`${data.route}/claim`, second)).status, 403);
+  assert.equal((await post(`${data.route}/tools/read_why`, second, { arguments: {} })).status, 403);
+  assert.equal((await post(`${data.route}/complete`, second, { verdict: 'GREEN', summary: '타인 결과', evidence: ['입력을 확인했습니다.'] })).status, 403);
+  assert.equal((await post(`${data.route}/complete`, first, { verdict: 'GREEN', summary: '확인', evidence: ['입력을 확인했습니다.'], reviewerId: second.reviewerId })).status, 400);
+  assert.equal((await post(`${data.route}/complete`, first, { verdict: 'GREEN', summary: '검토', evidence: [] })).status, 400);
+  assert.equal((await post(`${data.route}/complete`, first, { verdict: 'GREEN', summary: '검토', evidence: ['   '] })).status, 400);
+  assert.equal((await post(`${data.route}/tools/open_why`, first, { arguments: { command: '/unregistered' } })).status, 400);
+  await assert.rejects(access(join(data.dir, 'command-output.txt')));
+  const read = await post(`${data.route}/tools/read_why`, first, { arguments: { startLine: 1, lineCount: 1 } });
+  assert.equal(read.status, 200, await read.clone().text());
+  assert.match(JSON.stringify(await read.json()), /목적/);
+  const launch = await post(`${data.route}/tools/open_why`, first, { arguments: {} });
+  assert.equal(launch.status, 200, await launch.clone().text());
+  assert.equal((await launch.json() as { result: { launched: boolean } }).result.launched, true);
+  const deadline = Date.now() + 3000;
+  while (Date.now() < deadline) {
+    try { await access(join(data.dir, 'command-output.txt')); break; } catch { await delay(20); }
+  }
+  assert.equal(await readFile(join(data.dir, 'command-output.txt'), 'utf8'), '# 목적\n두 항목 선택\n');
+  const afterTool = await (await fetch(data.route)).json() as MonitorDetail;
+  assert.equal(afterTool.request.status, 'WAITING_HUMAN');
+  assert.equal(afterTool.result, null);
+  const completed = await post(`${data.route}/complete`, first, { verdict: 'RED', summary: '기준을 충족하지 않습니다.', evidence: ['두 항목 기준을 확인했습니다.'] });
+  assert.equal(completed.status, 200, await completed.clone().text());
+  assert.equal((await completed.json() as MonitorDetail).request.status, 'RED');
+  assert.equal((await post(`${data.route}/complete`, first, { verdict: 'GREEN', summary: '중복', evidence: ['입력을 확인했습니다.'] })).status, 409);
+  assert.equal((await post(`${data.route}/tools/read_why`, first, { arguments: {} })).status, 409);
+});
+
+test('browser reviewer identity survives monitor restart and requires the renewed CSRF token', async t => {
+  const data = await fixture(t, 'copy', { waiting: true });
+  const initial = await browserSession(data.monitor.url);
+  assert.equal((await post(`${data.route}/claim`, initial)).status, 200);
+  await data.monitor.close();
+  const next = await startMonitor({ stateDirs: [data.stateDir], port: 0 });
+  t.after(() => next.close());
+  const response = await fetch(`${next.url}/api/session`, { headers: { cookie: initial.cookie } });
+  const renewed = await response.json() as MonitorSession;
+  assert.equal(renewed.reviewerId, initial.reviewerId);
+  assert.notEqual(renewed.csrfToken, initial.csrfToken);
+  const route = `${next.url}/api/requests/${data.request.projectId}/${data.request.id}`;
+  assert.equal((await post(`${route}/complete`, initial, { verdict: 'GREEN', summary: '확인했습니다.', evidence: ['입력을 확인했습니다.'] })).status, 403);
+  const result = await post(`${route}/complete`, { cookie: initial.cookie, ...renewed }, { verdict: 'GREEN', summary: '확인했습니다.', evidence: ['입력을 확인했습니다.'] });
+  assert.equal(result.status, 200, await result.clone().text());
+});
+
+test('Human completion starts a detached successor that finishes after the monitor closes', async t => {
+  const data = await fixture(t, 'copy', { waiting: true, chain: true });
+  const session = await browserSession(data.monitor.url);
+  assert.equal((await post(`${data.route}/claim`, session)).status, 200);
+  const result = await post(`${data.route}/complete`, session, { verdict: 'GREEN', summary: '검토 완료', evidence: ['목적 확인'] });
+  assert.equal(result.status, 200, await result.clone().text());
+  await data.monitor.close();
+  const broker = createBroker({ repoPath: data.repoPath, stateDir: data.stateDir });
+  try {
+    const deadline = Date.now() + 5000;
+    let run = broker.getRun(data.run.id);
+    while (run && !['GREEN', 'RED', 'ERROR'].includes(run.status) && Date.now() < deadline) { await delay(30); run = broker.getRun(data.run.id); }
+    assert.equal(run?.status, 'GREEN', JSON.stringify(run));
+    assert.equal(run.requests[1].result?.exitCode, 0);
+  } finally { await broker.close(); }
+});
+
+test('Human completion rejects changed input and leaves an operational ERROR', async t => {
+  const data = await fixture(t, 'copy', { waiting: true });
+  const session = await browserSession(data.monitor.url);
+  assert.equal((await post(`${data.route}/claim`, session)).status, 200);
+  await removeOwnedWorkspaceTree(data.run.workspace.path);
+  const response = await post(`${data.route}/complete`, session, { verdict: 'GREEN', summary: '통과', evidence: ['입력을 확인했습니다.'] });
+  assert.equal(response.status, 409);
+  const detail = await (await fetch(data.route)).json() as MonitorDetail;
+  assert.equal(detail.request.status, 'ERROR');
+  assert.equal(detail.result, null);
+  assert.ok(detail.toolIssue);
+});
+
+
+test('Human tools reject a tampered stored Artifact scope without launching a program', async t => {
+  const data = await fixture(t, 'copy', { waiting: true, command: true });
+  const session = await browserSession(data.monitor.url);
+  assert.equal((await post(`${data.route}/claim`, session)).status, 200);
+  editStoredRequest(data.stateDir, data.request.id, request => { request.artifacts[0].path = 'private.md'; });
+  const response = await post(`${data.route}/tools/open_why`, session, { arguments: {} });
+  assert.equal(response.status, 409);
+  await assert.rejects(access(join(data.dir, 'command-output.txt')));
+  const detail = await (await fetch(data.route)).json() as MonitorDetail;
+  assert.equal(detail.request.status, 'ERROR');
+});
+
+
+test('a maximum-length registered Human tool name remains callable without relaxing request identifiers', async t => {
+  const data = await fixture(t, 'copy', { waiting: true, command: true, longTool: true });
+  const session = await browserSession(data.monitor.url);
+  const toolName = `${'o'.repeat(64)}_${'a'.repeat(64)}`;
+  assert.equal(toolName.length, 129);
+  const detail = await (await fetch(data.route)).json() as MonitorDetail;
+  assert.ok(detail.tools?.some(tool => tool.name === toolName));
+  assert.equal((await post(`${data.route}/claim`, session)).status, 200);
+  const executed = await post(`${data.route}/tools/${toolName}`, session, { arguments: {} });
+  assert.equal(executed.status, 200, await executed.clone().text());
+  assert.equal((await executed.json() as { result: { launched: boolean } }).result.launched, true);
+  assert.equal(await readFile(join(data.dir, 'command-output.txt'), 'utf8'), '# 목적\n두 항목 선택\n');
+  assert.equal((await post(`${data.route}/tools/${toolName}x`, session, { arguments: {} })).status, 400);
+  assert.equal((await fetch(`${data.monitor.url}/api/requests/${'p'.repeat(129)}/${data.request.id}`)).status, 400);
 });

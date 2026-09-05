@@ -1,4 +1,4 @@
-# CCDD v0.5.1 CLI 시연
+# CCDD CLI 시연
 
 Node 24 이상과 Pi Provider 인증을 준비합니다. 새 데모 profile은 openai-codex / gpt-6-astra / medium입니다. 서버와 브라우저는 사용하지 않습니다.
 
@@ -10,7 +10,7 @@ node dist/src/cli.js prepare-demo
 node dist/src/cli.js doctor --demo --scenario fixed --json
 ```
 
-데모 폴더는 기본적으로 `~/.local/share/ccdd/demo-v5.1`에 만들어집니다. `--demo-dir PATH`로 지정할 수도 있습니다. 기존 `demo-v5` 폴더와 사용자 설정은 보존합니다. 네 시나리오는 Git 없는 별도 폴더이며 현재 파일을 직접 수정할 수 있습니다.
+데모 폴더는 기본적으로 `~/.local/share/ccdd/demo-v7`에 만들어집니다. `--demo-dir PATH`로 지정할 수도 있습니다. 이전 데모 폴더와 사용자 설정은 보존합니다. 네 시나리오는 Git 없는 별도 폴더이며 현재 파일을 직접 수정할 수 있습니다. 새 데모는 Agent·Human 도구 목록을 타입에 명시합니다.
 
 | 시나리오 | Why / Spec / Tests / Implementation의 최대 개수 | 확인 |
 | --- | --- | --- |

@@ -1,6 +1,6 @@
-# Implementation contracts — v0.6
+# Implementation contracts — v0.7
 
-One npm package, strict TypeScript compiled to Node 24 ESM, local SQLite persistence. Broker and Executors remain separate bounded contexts. A request-scoped worker runs one Run; no daemon, global broker-owner lock, or automatic queue scanner is required. The optional local monitor is an HTTP observation adapter and does not own review execution.
+One npm package, strict TypeScript compiled to Node 24 ESM, local SQLite persistence. Broker and Executors remain separate bounded contexts. A request-scoped worker runs one Run; no daemon, global broker-owner lock, or automatic queue scanner is required. The optional local monitor observes persisted requests and delegates explicit Human actions to the Broker. It does not own review execution.
 
 ## Workspace contract
 
@@ -38,21 +38,34 @@ Agent profile: `{kind:'agent',provider:'openai-codex',model,reasoning,timeoutMs?
 
 ## Artifact type tools and line reads
 
-Each type can define optional operation description overrides:
+Each type explicitly declares the tools available to each reviewer audience:
 
 ```json
 "code": {
   "viewer": "files",
-  "tools": {
+  "agentTools": {
     "list": {"description": "{artifactName}의 파일 목록을 조회한다."},
     "read": {"description": "{artifactName}의 소스 텍스트를 줄 단위로 읽는다."}
+  },
+  "humanTools": {
+    "list": {},
+    "read": {},
+    "open": {
+      "description": "{artifactName}을 기본 프로그램으로 연다.",
+      "command": "/usr/bin/open",
+      "args": ["{artifactPath}"]
+    }
   }
 }
 ```
 
-`tools` is optional and does not enable new operations or disable omitted builtins. `text` supports read; `files` supports list/read, with the actual Artifact shape deciding which are exposed. A file exposes only `read_<artifactName>`; a directory exposes `list_<artifactName>` and `read_<artifactName>`. Names remain flat tools. Pi calls them directly; the optional stdio MCP adapter exposes the same registry. There is no payload `tool` discriminator.
+`agentTools` and `humanTools` are independent maps. Empty or omitted maps provide no capabilities to that audience. New Agent/Human submissions must have usable audience tools on every selected Artifact; Runtime keeps its own execution contract. Only the selected Critic is checked when `--critic` is used. A `files` type on a regular file cannot expose a list-only capability. Agent operations currently support read/list; Human supports those builtins plus registered command launchers. `text` supports read; `files` supports list/read, with the actual Artifact shape deciding which are exposed. Names remain flat `<toolName>_<artifactName>` tools. Pi and the optional stdio MCP adapter expose only the Agent registry. There is no payload `tool` discriminator.
 
-The only description template placeholder is `{artifactName}`, replaced literally everywhere by the Artifact definition ID. Type/tool settings validate before review acceptance and also in the standalone Viewer. Descriptions must be nonblank strings of at most 4000 characters. Unknown fields, operations and unsupported template braces are rejected. Existing types without `tools` retain builtin descriptions. These settings describe existing Viewer operations and cannot expand filesystem permissions.
+Builtin entries may be `{}` to use the default description. Unlike old `tools` description overrides, omitted operations are disabled. Historical snapshots containing only `viewer`/`tools` retain their old passive read/list behavior, but new submissions must explicitly migrate to the audience maps. Adding one audience map disables legacy fallback for both audiences; an omitted counterpart remains unavailable.
+
+Human command entries define fixed `command`, `args`, optional `timeoutMs` (1–120000, default 10000), and a description. Arguments must include a standalone `{artifactPath}` token; CCDD substitutes the scoped absolute path without a shell. A directory tool accepts an optional internal relative `path`; a file tool accepts no path. Browser callers never supply executables, argv, or environment. The launcher inherits only the desktop environment allowlist, not Provider credential variables. A launcher should return when the viewer has opened, such as `/usr/bin/open`, rather than wait for a whole interactive application session. Its successful exit confirms launch only, never Human observation or a verdict. Fixed commands are trusted repository configuration, not an OS sandbox; shared review inputs must remain unchanged.
+
+The only description template placeholder is `{artifactName}`, replaced literally everywhere by the Artifact definition ID. Type/tool settings validate before review acceptance and also in the standalone Viewer. Explicit descriptions must be nonblank strings of at most 4000 characters. Unknown fields, unsupported operations and unsupported template braces are rejected. Registered tools operate only on their supplied Artifact paths.
 
 Read inputs are `startLine` (integer >=1, default1) and `lineCount` (integer1–500, default80). Directory reads additionally require a nonempty `path` to a file inside that Artifact. File reads reject any path argument. Byte-read `offset`/`limit` and unknown arguments are rejected rather than reinterpreted. Directory listing keeps optional internal `path`, zero-based entry `offset` and entry `limit` (1–200).
 
@@ -86,7 +99,7 @@ Credentials come from Pi's supported Provider environment variables or explicit 
 
 ## Durable broker and process ownership
 
-`createBroker({repoPath,stateDir,repoId,executors?})` provides `submit`, `run`, `getRun`, `listRuns`, `getRequest`, `claimHuman`, `completeHuman`, `cancel`, `failRun`, `reconcile`, and `close`.
+`createBroker({repoPath,stateDir,repoId,executors?})` provides `submit`, `run`, `getRun`, `listRuns`, `getRequest`, `claimHuman`, `executeHumanTool`, `completeHuman`, `cancel`, `failRun`, `reconcile`, and `close`.
 
 - `submit({mode,requesterId,criticId?,reviewRequests?})` captures input, validates requirements, persists the Run, and returns its Handle. It does not start execution.
 - `run(runId,{signal?,onStarted?})` claims that Run transactionally. One live worker owns a Run; different Runs execute concurrently. Ownership stores PID, process identity and a token. Opening or closing another client never claims or cancels it.
@@ -101,6 +114,8 @@ Run scope is `{kind:'chain'}` or `{kind:'critic',criticId}`. Selected execution 
 The worker persists WAITING_HUMAN, invokes registered alarms, and records confirmed delivery. A registered local inbox writes `stateDir/human-inbox.jsonl`. It is a local file alarm, not an email, push notification or delivery acknowledgement by a person. Alarm failure causes ERROR.
 
 Copy-mode waiting and owner release are coordinated transactionally. After the worker exits, another CLI process can inspect Artifacts, claim the request, and submit `{reviewerId,result:{verdict,summary,evidence}}`. Only the claimant may complete it and only once. Input integrity is revalidated at completion. A successful result queues any successor and the CLI starts a new request worker, reusing the originally saved execution configuration.
+
+Human tool execution requires the active claimant and a WAITING_HUMAN request. The Broker reopens and validates the recorded workspace, matches stored Artifact definitions against its config, resolves registered tools, and validates workspace/claim again after execution. Only safe tool name, Artifact ID and operation metadata are persisted. Launch errors do not become RED or complete the review; input mutation invalidates the review with ERROR. Human result submission requires a nonempty summary and at least one nonblank evidence entry.
 
 Lock-mode waiting keeps its worker and input monitoring alive. Human completion requires a live owner. Changes or owner death invalidate the review. Result files and notification output must be outside the locked workspace.
 
@@ -127,8 +142,20 @@ v0.5.1 updates Pi to 0.85.1 and creates fresh demos in demo-v5.1 using openai-co
 
 The observation store opens SQLite read-only and never calls Broker getters that reconcile ownership. Stored status and process-liveness observations remain separate. A dead worker can be shown as missing without rewriting a request to ERROR. Human copy waiting without a worker is normal. No reviews, diagnoses, notifications, claims, or provider calls start when viewing the monitor.
 
+The Vue 3/TypeScript frontend is built with Vite and bundled in the npm package. A project picker scopes a four-column board: requested (QUEUED/BLOCKED/unclaimed Human), running (RUNNING/claimed Human), success (GREEN), failure (RED/ERROR). Blocked successors retain their own waiting state and a clear blocked-by-failure reason. Each column has independently bounded pagination and counts so recent completed requests cannot hide older active work. Card details show the instruction, result, existing lifecycle times, and scoped Artifact viewer.
+
 The overview returns bounded, paginated request summaries and project/filter counts. Request detail projects only the instruction, execution profile, result summary/evidence, safe lifecycle times, and Artifact references; it excludes credentials, worker ownership tokens, raw provider logs, and snapshot metadata dumps. Existing timestamps describe post-workspace-preparation acceptance; no missing timing is inferred.
 
 Artifact browsing reuses scoped Viewer tools and validates the recorded workspace before and after each read. Browser reads do not count as Agent or Human review observations. Changed lock inputs or missing copies fail explicitly instead of showing current source as the reviewed snapshot. File and directory pagination retain the Artifact contract.
 
-The server listens on 127.0.0.1 and validates request Host/origin. It serves local assets without external dependencies or CORS. Artifact and stored text are rendered as text. This first monitor exposes observation and Artifact reading only; Human actions and Provider configuration remain CLI workflows.
+The server listens on 127.0.0.1 and validates request Host/origin. It serves bundled local assets without CDN or CORS. Artifact and stored text are rendered as text. GET remains observational. Explicit JSON POST routes perform claim, registered Human tool calls, and GREEN/RED result submission through the Broker. Requests require the same origin, a browser-owned HttpOnly SameSite cookie, and a CSRF token. Reviewer identity is derived from that opaque cookie and cannot be supplied as a POST field; it survives server restarts. The same browser can continue its claim, while another browser cannot impersonate it. Clearing browser cookies loses that browser identity; this is a local workflow, not a multi-user login system.
+
+Human completion shares the CLI's saved execution configuration and detached worker startup. A monitor shutdown waits for an in-flight result handoff and never owns or cancels successor reviews. Command tools are available only to the active claimant. Concurrent mutations on one request are serialized by the HTTP adapter; the Broker checks the authoritative status and claim as well.
+
+## Artifact tool diagnostics
+
+`ccdd tools check [--repo PATH] [--artifact ID] [--for agent|human] [--tool NAME]` lists and checks registered capabilities without a Provider call, review history, verdict, notification, or program launch. `--execute` requires a selected Artifact, audience and tool; `--args JSON` supplies that tool's schema-validated arguments. Both preparation and actual execution use the same scoped registries as reviews. Copy is the default workspace mode; lock is explicit. Failed checks return NOT_READY and a nonzero exit code.
+
+Preparation confirms declarations, paths and launcher executable availability. Actual execution confirms the read/list response or registered launcher exit; a GUI app's rendered content and a person's reading are not inferred. A launcher copy is retained so an asynchronously opened desktop viewer keeps its input after the command exits. Copies are revalidated and normal immutable cache lifetime rules apply. `doctor` remains the whole-project readiness command, including Human tool preflight without launching applications.
+
+v0.7 adds explicit audience maps, the Vue kanban board, Human actions, and tool diagnostics. Fresh demos use `demo-v7` with manifest version 7 and explicit tool maps. Existing demos and historic review snapshots are never rewritten automatically.
