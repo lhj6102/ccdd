@@ -9,8 +9,16 @@
 _Avoid_: Reviewer, 실행기
 
 **Run**:
-하나의 스냅샷에 대해 의존 순서대로 진행되는 리뷰 요청들의 묶음.
+하나의 스냅샷과 정해진 평가 범위에 대한 리뷰 의뢰의 묶음.
 _Avoid_: Task, 프로젝트
+
+**Critic Run**:
+선택한 Critic 하나만 평가하는 Run. GREEN은 선택한 Critic의 충족을 뜻하며 앞뒤 Critic이나 전체 Chain의 충족을 뜻하지 않는다.
+_Avoid_: Chain Run, 전체 검증
+
+**Chain Run**:
+정의된 Critic 전체를 의존 순서대로 평가하는 Run. 모든 리뷰가 GREEN일 때 전체 Chain이 충족된다.
+_Avoid_: Critic Run, 개별 평가
 
 **Review Request**:
 평가 대상 Artifact, 평가 기준, 스냅샷과 실행 조건이 정해진 한 번의 리뷰 의뢰.
@@ -21,7 +29,7 @@ _Avoid_: Critic 정의, 작업 목록
 _Avoid_: 현재 작업 폴더, 최신 소스
 
 **Predecessor**:
-현재 리뷰가 시작되기 전에 GREEN 판정을 받아야 하는 바로 앞 리뷰 요청.
+Chain Run에서 현재 리뷰가 시작되기 전에 GREEN 판정을 받아야 하는 바로 앞 리뷰 요청.
 _Avoid_: 공동 평가 기준, 병합 조건
 
 **Verdict**:

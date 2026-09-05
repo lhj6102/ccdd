@@ -5,8 +5,10 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFileSync, spawn } from 'node:child_process';
 import { setTimeout as delay } from 'node:timers/promises';
+import { DatabaseSync } from 'node:sqlite';
 import { createBroker } from '../src/broker/index.mjs';
 import { prepareReviewRequests } from '../src/requester/index.mjs';
+import { createExecutorRegistry } from '../src/executors/index.mjs';
 
 const green = { verdict: 'GREEN', summary: 'The snapshot meets its criterion.', evidence: ['Checked the committed artifact.'] };
 const red = { verdict: 'RED', summary: 'The criterion is not met.', evidence: ['The expected value differs.'] };
@@ -30,7 +32,7 @@ async function fixture(t, config = defaults()) {
   await fs.mkdir(path.join(repoPath, 'tests')); await fs.mkdir(path.join(repoPath, 'implementation'));
   await fs.writeFile(path.join(repoPath, 'why.md'), 'Why from committed snapshot.');
   await fs.writeFile(path.join(repoPath, 'spec.md'), 'Spec from committed snapshot.');
-  await fs.writeFile(path.join(repoPath, 'tests/example.test.mjs'), 'export const test = true;');
+  await fs.writeFile(path.join(repoPath, 'tests/example.test.mjs'), "import test from 'node:test'; import assert from 'node:assert/strict'; import { answer } from '../implementation/example.mjs'; test('answer meets the criterion', () => assert.equal(answer, 42));");
   await fs.writeFile(path.join(repoPath, 'implementation/example.mjs'), 'export const answer = 42;');
   const commit = async (next = config) => {
     await fs.writeFile(path.join(repoPath, 'ccdd.config.json'), JSON.stringify(next));
@@ -71,6 +73,7 @@ test('submit returns a persisted handle; execution is sequential and pinned to s
   const broker = open(executors);
   const run = await broker.submit({ snapshotCommit, requesterId: 'test-requester' });
   assert.equal(run.status, 'QUEUED');
+  assert.deepEqual(run.scope, { kind: 'chain' });
   assert.deepEqual(run.requests.map(request => request.status), ['QUEUED', 'BLOCKED', 'BLOCKED']);
   assert.equal(calls.length, 0);
   await until(() => calls.length, count => count === 1);
@@ -88,6 +91,119 @@ test('submit returns a persisted handle; execution is sequential and pinned to s
   const reopened = open(executors);
   assert.equal(reopened.getRun(run.id).status, 'GREEN');
   assert.equal(reopened.listRuns()[0].id, run.id);
+});
+
+test('a Runtime Critic runs independently when an unrelated Agent Provider is unavailable', async t => {
+  const { snapshotCommit, open } = await fixture(t);
+  const executors = createExecutorRegistry({ codexPath: '/missing-codex' });
+  const capabilityChecks = [];
+  const broker = open({
+    canExecute: request => { capabilityChecks.push(request.criticId); return executors.canExecute(request); },
+    execute: (request, context) => executors.execute(request, context),
+  });
+  await assert.rejects(broker.submit({ snapshotCommit, requesterId: 'builder' }), /Provider is not registered/);
+  assert.deepEqual(broker.listRuns(), []);
+  capabilityChecks.length = 0;
+  const run = await broker.submit({ snapshotCommit, requesterId: 'builder', criticId: 'implementation-tests' });
+  assert.deepEqual(run.scope, { kind: 'critic', criticId: 'implementation-tests' });
+  assert.equal(run.requests.length, 1);
+  assert.equal(run.requests[0].dependsOn, 'tests-spec', 'The original Critic definition remains intact');
+  assert.equal(run.requests[0].predecessorId, null, 'A Critic Run has no execution prerequisite');
+  assert.equal(run.requests[0].blockedReason, null);
+  const completed = await until(() => broker.getRun(run.id), value => ['GREEN', 'RED', 'ERROR'].includes(value.status));
+  assert.equal(completed.status, 'GREEN', JSON.stringify(completed));
+  assert.equal(completed.requests[0].result.exitCode, 0);
+  assert.match(completed.requests[0].result.stdout, /answer meets the criterion/);
+  assert.deepEqual(capabilityChecks, ['implementation-tests']);
+  assert.equal(completed.requests.length, 1, 'Selected success cannot imply upstream reviews were run');
+});
+
+test('a middle Critic starts without predecessor results and persists its independent scope', async t => {
+  const { repoPath, snapshotCommit, open } = await fixture(t);
+  const received = [];
+  const executors = {
+    canExecute: request => ({ ok: request.criticId === 'tests-spec', reason: 'Only the selected Critic is available.' }),
+    execute: async request => { received.push(request); return green; },
+  };
+  const broker = open(executors);
+  const reviewRequests = await prepareReviewRequests({ repoPath, snapshotCommit, criticId: 'tests-spec' });
+  const run = await broker.submit({ snapshotCommit, requesterId: 'feature-builder', criticId: 'tests-spec', reviewRequests });
+  const completed = await until(() => broker.getRun(run.id), value => value.status === 'GREEN');
+  assert.deepEqual(received.map(request => request.criticId), ['tests-spec']);
+  assert.equal(received[0].dependsOn, 'spec-why');
+  assert.equal(received[0].predecessorId, null);
+  assert.equal(completed.requests.length, 1);
+  assert.deepEqual(completed.scope, { kind: 'critic', criticId: 'tests-spec' });
+  assert.deepEqual(completed.events.find(event => event.type === 'run.submitted').data.scope, completed.scope);
+  await broker.close();
+  const reopened = open(executors);
+  assert.deepEqual(reopened.getRun(run.id).scope, completed.scope);
+  assert.deepEqual(reopened.listRuns()[0].scope, completed.scope);
+  assert.equal(received.length, 1, 'A completed independent run is not replayed on restart');
+});
+
+test('unknown selections and empty or substituted selected envelopes are rejected before capability checks or persistence', async t => {
+  const { repoPath, snapshotCommit, open } = await fixture(t);
+  const checks = [];
+  const broker = open({ ...registry(async () => green), canExecute: request => { checks.push(request.criticId); return { ok: true }; } });
+  const chain = await prepareReviewRequests({ repoPath, snapshotCommit });
+  const selected = await prepareReviewRequests({ repoPath, snapshotCommit, criticId: 'tests-spec' });
+  await assert.rejects(broker.submit({ snapshotCommit, requesterId: 'builder', criticId: 'unknown' }), /Unknown Critic/);
+  for (const criticId of ['', null, {}, '../tests-spec']) {
+    await assert.rejects(broker.submit({ snapshotCommit, requesterId: 'builder', criticId }), /criticId/);
+  }
+  const erasedDependency = structuredClone(selected); erasedDependency[0].dependsOn = null;
+  for (const reviewRequests of [[], chain, [chain[0]], erasedDependency]) {
+    await assert.rejects(broker.submit({ snapshotCommit, requesterId: 'builder', criticId: 'tests-spec', reviewRequests }), /envelopes must exactly match/);
+  }
+  await assert.rejects(broker.submit({ snapshotCommit, requesterId: 'builder', reviewRequests: selected }), /envelopes must exactly match/);
+  assert.deepEqual(checks, []);
+  assert.deepEqual(broker.listRuns(), []);
+});
+
+test('builder retries use fresh immutable snapshots and separate handles without overwriting earlier verdicts', async t => {
+  const { repoPath, snapshotCommit, commit, open } = await fixture(t);
+  const broker = open(createExecutorRegistry({ codexPath: '/missing-codex' }));
+  const submit = async commitId => {
+    const run = await broker.submit({ snapshotCommit: commitId, requesterId: 'feature-builder', criticId: 'implementation-tests' });
+    return until(() => broker.getRun(run.id), value => ['GREEN', 'RED', 'ERROR'].includes(value.status));
+  };
+  const initial = await submit(snapshotCommit);
+  assert.equal(initial.status, 'GREEN');
+  await fs.writeFile(path.join(repoPath, 'implementation/example.mjs'), 'export const answer = 41;');
+  const brokenCommit = await commit();
+  const broken = await submit(brokenCommit);
+  assert.equal(broken.status, 'RED', JSON.stringify(broken));
+  await fs.writeFile(path.join(repoPath, 'implementation/example.mjs'), 'export const answer = 42;');
+  const repairedCommit = await commit();
+  const repaired = await submit(repairedCommit);
+  assert.equal(repaired.status, 'GREEN', JSON.stringify(repaired));
+  assert.equal(new Set([initial.id, broken.id, repaired.id]).size, 3);
+  assert.equal(new Set([initial.requests[0].worktreePath, broken.requests[0].worktreePath, repaired.requests[0].worktreePath]).size, 3);
+  assert.equal(broker.getRun(broken.id).status, 'RED');
+  assert.equal(broker.getRun(broken.id).snapshotCommit, brokenCommit);
+  assert.equal(broker.getRun(initial.id).status, 'GREEN');
+  assert.equal(repaired.snapshotCommit, repairedCommit);
+  assert.equal(git(repaired.requests[0].worktreePath, 'rev-parse', 'HEAD'), repairedCommit);
+});
+
+test('stored pre-scope runs remain readable as Chain Runs', async t => {
+  const { snapshotCommit, stateDir, open } = await fixture(t);
+  const broker = open(registry(async () => green));
+  const run = await broker.submit({ snapshotCommit, requesterId: 'legacy-requester' });
+  await until(() => broker.getRun(run.id), value => value.status === 'GREEN');
+  await broker.close();
+  const db = new DatabaseSync(path.join(stateDir, 'broker.sqlite'));
+  try {
+    const stored = JSON.parse(db.prepare('SELECT data FROM runs WHERE id = ?').get(run.id).data);
+    delete stored.scope;
+    db.prepare('UPDATE runs SET data = ? WHERE id = ?').run(JSON.stringify(stored), run.id);
+  } finally { db.close(); }
+  const reopened = open(registry(async () => { throw new Error('Must not repeat a completed legacy run'); }));
+  assert.equal(reopened.getRun(run.id).status, 'GREEN');
+  assert.equal(reopened.getRun(run.id).requests.length, 3);
+  assert.deepEqual(reopened.getRun(run.id).scope, { kind: 'chain' });
+  assert.deepEqual(reopened.listRuns()[0].scope, { kind: 'chain' });
 });
 
 test('RED stops the chain and never becomes run GREEN', async t => {

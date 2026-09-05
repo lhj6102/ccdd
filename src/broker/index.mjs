@@ -126,7 +126,8 @@ export function createBroker({ repoPath, stateDir, repoId = 'demo', executors })
     const row = db.prepare('SELECT data FROM runs WHERE id = ?').get(id);
     if (!row) return null;
     const events = db.prepare('SELECT * FROM (SELECT * FROM events WHERE run_id = ? ORDER BY id DESC LIMIT 500) ORDER BY id').all(id).map(event => ({ id: event.id, runId: event.run_id, requestId: event.request_id, createdAt: event.created_at, type: event.type, message: event.message, ...(event.data ? { data: JSON.parse(event.data) } : {}) }));
-    return { ...JSON.parse(row.data), requests: runRequests(id), events };
+    const run = JSON.parse(row.data);
+    return { ...run, scope: run.scope ?? { kind: 'chain' }, requests: runRequests(id), events };
   }
 
   function finish(requestId, { result, error }) {
@@ -233,10 +234,10 @@ export function createBroker({ repoPath, stateDir, repoId = 'demo', executors })
   }
 
   return {
-    async submit({ snapshotCommit, requesterId, reviewRequests }) {
+    async submit({ snapshotCommit, requesterId, reviewRequests, criticId }) {
       ensureOpen();
       if (typeof requesterId !== 'string' || !requesterId.trim() || requesterId.length > 200) throw new Error('requesterId is required (maximum 200 characters).');
-      const expected = await prepareReviewRequests({ repoPath, repoId, snapshotCommit });
+      const expected = await prepareReviewRequests({ repoPath, repoId, snapshotCommit, criticId });
       const supplied = reviewRequests === undefined ? expected : reviewRequests;
       if (!isDeepStrictEqual(supplied, expected)) {
         throw new Error('Submitted review request envelopes must exactly match the Artifact definitions, payload, profiles and dependency order in the requested snapshot.');
@@ -259,11 +260,12 @@ export function createBroker({ repoPath, stateDir, repoId = 'demo', executors })
         if (request.profile.kind === 'human' && typeof executors.notifyHuman !== 'function') throw new Error('Human execution requires an alarm method.');
       }
       ensureOpen();
-      const run = { id, repoId, snapshotCommit: envelopes[0].snapshotCommit, requesterId, status: 'QUEUED', createdAt };
+      const scope = criticId === undefined ? { kind: 'chain' } : { kind: 'critic', criticId };
+      const run = { id, repoId, snapshotCommit: envelopes[0].snapshotCommit, requesterId, scope, status: 'QUEUED', createdAt };
       transaction(() => {
         db.prepare('INSERT INTO runs(id,created_at,status,data) VALUES (?,?,?,?)').run(id, createdAt, run.status, JSON.stringify(run));
         requests.forEach((request, index) => db.prepare('INSERT INTO requests(id,run_id,ordinal,status,data) VALUES (?,?,?,?,?)').run(request.id, id, index, request.status, JSON.stringify(request)));
-        appendEvent(id, null, 'run.submitted', 'Review request persisted; execution will proceed asynchronously.', { snapshotCommit: run.snapshotCommit, requesterId });
+        appendEvent(id, null, 'run.submitted', 'Review request persisted; execution will proceed asynchronously.', { snapshotCommit: run.snapshotCommit, requesterId, scope });
       });
       changed(); schedule();
       return getRun(id);

@@ -1,4 +1,4 @@
-# Implementation contracts — v0.1 demo
+# Implementation contracts — v0.2
 
 One npm package, Node 24 ESM, SQLite persistence. Localhost HTTP UI; no external deployment or Docker required. The broker is the daemon/persistence bounded context. Executors are a separate context with code-runner, Agent provider, and Human implementations. Artifact Runner is the adapter that resolves request payload artifact references into scoped viewer entry-point tools.
 
@@ -25,7 +25,7 @@ Broker validates config, linear dependency order, artifact relative paths and ar
 
 ## Repo Requester
 
-`prepareReviewRequests({repoPath,repoId,snapshotCommit})` reads committed definitions and produces full ordered review envelopes. The browser submits these artifacts, types, paths, commit, payload and profile to the broker. The broker validates that the envelopes match the committed configuration before accepting them. [Full request contract](requester-contract.md).
+`prepareReviewRequests({repoPath,repoId,snapshotCommit,criticId?})` reads committed definitions and produces full ordered review envelopes. The browser submits these artifacts, types, paths, commit, payload and profile to the broker. The broker validates that the envelopes match the committed configuration before accepting them. [Full request contract](requester-contract.md).
 
 ## Executor-facing Request
 
@@ -52,11 +52,17 @@ Broker validates config, linear dependency order, artifact relative paths and ar
 
 Executor errors throw; broker records ERROR separately from RED. Runtime timeout and Agent timeout abort processes. Provider raw event streams are discarded, never sent to UI or GitHub. Only concise final result and artifact tool call provenance go into result.
 
+## Readiness diagnostics
+
+`diagnoseProject({repoPath,repoId,snapshotCommit,criticId?,executors,signal?})` returns `{ok,status:"READY"|"NOT_READY",scope,checkedAt,checks}`. It prepares a temporary snapshot worktree, validates Viewer operations and invokes `executors.probe`. Agent probes use the same Provider configuration and MCP transport as reviews, with a random diagnostic artifact nonce. Successful response plus audited nonce reading proves current model/auth/tool access. Agent profiles are deduplicated; runtime checks are per Critic. Runtime diagnosis starts Node and checks test paths without running project tests. Human diagnosis checks method registration without sending notifications. No Run or review verdict is created.
+
+`POST /api/doctor` takes `{snapshotCommit,criticId?}` and returns the diagnostic report; `NOT_READY` is a successfully returned report (HTTP 200), with failed checks and suggested remedies. It runs only on explicit request, and aborts on client disconnect/server shutdown.
+
 ## Broker adapter
 
 `src/broker/index.mjs` exports `createBroker({repoPath,stateDir,repoId='demo',executors})` returning:
 
-- `submit({snapshotCommit,requesterId,reviewRequests?})` => run record with `id` and `requests` (one request per critic)
+- `submit({snapshotCommit,requesterId,reviewRequests?,criticId?})` => run record with `id` and `requests` (one request per critic)
 - `listRuns()` => newest first run records with request summaries
 - `getRun(id)` => run plus full requests/results and events
 - `getRequest(id)` => full request with metadata/result/worktreePath
@@ -64,15 +70,15 @@ Executor errors throw; broker records ERROR separately from RED. Runtime timeout
 - `close()` => close workers/db safely (may be async)
 - optional `onChange(callback)` subscription for transport
 
-Run shape `{id,repoId,snapshotCommit,requesterId,status,createdAt,requests,events}`. Status values `QUEUED|RUNNING|WAITING_HUMAN|GREEN|RED|ERROR`.
+Run shape `{id,repoId,snapshotCommit,requesterId,scope,status,createdAt,requests,events}`. `scope` is `{kind:"chain"}` or `{kind:"critic",criticId}`. Omitted legacy scope is read as chain. A selected Critic runs independently with `predecessorId:null`; its committed `dependsOn` remains definition data. GREEN certifies only the requested scope. Status values `QUEUED|RUNNING|WAITING_HUMAN|GREEN|RED|ERROR`.
 Request shape extends Executor Request with `{status,createdAt,startedAt,completedAt,result,error,worktreePath}`. Requests waiting for predecessors use `BLOCKED` with an explainable dependency; RED blocks downstream. No success reuse across snapshots in this small demo. Failed reviews never rewrite the registered repo. Restart marks interrupted executions as ERROR; explicit new submission retries. A run can never be GREEN while a request is missing, blocked, running or failed.
 
 ## HTTP transport owned by integration/root
 
-- `GET /api/health` readiness + version
+- `GET /api/health` liveness + version; `readinessChecked:false`, `providerReady:null`
 - `GET /api/demo` `{repoId,name,scenarios:[{id,label,description,commit,reviewRequests}],graph:[{id,artifact,title,criticTitle?}],provider}`. Scenario manifest `.ccdd/demo/manifest.json` created by prepare-demo.
 - `GET /api/runs`, `GET /api/runs/:id`
-- `POST /api/runs` `{snapshotCommit,requesterId:'web-demo',reviewRequests}` -> run; API must return handle without waiting for evaluation.
+- `POST /api/runs` `{snapshotCommit,requesterId:'web-demo',reviewRequests,criticId?}` -> run; API must return handle without waiting for evaluation.
 - `GET /api/requests/:id/artifacts/:artifactId?file=...` -> `{path,content,type,snapshotCommit}`; scoped viewer uses the same Artifact Runner as Agent.
 - `GET /api/requests/:id` -> request
 - `POST /api/requests/:id/claim` `{reviewerId}`
