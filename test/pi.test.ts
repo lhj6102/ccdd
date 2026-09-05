@@ -21,7 +21,7 @@ async function fixture(t: TestContext): Promise<InvokePiOptions & { dir: string 
   await mkdir(worktreePath);
   await writeFile(join(worktreePath, 'spec.md'), '첫째 줄\r\n둘째 줄\r\n셋째 줄\n');
   const request: ReviewEnvelope = {
-    repoId: 'test', criticId: 'spec-why', title: 'Spec 검토', snapshotHash: 'a'.repeat(64), dependsOn: null,
+    repoId: 'test', criticId: 'spec-why', title: 'Spec 검토', snapshotHash: 'a'.repeat(64), target: 'spec', deps: [],
     artifacts: [{ id: 'spec', type: 'markdown', path: 'spec.md' }],
     artifactTypes: { markdown: { viewer: 'text', tools: { read: { description: '{artifactName}의 내용을 줄 단위로 읽는다.' } } } },
     payload: { instruction: 'Spec을 확인하세요.' }, profile: { ...profile },

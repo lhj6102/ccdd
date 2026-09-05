@@ -11,7 +11,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { createBroker } from '../src/broker/index.js';
 import { removeOwnedWorkspaceTree } from '../src/workspaces/index.js';
 import { startMonitor } from '../src/monitor/server.js';
-import type { MonitorArtifactPage, MonitorDetail, MonitorOverview, MonitorSession } from '../src/monitor/types.js';
+import type { MonitorArtifactPage, MonitorDetail, MonitorOverview, MonitorSession, MonitorGraph, MonitorRunOverview } from '../src/monitor/types.js';
 import type { RepoConfig, ReviewRequest, WorkspaceMode } from '../src/contracts.js';
 
 async function fixture(t: TestContext, mode: WorkspaceMode = 'copy', options: { waiting?: boolean; chain?: boolean; command?: boolean; longTool?: boolean } = {}) {
@@ -24,16 +24,16 @@ async function fixture(t: TestContext, mode: WorkspaceMode = 'copy', options: { 
   await writeFile(join(repoPath, 'tests/example.test.mjs'), `${options.chain ? "await new Promise(resolve => setTimeout(resolve, 350));" : ''}export const count = 2;\n`);
   await writeFile(join(repoPath, 'private.md'), 'UNDECLARED_PRIVATE_CONTENT');
   const config: RepoConfig = {
-    artifacts: { why: { type: 'markdown', path: 'why.md' }, tests: { type: 'code', path: 'tests' } },
+    artifacts: { why: { type: 'markdown', path: 'why.md' }, tests: { type: 'code', path: 'tests', basis: true } },
     artifactTypes: { markdown: { viewer: 'text', agentTools: { read: {} }, humanTools: { read: { description: '{artifactName}의 줄을 읽습니다.' } } }, code: { viewer: 'files', agentTools: { read: {}, list: {} }, humanTools: { list: { description: '{artifactName}의 파일 목록입니다.' }, read: { description: '{artifactName}의 내부 파일을 읽습니다.' } } } },
-    critics: [{ id: 'human-check', title: '<script>unsafe title</script>', dependsOn: null, artifacts: ['why', 'tests'], profile: { kind: 'human' }, payload: { instruction: '두 항목 기준을 확인하세요.', authFile: 'DO_NOT_EXPOSE_AUTH_METADATA' } }],
+    critics: [{ id: 'human-check', title: '<script>unsafe title</script>', target: 'why', deps: ['tests'], profile: { kind: 'human' }, payload: { instruction: '두 항목 기준을 확인하세요.', authFile: 'DO_NOT_EXPOSE_AUTH_METADATA' } }],
   };
   if (options.command) config.artifactTypes.markdown.humanTools = { ...config.artifactTypes.markdown.humanTools, [options.longTool ? 'o'.repeat(64) : 'open']: { description: '고정된 프로그램으로 입력을 확인합니다.', command: process.execPath, args: ['-e', `require('node:fs').writeFileSync(${JSON.stringify(join(dir, 'command-output.txt'))}, require('node:fs').readFileSync(process.argv[1], 'utf8'))`, '{artifactPath}'] } };
   if (options.longTool) {
     config.artifacts['a'.repeat(64)] = config.artifacts.why; delete config.artifacts.why;
-    config.critics[0].artifacts = config.critics[0].artifacts.map(name => name === 'why' ? 'a'.repeat(64) : name);
+    config.critics[0].target = 'a'.repeat(64);
   }
-  if (options.chain) config.critics.push({ id: 'runtime', title: '후속 Runtime', dependsOn: 'human-check', artifacts: ['tests'], profile: { kind: 'runtime', command: 'node', args: ['--test', 'tests/example.test.mjs'] }, payload: { instruction: '실제 테스트 실행' } });
+  if (options.chain) { config.artifacts.implementation = { type: 'code', path: 'tests/example.test.mjs' }; config.critics.push({ id: 'runtime', title: '후속 Runtime', target: 'implementation', deps: ['why', 'tests'], profile: { kind: 'runtime', command: 'node', args: ['--test', 'tests/example.test.mjs'] }, payload: { instruction: '실제 테스트 실행' } }); }
   await writeFile(join(repoPath, 'ccdd.config.json'), JSON.stringify(config));
   const broker = createBroker({ repoPath, stateDir, executors: { canExecute: () => ({ ok: true }), execute: async () => { throw new Error('Monitor must not execute reviews'); }, notifyHuman: async () => { if (!options.waiting) throw new Error('Monitor must not send notifications'); } } });
   cleanup.push(() => broker.close());
@@ -352,4 +352,35 @@ test('a maximum-length registered Human tool name remains callable without relax
   assert.equal(await readFile(join(data.dir, 'command-output.txt'), 'utf8'), '# 목적\n두 항목 선택\n');
   assert.equal((await post(`${data.route}/tools/${toolName}x`, session, { arguments: {} })).status, 400);
   assert.equal((await fetch(`${data.monitor.url}/api/requests/${'p'.repeat(129)}/${data.request.id}`)).status, 400);
+});
+
+test('run and graph HTTP views are read-only and share one project/run scope with Kanban', async t => {
+  const data = await fixture(t, 'copy', { chain: true });
+  const before = await readFile(join(data.stateDir, 'broker.sqlite'));
+  await removeOwnedWorkspaceTree(data.repoPath);
+  const runsResponse = await fetch(`${data.monitor.url}/api/runs?project=${data.request.projectId}&limit=1`);
+  assert.equal(runsResponse.status, 200);
+  const runs = await runsResponse.json() as MonitorRunOverview;
+  assert.equal(runs.runs.length, 1); assert.equal(runs.runs[0].id, data.run.id);
+  assert.equal(runs.runs[0].snapshotHash, data.run.snapshotHash);
+  const graphRoute = `${data.monitor.url}/api/graphs/${data.request.projectId}/${data.run.id}`;
+  const response = await fetch(graphRoute);
+  assert.equal(response.status, 200);
+  const graph = await response.json() as MonitorGraph;
+  assert.equal(graph.available, true, graph.unavailableReason ?? '');
+  assert.equal(graph.run.id, data.run.id); assert.equal(graph.run.snapshotHash, data.run.snapshotHash);
+  assert.equal(graph.graph?.critics.length, 2);
+  assert.equal(graph.graph?.artifacts.find(artifact => artifact.id === 'tests')?.status, 'BASIS');
+  assert.ok(graph.graph?.critics.every(critic => graph.requests.some(request => request.id === critic.requestId)));
+  const board = await (await fetch(`${data.monitor.url}/api/requests?project=${data.request.projectId}&run=${data.run.id}`)).json() as MonitorOverview;
+  assert.deepEqual(new Set(board.requests.map(request => request.id)), new Set(graph.requests.map(request => request.id)));
+  assert.equal((await fetch(`${data.monitor.url}/api/requests?run=${data.run.id}`)).status, 400);
+  assert.equal((await fetch(`${data.monitor.url}/api/runs?limit=101`)).status, 400);
+  assert.equal((await fetch(`${graphRoute}?snapshot=live`)).status, 400);
+  assert.equal((await fetch(`${data.monitor.url}/api/graphs/missing/${data.run.id}`)).status, 404);
+  assert.equal((await fetch(`${data.monitor.url}/api/graphs/${data.request.projectId}/missing`)).status, 404);
+  assert.equal((await raw(graphRoute, { headers: { origin: 'https://outside.invalid' } })).status, 403);
+  assert.equal((await raw(graphRoute, { method: 'POST', headers: { origin: data.monitor.url } })).status, 405);
+  assert.doesNotMatch(JSON.stringify({ graph, runs }), /DO_NOT_EXPOSE_AUTH|privatePayload|authFile|piOptions|workspace|owner|instruction/);
+  assert.deepEqual(await readFile(join(data.stateDir, 'broker.sqlite')), before);
 });

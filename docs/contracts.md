@@ -1,4 +1,4 @@
-# Implementation contracts — v0.7
+# Implementation contracts — v0.8
 
 One npm package, strict TypeScript compiled to Node 24 ESM, local SQLite persistence. Broker and Executors remain separate bounded contexts. A request-scoped worker runs one Run; no daemon, global broker-owner lock, or automatic queue scanner is required. The optional local monitor observes persisted requests and delegates explicit Human actions to the Broker. It does not own review execution.
 
@@ -19,15 +19,14 @@ This is cooperative local execution, not an OS sandbox against a hostile process
 
 ## Repository configuration
 
-`ccdd.config.json` is read from the prepared workspace. It declares `artifacts`, `artifactTypes` and an ordered, strictly linear `critics` array. Each Artifact has a type and safe relative path. Each type uses a `text` or `files` viewer. Each Critic has a unique ID, title, referenced Artifact IDs, profile, payload, and `dependsOn` pointing only to its immediate predecessor (the first uses null).
+`ccdd.config.json` is read from the prepared workspace. It declares `artifacts`, `artifactTypes` and a `critics` array whose order does not prescribe execution. Each Artifact has a type, safe relative path and optional `basis: true`. Each Critic has a unique ID, title, one `target` Artifact ID, a `deps` array of other Artifact IDs, profile and payload. The `deps → target` relations must form a DAG. A dependency must have required evaluators or be explicitly declared as a basis; a basis cannot also be a target. The old `dependsOn` and Critic-level `artifacts` fields are rejected with migration guidance. See [Artifact graph](artifact-graph.md).
 
 ```json
 {
-  "artifacts": {"tests":{"type":"code","path":"tests"},"implementation":{"type":"code","path":"implementation"}},
-  "artifactTypes": {"code":{"viewer":"files"}},
+  "artifacts": {"tests":{"type":"code","path":"tests","basis":true},"implementation":{"type":"code","path":"implementation"}},
+  "artifactTypes": {"code":{"viewer":"files","agentTools":{"list":{},"read":{}},"humanTools":{"list":{},"read":{}}}},
   "critics": [{
-    "id":"runtime", "title":"테스트 런타임 통과", "dependsOn":null,
-    "artifacts":["tests","implementation"],
+    "id":"runtime", "title":"테스트 런타임 통과", "target":"implementation", "deps":["tests"],
     "profile":{"kind":"runtime","command":"node","args":["--test","tests/example.test.mjs"]},
     "payload":{"instruction":"Run the actual test suite against the implementation."}
   }]
@@ -79,7 +78,7 @@ CLI inspection uses `artifact REQUEST_ID ARTIFACT_ID --start-line N --line-count
 
 ## Request and execution
 
-`prepareReviewRequests({repoPath,repoId,snapshotHash,criticId?})` creates explicit envelopes containing `{repoId,snapshotHash,criticId,title,artifacts:[{id,type,path}],artifactTypes,payload,profile,dependsOn}`. The broker validates supplied envelopes against the prepared input. `--critic` selects exactly one envelope and validates only its required executor.
+`prepareReviewRequests({repoPath,repoId,snapshotHash,criticId?})` creates explicit envelopes containing `{repoId,snapshotHash,criticId,title,artifacts:[{id,type,path}],artifactTypes,payload,profile,target,deps}`. Envelope `artifacts` is derived as `[target, ...deps]` and the broker validates supplied envelopes against the prepared input. `--critic` selects exactly one envelope and validates only its required executor.
 
 The Artifact Runner creates scoped Viewer entry-point tools such as `read_why`, `read_spec`, `list_tests`, and `read_tests`. Having the entire repo available as execution input does not grant an Agent visibility into every Artifact. Agent review requires observed reads of every supplied Artifact, a real Provider response, and a valid structured result.
 
@@ -103,17 +102,17 @@ Credentials come from Pi's supported Provider environment variables or explicit 
 
 - `submit({mode,requesterId,criticId?,reviewRequests?})` captures input, validates requirements, persists the Run, and returns its Handle. It does not start execution.
 - `run(runId,{signal?,onStarted?})` claims that Run transactionally. One live worker owns a Run; different Runs execute concurrently. Ownership stores PID, process identity and a token. Opening or closing another client never claims or cancels it.
-- CLI submission starts a detached worker with private IPC for startup only. It exposes no listening server. The worker exits after completion or a copy-mode Human wait. `status --wait` polls stored state.
+- CLI submission starts a detached worker with private IPC for startup only. It exposes no listening server. The worker exits after completion or a copy-mode Human wait once independent queued work and notifications have settled. `status --wait` polls stored state.
 - Wait timeout returns exit 3 with the same Handle and leaves the worker running. `cancel` records ERROR and requests worker cancellation. Dead ownership is reconciled when records are inspected; there is no automatic retry or unseen background recovery service. `resume` can start persisted, unowned queued work.
 - Normal termination cancels the worker's subprocess groups. Forced process/host termination cannot guarantee cleanup of every external side effect or descendant; unfinished work is never inferred to have passed.
 
-Run scope is `{kind:'chain'}` or `{kind:'critic',criticId}`. Selected execution has exactly one request with `predecessorId:null`; the definition's `dependsOn` remains metadata. In a chain, each GREEN unblocks only the next request; RED/ERROR blocks the remaining requests. Run status is `QUEUED|RUNNING|WAITING_HUMAN|GREEN|RED|ERROR`; request status additionally includes `BLOCKED`. Completed results are immutable, and subsequent review attempts receive new Handles.
+Run scope is `{kind:'graph'}` or `{kind:'critic',criticId}`. Every new Run persists its full graph definition, including evaluators omitted by a selected-Critic run. Full runs gate on all evaluators of every dependency Artifact being GREEN in that Run; explicit bases require no verdict. Ready Agent/Runtime critics execute with a per-Run limit of four, while Human waiting never blocks independent work. RED/operational ERROR blocks dependents but leaves independent branches running. Active Run status takes precedence until independent work settles. Workspace/cancellation/owner failures invalidate all unfinished requests. Selected execution bypasses dependency gates and has one request; absent evaluators never contribute GREEN to Artifact aggregation. Run status is `QUEUED|RUNNING|WAITING_HUMAN|GREEN|RED|ERROR`; request status additionally includes `BLOCKED`. Old runs retain their stored chain semantics and optional predecessor IDs. Completed results are immutable, and subsequent review attempts receive new Handles.
 
 ## Human lifecycle
 
 The worker persists WAITING_HUMAN, invokes registered alarms, and records confirmed delivery. A registered local inbox writes `stateDir/human-inbox.jsonl`. It is a local file alarm, not an email, push notification or delivery acknowledgement by a person. Alarm failure causes ERROR.
 
-Copy-mode waiting and owner release are coordinated transactionally. After the worker exits, another CLI process can inspect Artifacts, claim the request, and submit `{reviewerId,result:{verdict,summary,evidence}}`. Only the claimant may complete it and only once. Input integrity is revalidated at completion. A successful result queues any successor and the CLI starts a new request worker, reusing the originally saved execution configuration.
+Copy-mode waiting and owner release are coordinated transactionally. After the worker exits, another CLI process can inspect Artifacts, claim the request, and submit `{reviewerId,result:{verdict,summary,evidence}}`. Only the claimant may complete it and only once. Input integrity is revalidated at completion. A result recomputes dependency readiness and the CLI starts a new request worker, reusing the originally saved execution configuration.
 
 Human tool execution requires the active claimant and a WAITING_HUMAN request. The Broker reopens and validates the recorded workspace, matches stored Artifact definitions against its config, resolves registered tools, and validates workspace/claim again after execution. Only safe tool name, Artifact ID and operation metadata are persisted. Launch errors do not become RED or complete the review; input mutation invalidates the review with ERROR. Human result submission requires a nonempty summary and at least one nonblank evidence entry.
 
@@ -158,4 +157,6 @@ Human completion shares the CLI's saved execution configuration and detached wor
 
 Preparation confirms declarations, paths and launcher executable availability. Actual execution confirms the read/list response or registered launcher exit; a GUI app's rendered content and a person's reading are not inferred. A launcher copy is retained so an asynchronously opened desktop viewer keeps its input after the command exits. Copies are revalidated and normal immutable cache lifetime rules apply. `doctor` remains the whole-project readiness command, including Human tool preflight without launching applications.
 
-v0.7 adds explicit audience maps, the Vue kanban board, Human actions, and tool diagnostics. Fresh demos use `demo-v7` with manifest version 7 and explicit tool maps. Existing demos and historic review snapshots are never rewritten automatically.
+v0.8 replaces Critic sequencing with Artifact target/deps, persists graph definitions, and adds GraphView alongside Kanban. Fresh demos use `demo-v8` with manifest version 8, explicit bases and audience tool maps. Existing demos and historic review snapshots are never rewritten automatically.
+
+Graph APIs are read-only: `GET /api/runs?project=&limit=&offset=` lists persisted runs; `GET /api/graphs/:projectId/:runId` returns the same-Run graph projection and safe request headers. `GET /api/requests` accepts `run=ID` only with a project filter. Historical runs without graph metadata are explicitly unavailable in GraphView. Partial runs retain missing critics and cannot borrow results from another Run or snapshot.

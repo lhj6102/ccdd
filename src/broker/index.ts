@@ -5,7 +5,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { setTimeout as delay } from 'node:timers/promises';
-import { prepareReviewRequests } from '../requester/index.js';
+import { prepareReviewRequests, readStoredArtifactScope } from '../requester/index.js';
+import { readWorkspaceConfig } from './config.js';
+import { createGraphDefinition, prerequisiteCriticIds, type GraphDefinition } from './graph.js';
 import { createHumanArtifactTools } from '../artifacts/human.js';
 import { prepareWorkspace, reopenWorkspace, type WorkspaceDescriptor, type WorkspaceHandle, type WorkspaceMode } from '../workspaces/index.js';
 import type { ReviewEnvelope, ReviewRequest, ReviewResult, ReviewStatus, ReviewToolCall, ExecutionContext, ExecutorReadiness } from '../contracts.js';
@@ -13,7 +15,8 @@ import type { ReviewEnvelope, ReviewRequest, ReviewResult, ReviewStatus, ReviewT
 interface OwnerRecord { run_id: string; pid: number; process_identity: string | null; token: string; claimed_at: string }
 export interface RunRecord {
   id: string; repoId: string; snapshotHash: string; workspace: WorkspaceDescriptor;
-  requesterId: string; scope?: { kind: 'chain' } | { kind: 'critic'; criticId: string };
+  requesterId: string; scope?: { kind: 'graph' } | { kind: 'chain' } | { kind: 'critic'; criticId: string };
+  graph?: GraphDefinition;
   status: ReviewStatus; createdAt: string; completedAt?: string; error?: string;
 }
 export interface BrokerEvent { id: number; runId: string; requestId: string | null; createdAt: string; type: string; message: string; data?: unknown }
@@ -37,6 +40,11 @@ const now = () => new Date().toISOString();
 const errorText = (error: unknown) => String(object(error) && typeof error.message === 'string' ? error.message : error).slice(0, 2000);
 const copy = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
 const codedError = (message: string, code: string) => Object.assign(new Error(message), { code });
+const MAX_CONCURRENT_EXECUTORS = 4;
+const fatalExecutionError = (error: unknown): boolean => {
+  const code = errorCode(error);
+  return Boolean(code?.startsWith('WORKSPACE_') || ['RUN_OWNERSHIP_LOST', 'REVIEW_CANCELED', 'WORKER_STOPPED', 'WORKER_EXITED', 'REVIEW_GRAPH_INVALID'].includes(code ?? ''));
+};
 
 function validateResult(value: unknown): ReviewResult {
   if (!object(value) || (value.verdict !== 'GREEN' && value.verdict !== 'RED') || typeof value.summary !== 'string' || !value.summary.trim() ||
@@ -179,42 +187,75 @@ export function createBroker({ repoPath, stateDir, repoId = 'demo', executors, w
     db.prepare('INSERT INTO events(run_id,request_id,created_at,type,message,data) VALUES (?,?,?,?,?,?)').run(runId, requestId, now(), type, message.slice(0, 4000), data === null ? null : JSON.stringify(data));
   };
   const changed = () => { for (const callback of listeners) { try { callback(); } catch {} } };
+  function prerequisites(request: ReviewRequest, run: RunRecord, requests: ReviewRequest[]): ReviewRequest[] {
+    if (run.scope?.kind === 'critic') return [];
+    if (run.graph) {
+      const byCritic = new Map(requests.map(item => [item.criticId, item]));
+      return prerequisiteCriticIds(request, run.graph).map(id => {
+        const dependency = byCritic.get(id);
+        if (!dependency || dependency.runId !== run.id) throw codedError(`Required Critic ${id} is missing from this Run.`, 'REVIEW_GRAPH_INVALID');
+        return dependency;
+      });
+    }
+    // Historical chains retain their explicit links; no target Artifact is guessed.
+    if (request.predecessorId === null || (request.predecessorId === undefined && requests.length === 1)) return [];
+    const previous = requests.find(item => item.id === request.predecessorId);
+    if (!previous || previous.runId !== run.id) throw codedError('This historical Run has no usable predecessor link. Submit a new review.', 'REVIEW_GRAPH_INVALID');
+    return [previous];
+  }
+  function dependencyFailure(request: ReviewRequest, run: RunRecord, requests: ReviewRequest[], seen = new Set<string>()): ReviewRequest | null {
+    if (seen.has(request.id)) return null;
+    seen.add(request.id);
+    for (const dependency of prerequisites(request, run, requests)) {
+      if (dependency.status === 'RED' || dependency.status === 'ERROR') return dependency;
+      const failure = dependencyFailure(dependency, run, requests, seen);
+      if (failure) return failure;
+    }
+    return null;
+  }
+  function refreshReadinessWithin(runId: string): void {
+    const run = required(runData(runId), 'Run'), requests = runRequests(runId);
+    for (const request of requests) {
+      if (request.status !== 'BLOCKED') continue;
+      const dependencies = prerequisites(request, run, requests);
+      if (dependencies.every(item => item.status === 'GREEN')) {
+        request.status = 'QUEUED'; request.blockedReason = null; saveRequest(request);
+        appendEvent(runId, request.id, 'request.queued', 'All required Artifact reviews are GREEN.');
+      } else {
+        const failed = dependencyFailure(request, run, requests);
+        const reason = failed ? `${failed.criticId} returned ${failed.status}; dependent reviews cannot start.` : `Waiting for ${dependencies.filter(item => item.status !== 'GREEN').map(item => item.criticId).join(', ')} to become GREEN.`;
+        if (request.blockedReason !== reason) { request.blockedReason = reason; saveRequest(request); }
+      }
+    }
+  }
   const updateRunStatus = (runId: string) => {
     const states = runRequests(runId).map(request => request.status);
-    const status = states.includes('ERROR') ? 'ERROR' : states.includes('RED') ? 'RED' :
-      states.length > 0 && states.every(state => state === 'GREEN') ? 'GREEN' :
-      states.includes('RUNNING') ? 'RUNNING' : states.includes('WAITING_HUMAN') ? 'WAITING_HUMAN' :
-      states.includes('QUEUED') ? 'QUEUED' : 'ERROR';
+    // A branch failure is a verdict for that branch, not a stop signal for its siblings.
+    const status = states.includes('RUNNING') ? 'RUNNING' : states.includes('QUEUED') ? 'QUEUED' :
+      states.includes('WAITING_HUMAN') ? 'WAITING_HUMAN' : states.includes('ERROR') ? 'ERROR' : states.includes('RED') ? 'RED' :
+      states.length > 0 && states.every(state => state === 'GREEN') ? 'GREEN' : 'ERROR';
     const run = required(runData(runId), 'Run');
     if (run.status !== status) {
       run.status = status;
       if (terminal.has(status)) run.completedAt = now();
+      else delete run.completedAt;
       saveRun(run);
       appendEvent(runId, null, 'run.status', `Run ${status}`, { status });
     }
   };
 
-  function finishWithin(requestId: string, { result, error }: { result?: ReviewResult; error?: unknown }, expectedStates: ReviewStatus[] = ['RUNNING', 'WAITING_HUMAN']) {
+  function finishWithin(requestId: string, outcome: { result?: ReviewResult; error?: unknown }, expectedStates: ReviewStatus[] = ['RUNNING', 'WAITING_HUMAN']) {
+    const { result, error } = outcome, hasError = Object.hasOwn(outcome, 'error');
     const request = requestData(requestId);
     if (!request || !expectedStates.includes(request.status) || terminal.has(required(runData(request.runId), 'Run').status)) return false;
-    request.status = error ? 'ERROR' : required(result, 'review result').verdict;
+    request.status = hasError ? 'ERROR' : required(result, 'review result').verdict;
     request.result = result ?? null;
-    request.error = error ? errorText(error) : null;
+    request.error = hasError ? errorText(error) : null;
     request.errorCode = errorCode(error) ?? null;
     request.completedAt = now();
     saveRequest(request);
-    appendEvent(request.runId, request.id, error ? 'request.error' : 'request.completed', error ? required(request.error, 'error message') : required(result, 'review result').summary, { status: request.status, ...(request.errorCode ? { code: request.errorCode } : {}) });
-    const requests = runRequests(request.runId);
-    const index = requests.findIndex(item => item.id === request.id);
-    if (request.status === 'GREEN' && requests[index + 1]) {
-      const next = requests[index + 1];
-      next.status = 'QUEUED'; next.blockedReason = null; saveRequest(next);
-      appendEvent(next.runId, next.id, 'request.queued', `Predecessor ${request.criticId} is GREEN.`);
-    } else if (request.status !== 'GREEN') {
-      for (const downstream of requests.slice(index + 1)) {
-        downstream.status = 'BLOCKED'; downstream.blockedReason = `${request.criticId} returned ${request.status}; downstream reviews cannot start.`; saveRequest(downstream);
-      }
-    }
+    appendEvent(request.runId, request.id, hasError ? 'request.error' : 'request.completed', hasError ? required(request.error, 'error message') : required(result, 'review result').summary, { status: request.status, ...(request.errorCode ? { code: request.errorCode } : {}) });
+    refreshReadinessWithin(request.runId);
     updateRunStatus(request.runId);
     return true;
   }
@@ -222,20 +263,24 @@ export function createBroker({ repoPath, stateDir, repoId = 'demo', executors, w
   function failWithin(runId: string, error: unknown) {
     const run = runData(runId);
     if (!run || terminal.has(run.status)) return;
-    const current = runRequests(runId).find(request => ['RUNNING', 'WAITING_HUMAN', 'QUEUED'].includes(request.status));
-    if (current) finishWithin(current.id, { error }, ['RUNNING', 'WAITING_HUMAN', 'QUEUED']);
-    else {
-      run.status = 'ERROR'; run.error = errorText(error); run.completedAt = now(); saveRun(run);
-      appendEvent(runId, null, 'run.error', run.error);
+    for (const request of runRequests(runId)) {
+      if (terminal.has(request.status)) continue;
+      request.status = 'ERROR'; request.result = null; request.error = errorText(error); request.errorCode = errorCode(error) ?? null;
+      request.completedAt = now(); request.blockedReason = null; saveRequest(request);
+      appendEvent(runId, request.id, 'request.error', request.error, { status: request.status, ...(request.errorCode ? { code: request.errorCode } : {}) });
     }
+    run.status = 'ERROR'; run.error = errorText(error); run.completedAt = now(); saveRun(run);
+    appendEvent(runId, null, 'run.error', run.error);
   }
 
   function reconcileWithin(runId: string) {
     const owner = ownerData(runId);
     if (!owner || ownerAlive(owner)) return;
     const run = runData(runId);
-    const waiting = runRequests(runId).find(request => request.status === 'WAITING_HUMAN');
-    if (!(run?.workspace?.mode === 'copy' && waiting?.notifiedAt)) {
+    const unfinished = runRequests(runId).filter(request => !terminal.has(request.status));
+    const safeHumanWait = run?.workspace?.mode === 'copy' && unfinished.some(request => request.status === 'WAITING_HUMAN') &&
+      unfinished.every(request => request.status === 'BLOCKED' || (request.status === 'WAITING_HUMAN' && request.notifiedAt));
+    if (!safeHumanWait) {
       failWithin(runId, codedError('The review worker exited before completing its work. Submit a new run to retry.', 'WORKER_EXITED'));
     }
     db.prepare('DELETE FROM run_owners WHERE run_id = ? AND token = ?').run(runId, owner.token);
@@ -257,7 +302,7 @@ export function createBroker({ repoPath, stateDir, repoId = 'demo', executors, w
     const run = required(runData(id), 'Run');
     const owner = ownerData(id);
     const events = db.prepare('SELECT * FROM (SELECT * FROM events WHERE run_id = ? ORDER BY id DESC LIMIT 500) ORDER BY id').all(id).map(event => ({ id: Number(event.id), runId: String(event.run_id), requestId: event.request_id === null ? null : String(event.request_id), createdAt: String(event.created_at), type: String(event.type), message: String(event.message), ...(event.data ? { data: parseStored<unknown>(event.data) } : {}) }));
-    return { ...run, scope: run.scope ?? { kind: 'chain' }, owner: owner ? { pid: owner.pid, claimedAt: owner.claimed_at } : null, requests: runRequests(id), events };
+    return { ...run, scope: run.scope ?? { kind: run.graph ? 'graph' : 'chain' }, owner: owner ? { pid: owner.pid, claimedAt: owner.claimed_at } : null, requests: runRequests(id), events };
   }
 
   function failOwned(runId: string, token: string, error: unknown) {
@@ -318,7 +363,12 @@ export function createBroker({ repoPath, stateDir, repoId = 'demo', executors, w
       signal.throwIfAborted();
       transaction(() => { if (ownerData(runId)?.token === token) finishWithin(requestId, { result }); });
       changed();
-    } catch (error) { failOwned(runId, token, signal.aborted ? signal.reason : error); }
+    } catch (error) {
+      const reason = signal.aborted ? signal.reason : error;
+      if (signal.aborted || fatalExecutionError(reason)) throw reason;
+      transaction(() => { if (ownerData(runId)?.token === token) finishWithin(requestId, { error: reason }); });
+      changed();
+    }
   }
 
   async function run(runId: string, { signal, onStarted }: { signal?: AbortSignal; onStarted?: (value: { runId: string; pid: number }) => void } = {}) {
@@ -345,6 +395,7 @@ export function createBroker({ repoPath, stateDir, repoId = 'demo', executors, w
     entry.promise = (async () => {
       let workspace: WorkspaceHandle | undefined;
       let poll: ReturnType<typeof setInterval> | undefined;
+      const inFlight = new Map<string, { kind: ReviewRequest['profile']['kind']; promise: Promise<void> }>();
       try {
         onStarted?.({ runId, pid: process.pid });
         workspace = await workspaceAdapter.reopenWorkspace(ownedRun.workspace, { signal: executionSignal });
@@ -355,21 +406,41 @@ export function createBroker({ repoPath, stateDir, repoId = 'demo', executors, w
         }, 100);
         while (true) {
           const current = required(runData(runId), 'Run');
-          if (terminal.has(current.status)) break;
+          if (terminal.has(current.status)) {
+            if (inFlight.size) abort.abort(codedError('Review is already complete or canceled.', 'REVIEW_CANCELED'));
+            break;
+          }
           reviewSignal.throwIfAborted();
+          transaction(() => { refreshReadinessWithin(runId); updateRunStatus(runId); });
           const requests = runRequests(runId);
-          const waiting = requests.find(request => request.status === 'WAITING_HUMAN');
-          if (waiting) {
-            if (!waiting.notifiedAt) throw new Error('Human notification did not complete; submit a new Run to retry.');
+          let executing = [...inFlight.values()].filter(item => item.kind !== 'human').length;
+          for (const queued of requests.filter(request => request.status === 'QUEUED')) {
+            if (queued.profile.kind !== 'human' && executing >= MAX_CONCURRENT_EXECUTORS) continue;
+            if (queued.profile.kind !== 'human') executing++;
+            const promise = executeOne(queued.id, workspace, token, reviewSignal).catch(error => {
+              // A different task may win Promise.race before this rejection. Preserve fatal failure independently of that race.
+              abort.abort(error);
+              throw error;
+            }).finally(() => { inFlight.delete(queued.id); });
+            inFlight.set(queued.id, { kind: queued.profile.kind, promise });
+          }
+          if (inFlight.size) {
+            // Human alarms and independent branches progress together; completed dependencies can unblock work immediately.
+            await Promise.race([...inFlight.values()].map(item => item.promise).concat(delay(50, undefined, { signal: reviewSignal })));
+            continue;
+          }
+          const waiting = requests.filter(request => request.status === 'WAITING_HUMAN');
+          if (waiting.length) {
+            if (waiting.some(request => !request.notifiedAt)) throw new Error('Human notification did not complete; submit a new Run to retry.');
             await workspace.assertUnchanged();
             if (ownedRun.workspace.mode === 'copy') {
-              // Completion may queue a successor during the asynchronous input check.
-              // Release only while still waiting, atomically with the last state check.
+              // A result can arrive during input validation. Release only after rechecking all branches atomically.
               const paused = transaction(() => {
-                if (required(runData(runId), 'Run').status !== 'WAITING_HUMAN') return false;
+                const pending = runRequests(runId).filter(request => !terminal.has(request.status));
+                if (!pending.some(request => request.status === 'WAITING_HUMAN') || pending.some(request => request.status !== 'BLOCKED' && (request.status !== 'WAITING_HUMAN' || !request.notifiedAt))) return false;
                 if (ownerData(runId)?.token !== token) throw codedError('Review ownership was lost.', 'RUN_OWNERSHIP_LOST');
                 db.prepare('DELETE FROM run_owners WHERE run_id = ? AND token = ?').run(runId, token);
-                appendEvent(runId, null, 'worker.paused', 'Copied Human review is persisted; no worker is needed while awaiting a result.');
+                appendEvent(runId, null, 'worker.paused', 'Copied Human reviews are persisted; no worker is needed while awaiting results.');
                 return true;
               });
               if (paused) break;
@@ -378,15 +449,16 @@ export function createBroker({ repoPath, stateDir, repoId = 'demo', executors, w
             await delay(100, undefined, { signal: reviewSignal });
             continue;
           }
-          const queued = requests.find(request => request.status === 'QUEUED');
-          if (!queued) throw new Error('Run has no executable request.');
-          await executeOne(queued.id, workspace, token, reviewSignal);
+          if (terminal.has(required(runData(runId), 'Run').status)) break;
+          throw codedError('Run has no executable request or pending Human review.', 'REVIEW_GRAPH_INVALID');
         }
       } catch (error) {
         const reason = workspace?.signal.aborted ? workspace.signal.reason : executionSignal.aborted ? executionSignal.reason : error;
+        abort.abort(reason);
         failOwned(runId, token, reason);
       } finally {
         clearInterval(poll);
+        await Promise.allSettled([...inFlight.values()].map(item => item.promise));
         try { await workspace?.close(); }
         catch (error) {
           failOwned(runId, token, error);
@@ -413,31 +485,33 @@ export function createBroker({ repoPath, stateDir, repoId = 'demo', executors, w
       const workspace = await workspaceAdapter.prepareWorkspace({ repoPath, stateDir, mode });
       try {
         const descriptor = copy(workspace.descriptor);
+        const graph = createGraphDefinition((await readWorkspaceConfig(descriptor.path)).config);
         const expected = await prepareReviewRequests({ repoPath: descriptor.path, repoId, snapshotHash: descriptor.hash, criticId });
         const supplied = reviewRequests === undefined ? expected : reviewRequests;
-        if (!isDeepStrictEqual(supplied, expected)) throw new Error('Submitted review request envelopes must exactly match the Artifact definitions, payload, profiles and dependency order in the requested workspace.');
+        if (!isDeepStrictEqual(supplied, expected)) throw new Error('Submitted review request envelopes must exactly match the Artifact definitions, payload, profiles and dependencies in the requested workspace.');
         const id = randomUUID();
         const createdAt = now();
         const requests: ReviewRequest[] = copy(supplied as ReviewEnvelope[]).map(envelope => ({
           ...envelope, id: randomUUID(), runId: id, workspace: descriptor, worktreePath: descriptor.path,
-          predecessorId: null, status: 'BLOCKED', createdAt, startedAt: null, completedAt: null,
+          status: 'BLOCKED', createdAt, startedAt: null, completedAt: null,
           result: null, error: null, claimedBy: null, claimedAt: null, notifiedAt: null,
         }));
-        for (const [index, request] of requests.entries()) {
-          request.predecessorId = index === 0 ? null : requests[index - 1].id;
-          request.status = index === 0 ? 'QUEUED' : 'BLOCKED';
-          request.blockedReason = index === 0 ? null : `Waiting for ${requests[index - 1].criticId} to become GREEN.`;
+        for (const request of requests) {
+          const dependencies = criticId === undefined ? prerequisiteCriticIds(request, graph) : [];
+          request.status = dependencies.length ? 'BLOCKED' : 'QUEUED';
+          request.blockedReason = dependencies.length ? `Waiting for ${dependencies.join(', ')} to become GREEN.` : null;
           const capability = await requireExecutors().canExecute(copy(request));
           if (!capability?.ok) throw new Error(`Cannot execute ${request.criticId}: ${capability?.reason ?? 'No compatible executor.'}`);
           if (request.profile.kind === 'human' && typeof requireExecutors().notifyHuman !== 'function') throw new Error('Human execution requires an alarm method.');
         }
         await workspace.assertUnchanged(); workspace.signal.throwIfAborted(); ensureOpen();
-        const scope: NonNullable<RunRecord['scope']> = criticId === undefined ? { kind: 'chain' } : { kind: 'critic', criticId: criticId as string };
-        const record: RunRecord = { id, repoId, snapshotHash: descriptor.hash, workspace: descriptor, requesterId, scope, status: 'QUEUED', createdAt };
+        const scope: NonNullable<RunRecord['scope']> = criticId === undefined ? { kind: 'graph' } : { kind: 'critic', criticId: criticId as string };
+        const record: RunRecord = { id, repoId, snapshotHash: descriptor.hash, workspace: descriptor, requesterId, scope, graph, status: 'QUEUED', createdAt };
         transaction(() => {
           db.prepare('INSERT INTO runs(id,created_at,status,data) VALUES (?,?,?,?)').run(id, createdAt, record.status, JSON.stringify(record));
           requests.forEach((request, index) => db.prepare('INSERT INTO requests(id,run_id,ordinal,status,data) VALUES (?,?,?,?,?)').run(request.id, id, index, request.status, JSON.stringify(request)));
           appendEvent(id, null, 'run.submitted', 'Review persisted; a request-scoped worker can execute it.', { snapshotHash: descriptor.hash, mode, requesterId, scope });
+          for (const request of requests) if (request.status === 'QUEUED') appendEvent(id, request.id, 'request.queued', 'Required Artifact reviews are satisfied; the review is ready.');
           appendEvent(id, null, 'workspace.ready', mode === 'copy' ? 'Content-addressed copied workspace is ready.' : 'Current workspace is fixed for this review; changes invalidate it.', { path: descriptor.path, snapshotHash: descriptor.hash });
         });
         changed();
@@ -495,7 +569,7 @@ export function createBroker({ repoPath, stateDir, repoId = 'demo', executors, w
         workspace = await workspaceAdapter.reopenWorkspace(request.workspace, { signal });
         await workspace.assertUnchanged(); workspace.signal.throwIfAborted();
         inputsValidated = true;
-        const expected = (await prepareReviewRequests({ repoPath: workspace.descriptor.path, repoId: request.repoId, snapshotHash: request.snapshotHash, criticId: request.criticId, allowLegacyTools: true }))[0];
+        const expected = await readStoredArtifactScope({ repoPath: workspace.descriptor.path, criticId: request.criticId });
         if (!expected || expected.profile.kind !== 'human' || !isDeepStrictEqual(expected.artifactTypes, request.artifactTypes) || !isDeepStrictEqual(expected.artifacts, request.artifacts)) {
           throw codedError('Stored Artifact tools do not match the reviewed workspace configuration.', 'WORKSPACE_ARTIFACT_MISMATCH');
         }
@@ -516,7 +590,7 @@ export function createBroker({ repoPath, stateDir, repoId = 'demo', executors, w
         const failure = workspace?.signal.aborted && !signal?.aborted ? workspace.signal.reason ?? error : error;
         if (!signal?.aborted && (!inputsValidated || errorCode(failure)?.startsWith('WORKSPACE_'))) {
           transaction(() => {
-            if (requestData(requestId)?.status === 'WAITING_HUMAN') finishWithin(requestId, { error: failure });
+            if (requestData(requestId)?.status === 'WAITING_HUMAN') failWithin(request.runId, failure);
           });
           changed();
         }
@@ -550,7 +624,7 @@ export function createBroker({ repoPath, stateDir, repoId = 'demo', executors, w
       } catch (error) {
         // A workspace failure invalidates the review; a competing completed result is immutable.
         if (!inputsValidated || errorCode(error)?.startsWith('WORKSPACE_')) {
-          transaction(() => { finishWithin(requestId, { error }); }); changed();
+          transaction(() => { if (requestData(requestId)?.status === 'WAITING_HUMAN') failWithin(request.runId, error); }); changed();
         }
         throw error;
       } finally { await workspace?.close(); }

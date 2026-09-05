@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, readFile, writeFile, mkdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { prepareReviewRequests } from '../src/requester/index.js';
+import { prepareReviewRequests, readStoredArtifactScope } from '../src/requester/index.js';
 import { createBroker } from '../src/broker/index.js';
 import { validateArtifactType, toolDescription } from '../src/artifacts/types.js';
 import { fingerprintWorkspace, prepareWorkspace, removeOwnedWorkspaceTree } from '../src/workspaces/index.js';
@@ -19,12 +19,12 @@ async function fixture(t: TestContext) {
   await writeFile(join(repoPath, 'spec.md'), 'Spec');
   await writeFile(join(repoPath, 'tests', 'rank.test.mjs'), '');
   const config: RepoConfig = {
-    artifacts: { why: { type: 'markdown', path: 'why.md' }, spec: { type: 'markdown', path: 'spec.md' }, tests: { type: 'code', path: 'tests' } },
+    artifacts: { why: { type: 'markdown', path: 'why.md', basis: true }, spec: { type: 'markdown', path: 'spec.md' }, tests: { type: 'code', path: 'tests' } },
     artifactTypes: { markdown: { viewer: 'text', agentTools: { read: {} }, humanTools: { read: {} } }, code: { viewer: 'files', agentTools: { list: {}, read: {} }, humanTools: { list: {}, read: {} } } },
     critics: [
-      { id: 'spec-why', title: 'Spec fits Why', dependsOn: null, artifacts: ['why', 'spec'], profile: { kind: 'agent', provider: 'codex', model: 'gpt-6-astra', reasoning: 'medium' }, payload: { instruction: 'Basis: {why}. Target: {spec}' } },
-      { id: 'tests-spec', title: 'Tests fit Spec', dependsOn: 'spec-why', artifacts: ['spec', 'tests'], profile: { kind: 'agent', provider: 'codex', model: 'gpt-6-astra', reasoning: 'medium' }, payload: { instruction: 'Compare tests and spec' } },
-      { id: 'implementation-tests', title: 'Runtime', dependsOn: 'tests-spec', artifacts: ['tests'], profile: { kind: 'runtime', command: 'node', args: ['--test', 'tests/rank.test.mjs'] }, payload: { instruction: 'Run tests' } },
+      { id: 'spec-why', title: 'Spec fits Why', target: 'spec', deps: ['why'], profile: { kind: 'agent', provider: 'codex', model: 'gpt-6-astra', reasoning: 'medium' }, payload: { instruction: 'Basis: {why}. Target: {spec}' } },
+      { id: 'tests-spec', title: 'Tests fit Spec', target: 'tests', deps: ['spec'], profile: { kind: 'agent', provider: 'codex', model: 'gpt-6-astra', reasoning: 'medium' }, payload: { instruction: 'Compare tests and spec' } },
+      { id: 'implementation-tests', title: 'Runtime', target: 'tests', deps: ['spec'], profile: { kind: 'runtime', command: 'node', args: ['--test', 'tests/rank.test.mjs'] }, payload: { instruction: 'Run tests' } },
     ],
   };
   await writeFile(join(repoPath, 'ccdd.config.json'), JSON.stringify(config));
@@ -36,9 +36,10 @@ test('requester sends explicit artifact metadata, workspace hash, payload and pr
   const data = await fixture(t);
   const requests = await prepareReviewRequests({ ...data, repoId: 'focus-demo' });
   assert.equal(requests.length, 3);
-  assert.deepEqual(requests.map(x => x.dependsOn), [null, 'spec-why', 'tests-spec']);
+  assert.deepEqual(requests.map(x => [x.target,x.deps]), [['spec',['why']],['tests',['spec']],['tests',['spec']]]);
+  assert.ok(requests.every(x => !('dependsOn' in x)));
   assert.ok(requests.every(x => x.repoId === 'focus-demo' && x.snapshotHash === data.snapshotHash && !('snapshotCommit' in x)));
-  assert.deepEqual(requests[0].artifacts, [{ id: 'why', type: 'markdown', path: 'why.md' }, { id: 'spec', type: 'markdown', path: 'spec.md' }]);
+  assert.deepEqual(requests[0].artifacts, [{ id: 'spec', type: 'markdown', path: 'spec.md' }, { id: 'why', type: 'markdown', path: 'why.md' }]);
   assert.match(requests[0].payload.instruction, /Basis: \{why\}. Target: \{spec\}/);
   assert.equal(requests[0].profile.kind, 'agent');
   assert.ok(requests[0].profile.kind === 'agent');
@@ -71,20 +72,49 @@ test('selecting one Critic preserves its definition and excludes other envelopes
   const data = await fixture(t);
   const chain = await prepareReviewRequests(data);
   assert.deepEqual(await prepareReviewRequests({ ...data, criticId: 'tests-spec' }), [chain[1]]);
-  assert.equal(chain[1].dependsOn, 'spec-why');
+  assert.equal(chain[1].target, 'tests');
+  assert.deepEqual(chain[1].deps, ['spec']);
   await assert.rejects(prepareReviewRequests({ ...data, criticId: 'missing' }), /Unknown Critic/);
   for (const criticId of ['', ' ', '../spec-why', null, 1, ['spec-why']]) await assert.rejects(prepareReviewRequests({ ...data, criticId }), /criticId/);
 });
 
-test('configuration rejects unsafe paths and preserves the strictly linear Critic graph', async t => {
+test('configuration rejects unsafe paths and Artifact dependency cycles', async t => {
   const data = await fixture(t);
   data.config.artifacts.why.path = '../outside';
   await writeFile(join(data.repoPath, 'ccdd.config.json'), JSON.stringify(data.config));
   await assert.rejects(prepareReviewRequests(data), /safe repository-relative/);
   data.config.artifacts.why.path = 'why.md';
-  data.config.critics[2].dependsOn = 'spec-why';
+  data.config.critics[0].deps = ['tests'];
   await writeFile(join(data.repoPath, 'ccdd.config.json'), JSON.stringify(data.config));
-  await assert.rejects(prepareReviewRequests(data), /strictly linear/);
+  await assert.rejects(prepareReviewRequests(data), /cycle/);
+});
+
+test('legacy Critic config is rejected for admission but its historical Artifact scope remains readable', async t => {
+  const data = await fixture(t);
+  const historical = { ...data.config, critics: data.config.critics.map((critic, index) => {
+    const { target, deps, ...rest } = critic;
+    return { ...rest, artifacts: [target, ...deps], dependsOn: index ? data.config.critics[index - 1].id : null };
+  }) };
+  await writeFile(join(data.repoPath, 'ccdd.config.json'), JSON.stringify(historical));
+  await assert.rejects(prepareReviewRequests(data), /replaced by target/);
+  const scope = await readStoredArtifactScope({ repoPath: data.repoPath, criticId: 'spec-why' });
+  assert.deepEqual(scope.artifacts.map(a => a.id), ['spec', 'why']);
+  assert.ok(!('target' in scope) && !('deps' in scope));
+  historical.artifacts.spec.path = '../private';
+  await writeFile(join(data.repoPath, 'ccdd.config.json'), JSON.stringify(historical));
+  await assert.rejects(readStoredArtifactScope({ repoPath: data.repoPath, criticId: 'spec-why' }), /safe repository-relative/);
+});
+
+test('Critic array order has no effect on declared roles and every target/dep receives a tool', async t => {
+  const data = await fixture(t);
+  data.config.critics.reverse();
+  await writeFile(join(data.repoPath, 'ccdd.config.json'), JSON.stringify(data.config));
+  const selected = (await prepareReviewRequests({ ...data, criticId: 'spec-why' }))[0];
+  assert.equal(selected.target, 'spec'); assert.deepEqual(selected.deps, ['why']);
+  assert.deepEqual(selected.artifacts.map(a => a.id), ['spec', 'why']);
+  data.config.artifacts.why.basis = false;
+  await writeFile(join(data.repoPath, 'ccdd.config.json'), JSON.stringify(data.config));
+  await assert.rejects(prepareReviewRequests(data), /no Critic.*basis/);
 });
 
 test('repo-defined types preserve description templates in isolated request envelopes', async t => {
@@ -125,7 +155,7 @@ test('new requests require audience tools on every supplied Artifact while an in
   const save = () => writeFile(join(data.repoPath, 'ccdd.config.json'), JSON.stringify(data.config));
   data.config.artifactTypes.markdown = { viewer: 'text', humanTools: { read: {} } };
   await save();
-  await assert.rejects(prepareReviewRequests({ ...data, criticId: 'spec-why' }), /why has no agent tools/);
+  await assert.rejects(prepareReviewRequests({ ...data, criticId: 'spec-why' }), /spec has no agent tools/);
   const runtime = await prepareReviewRequests({ ...data, criticId: data.config.critics[2].id });
   assert.equal(runtime[0].profile.kind, 'runtime');
   data.config.critics[0].profile = { kind: 'human' };

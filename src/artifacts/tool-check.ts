@@ -70,7 +70,7 @@ export async function diagnoseArtifactTools({ repoPath, mode = 'copy', stateDir,
     if (!artifactId && !audience && !toolName) {
       for (const critic of config.critics) {
         try {
-          assertArtifactAudience({ profile: critic.profile, artifacts: allArtifacts.filter(artifact => critic.artifacts.includes(artifact.id)), artifactTypes: config.artifactTypes });
+          assertArtifactAudience({ profile: critic.profile, artifacts: allArtifacts.filter(artifact => [critic.target, ...critic.deps].includes(artifact.id)), artifactTypes: config.artifactTypes });
         } catch (error) {
           report.checks.push({ ok: false, ...safeFailure(error, false) });
         }
@@ -90,7 +90,7 @@ export async function diagnoseArtifactTools({ repoPath, mode = 'copy', stateDir,
       report.tools.push(...definitions.map(tool => ({ ...tool, audience: targetAudience })));
       for (const artifact of selected) {
         if (definitions.some(tool => tool.artifactId === artifact.id)) continue;
-        const required = audience !== undefined || config.critics.some(critic => critic.profile.kind === targetAudience && critic.artifacts.includes(artifact.id));
+        const required = audience !== undefined || config.critics.some(critic => critic.profile.kind === targetAudience && [critic.target, ...critic.deps].includes(artifact.id));
         report.checks.push({ artifactId: artifact.id, audience: targetAudience, ok: !required, message: `No ${targetAudience} tools are available for this Artifact. It cannot be used by a ${targetAudience} Critic.` });
       }
       if (targetAudience === 'human' && 'preflight' in registry) {

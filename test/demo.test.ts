@@ -10,12 +10,12 @@ import type { RepoConfig } from '../src/contracts.js';
 test('four editable workspaces preserve the graph and real runtime regression without Git',async()=>{
   const root=await mkdtemp(join(tmpdir(),'ccdd-demo-test-'));
   try{
-    const manifest=await prepareDemo({root});assert.equal(manifest.scenarios.length,4);assert.equal(manifest.version,7);
+    const manifest=await prepareDemo({root});assert.equal(manifest.scenarios.length,4);assert.equal(manifest.version,8);
     assert.deepEqual(await prepareDemo({root}),manifest);
     for(const scenario of manifest.scenarios){
       const read=(p:string)=>readFile(join(scenario.repoPath,p),'utf8');
       const config=JSON.parse(await read('ccdd.config.json')) as RepoConfig;
-      assert.deepEqual(config.critics.map(c=>c.dependsOn),[null,'spec-why','tests-spec']);
+      assert.deepEqual(config.critics.map(c=>[c.target,c.deps]),[['spec',['why']],['tests',['spec']],['implementation',['tests']]]);assert.equal(config.artifacts.why.basis,true);
       assert.deepEqual(config.critics.slice(0,2).map(c=>c.profile),Array(2).fill({kind:'agent',provider:'openai-codex',model:'gpt-6-astra',reasoning:'medium'}));
       assert.equal(config.artifactTypes.markdown.agentTools!.read!.description,'{artifactName}의 문서 내용을 줄 단위로 읽는다.');
       assert.equal(config.artifactTypes.code.agentTools!.list!.description,'{artifactName}의 파일 목록을 조회한다.');

@@ -17,6 +17,12 @@ node dist/src/cli.js run --repo /path/to/project --copy --critic tests-spec --wa
 
 npm 패키지를 설치했다면 `node dist/src/cli.js` 대신 `ccdd`를 사용합니다. 실제 Agent 진단과 리뷰는 계정 사용량을 소비합니다.
 
+## Artifact 의존 관계
+
+Critic 설정은 `target`(평가 대상 하나)과 `deps`(참조 Artifact 배열)를 사용합니다. 같은 Artifact의 필수 Critic이 모두 통과하면 다음 검토가 시작됩니다. `basis: true`로 명시한 기준 Artifact를 제외하고 검토 없는 입력을 자동 통과시키지 않습니다. 기존 `dependsOn`·Critic의 `artifacts` 설정은 [설정 변경 안내](docs/artifact-graph.md)를 따라 변경하세요.
+
+모니터에서 **Kanban / Graph**를 선택할 수 있습니다. Graph는 선택한 검증 실행의 Artifact 관계와 Critic별 판정을 보여주며, 노드에서 기존 Human 요청 상세로 이어집니다. 과거에 역할 정보 없이 저장한 실행은 Kanban에서 계속 확인할 수 있습니다.
+
 ## Agent Provider와 인증
 
 Agent profile은 Pi의 정확한 Provider·모델 ID와 reasoning을 명시합니다. 예:
@@ -130,7 +136,7 @@ ccdd status RUN_ID --state-dir /outside/repo/state
 
 각 Run은 독립된 실행 프로세스를 가집니다. 요청 CLI가 종료되거나 대기 시간이 초과돼도 실행 프로세스는 계속 작업합니다. `--wait`의 종료 코드는 `0=GREEN`, `1=RED`, `2=ERROR`, `3=대기 시간 초과`입니다. `--wait`를 생략한 종료 코드 0은 접수 성공입니다.
 
-`--critic`은 선택한 Critic 하나만 독립적으로 평가합니다. 생략하면 전체 선형 체인을 실행합니다. 단독 GREEN은 선택한 기준의 통과이며 전체 체인 통과가 아닙니다. RED의 근거를 반영해 파일을 수정하고 새 요청을 보내면 됩니다. 새 commit은 필요하지 않습니다.
+`--critic`은 선택한 Critic 하나만 독립적으로 평가합니다. 생략하면 Artifact 의존 그래프 전체를 실행합니다. 단독 GREEN은 선택한 기준의 통과이며 다른 필수 Critic의 통과를 뜻하지 않습니다. RED의 근거를 반영해 파일을 수정하고 새 요청을 보내면 됩니다. 새 commit은 필요하지 않습니다.
 
 [Builder 사용법](docs/builder-workflow.md) · [요청 계약](docs/requester-contract.md)
 
@@ -173,7 +179,7 @@ node dist/src/cli.js run --demo --scenario runtime-failure --copy --critic imple
 node dist/src/cli.js run --demo --scenario fixed --copy --wait
 ```
 
-새 데모는 `~/.local/share/ccdd/demo-v7`에 Git 없는 네 개의 수정 가능한 작업 폴더를 만듭니다. 기존 작업 폴더를 다시 초기화하지 않습니다. 별도 위치를 쓰려면 `--demo-dir PATH`를 지정합니다.
+새 데모는 `~/.local/share/ccdd/demo-v8`에 Git 없는 네 개의 수정 가능한 작업 폴더를 만듭니다. 기존 작업 폴더를 다시 초기화하지 않습니다. 별도 위치를 쓰려면 `--demo-dir PATH`를 지정합니다.
 
 ```text
 why.md → [Spec이 Why에 부합하는가] → spec.md
