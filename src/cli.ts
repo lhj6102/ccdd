@@ -15,6 +15,7 @@ import {readArtifact} from './artifacts/index.js';
 import {reopenWorkspace} from './workspaces/index.js';
 import type { PiOptions } from './executors/pi.js';
 import { errorMessage, errorCode } from './executors/errors.js';
+import { startMonitor } from './monitor/server.js';
 type Broker = ReturnType<typeof createBroker>;
 type Run = NonNullable<ReturnType<Broker['getRun']>>;
 export interface WorkerOptions { runId: string; repoPath: string; repoId: string; stateDir: string; piOptions?: PiOptions; humanInbox: boolean }
@@ -23,7 +24,7 @@ type Options = Record<string, string | boolean>;
 
 const terminal=new Set(['GREEN','RED','ERROR']);
 const booleanFlags=new Set(['--demo','--human-inbox','--wait','--json','--help','--lock','--copy']);
-const valueFlags=new Set(['--repo','--state-dir','--pi-auth-file','--codex-auth-file','--requester','--critic','--timeout-ms','--scenario','--demo-dir','--reviewer','--result-file','--file','--start-line','--line-count','--offset','--limit']);
+const valueFlags=new Set(['--repo','--state-dir','--pi-auth-file','--codex-auth-file','--requester','--critic','--timeout-ms','--scenario','--demo-dir','--reviewer','--result-file','--file','--start-line','--line-count','--offset','--limit','--port']);
 function parse(argv: string[]){
   const options: Options={},positional: string[]=[];
   for(let i=0;i<argv.length;i++){
@@ -93,6 +94,7 @@ export async function main(argv: string[]=process.argv.slice(2),{stdout=process.
   ccdd doctor [--repo PATH] [--critic ID] [--copy | --lock] [--json]
   ccdd status RUN_ID [--wait]
   ccdd list
+  ccdd monitor [--repo PATH | --state-dir PATH] [--port 4318]
   ccdd request REQUEST_ID
   ccdd artifact REQUEST_ID ARTIFACT_ID [--file RELATIVE_PATH] [--start-line 1] [--line-count 80]
   ccdd human-claim REQUEST_ID --reviewer ID
@@ -104,7 +106,8 @@ export async function main(argv: string[]=process.argv.slice(2),{stdout=process.
 
 All review commands accept --repo PATH and --state-dir PATH (outside the repo).
 run requires exactly one workspace mode. --copy is recommended; doctor defaults to copy.
-No daemon, HTTP server, Git repository, or commit is required.
+No daemon, HTTP server, Git repository, or commit is required for reviews.
+monitor is an optional local read-only view; it does not start or own reviews.
 --critic runs only that Critic; omission evaluates the full linear chain.
 Commands return JSON. --wait: 0=GREEN, 1=RED, 2=ERROR, 3=wait timed out.
 Without --wait, run returns 0 for acceptance; the independent review worker continues.
@@ -116,6 +119,28 @@ Agent reviews use Pi libraries; Provider/model/reasoning must match the Pi catal
 --codex-auth-file PATH explicitly reads an unexpired Codex access token, without refreshing it.
 Only credential paths are saved for worker/resume; credentials are never copied into review state.`);return 0;
     }
+    if(command==='monitor'){
+      const permitted=new Set(['--repo','--state-dir','--port']);
+      if(positional.length||Object.keys(options).some(key=>!permitted.has(key)))throw new Error('monitor accepts only --repo, --state-dir and --port.');
+      if(options['--repo']&&options['--state-dir'])throw new Error('monitor --repo and --state-dir are mutually exclusive.');
+      const portValue=get('--port','4318')!;
+      const port=Number(portValue);
+      if(!/^\d+$/.test(portValue)||!Number.isInteger(port)||port<0||port>65535)throw new Error('--port must be an integer from 0 to 65535.');
+      const stateDir=options['--repo']?(await localContext({repoPath:resolve(get('--repo')!)})).stateDir:get('--state-dir');
+      const monitor=await startMonitor({...(stateDir?{stateDirs:[resolve(stateDir)]}:{}),port});
+      print(`CCDD monitor · ${monitor.url}`);
+      await new Promise<void>((ok,no)=>{
+        let stopping=false;
+        const stop=()=>{
+          if(stopping)return;stopping=true;
+          process.off('SIGINT',stop);process.off('SIGTERM',stop);
+          void monitor.close().then(ok,no);
+        };
+        process.once('SIGINT',stop);process.once('SIGTERM',stop);
+      });
+      return 0;
+    }
+    if(options['--port']!==undefined)throw new Error('--port requires the monitor command.');
     if(options['--lock']&&options['--copy'])throw new Error('--lock and --copy are mutually exclusive.');
     if(command==='run'&&!options['--lock']&&!options['--copy'])throw new Error('run requires exactly one of --copy (recommended) or --lock.');
     if(command!=='artifact'&&['--start-line','--line-count','--offset','--limit'].some(key=>options[key]!==undefined))throw new Error('Artifact read/list options require the artifact command.');

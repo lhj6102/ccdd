@@ -62,7 +62,7 @@ test('npm bin symlink invokes CLI without starting a server',async t=>{
   const dir=await mkdtemp(join(tmpdir(),'ccdd-bin-'));t.after(()=>removeOwnedWorkspaceTree(dir));
   const bin=join(dir,'ccdd');await symlink(cli,bin);
   const {stdout}=await promisify(execFile)(process.execPath,[bin,'help']);
-  assert.match(stdout,/CCDD 0[.]5[.]1/);assert.match(stdout,/No daemon/);assert.doesNotMatch(stdout,/ccdd serve/);
+  assert.match(stdout,/CCDD 0[.]6[.]0/);assert.match(stdout,/No daemon/);assert.doesNotMatch(stdout,/ccdd serve/);
 });
 
 test('CLI requires explicit exclusive workspace modes and rejects removed options',async()=>{
