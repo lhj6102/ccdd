@@ -24,15 +24,15 @@ async function fixture(t: TestContext) {
     artifacts: { why: { type: 'markdown', path: 'why.md' }, spec: { type: 'markdown', path: 'spec.md' }, tests: { type: 'code', path: 'tests' } },
     artifactTypes: { markdown: { viewer: 'text', agentTools: { read: {} }, humanTools: { read: {} } }, code: { viewer: 'files', agentTools: { list: {}, read: {} }, humanTools: { list: {}, read: {} } } },
     critics: [
-      { id: 'first', title: 'first', dependsOn: null, artifacts: ['why'], profile, payload: { instruction: 'Review why' } },
-      { id: 'second', title: 'second', dependsOn: 'first', artifacts: ['spec'], profile: { timeoutMs: 3_000, reasoning: 'medium', model: 'gpt-6-astra', provider: 'openai-codex', kind: 'agent' }, payload: { instruction: 'Review spec' } },
-      { id: 'runtime', title: 'runtime', dependsOn: 'second', artifacts: ['tests'], profile: { kind: 'runtime', command: 'node', args: ['--test', 'tests/check.test.mjs'] }, payload: { instruction: 'Run tests' } },
-      { id: 'human', title: 'human', dependsOn: 'runtime', artifacts: ['spec'], profile: { kind: 'human' }, payload: { instruction: 'Human review' } },
+      { id: 'first', title: 'first', target: 'why', deps: [], profile, payload: { instruction: 'Review why' } },
+      { id: 'second', title: 'second', target: 'spec', deps: ['why'], profile: { timeoutMs: 3_000, reasoning: 'medium', model: 'gpt-6-astra', provider: 'openai-codex', kind: 'agent' }, payload: { instruction: 'Review spec' } },
+      { id: 'runtime', title: 'runtime', target: 'tests', deps: ['spec'], profile: { kind: 'runtime', command: 'node', args: ['--test', 'tests/check.test.mjs'] }, payload: { instruction: 'Run tests' } },
+      { id: 'human', title: 'human', target: 'spec', deps: [], profile: { kind: 'human' }, payload: { instruction: 'Human review' } },
     ],
   };
   await writeFile(join(worktreePath, 'ccdd.config.json'), JSON.stringify(config));
   const snapshotHash = await fingerprintWorkspace(worktreePath);
-  const request: ReviewEnvelope = { repoId: 'test-repo', title: 'Doctor fixture', criticId: 'first', snapshotHash, profile, dependsOn: null, payload: { instruction: 'Review why' }, artifacts: [{ id: 'why', ...config.artifacts.why }], artifactTypes: config.artifactTypes };
+  const request: ReviewEnvelope = { repoId: 'test-repo', title: 'Doctor fixture', criticId: 'first', snapshotHash, profile, target: 'why', deps: [], payload: { instruction: 'Review why' }, artifacts: [{ id: 'why', ...config.artifacts.why }], artifactTypes: config.artifactTypes };
   return { dir, worktreePath, repoPath: worktreePath, runDir: join(dir, 'run'), stateDir: join(dir, 'state'), snapshotHash, request, config };
 }
 
@@ -161,7 +161,7 @@ test('copy doctor diagnoses current files without Git, deduplicates profiles and
   } };
   const report = await diagnoseProject({ ...data, executors, onEvent: event => { events.push(event); } });
   assert.equal(report.status, 'READY', JSON.stringify(report));
-  assert.deepEqual(report.scope, { kind: 'chain' });
+  assert.deepEqual(report.scope, { kind: 'graph' });
   assert.equal(report.mode, 'copy');
   assert.equal(report.snapshotHash, expectedHash);
   assert.equal(probes.length, 3);
@@ -201,8 +201,8 @@ test('identical runtime commands are checked for each Critic artifact scope', as
   const data = await fixture(t);
   const profile = data.config.critics[2].profile;
   data.config.critics = [
-    { ...data.config.critics[0], profile, artifacts: ['tests'] },
-    { ...data.config.critics[1], profile, artifacts: ['why'] },
+    { ...data.config.critics[0], profile, target: 'tests', deps: [] },
+    { ...data.config.critics[1], profile, target: 'why', deps: [] },
   ];
   await writeFile(join(data.repoPath, 'ccdd.config.json'), JSON.stringify(data.config));
   const report = await diagnoseProject({ ...data, executors: createExecutorRegistry() });

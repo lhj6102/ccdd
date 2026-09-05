@@ -1,4 +1,5 @@
 import type { ArtifactReference, CriticProfile, ReviewStatus } from '../contracts.js';
+import type { GraphProjection } from '../broker/graph.js';
 import type { ArtifactCallResult } from '../artifacts/index.js';
 
 export type MonitorLane = 'requested' | 'running' | 'success' | 'failure';
@@ -41,5 +42,21 @@ export interface MonitorArtifactPage {
   artifact: { id: string; path: string; directory: boolean; description: string };
   result: ArtifactCallResult;
 }
-export interface MonitorQuery { lane?: MonitorLane; project?: string; filter?: MonitorFilter; limit?: number; offset?: number }
+export interface MonitorQuery { run?: string; lane?: MonitorLane; project?: string; filter?: MonitorFilter; limit?: number; offset?: number }
 export interface MonitorSources { stateHome?: string; stateDirs?: string[] }
+
+export interface MonitorRun {
+  id: string; projectId: string; snapshotHash: string | null; status: ReviewStatus;
+  createdAt: string; completedAt: string | null;
+  scope: { kind: 'graph' | 'chain' } | { kind: 'critic'; criticId: string } | null;
+  graphAvailable: boolean;
+}
+export interface MonitorRunQuery { project?: string; limit?: number; offset?: number }
+export interface MonitorRunOverview {
+  projects: MonitorProject[]; runs: MonitorRun[]; total: number; hasMore: boolean; observedAt: string;
+}
+export interface MonitorGraph {
+  project: MonitorProject; run: MonitorRun; available: boolean;
+  unavailableReason: string | null; graph: GraphProjection | null;
+  requests: MonitorRequest[]; observedAt: string;
+}

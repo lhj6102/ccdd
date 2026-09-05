@@ -95,7 +95,7 @@ run requires exactly one workspace mode. --copy is recommended; doctor defaults 
 No daemon, HTTP server, Git repository, or commit is required for reviews.
 monitor is an optional local view with explicit Human claim, tool and result actions.
 Viewing the monitor does not start or own reviews; completion resumes a detached worker.
---critic runs only that Critic; omission evaluates the full linear chain.
+--critic runs only that Critic; omission evaluates the full Artifact dependency graph.
 Commands return JSON. --wait: 0=GREEN, 1=RED, 2=ERROR, 3=wait timed out.
 Without --wait, run returns 0 for acceptance; the independent review worker continues.
 --timeout-ms controls client waiting, not review execution; use cancel to stop a review.

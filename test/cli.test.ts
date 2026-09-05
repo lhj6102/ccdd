@@ -42,9 +42,9 @@ async function fixture(t:TestContext,{human=false,slow=0,red=false,chain=false}=
   await mkdir(repo);
   await writeFile(join(repo,'why.md'),'Review basis.');
   await writeFile(join(repo,'test.mjs'),`import test from 'node:test';import assert from 'node:assert/strict';import {setTimeout as delay} from 'node:timers/promises';import {writeFile} from 'node:fs/promises';import {join} from 'node:path';test('actual runtime',async()=>{await delay(${slow});await writeFile(join(process.env.CCDD_OUTPUT_DIR,'result.txt'),'isolated output');assert.equal(${red?1:0},0);});`);
-  const critic:CriticDefinition={id:'runtime',title:'Runtime',dependsOn:null,artifacts:['tests'],profile:{kind:'runtime',command:'node',args:['--test','test.mjs']},payload:{instruction:'Execute actual tests.'}};
-  const humanCritic:CriticDefinition={id:'human',title:'Human review',dependsOn:null,artifacts:['why'],profile:{kind:'human'},payload:{instruction:'Check the basis.'}};
-  const config:RepoConfig={artifacts:{tests:{type:'code',path:'test.mjs'},why:{type:'text',path:'why.md'}},artifactTypes:{code:{viewer:'files',agentTools:{read:{},list:{}},humanTools:{read:{},list:{}}},text:{viewer:'text',agentTools:{read:{}},humanTools:{read:{}}}},critics:chain?[humanCritic,{...critic,dependsOn:'human'}]:[human?humanCritic:critic]};
+  const critic:CriticDefinition={id:'runtime',title:'Runtime',target:'tests',deps:[],profile:{kind:'runtime',command:'node',args:['--test','test.mjs']},payload:{instruction:'Execute actual tests.'}};
+  const humanCritic:CriticDefinition={id:'human',title:'Human review',target:'why',deps:[],profile:{kind:'human'},payload:{instruction:'Check the basis.'}};
+  const config:RepoConfig={artifacts:{tests:{type:'code',path:'test.mjs'},why:{type:'text',path:'why.md'}},artifactTypes:{code:{viewer:'files',agentTools:{read:{},list:{}},humanTools:{read:{},list:{}}},text:{viewer:'text',agentTools:{read:{}},humanTools:{read:{}}}},critics:chain?[humanCritic,{...critic,deps:['why']}]:[human?humanCritic:critic]};
   await writeFile(join(repo,'ccdd.config.json'),JSON.stringify(config));
   const args=['--repo',repo,'--state-dir',state,'--json'];
   t.after(async()=>{
@@ -77,7 +77,7 @@ test('real runtime succeeds or fails without Git, commit or HTTP server',async t
     const f=await fixture(t,{red});
     const result=await invoke(['run','--copy','--critic','runtime','--wait',...f.args]);
     assert.equal(result.code,red?1:0,result.output+result.errors);
-    assert.equal(result.data.requests.length,1);assert.equal(result.data.requests[0].predecessorId,null);
+    assert.equal(result.data.requests.length,1);assert.equal(result.data.requests[0].predecessorId,undefined);
     assert.equal(result.data.snapshotHash.length,64);assert.equal(result.data.workspace.mode,'copy');
     assert.equal(present(result.data.requests[0].result).exitCode,red?1:0);
   }

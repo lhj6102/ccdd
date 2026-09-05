@@ -17,7 +17,7 @@ async function fixture(t: TestContext) {
   await writeFile(join(worktreePath, 'why.md'), '# Why\nSelect two tasks.');
   await writeFile(join(worktreePath, 'spec.md'), '# Spec\nSelect two tasks.');
   const request: ReviewEnvelope & { profile: AgentProfile } = {
-    repoId: 'test', dependsOn: null, criticId: 'spec-why', title: 'Spec이 Why에 부합하는가', snapshotHash: 'a'.repeat(64),
+    repoId: 'test', target: 'spec', deps: ['why'], criticId: 'spec-why', title: 'Spec이 Why에 부합하는가', snapshotHash: 'a'.repeat(64),
     artifacts: [{ id: 'why', type: 'markdown', path: 'why.md' }, { id: 'spec', type: 'markdown', path: 'spec.md' }],
     artifactTypes: { markdown: { viewer: 'text', agentTools: { read: {} }, humanTools: { read: {} } }, code: { viewer: 'files', agentTools: { list: {}, read: {} }, humanTools: { list: {}, read: {} } } },
     payload: { instruction: 'Compare {why} and {spec}.' },

@@ -6,6 +6,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import type { ReviewRequest } from '../src/contracts.js';
+import type { GraphDefinition } from '../src/broker/graph.js';
+type StoredRequest = Omit<ReviewRequest, 'target' | 'deps'> & Partial<Pick<ReviewRequest, 'target' | 'deps'>> & { dependsOn?: string | null };
 import { createMonitorStore } from '../src/monitor/store.js';
 
 const at = (seconds: number): string => new Date(Date.UTC(2026, 8, 6, 0, 0, seconds)).toISOString();
@@ -17,7 +19,7 @@ async function fixture(t: TestContext) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'ccdd-monitor-store-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const stateHome = path.join(root, 'home');
-  function request(id: string, overrides: Partial<ReviewRequest> = {}): ReviewRequest {
+  function request(id: string, overrides: Partial<StoredRequest> = {}): StoredRequest {
     return {
       id, runId: `run-${id}`, repoId: 'local', snapshotHash: 'snapshot-secret', criticId: `critic-${id}`, title: `Review ${id}`,
       status: 'QUEUED', createdAt: at(0), predecessorId: null, dependsOn: null,
@@ -31,7 +33,7 @@ async function fixture(t: TestContext) {
       ...overrides,
     };
   }
-  async function state(name: string, requests: ReviewRequest[], options: { repoPath?: string; events?: StoredEvent[]; owners?: Owner[]; directory?: string } = {}) {
+  async function state(name: string, requests: StoredRequest[], options: { repoPath?: string; events?: StoredEvent[]; owners?: Owner[]; directory?: string; runData?: Record<string, Record<string, unknown>> } = {}) {
     const stateDir = options.directory ?? path.join(stateHome, name);
     const repoPath = options.repoPath ?? path.join(root, 'repos', name);
     await fs.mkdir(stateDir, { recursive: true });
@@ -46,7 +48,7 @@ async function fixture(t: TestContext) {
       const runs = new Set<string>();
       for (const [ordinal, request] of requests.entries()) {
         if (!runs.has(request.runId)) {
-          db.prepare('INSERT INTO runs VALUES (?,?,?,?)').run(request.runId, request.createdAt, request.status, JSON.stringify({ id: request.runId, status: request.status }));
+          db.prepare('INSERT INTO runs VALUES (?,?,?,?)').run(request.runId, request.createdAt, request.status, JSON.stringify({ id: request.runId, status: request.status, ...options.runData?.[request.runId] }));
           runs.add(request.runId);
         }
         db.prepare('INSERT INTO requests VALUES (?,?,?,?,?)').run(request.id, request.runId, ordinal, request.status, JSON.stringify(request));
@@ -295,4 +297,106 @@ test('kanban lanes have independent counts and pagination with claimed Human req
   assert.equal(secondSuccess.requests.length, 5);
   assert.equal(secondSuccess.total, 55);
   await assert.rejects(store.overview({ lane: 'unknown' as 'requested' }));
+});
+
+const graphDefinition = (): GraphDefinition => ({
+  version: 1,
+  artifacts: { why: { type: 'text', path: 'why.md', basis: true }, spec: { type: 'text', path: 'spec.md' }, tests: { type: 'code', path: 'tests' }, implementation: { type: 'code', path: 'src' }, unused: { type: 'text', path: 'notes.md' } },
+  critics: [
+    { id: 'spec-agent', title: 'Spec 목적 확인', kind: 'agent', target: 'spec', deps: ['why'] },
+    { id: 'spec-human', title: 'Spec 사람 확인', kind: 'human', target: 'spec', deps: ['why'] },
+    { id: 'tests', title: 'Tests 확인', kind: 'runtime', target: 'tests', deps: ['spec'] },
+    { id: 'implementation', title: '구현 확인', kind: 'runtime', target: 'implementation', deps: ['spec', 'tests'] },
+  ],
+});
+
+test('run-scoped graph includes all declarations and never borrows passes from other runs or snapshots', async t => {
+  const f = await fixture(t), graph = graphDefinition(), firstHash = 'a'.repeat(64), secondHash = 'b'.repeat(64);
+  const request = (runId: string, criticId: string, status: ReviewRequest['status'], hash = firstHash): StoredRequest => {
+    const critic = present(graph.critics.find(item => item.id === criticId));
+    return f.request(`${runId}-${criticId}`, { runId, criticId, target: critic.target, deps: critic.deps, snapshotHash: hash, status, profile: critic.kind === 'human' ? { kind: 'human' } : critic.kind === 'agent' ? { kind: 'agent', provider: 'safe-provider', model: 'safe-model', reasoning: 'medium' } : { kind: 'runtime', command: 'node', args: [] } });
+  };
+  const rows = [
+    request('full', 'spec-agent', 'GREEN'), { ...request('full', 'spec-human', 'WAITING_HUMAN'), claimedBy: 'browser-person', claimedAt: at(2), notifiedAt: at(1) }, request('full', 'tests', 'BLOCKED'), request('full', 'implementation', 'BLOCKED'),
+    request('partial', 'spec-agent', 'GREEN'), request('other', 'spec-human', 'GREEN', secondHash),
+  ];
+  const state = await f.state('graph', rows, { runData: {
+    full: { snapshotHash: firstHash, graph, scope: { kind: 'graph' }, privateRunPayload: 'RUN_PRIVATE_SENTINEL' },
+    partial: { snapshotHash: firstHash, graph, scope: { kind: 'critic', criticId: 'spec-agent' } },
+    other: { snapshotHash: secondHash, graph, scope: { kind: 'critic', criticId: 'spec-human' } },
+  } });
+  const otherProject = await f.state('other-project', [request('full', 'spec-human', 'RED')], { runData: { full: { snapshotHash: firstHash, graph } } });
+  const store = createMonitorStore({ stateHome: f.stateHome });
+  const before = await fs.readFile(path.join(state.stateDir, 'broker.sqlite'));
+  const full = present(await store.graph(state.id, 'full'));
+  assert.equal(full.available, true, full.unavailableReason ?? '');
+  assert.equal(full.run.snapshotHash, firstHash);
+  assert.equal(full.requests.length, 4);
+  const spec = present(full.graph?.artifacts.find(item => item.id === 'spec'));
+  assert.deepEqual({ status: spec.status, passed: spec.passed, total: spec.total, included: spec.included }, { status: 'WAITING_HUMAN', passed: 1, total: 2, included: 2 });
+  assert.equal(full.graph?.critics.find(item => item.id === 'spec-human')?.claimedBy, 'browser-person');
+  assert.equal(full.graph?.artifacts.find(item => item.id === 'why')?.status, 'BASIS');
+  assert.equal(full.graph?.artifacts.find(item => item.id === 'unused')?.status, 'UNREVIEWED');
+  assert.ok(full.graph?.edges.some(edge => edge.source === 'spec' && edge.target === 'implementation'));
+  const partial = present(await store.graph(state.id, 'partial'));
+  const partialSpec = present(partial.graph?.artifacts.find(item => item.id === 'spec'));
+  assert.deepEqual({ status: partialSpec.status, passed: partialSpec.passed, total: partialSpec.total, included: partialSpec.included }, { status: 'UNREVIEWED', passed: 1, total: 2, included: 1 });
+  assert.equal(partial.graph?.critics.length, 4);
+  assert.equal(partial.graph?.critics.find(item => item.id === 'spec-human')?.requestId, null);
+  assert.equal(partial.graph?.critics.find(item => item.id === 'spec-human')?.status, null);
+  assert.equal((await store.graph(otherProject.id, 'full'))?.graph?.artifacts.find(item => item.id === 'spec')?.status, 'RED');
+  const board = await store.overview({ project: state.id, run: 'partial', lane: 'success' });
+  assert.equal(board.total, 1);
+  assert.equal(board.requests[0].runId, 'partial');
+  assert.deepEqual(board.laneCounts, { requested: 0, running: 0, success: 1, failure: 0 });
+  await assert.rejects(store.overview({ run: 'full' }));
+  const runs = await store.runs({ project: state.id, limit: 2 });
+  assert.equal(runs.total, 3); assert.equal(runs.runs.length, 2); assert.equal(runs.hasMore, true);
+  assert.equal((await store.runs({ project: state.id, limit: 2, offset: 2 })).runs.length, 1);
+  assert.ok(runs.runs.every(item => item.graphAvailable));
+  assert.doesNotMatch(JSON.stringify({ full, partial, runs }), /RUN_PRIVATE_SENTINEL|payload-secret|owner-token-secret|metadata-secret|privatePayload|profile|authFile/);
+  assert.deepEqual(await fs.readFile(path.join(state.stateDir, 'broker.sqlite')), before);
+});
+
+test('historical or inconsistent graph metadata remains explicit unavailable without inspecting current source', async t => {
+  const f = await fixture(t), graph = graphDefinition(), hash = 'a'.repeat(64);
+  const historical = f.request('old', { runId: 'legacy' });
+  const invalidSnapshot = f.request('mismatch', { runId: 'mismatch', criticId: 'tests', target: 'tests', deps: ['spec'], snapshotHash: 'b'.repeat(64) });
+  const invalidTarget = f.request('scope', { runId: 'scope', criticId: 'tests', target: 'implementation', deps: ['spec'], snapshotHash: hash });
+  const state = await f.state('history', [historical, invalidSnapshot, invalidTarget], { runData: { mismatch: { snapshotHash: hash, graph }, scope: { snapshotHash: hash, graph } } });
+  const store = createMonitorStore({ stateDirs: [state.stateDir] });
+  const old = present(await store.graph(state.id, 'legacy'));
+  assert.equal(old.available, false); assert.equal(old.graph, null); assert.match(old.unavailableReason ?? '', /정의가 저장되어 있지/);
+  assert.equal(old.requests.length, 1);
+  for (const run of ['mismatch', 'scope']) {
+    const result = present(await store.graph(state.id, run));
+    assert.equal(result.available, false); assert.equal(result.graph, null); assert.match(result.unavailableReason ?? '', /일치하지/);
+  }
+  assert.equal(await store.graph(state.id, 'unknown'), null);
+  assert.equal(await store.graph('unknown', 'legacy'), null);
+  assert.equal((await store.runs()).runs.find(run => run.id === 'legacy')?.graphAvailable, false);
+  // No source directory was ever created; graph observation uses only persisted metadata.
+  await assert.rejects(fs.stat(state.repoPath));
+});
+
+test('DAG failure attention follows all dependency artifacts and remains inside the selected run', async t => {
+  const f = await fixture(t);
+  const state = await f.state('dag', [
+    f.request('a-green', { runId: 'dag', criticId: 'a-green', target: 'a', deps: [], status: 'GREEN' }),
+    f.request('a-red', { runId: 'dag', criticId: 'a-red', target: 'a', deps: [], status: 'RED' }),
+    f.request('b', { runId: 'dag', target: 'b', deps: [], status: 'GREEN' }),
+    f.request('join', { runId: 'dag', target: 'join', deps: ['a', 'b'], status: 'BLOCKED' }),
+    f.request('downstream', { runId: 'dag', target: 'final', deps: ['join'], status: 'BLOCKED' }),
+    f.request('unrelated', { runId: 'dag', target: 'independent', deps: [], status: 'QUEUED' }),
+    f.request('other-join', { runId: 'other', target: 'join', deps: ['a', 'b'], status: 'BLOCKED' }),
+  ]);
+  const store = createMonitorStore({ stateDirs: [state.stateDir] });
+  const overview = await store.overview({ project: state.id, run: 'dag' });
+  for (const id of ['join', 'downstream']) {
+    const row = present(overview.requests.find(request => request.id === id));
+    assert.equal(row.blockedByFailure, true); assert.match(row.waitingReason ?? '', /a-red/);
+  }
+  assert.equal(overview.requests.find(request => request.id === 'unrelated')?.blockedByFailure, false);
+  assert.equal((await store.overview({ project: state.id, run: 'other' })).requests[0].blockedByFailure, false);
+  assert.deepEqual(overview.counts, { all: 6, active: 1, attention: 3 });
 });

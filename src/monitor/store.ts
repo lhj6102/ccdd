@@ -6,19 +6,20 @@ import { basename, isAbsolute, join, resolve } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { promisify } from 'node:util';
 import type { ArtifactReference, CriticProfile, ReviewRequest, ReviewStatus } from '../contracts.js';
-import type { MonitorDetail, MonitorLane, MonitorOverview, MonitorProject, MonitorQuery, MonitorRequest, MonitorSources } from './types.js';
+import { projectGraph, validateGraphDefinition } from '../broker/graph.js';
+import type { MonitorDetail, MonitorLane, MonitorOverview, MonitorProject, MonitorQuery, MonitorRequest, MonitorSources, MonitorRun, MonitorRunOverview, MonitorRunQuery, MonitorGraph } from './types.js';
 
 interface Source { id: string; stateDir: string; issue?: string }
 interface Identity { repoId: string; repoPath: string }
 interface Header {
   id: string; runId: string; title: string; criticId: string; status: ReviewStatus; kind: CriticProfile['kind'];
-  predecessorId: string | null; createdAt: string; startedAt: string | null; completedAt: string | null;
+  predecessorId: string | null; target: string | null; deps: string[] | null; snapshotHash: string | null; blockedReason: string | null; createdAt: string; startedAt: string | null; completedAt: string | null;
   claimedAt: string | null; claimedBy: string | null; notifiedAt: string | null; mode: 'copy' | 'lock' | null;
 }
 interface Owner { pid: number; identity: string | null }
 interface Event { id: number; requestId: string | null; type: string; at: string }
 interface Snapshot {
-  source: Source; project: MonitorProject; identity: Identity | null; requests: Header[];
+  source: Source; project: MonitorProject; identity: Identity | null; requests: Header[]; runs: MonitorRun[]; graph: unknown;
   owners: Map<string, Owner>; activity: Map<string, string>; events: Event[]; target: Record<string, unknown> | null;
 }
 export interface MonitorStoredRequest { request: ReviewRequest; repoPath: string; stateDir: string; repoId: string }
@@ -56,6 +57,10 @@ function json(value: unknown): Record<string, unknown> {
   return parsed;
 }
 function text(value: string, limit: number): string { return value.length <= limit ? value : `${value.slice(0, limit)}…`; }
+function strings(value: unknown): string[] {
+  if (!Array.isArray(value) || !value.every(item => typeof item === 'string')) throw storageError();
+  return value;
+}
 
 function readHeader(row: Record<string, unknown>): Header {
   const status = string(row.status), kind = string(row.kind);
@@ -64,6 +69,7 @@ function readHeader(row: Record<string, unknown>): Header {
   return {
     id: string(row.id), runId: string(row.run_id), title: text(string(row.title), 500), criticId: string(row.critic_id),
     status: status as ReviewStatus, kind: kind as CriticProfile['kind'], predecessorId: nullableString(row.predecessor_id),
+    target: nullableString(row.target), deps: row.deps == null ? null : strings(JSON.parse(string(row.deps))), snapshotHash: nullableString(row.snapshot_hash), blockedReason: row.blocked_reason == null ? null : text(string(row.blocked_reason), 2_000),
     createdAt: date(row.created_at), startedAt: nullableDate(row.started_at), completedAt: nullableDate(row.completed_at),
     claimedAt: nullableDate(row.claimed_at), claimedBy: nullableString(row.claimed_by), notifiedAt: nullableDate(row.notified_at),
     mode: row.workspace_mode === 'copy' || row.workspace_mode === 'lock' ? row.workspace_mode : null,
@@ -74,17 +80,35 @@ function readHeader(row: Record<string, unknown>): Header {
 const headerSql = `SELECT id,run_id,status,
   json_extract(data,'$.id') AS json_id,json_extract(data,'$.runId') AS json_run_id,json_extract(data,'$.status') AS json_status,
   json_extract(data,'$.title') AS title,json_extract(data,'$.criticId') AS critic_id,json_extract(data,'$.profile.kind') AS kind,
+  json_extract(data,'$.blockedReason') AS blocked_reason,json_extract(data,'$.target') AS target,json_extract(data,'$.deps') AS deps,json_extract(data,'$.snapshotHash') AS snapshot_hash,
   json_extract(data,'$.predecessorId') AS predecessor_id,json_extract(data,'$.createdAt') AS created_at,
   json_extract(data,'$.startedAt') AS started_at,json_extract(data,'$.completedAt') AS completed_at,
   json_extract(data,'$.claimedAt') AS claimed_at,json_extract(data,'$.claimedBy') AS claimed_by,
   json_extract(data,'$.notifiedAt') AS notified_at,json_extract(data,'$.workspace.mode') AS workspace_mode
   FROM requests`;
 
+const runSql = `SELECT id,status,created_at,
+  json_extract(data,'$.id') AS json_id,json_extract(data,'$.status') AS json_status,
+  json_extract(data,'$.snapshotHash') AS snapshot_hash,json_extract(data,'$.completedAt') AS completed_at,
+  json_extract(data,'$.scope') AS scope,json_type(data,'$.graph') AS graph_type,json_extract(data,'$.graph.version') AS graph_version
+  FROM runs`;
+function readRun(row: Record<string, unknown>, project: string): MonitorRun {
+  const status = string(row.status);
+  if (!statuses.has(status) || row.id !== row.json_id || row.json_status !== status) throw storageError();
+  let scope: MonitorRun['scope'] = null;
+  if (typeof row.scope === 'string') {
+    const raw = json(row.scope);
+    if (raw.kind === 'chain' || raw.kind === 'graph') scope = { kind: raw.kind };
+    else if (raw.kind === 'critic' && typeof raw.criticId === 'string') scope = { kind: 'critic', criticId: text(raw.criticId, 128) };
+  }
+  return { id: string(row.id), projectId: project, snapshotHash: nullableString(row.snapshot_hash), status: status as ReviewStatus, createdAt: date(row.created_at), completedAt: nullableDate(row.completed_at), scope, graphAvailable: row.graph_type === 'object' && row.graph_version === 1 };
+}
+
 /** Open only existing databases. All reads for one source share one SQLite snapshot. */
-async function readSnapshot(source: Source, requestId?: string): Promise<Snapshot> {
+async function readSnapshot(source: Source, requestId?: string, runId?: string): Promise<Snapshot> {
   const snapshot: Snapshot = {
     source, project: { id: source.id, name: basename(source.stateDir), path: source.stateDir }, identity: null,
-    requests: [], owners: new Map(), activity: new Map(), events: [], target: null,
+    requests: [], runs: [], graph: null, owners: new Map(), activity: new Map(), events: [], target: null,
   };
   if (source.issue) { snapshot.project.issue = source.issue; return snapshot; }
   let db: DatabaseSync | undefined;
@@ -99,6 +123,13 @@ async function readSnapshot(source: Source, requestId?: string): Promise<Snapsho
     snapshot.identity = { repoPath: identity.repoPath, repoId: identity.repoId };
     snapshot.project = { id: source.id, name: basename(identity.repoPath) || identity.repoPath, path: identity.repoPath };
     snapshot.requests = db.prepare(headerSql).all().map(readHeader);
+    snapshot.runs = db.prepare(runSql).all().map(row => readRun(row, source.id));
+    if (runId !== undefined) {
+      const row = db.prepare("SELECT json_extract(data,'$.graph') AS graph FROM runs WHERE id=?").get(runId);
+      if (row?.graph != null) {
+        try { snapshot.graph = JSON.parse(string(row.graph)); } catch { snapshot.graph = false; }
+      }
+    }
     for (const owner of db.prepare('SELECT run_id,pid,process_identity FROM run_owners').all()) {
       snapshot.owners.set(string(owner.run_id), { pid: typeof owner.pid === 'number' ? owner.pid : NaN, identity: nullableString(owner.process_identity) });
     }
@@ -119,7 +150,7 @@ async function readSnapshot(source: Source, requestId?: string): Promise<Snapsho
   } catch (error) {
     try { db?.exec('ROLLBACK'); } catch {}
     snapshot.project.issue = codeOf(error) === 'ENOENT' ? '상태 저장소를 찾을 수 없습니다.' : '이 프로젝트의 상태 기록을 읽을 수 없습니다.';
-    snapshot.requests = []; snapshot.owners.clear(); snapshot.activity.clear(); snapshot.events = []; snapshot.target = null;
+    snapshot.requests = []; snapshot.runs = []; snapshot.graph = null; snapshot.owners.clear(); snapshot.activity.clear(); snapshot.events = []; snapshot.target = null;
   } finally { db?.close(); }
   return snapshot;
 }
@@ -193,15 +224,20 @@ async function workerState(request: Header, snapshot: Snapshot, checks: ProcessC
   return owner.identity === process.identity ? 'alive' : 'missing';
 }
 
+function dependencies(request: Header, byId: Map<string, Header>): Header[] {
+  if (request.target !== null && request.deps !== null) return [...byId.values()].filter(candidate => candidate.runId === request.runId && candidate.target !== null && request.deps!.includes(candidate.target));
+  const previous = request.predecessorId ? byId.get(request.predecessorId) : undefined;
+  return previous?.runId === request.runId ? [previous] : [];
+}
 function failedPredecessor(request: Header, byId: Map<string, Header>): Header | null {
   const seen = new Set<string>([request.id]);
-  let predecessor = request.predecessorId;
-  while (predecessor && !seen.has(predecessor)) {
-    seen.add(predecessor);
-    const previous = byId.get(predecessor);
-    if (!previous || previous.runId !== request.runId) break;
+  const pending = dependencies(request, byId);
+  for (let index = 0; index < pending.length; index++) {
+    const previous = pending[index];
+    if (seen.has(previous.id)) continue;
+    seen.add(previous.id);
     if (previous.status === 'RED' || previous.status === 'ERROR') return previous;
-    predecessor = previous.predecessorId;
+    pending.push(...dependencies(previous, byId));
   }
   return null;
 }
@@ -212,6 +248,7 @@ function waitingReason(request: Header, state: MonitorRequest['workerState'], by
   if (request.status === 'BLOCKED') {
     const failed = failedPredecessor(request, byId);
     if (failed) return `선행 리뷰 “${failed.title}”가 ${failed.status === 'RED' ? '기준을 충족하지 못해' : '오류로 종료되어'} 진행할 수 없습니다.`;
+    if (request.deps?.length) return `Artifact “${request.deps.map(dep => text(dep, 64)).join(', ')}”의 리뷰 통과를 기다리고 있습니다.`;
     const previous = request.predecessorId ? byId.get(request.predecessorId) : undefined;
     return previous ? `선행 리뷰 “${previous.title}”의 통과를 기다리고 있습니다.` : '선행 리뷰의 통과를 기다리고 있습니다.';
   }
@@ -238,9 +275,8 @@ async function projectRequests(snapshot: Snapshot, checks: ProcessChecks, onlyId
   }));
 }
 
-function categories(request: MonitorRequest, byId: Map<string, Header>): { active: boolean; attention: boolean } {
-  const header = byId.get(request.id)!;
-  const blockedByFailure = header.status === 'BLOCKED' && failedPredecessor(header, byId) !== null;
+function categories(request: MonitorRequest): { active: boolean; attention: boolean } {
+  const blockedByFailure = request.blockedByFailure;
   return {
     active: !finished.has(request.status) && !blockedByFailure,
     attention: request.status === 'RED' || request.status === 'ERROR' || request.status === 'WAITING_HUMAN' || blockedByFailure || request.workerState === 'missing' || request.workerState === 'unknown',
@@ -262,7 +298,7 @@ function timeline(request: Header, events: Event[]): MonitorDetail['timeline'] {
   }
   add('접수', request.createdAt, -2);
   // The first request is queued atomically with submission; later requests need their own queued event.
-  if (!request.predecessorId) add('실행 대기', labels.get('접수')?.at, (labels.get('접수')?.order ?? -2) + 0.5);
+  if (request.target === null && !request.predecessorId) add('실행 대기', labels.get('접수')?.at, (labels.get('접수')?.order ?? -2) + 0.5);
   add('실행 시작', request.startedAt, Number.MAX_SAFE_INTEGER - 4);
   add('담당', request.claimedAt, Number.MAX_SAFE_INTEGER - 3);
   add('알림 전달', request.notifiedAt, Number.MAX_SAFE_INTEGER - 2);
@@ -286,6 +322,26 @@ function artifactReferences(value: unknown): ArtifactReference[] {
   });
 }
 
+function pagination(query: { limit?: number; offset?: number }): { limit: number; offset: number } {
+  const limit = query.limit ?? 50, offset = query.offset ?? 0;
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 200 || !Number.isSafeInteger(offset) || offset < 0) throw new Error('목록 조회 범위가 올바르지 않습니다.');
+  return { limit, offset };
+}
+function graphFrom(snapshot: Snapshot, run: MonitorRun): Pick<MonitorGraph, 'available' | 'unavailableReason' | 'graph'> {
+  if (snapshot.graph === null) return { available: false, unavailableReason: '이 과거 실행에는 Artifact 그래프 정의가 저장되어 있지 않습니다.', graph: null };
+  try {
+    validateGraphDefinition(snapshot.graph);
+    if (!run.snapshotHash || !/^[a-f0-9]{64}$/.test(run.snapshotHash)) throw storageError();
+    const requests = snapshot.requests.filter(request => request.runId === run.id);
+    const definitions = new Map(snapshot.graph.critics.map(critic => [critic.id, critic]));
+    for (const request of requests) {
+      const expected = definitions.get(request.criticId);
+      if (request.snapshotHash !== run.snapshotHash || !expected || request.kind !== expected.kind || request.target !== expected.target || JSON.stringify(request.deps) !== JSON.stringify(expected.deps)) throw storageError();
+    }
+    return { available: true, unavailableReason: null, graph: projectGraph(snapshot.graph, requests.map(request => ({ id: request.id, criticId: request.criticId, status: request.status, claimedBy: request.claimedBy, blockedReason: request.blockedReason }))) };
+  } catch { return { available: false, unavailableReason: '저장된 그래프와 이 실행의 입력·리뷰 기록이 일치하지 않습니다.', graph: null }; }
+}
+
 /** Optional observer: opening or querying it never runs reconciliation or changes review state. */
 export function createMonitorStore(options: MonitorSources = {}) {
   const discover = sourcesReader(options);
@@ -294,6 +350,23 @@ export function createMonitorStore(options: MonitorSources = {}) {
     return source ? readSnapshot(source, requestId) : null;
   }
   return {
+    async runs(query: MonitorRunQuery = {}): Promise<MonitorRunOverview> {
+      const { limit, offset } = pagination(query);
+      const snapshots = await Promise.all((await discover()).map(source => readSnapshot(source)));
+      const projects = snapshots.map(snapshot => snapshot.project).sort((a, b) => a.name.localeCompare(b.name, 'ko') || a.id.localeCompare(b.id));
+      const rows = snapshots.filter(snapshot => query.project === undefined || snapshot.project.id === query.project).flatMap(snapshot => snapshot.runs)
+        .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt) || a.projectId.localeCompare(b.projectId) || a.id.localeCompare(b.id));
+      return { projects, runs: rows.slice(offset, offset + limit), total: rows.length, hasMore: offset + limit < rows.length, observedAt: new Date().toISOString() };
+    },
+    async graph(project: string, runId: string): Promise<MonitorGraph | null> {
+      const source = (await discover()).find(candidate => candidate.id === project);
+      if (!source) return null;
+      const snapshot = await readSnapshot(source, undefined, runId);
+      const run = snapshot.runs.find(run => run.id === runId);
+      if (!run || snapshot.project.issue) return null;
+      const requests = (await projectRequests(snapshot, new Map())).filter(request => request.runId === runId);
+      return { project: snapshot.project, run, ...graphFrom(snapshot, run), requests, observedAt: new Date().toISOString() };
+    },
     async overview(query: MonitorQuery = {}): Promise<MonitorOverview> {
       const limit = query.limit ?? 50, offset = query.offset ?? 0, filter = query.filter ?? 'all';
       if (!Number.isSafeInteger(limit) || limit < 1 || limit > 200 || !Number.isSafeInteger(offset) || offset < 0 || !['all', 'active', 'attention'].includes(filter) || (query.lane !== undefined && !['requested', 'running', 'success', 'failure'].includes(query.lane))) throw new Error('목록 조회 조건이 올바르지 않습니다.');
@@ -301,9 +374,9 @@ export function createMonitorStore(options: MonitorSources = {}) {
       const projects = snapshots.map(snapshot => snapshot.project).sort((a, b) => a.name.localeCompare(b.name, 'ko') || a.id.localeCompare(b.id));
       const checks: ProcessChecks = new Map();
       const scoped = snapshots.filter(snapshot => query.project === undefined || snapshot.project.id === query.project);
+      if (query.run !== undefined && query.project === undefined) throw new Error('실행을 선택하려면 프로젝트를 먼저 선택하세요.');
       const rows = (await Promise.all(scoped.map(async snapshot => {
-        const byId = new Map(snapshot.requests.map(request => [request.id, request]));
-        return (await projectRequests(snapshot, checks)).map(request => ({ request, ...categories(request, byId) }));
+        return (await projectRequests(snapshot, checks)).filter(request => query.run === undefined || request.runId === query.run).map(request => ({ request, ...categories(request) }));
       }))).flat();
       const counts = { all: rows.length, active: rows.filter(row => row.active).length, attention: rows.filter(row => row.attention).length };
       const filtered = rows.filter(row => filter === 'all' || row[filter]).sort((a, b) => Number(b.active || b.attention) - Number(a.active || a.attention) || Date.parse(b.request.createdAt) - Date.parse(a.request.createdAt) || a.request.projectId.localeCompare(b.request.projectId) || a.request.id.localeCompare(b.request.id));

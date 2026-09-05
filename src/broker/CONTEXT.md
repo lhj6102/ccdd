@@ -13,11 +13,11 @@ _Avoid_: Reviewer, 실행기
 _Avoid_: Task, 프로젝트
 
 **Critic Run**:
-선택한 Critic 하나만 평가하는 Run. GREEN은 선택한 Critic의 충족을 뜻하며 앞뒤 Critic이나 전체 Chain의 충족을 뜻하지 않는다.
-_Avoid_: Chain Run, 전체 검증
+선택한 Critic 하나만 평가하는 Run. GREEN은 선택한 Critic의 충족을 뜻하며 참조 Artifact나 다른 Critic의 충족을 뜻하지 않는다.
+_Avoid_: Graph Run, 전체 검증
 
-**Chain Run**:
-정의된 Critic 전체를 의존 순서대로 평가하는 Run. 모든 리뷰가 GREEN일 때 전체 Chain이 충족된다.
+**Graph Run**:
+정의된 Critic 전체를 Artifact 의존 관계에 따라 평가하는 Run. 모든 필수 리뷰가 GREEN일 때 전체 검증이 충족된다.
 _Avoid_: Critic Run, 개별 평가
 
 **Review Request**:
@@ -28,16 +28,28 @@ _Avoid_: Critic 정의, 작업 목록
 리뷰의 Artifact와 Critic 정의를 포함하는 전체 입력 상태. 입력 내용의 hash로 식별되며, 리뷰 중 변경되지 않아야 한다.
 _Avoid_: Git commit, 최신 소스
 
-**Predecessor**:
-Chain Run에서 현재 리뷰가 시작되기 전에 GREEN 판정을 받아야 하는 바로 앞 리뷰 요청.
-_Avoid_: 공동 평가 기준, 병합 조건
+**Target Artifact**:
+한 Critic이 판정하는 Artifact. 같은 Artifact를 여러 Critic이 서로 다른 기준으로 평가할 수 있다.
+_Avoid_: 참조 Artifact, 생성 결과
+
+**Dependency Artifact**:
+Critic이 대상의 판정 근거로 참조하는 다른 Artifact. 전체 검증에서는 이 Artifact의 필수 평가가 통과해야 해당 Critic이 시작할 수 있다.
+_Avoid_: 선행 Critic, 대상 Artifact
+
+**Basis Artifact**:
+별도의 Critic 판정을 요구하지 않는다고 명시한 검증의 출발점.
+_Avoid_: 자동 통과, 검토 완료
+
+**Artifact Validation**:
+같은 스냅샷과 평가 범위에서 한 Artifact를 대상으로 하는 모든 필수 Critic의 판정을 종합한 상태. 개별 판정의 성공이나 미실행만으로 전체 통과가 되지 않는다.
+_Avoid_: 파일의 영구적인 상태, 단일 Critic 판정
 
 **Verdict**:
 리뷰어가 평가 기준의 충족 여부에 대해 내린 GREEN 또는 RED 판정.
 _Avoid_: 실행 오류, 진행 상태
 
 **Blocked Review**:
-앞선 리뷰의 GREEN 판정이 없어 아직 시작할 수 없는 리뷰 요청.
+참조 Artifact의 필수 검토가 충족되지 않아 아직 시작할 수 없는 리뷰 요청.
 _Avoid_: 실패한 리뷰, RED 판정
 
 **Human Claim**:

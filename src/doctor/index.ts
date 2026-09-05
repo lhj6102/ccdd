@@ -9,7 +9,7 @@ import { errorCode, errorMessage } from '../executors/errors.js';
 import type { ReviewEnvelope, ExecutorRegistry, ExecutionEvent, WorkspaceHandle, WorkspaceMode } from '../contracts.js';
 
 
-export type DiagnosticScope = { kind: 'chain' } | { kind: 'critic'; criticId: string };
+export type DiagnosticScope = { kind: 'graph' } | { kind: 'critic'; criticId: string };
 export interface DiagnosticCheck {
   id: string;
   status: 'PASS' | 'FAIL' | 'SKIP';
@@ -44,7 +44,7 @@ export interface DiagnoseProjectOptions {
 }
 
 const canonical = (value: unknown): unknown => Array.isArray(value) ? value.map(canonical) : value && typeof value === 'object' ? Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b)).map(([key, entry]: [string, unknown]) => [key, canonical(entry)])) : value;
-const scopeFor = (criticId?: string): DiagnosticScope => criticId === undefined ? { kind: 'chain' } : { kind: 'critic', criticId };
+const scopeFor = (criticId?: string): DiagnosticScope => criticId === undefined ? { kind: 'graph' } : { kind: 'critic', criticId };
 const bounded = (value: unknown): string => String(value).slice(0, 2_000);
 const remedyFor = (value: unknown): string | undefined => value && typeof value === 'object' && 'remedy' in value && typeof value.remedy === 'string' ? value.remedy : undefined;
 

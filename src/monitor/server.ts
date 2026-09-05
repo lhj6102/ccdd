@@ -5,7 +5,7 @@ import { isDeepStrictEqual } from 'node:util';
 import { createArtifactViewer, createArtifactTools } from '../artifacts/index.js';
 import { createHumanArtifactTools } from '../artifacts/human.js';
 import type { MonitorStoredRequest } from './store.js';
-import { prepareReviewRequests } from '../requester/index.js';
+import { readStoredArtifactScope } from '../requester/index.js';
 import { reopenWorkspace } from '../workspaces/index.js';
 import { createMonitorStore } from './store.js';
 import { MonitorActionError, authorizeWorkspace, claimReview, completeReview, executeReviewTool } from './actions.js';
@@ -220,17 +220,32 @@ export async function startMonitor(options: MonitorSources & { port?: number } =
         } finally { mutations.delete(key); }
         return;
       }
+      if (url.pathname === '/api/runs') {
+        parameters(url, ['project', 'limit', 'offset']);
+        const project = url.searchParams.get('project');
+        json(response, await store.runs({ project: project === null ? undefined : id(project), limit: number(url.searchParams.get('limit'), 50, 1, 100), offset: number(url.searchParams.get('offset'), 0, 0, Number.MAX_SAFE_INTEGER) })); return;
+      }
+      const graphRoute = /^\/api\/graphs\/([^/]+)\/([^/]+)$/.exec(url.pathname);
+      if (graphRoute) {
+        parameters(url, []);
+        const graph = await store.graph(id(graphRoute[1]), id(graphRoute[2]));
+        if (!graph) throw new HttpError(404, '선택한 실행을 찾을 수 없습니다.');
+        json(response, graph); return;
+      }
       if (url.pathname === '/api/requests') {
-        parameters(url, ['project', 'filter', 'lane', 'limit', 'offset']);
+        parameters(url, ['project', 'run', 'filter', 'lane', 'limit', 'offset']);
         const filter = url.searchParams.get('filter') ?? 'all';
         if (!['all', 'active', 'attention'].includes(filter)) throw new HttpError(400, '알 수 없는 요청 필터입니다.');
         const projectValue = url.searchParams.get('project');
         const project = projectValue === null ? undefined : id(projectValue);
+        const runValue = url.searchParams.get('run');
+        const run = runValue === null ? undefined : id(runValue);
+        if (run !== undefined && project === undefined) throw new HttpError(400, '실행을 선택하려면 프로젝트를 먼저 선택하세요.');
         const limit = number(url.searchParams.get('limit'), 50, 1, 100);
         const offset = number(url.searchParams.get('offset'), 0, 0, Number.MAX_SAFE_INTEGER);
         const lane = url.searchParams.get('lane') ?? undefined;
         if (lane !== undefined && !['requested', 'running', 'success', 'failure'].includes(lane)) throw new HttpError(400, '알 수 없는 칸반 열입니다.');
-        json(response, await store.overview({ project, filter: filter as MonitorFilter, lane: lane as MonitorLane | undefined, limit, offset })); return;
+        json(response, await store.overview({ project, run, filter: filter as MonitorFilter, lane: lane as MonitorLane | undefined, limit, offset })); return;
       }
       const detail = /^\/api\/requests\/([^/]+)\/([^/]+)$/.exec(url.pathname);
       if (detail) {
@@ -261,7 +276,7 @@ export async function startMonitor(options: MonitorSources & { port?: number } =
         const handle = await reopenWorkspace(record.request.workspace, { signal: controller.signal });
         try {
           await handle.assertUnchanged();
-          const expected = (await prepareReviewRequests({ repoPath: handle.descriptor.path, repoId: record.repoId, snapshotHash: record.request.snapshotHash, criticId: record.request.criticId, allowLegacyTools: true }))[0];
+          const expected = await readStoredArtifactScope({ repoPath: handle.descriptor.path, criticId: record.request.criticId });
           if (!expected || !isDeepStrictEqual(expected.artifacts, record.request.artifacts) || !isDeepStrictEqual(expected.artifactTypes, record.request.artifactTypes)) throw new HttpError(409, '저장된 Artifact 범위가 리뷰 입력의 정의와 일치하지 않습니다.');
           const viewer = await createArtifactViewer({ worktreePath: handle.descriptor.path, artifacts: record.request.artifacts, artifactTypes: record.request.artifactTypes, signal: handle.signal });
           const definition = viewer.listArtifacts().find(item => item.id === artifactId);

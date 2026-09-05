@@ -19,7 +19,7 @@ async function fixture(t: TestContext, script = "import {writeFileSync} from 'no
   const output = join(dir, 'launch.txt');
   await writeFile(program, script);
   const type: ArtifactTypeDefinition = { viewer: 'text', agentTools: { read: {} }, humanTools: { open: { description: 'Open {artifactName}.', command: process.execPath, args: [program, output, '{artifactPath}'] } } };
-  const writeConfig = async (artifactType = type, profile: CriticProfile = { kind: 'human' }) => writeFile(join(repoPath, 'ccdd.config.json'), JSON.stringify({ artifacts: { why: { type: 'markdown', path: 'why.md' } }, artifactTypes: { markdown: artifactType }, critics: [{ id: 'review', title: 'Review Why', dependsOn: null, artifacts: ['why'], profile, payload: { instruction: 'Review the supplied Artifact.' } }] }));
+  const writeConfig = async (artifactType = type, profile: CriticProfile = { kind: 'human' }) => writeFile(join(repoPath, 'ccdd.config.json'), JSON.stringify({ artifacts: { why: { type: 'markdown', path: 'why.md' } }, artifactTypes: { markdown: artifactType }, critics: [{ id: 'review', title: 'Review Why', target: 'why', deps: [], profile, payload: { instruction: 'Review the supplied Artifact.' } }] }));
   await writeConfig();
   return { dir, repoPath, stateDir, program, output, type, writeConfig };
 }

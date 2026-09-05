@@ -1,6 +1,7 @@
 import path from 'node:path';
 import { lstat, readFile, readdir, realpath } from 'node:fs/promises';
 import { validateArtifactType } from '../artifacts/types.js';
+import { createGraphDefinition } from './graph.js';
 import type { RepoConfig } from '../contracts.js';
 
 export interface WorkspaceTreeEntry { path: string; type: string; mode: string }
@@ -57,13 +58,13 @@ export async function readWorkspaceConfig(repoPath: string): Promise<{ config: R
 export function validateConfig(config: unknown, tree: WorkspaceTreeEntry[]): asserts config is RepoConfig {
   if (!object(config) || !object(config.artifacts) || !object(config.artifactTypes) ||
       !Array.isArray(config.critics) || config.critics.length === 0 || config.critics.length > 32) {
-    throw new Error('Config requires artifacts, artifactTypes, and 1–32 ordered critics.');
+    throw new Error('Config requires artifacts, artifactTypes, and 1–32 critics.');
   }
   for (const [type, definition] of Object.entries(config.artifactTypes)) {
     validateArtifactType(type, definition);
   }
   for (const [id, artifact] of Object.entries(config.artifacts)) {
-    if (!identifier.test(id) || !object(artifact) || typeof artifact.type !== 'string' || !Object.hasOwn(config.artifactTypes, artifact.type)) {
+    if (!identifier.test(id) || !object(artifact) || typeof artifact.type !== 'string' || !Object.hasOwn(config.artifactTypes, artifact.type) || (artifact.basis !== undefined && typeof artifact.basis !== 'boolean')) {
       throw new Error(`Invalid artifact definition or unknown type: ${id}`);
     }
     const artifactPath = validateRelativePath(artifact.path);
@@ -77,17 +78,17 @@ export function validateConfig(config: unknown, tree: WorkspaceTreeEntry[]): ass
   }
   const artifacts = config.artifacts;
   const seen = new Set<string>();
-  for (const [index, critic] of config.critics.entries()) {
+  for (const critic of config.critics) {
     if (!object(critic) || typeof critic.id !== 'string' || !identifier.test(critic.id) || seen.has(critic.id)) throw new Error('Critic IDs must be unique safe identifiers.');
     seen.add(critic.id);
-    if (critic.dependsOn !== (index === 0 ? null : (config.critics[index - 1] as { id: string }).id)) {
-      throw new Error('Critics must form one ordered, strictly linear dependency chain.');
+    if (Object.hasOwn(critic, 'dependsOn') || Object.hasOwn(critic, 'artifacts')) {
+      throw new Error(`Critic ${critic.id}: dependsOn/artifacts have been replaced by target (one Artifact ID) and deps (Artifact ID array). Migrate the configuration explicitly; see docs/artifact-graph.md.`);
     }
     if (typeof critic.title !== 'string' || !critic.title.trim() ||
-        !Array.isArray(critic.artifacts) || critic.artifacts.length === 0 ||
-        new Set(critic.artifacts).size !== critic.artifacts.length ||
-        critic.artifacts.some(id => typeof id !== 'string' || !Object.hasOwn(artifacts, id))) {
-      throw new Error(`Critic ${critic.id} requires a title and known artifact references.`);
+        typeof critic.target !== 'string' || !Object.hasOwn(artifacts, critic.target) ||
+        !Array.isArray(critic.deps) || new Set(critic.deps).size !== critic.deps.length ||
+        critic.deps.some(id => typeof id !== 'string' || !Object.hasOwn(artifacts, id))) {
+      throw new Error(`Critic ${critic.id} requires a title, a known target Artifact and unique known deps.`);
     }
     if (!object(critic.payload) || typeof critic.payload.instruction !== 'string' || !critic.payload.instruction.trim()) {
       throw new Error(`Critic ${critic.id} requires a review request payload instruction.`);
@@ -102,4 +103,5 @@ export function validateConfig(config: unknown, tree: WorkspaceTreeEntry[]): ass
       throw new Error(`Runtime profile requires command and string args: ${critic.id}`);
     }
   }
+  createGraphDefinition(config as unknown as RepoConfig);
 }
