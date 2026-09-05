@@ -54,7 +54,7 @@ test('npm bin symlink invokes CLI without starting a server',async t=>{
   const dir=await mkdtemp(join(tmpdir(),'ccdd-bin-'));t.after(()=>removeOwnedWorkspaceTree(dir));
   const bin=join(dir,'ccdd');await symlink(cli,bin);
   const {stdout}=await promisify(execFile)(process.execPath,[bin,'help']);
-  assert.match(stdout,/CCDD 0[.]3[.]0/);assert.match(stdout,/No daemon/);assert.doesNotMatch(stdout,/ccdd serve/);
+  assert.match(stdout,/CCDD 0[.]4[.]0/);assert.match(stdout,/No daemon/);assert.doesNotMatch(stdout,/ccdd serve/);
 });
 
 test('CLI requires explicit exclusive workspace modes and rejects removed options',async()=>{
@@ -180,4 +180,19 @@ test('resume of a live worker preserves single ownership and execution',async t=
   const first=await invoke(['run','--copy',...f.args]);assert.equal(first.code,0,first.output);
   const second=await invoke(['resume',first.data.id,'--wait',...f.args]);assert.equal(second.code,0,second.output);
   assert.equal(second.data.events.filter(event=>event.type==='request.started').length,1);
+});
+
+
+test('CLI Artifact partial reads use line arguments and reject listing pagination on reads',async t=>{
+  const f=await fixture(t,{human:true});
+  await writeFile(join(f.repo,'why.md'),'첫 줄\r\n둘째 줄\r\n셋째 줄\n');
+  const first=await invoke(['run','--copy','--human-inbox',...f.args]);assert.equal(first.code,0,first.output);
+  const waiting=await until(()=>f.status(first.data.id),run=>run.status==='WAITING_HUMAN'&&!run.owner);
+  const id=waiting.requests[0].id;
+  const partial=await separate(['artifact',id,'why','--start-line','2','--line-count','1',...f.args]);
+  assert.equal(partial.code,0,JSON.stringify(partial));assert.equal(partial.data.content,'둘째 줄\r\n');
+  assert.equal(partial.data.startLine,2);assert.equal(partial.data.endLine,2);assert.equal(partial.data.nextStartLine,3);
+  for(const flags of [['--start-line','0'],['--line-count','501'],['--offset','1'],['--file','why.md']]){
+    const invalid=await separate(['artifact',id,'why',...flags,...f.args]);assert.equal(invalid.code,2,JSON.stringify(invalid));
+  }
 });

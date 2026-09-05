@@ -1,4 +1,4 @@
-# Implementation contracts — v0.3
+# Implementation contracts — v0.4
 
 One npm package, Node 24 ESM, local SQLite persistence. Broker and Executors remain separate bounded contexts. A request-scoped worker runs one Run; there is no daemon, HTTP transport, observer UI, global broker-owner lock, or automatic queue scanner. An observer server may be added later as an optional adapter.
 
@@ -35,6 +35,34 @@ This is cooperative local execution, not an OS sandbox against a hostile process
 ```
 
 Agent profile: `{kind:'agent',provider:'codex',model,reasoning,timeoutMs?}`. Human profile: `{kind:'human'}` with at least one registered alarm method. The demo Code Runner supports Node test paths. Configuration and payload are fixed with the input, including uncommitted edits.
+
+## Artifact type tools and line reads
+
+Each type can define optional operation description overrides:
+
+```json
+"code": {
+  "viewer": "files",
+  "tools": {
+    "list": {"description": "{artifactName}의 파일 목록을 조회한다."},
+    "read": {"description": "{artifactName}의 소스 텍스트를 줄 단위로 읽는다."}
+  }
+}
+```
+
+`tools` is optional and does not enable new operations or disable omitted builtins. `text` supports read; `files` supports list/read, with the actual Artifact shape deciding which are exposed. A file exposes only `read_<artifactName>`; a directory exposes `list_<artifactName>` and `read_<artifactName>`. Names remain flat MCP tools. There is no payload `tool` discriminator.
+
+The only description template placeholder is `{artifactName}`, replaced literally everywhere by the Artifact definition ID. Type/tool settings validate before review acceptance and also in the standalone Viewer. Descriptions must be nonblank strings of at most 4000 characters. Unknown fields, operations and unsupported template braces are rejected. Existing types without `tools` retain builtin descriptions. These settings describe existing Viewer operations and cannot expand filesystem permissions.
+
+Read inputs are `startLine` (integer >=1, default1) and `lineCount` (integer1–500, default80). Directory reads additionally require a nonempty `path` to a file inside that Artifact. File reads reject any path argument. Byte-read `offset`/`limit` and unknown arguments are rejected rather than reinterpreted. Directory listing keeps optional internal `path`, zero-based entry `offset` and entry `limit` (1–200).
+
+Read results contain plain original text, `startLine`, `endLine` (null when no lines returned), actual `lineCount`, `truncated`, and `nextStartLine` (null at EOF). `totalLines` is returned when EOF is reached; early pages do not scan the entire remaining file merely to compute a total. LF/CRLF and UTF-8 text are preserved, and a trailing newline does not create an extra empty line. Empty files and requests past EOF return empty content with lineCount0.
+
+Responses retain a 64KiB content bound. Pagination stops before a whole line that would exceed the remaining response budget and points to that line for continuation. A requested individual line larger than the bound fails explicitly rather than returning a partial line. The reader streams through the file and avoids loading all content into memory. Binary/invalid text and escaping paths fail.
+
+MCP audit records include only successful operation names, arguments, and safe observation metadata (Artifact ID, operation and returned line range/count), never file contents. Agent inspection requires a successful read returning at least one line, or observing an actually empty file. Listing alone or reading beyond EOF of a nonempty file does not satisfy required observation. Provider prompts explain the review payload and Artifact scope before describing the available operations and line continuation.
+
+CLI inspection uses `artifact REQUEST_ID ARTIFACT_ID --start-line N --line-count N`, adding `--file INTERNAL_PATH` for directory reads. Listing uses `--offset` and `--limit`. The same Viewer validates both CLI and Agent access.
 
 ## Request and execution
 
@@ -73,3 +101,5 @@ The Agent readiness probe uses the same Provider/model/reasoning and MCP transpo
 ## Compatibility
 
 v0.3 removes `serve`, HTTP APIs, `--url`, `--commit`, and the browser/video recording implementation. Previous release assets remain historical. Use a fresh external state directory for new reviews; v0.1/v0.2 state located inside a repo is not automatically moved. An optional observer server can be added later without owning or being required for reviews.
+
+In v0.4, read calls replace byte-based offset/limit with startLine/lineCount. Custom operation descriptions are optional. Fresh demos use demo-v4; existing demo directories are never rewritten automatically.

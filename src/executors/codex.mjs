@@ -100,7 +100,10 @@ export async function invokeCodex({ codexPath, request, worktreePath, runDir, sc
   try { final = JSON.parse(await readFile(resultPath, 'utf8')); }
   catch { throw diagnosticError('INVALID_PROVIDER_RESULT', 'Codex did not return valid final JSON', 'Provider가 요구된 구조의 최종 응답을 반환하는지 확인하세요.'); }
   const audit = (await readFile(auditPath, 'utf8')).trim();
-  const toolCalls = audit ? audit.split('\n').map(line => { const { name, arguments: args } = JSON.parse(line); return { name, arguments: args }; }) : [];
+  const toolCalls = audit ? audit.split('\n').map(line => {
+    const { name, arguments: args, observation } = JSON.parse(line);
+    return { name, arguments: args, ...(observation ? { observation } : {}) };
+  }) : [];
   for (const call of toolCalls) await onEvent({ type: 'artifact.tool.called', ...call });
   return { final, toolCalls };
 }

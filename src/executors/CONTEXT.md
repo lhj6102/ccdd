@@ -29,7 +29,7 @@ _Avoid_: 등록 없는 대기열
 _Avoid_: 테스트 실행기, Artifact 생성기
 
 **Viewer Entry Point**:
-특정 스냅샷과 Artifact 범위에서 리뷰어가 필요한 부분을 관측할 수 있는 진입점이다. Agent에게는 사용할 수 있는 도구로 제공된다.
+특정 스냅샷의 Artifact에 대해 하나의 관측 동작을 제공하는 진입점이다. Artifact 타입에 정의된 설명을 바탕으로 리뷰어에게 관측 범위와 동작을 안내한다.
 _Avoid_: 전체 파일을 미리 넣은 프롬프트, Repo 전체 접근
 
 **Review Result**:

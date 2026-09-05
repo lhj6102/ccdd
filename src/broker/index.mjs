@@ -22,7 +22,17 @@ function validateResult(value) {
   const result = { verdict: value.verdict, summary: value.summary.slice(0, 12_000), evidence: value.evidence.slice(0, 100).map(item => item.slice(0, 4000)) };
   for (const key of ['provider', 'model', 'stdout', 'stderr']) if (typeof value[key] === 'string') result[key] = value[key].slice(0, 24_000);
   for (const key of ['durationMs', 'exitCode']) if (Number.isFinite(value[key])) result[key] = value[key];
-  if (Array.isArray(value.toolCalls)) result.toolCalls = value.toolCalls.slice(0, 100).filter(item => item && typeof item.name === 'string').map(item => ({ name: item.name, ...(item.arguments === undefined ? {} : { arguments: copy(item.arguments) }) }));
+  if (Array.isArray(value.toolCalls)) result.toolCalls = value.toolCalls.slice(0, 100).filter(item => item && typeof item.name === 'string').map(item => {
+    const call = { name: item.name, ...(item.arguments === undefined ? {} : { arguments: copy(item.arguments) }) };
+    if (item.observation && typeof item.observation.artifactId === 'string' && ['read', 'list'].includes(item.observation.operation)) {
+      call.observation = { artifactId: item.observation.artifactId.slice(0, 64), operation: item.observation.operation };
+      for (const key of ['startLine', 'endLine', 'lineCount', 'totalLines']) {
+        const number = item.observation[key];
+        if (number === null || (Number.isSafeInteger(number) && number >= 0)) call.observation[key] = number;
+      }
+    }
+    return call;
+  });
   if (JSON.stringify(result).length > 256_000) throw new Error('Review result exceeds the supported size.');
   return result;
 }

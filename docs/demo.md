@@ -1,4 +1,4 @@
-# CCDD v0.3 CLI 시연
+# CCDD v0.4 CLI 시연
 
 Node 24 이상과 요청 모델을 사용할 수 있는 Codex 로그인을 준비합니다. 서버와 브라우저는 사용하지 않습니다.
 
@@ -7,7 +7,7 @@ node src/cli.mjs prepare-demo
 node src/cli.mjs doctor --demo --scenario fixed --json
 ```
 
-데모 폴더는 기본적으로 `~/.local/share/ccdd/demo-v3`에 만들어집니다. `--demo-dir PATH`로 지정할 수도 있습니다. 네 시나리오는 Git 없는 별도 폴더이며 현재 파일을 직접 수정할 수 있습니다.
+데모 폴더는 기본적으로 `~/.local/share/ccdd/demo-v4`에 만들어집니다. `--demo-dir PATH`로 지정할 수도 있습니다. 네 시나리오는 Git 없는 별도 폴더이며 현재 파일을 직접 수정할 수 있습니다.
 
 | 시나리오 | Why / Spec / Tests / Implementation의 최대 개수 | 확인 |
 | --- | --- | --- |
@@ -32,3 +32,5 @@ node src/cli.mjs status RUN_ID --demo --scenario fixed
 ```
 
 `--lock` 도중 원본을 수정하면 입력 변경 ERROR가 됩니다. `--copy`가 준비된 뒤 원본을 수정해도 진행 중인 리뷰는 복사된 내용으로 계속 실행됩니다. 관찰 서버는 향후 추가 가능한 기능으로만 남깁니다.
+
+Artifact 도구의 이름은 `read_spec`, `list_tests`, `read_tests`입니다. 데모의 markdown/code 타입에 동작별 설명 템플릿이 들어 있으며 `{artifactName}`이 실제 ID로 치환됩니다. 예를 들어 `read_tests({path: "rank.test.mjs", startLine: 1, lineCount: 80})`으로 테스트 파일을 줄 단위로 읽습니다.

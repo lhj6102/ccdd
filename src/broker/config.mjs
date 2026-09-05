@@ -1,5 +1,6 @@
 import path from 'node:path';
 import { lstat, readFile, readdir, realpath } from 'node:fs/promises';
+import { validateArtifactType } from '../artifacts/types.mjs';
 
 const identifier = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
 const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -55,9 +56,7 @@ export function validateConfig(config, tree) {
     throw new Error('Config requires artifacts, artifactTypes, and 1–32 ordered critics.');
   }
   for (const [type, definition] of Object.entries(config.artifactTypes)) {
-    if (!identifier.test(type) || !object(definition) || !['text', 'files'].includes(definition.viewer)) {
-      throw new Error(`Invalid artifact type/viewer: ${type}`);
-    }
+    validateArtifactType(type, definition);
   }
   for (const [id, artifact] of Object.entries(config.artifacts)) {
     if (!identifier.test(id) || !object(artifact) || !Object.hasOwn(config.artifactTypes, artifact.type)) {

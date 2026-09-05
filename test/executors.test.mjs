@@ -34,6 +34,7 @@ const configValue=key=>JSON.parse(config.find(x=>x.startsWith(key+'=')).slice(ke
 await writeFile(${JSON.stringify(join(dir, 'provider-args.json'))},JSON.stringify(args));
 let prompt='';for await(const chunk of process.stdin)prompt+=chunk;
 if(!prompt.includes('Review payload:'))process.exit(2);
+await writeFile(${JSON.stringify(join(dir, 'provider-prompt.txt'))},prompt);
 console.log(JSON.stringify({type:'item.completed',item:{type:'reasoning',text:'PRIVATE_REASONING_DO_NOT_EXPOSE'}}));
 if(${JSON.stringify(mode)}==='hang'){setInterval(()=>{},1000);await new Promise(()=>{});}
 if(${JSON.stringify(mode)}==='exit')process.exit(7);
@@ -44,7 +45,9 @@ lines.on('line',line=>{const m=JSON.parse(line);pending.get(m.id)(m);pending.del
 const call=(method,params)=>new Promise(resolve=>{const id=++seq;pending.set(id,resolve);mcp.stdin.write(JSON.stringify({jsonrpc:'2.0',id,method,params})+'\\n');});
 await call('initialize',{protocolVersion:'2024-11-05'});
 const tools=(await call('tools/list')).result.tools;
-if(${JSON.stringify(mode)}!=='no-tools')for(const tool of tools)if(tool.name.startsWith('read_'))await call('tools/call',{name:tool.name,arguments:{}});
+await writeFile(${JSON.stringify(join(dir, 'provider-tools.json'))},JSON.stringify(tools));
+if(${JSON.stringify(mode)}==='list-only'){for(const tool of tools)if(tool.name.startsWith('list_'))await call('tools/call',{name:tool.name,arguments:{}});}
+else if(${JSON.stringify(mode)}!=='no-tools')for(const tool of tools)if(tool.name.startsWith('read_'))await call('tools/call',{name:tool.name,arguments:${JSON.stringify(mode)}==='beyond-eof'?{startLine:1000,lineCount:1}:${JSON.stringify(mode)}==='partial'?{startLine:2,lineCount:1}:{}});
 mcp.stdin.end();
 const result=${JSON.stringify(mode)}==='malformed'?'not json':JSON.stringify({verdict:'GREEN',summary:'두 문서가 일치합니다.',evidence:['why.md와 spec.md는 모두 두 작업을 선택합니다.']});
 await writeFile(args[args.indexOf('--output-last-message')+1],result);
@@ -75,7 +78,7 @@ test('Codex adapter starts a real provider process with scoped MCP and keeps onl
 });
 
 test('provider errors, malformed final JSON and missing observation are ERROR conditions rather than fabricated RED verdicts', async t => {
-  for (const [mode, expected] of [['exit', /provider failed/], ['malformed', /final JSON/], ['no-tools', /did not inspect/]]) {
+  for (const [mode, expected] of [['exit', /provider failed/], ['malformed', /final JSON/], ['no-tools', /did not inspect/], ['beyond-eof', /did not inspect/]]) {
     const data = await fixture(t);
     const registry = createExecutorRegistry({ codexPath: await fakeProvider(data.dir, mode) });
     await assert.rejects(registry.execute(data.request, data), expected);
@@ -155,4 +158,33 @@ test('executors reject output directories inside input before creating files', a
     await assert.rejects(registry.execute(request, { ...data, runDir }), /outside the review workspace/);
     await assert.rejects(access(runDir));
   }
+});
+
+
+test('Agent receives type descriptions and line schemas, with Artifact scope explained before operations',async t=>{
+  const data=await fixture(t);
+  data.request.artifactTypes.markdown.tools={read:{description:'{artifactName}의 명세 텍스트를 줄 단위로 읽는다.'}};
+  const registry=createExecutorRegistry({codexPath:await fakeProvider(data.dir,'partial')});
+  const result=await registry.execute(data.request,data);
+  assert.equal(result.verdict,'GREEN');
+  const tools=JSON.parse(await readFile(join(data.dir,'provider-tools.json'),'utf8'));
+  assert.deepEqual(tools.map(tool=>tool.name),['read_why','read_spec']);
+  assert.equal(tools[1].description,'spec의 명세 텍스트를 줄 단위로 읽는다.');
+  for(const tool of tools){
+    assert.ok(tool.inputSchema.properties.startLine);assert.ok(tool.inputSchema.properties.lineCount);
+    assert.equal(tool.inputSchema.properties.offset,undefined);assert.equal(tool.inputSchema.properties.limit,undefined);
+    assert.equal(tool.inputSchema.properties.path,undefined);assert.equal(tool.inputSchema.properties.tool,undefined);
+  }
+  for(const call of result.toolCalls){assert.equal(call.observation.lineCount,1);assert.equal(call.observation.startLine,2);assert.equal(call.observation.endLine,2);}
+  const prompt=await readFile(join(data.dir,'provider-prompt.txt'),'utf8');
+  assert.ok(prompt.indexOf('Artifacts:')<prompt.indexOf('Each tool is named'));
+  assert.match(prompt,/spec의 명세 텍스트를 줄 단위로 읽는다/);
+});
+
+test('listing a directory alone does not satisfy required source observation',async t=>{
+  const data=await fixture(t);
+  await writeFile(join(data.worktreePath,'tests','example.mjs'),'export const value=2;');
+  data.request.artifacts=[{id:'tests',type:'code',path:'tests'}];
+  const registry=createExecutorRegistry({codexPath:await fakeProvider(data.dir,'list-only')});
+  await assert.rejects(registry.execute(data.request,data),/did not inspect required artifact: tests/);
 });
