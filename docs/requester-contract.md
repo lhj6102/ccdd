@@ -27,4 +27,7 @@ await broker.run(run.id);
 
 Human copy 대기는 영속 상태이며 프로세스 상주를 요구하지 않습니다. 결과 제출 명령이 다음 실행을 이어갑니다. Human lock 대기는 입력 감시 worker가 살아 있어야 합니다.
 
-타입의 `tools.read.description`, `tools.list.description` 템플릿은 `artifactTypes`에 포함되어 입력 hash 및 요청과 함께 고정됩니다. Artifact Runner가 `{artifactName}`을 실제 Artifact ID로 치환하고 `read_spec`, `list_tests` 등의 MCP 도구 설명을 구성합니다. 도구 인자는 줄 단위 `startLine`·`lineCount`이며 디렉터리 읽기에는 내부 `path`가 필요합니다.
+타입의 `tools.read.description`, `tools.list.description` 템플릿은 `artifactTypes`에 포함되어 입력 hash 및 요청과 함께 고정됩니다. Artifact Runner가 `{artifactName}`을 실제 Artifact ID로 치환하고 `read_spec`, `list_tests` 등의 도구 설명을 구성합니다. 도구 인자는 줄 단위 `startLine`·`lineCount`이며 디렉터리 읽기에는 내부 `path`가 필요합니다.
+
+
+Agent는 Pi 실행기로 전달합니다. 공통 요청·결과 타입은 `src/contracts.ts`에 있으며 Pi 라이브러리 타입을 Broker 계약으로 노출하지 않습니다. 인증 파일의 경로는 실행 환경 설정이고 repo payload나 Artifact 정의에 credential을 넣지 않습니다.

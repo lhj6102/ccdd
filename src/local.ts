@@ -2,14 +2,15 @@ import {appendFile, mkdir, realpath} from 'node:fs/promises';
 import {createHash} from 'node:crypto';
 import {homedir} from 'node:os';
 import {join, resolve} from 'node:path';
+import type { AlarmMethod } from './contracts.js';
 
-export async function localContext({repoPath=process.cwd(),stateDir}={}) {
+export async function localContext({repoPath=process.cwd(),stateDir}: {repoPath?:string;stateDir?:string}={}) {
   repoPath=await realpath(resolve(repoPath));
   const key=createHash('sha256').update(repoPath).digest('hex').slice(0,24);
   return {repoPath,repoId:'local',stateDir:resolve(stateDir ?? join(process.env.CCDD_STATE_HOME || join(homedir(),'.local','state','ccdd'),key))};
 }
 
-export function createLocalAlarmMethods({stateDir,humanInbox=false}) {
+export function createLocalAlarmMethods({stateDir,humanInbox=false}: {stateDir:string;humanInbox?:boolean}): AlarmMethod[] {
   return humanInbox ? [{id:'local-inbox',notify:async request=>{
     await mkdir(stateDir,{recursive:true,mode:0o700});
     await appendFile(join(stateDir,'human-inbox.jsonl'),JSON.stringify({

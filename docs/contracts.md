@@ -1,6 +1,6 @@
-# Implementation contracts — v0.4
+# Implementation contracts — v0.5
 
-One npm package, Node 24 ESM, local SQLite persistence. Broker and Executors remain separate bounded contexts. A request-scoped worker runs one Run; there is no daemon, HTTP transport, observer UI, global broker-owner lock, or automatic queue scanner. An observer server may be added later as an optional adapter.
+One npm package, strict TypeScript compiled to Node 24 ESM, local SQLite persistence. Broker and Executors remain separate bounded contexts. A request-scoped worker runs one Run; there is no daemon, HTTP transport, observer UI, global broker-owner lock, or automatic queue scanner. An observer server may be added later as an optional adapter.
 
 ## Workspace contract
 
@@ -34,7 +34,7 @@ This is cooperative local execution, not an OS sandbox against a hostile process
 }
 ```
 
-Agent profile: `{kind:'agent',provider:'codex',model,reasoning,timeoutMs?}`. Human profile: `{kind:'human'}` with at least one registered alarm method. The demo Code Runner supports Node test paths. Configuration and payload are fixed with the input, including uncommitted edits.
+Agent profile: `{kind:'agent',provider:'openai-codex',model,reasoning,timeoutMs?}`. Human profile: `{kind:'human'}` with at least one registered alarm method. The demo Code Runner supports Node test paths. Configuration and payload are fixed with the input, including uncommitted edits.
 
 ## Artifact type tools and line reads
 
@@ -50,7 +50,7 @@ Each type can define optional operation description overrides:
 }
 ```
 
-`tools` is optional and does not enable new operations or disable omitted builtins. `text` supports read; `files` supports list/read, with the actual Artifact shape deciding which are exposed. A file exposes only `read_<artifactName>`; a directory exposes `list_<artifactName>` and `read_<artifactName>`. Names remain flat MCP tools. There is no payload `tool` discriminator.
+`tools` is optional and does not enable new operations or disable omitted builtins. `text` supports read; `files` supports list/read, with the actual Artifact shape deciding which are exposed. A file exposes only `read_<artifactName>`; a directory exposes `list_<artifactName>` and `read_<artifactName>`. Names remain flat tools. Pi calls them directly; the optional stdio MCP adapter exposes the same registry. There is no payload `tool` discriminator.
 
 The only description template placeholder is `{artifactName}`, replaced literally everywhere by the Artifact definition ID. Type/tool settings validate before review acceptance and also in the standalone Viewer. Descriptions must be nonblank strings of at most 4000 characters. Unknown fields, operations and unsupported template braces are rejected. Existing types without `tools` retain builtin descriptions. These settings describe existing Viewer operations and cannot expand filesystem permissions.
 
@@ -60,7 +60,7 @@ Read results contain plain original text, `startLine`, `endLine` (null when no l
 
 Responses retain a 64KiB content bound. Pagination stops before a whole line that would exceed the remaining response budget and points to that line for continuation. A requested individual line larger than the bound fails explicitly rather than returning a partial line. The reader streams through the file and avoids loading all content into memory. Binary/invalid text and escaping paths fail.
 
-MCP audit records include only successful operation names, arguments, and safe observation metadata (Artifact ID, operation and returned line range/count), never file contents. Agent inspection requires a successful read returning at least one line, or observing an actually empty file. Listing alone or reading beyond EOF of a nonempty file does not satisfy required observation. Provider prompts explain the review payload and Artifact scope before describing the available operations and line continuation.
+Shared audit records used by both Pi and MCP include only successful operation names, arguments, and safe observation metadata (Artifact ID, operation and returned line range/count), never file contents. Agent inspection requires a successful read returning at least one line, or observing an actually empty file. Listing alone or reading beyond EOF of a nonempty file does not satisfy required observation. Provider prompts explain the review payload and Artifact scope before describing the available operations and line continuation.
 
 CLI inspection uses `artifact REQUEST_ID ARTIFACT_ID --start-line N --line-count N`, adding `--file INTERNAL_PATH` for directory reads. Listing uses `--offset` and `--limit`. The same Viewer validates both CLI and Agent access.
 
@@ -71,6 +71,18 @@ CLI inspection uses `artifact REQUEST_ID ARTIFACT_ID --start-line N --line-count
 The Artifact Runner creates scoped Viewer entry-point tools such as `read_why`, `read_spec`, `list_tests`, and `read_tests`. Having the entire repo available as execution input does not grant an Agent visibility into every Artifact. Agent review requires observed reads of every supplied Artifact, a real Provider response, and a valid structured result.
 
 Executors receive the prepared input path, a distinct `runDir`, cancellation signal and event callback. Runtime environment sets `CCDD_OUTPUT_DIR`, `CCDD_TMP_DIR`, `TMPDIR`, `TMP`, `TEMP`, `HOME`, and `XDG_CACHE_HOME` to review-specific locations. Runtime cwd remains the input so relative imports work. A test failure is RED; an operational failure or detected input mutation is ERROR.
+
+## Pi Agent execution
+
+Only `src/executors` imports Pi runtime libraries. `@earendil-works/pi-agent-core` and `@earendil-works/pi-ai` are pinned to 0.85.0, reused as dependencies. The Broker delegates the common `ExecutorRegistry` contract (`src/contracts.ts`); it does not own LLM sessions. Human remains a durable broker workflow, and Runtime remains actual Node execution.
+
+Pi receives only the request's Artifact tools. No coding harness, shell, write, network-browsing or general filesystem tools are added. `createAuditedArtifactTools` is the common execution wrapper; Pi's `prepareArguments` invokes its strict validation before Pi can coerce numeric strings or strip nulls. The same Viewer performs all filesystem scope checks.
+
+CCDD resolves the exact Provider/model in Pi's installed catalog. Unsupported reasoning, including Pi mappings that substitute a different named effort, is rejected. `off` is accepted only for models without reasoning. A model absent from that version of the catalog is rejected, never replaced. Actual Provider access remains a runtime diagnostic because catalog presence does not prove account access.
+
+The same Pi loop serves `doctor` and review. External cancellation and profile timeout abort the loop; aborted/error Provider messages cannot become verdicts. The final response must be complete JSON matching the requested schema, followed by CCDD's semantic shape and required-observation validation. Only safe lifecycle/tool metadata and final result are persisted; Provider thinking and raw errors are excluded.
+
+Credentials come from Pi's supported Provider environment variables or explicit absolute credential-file paths. `--pi-auth-file` reads provider-keyed Pi credentials; `--codex-auth-file` explicitly bridges an existing unexpired Codex access token for `openai-codex`. File adapters are read-only; they never refresh or modify shared tokens. OAuth within five minutes of expiration is rejected. The issuer's login tool owns renewal. Configured credential files must stay outside reviewed input. Only paths and Human alarm settings are serialized for the worker; API key environment variables must be available to a resumed process. No credentials are copied into the broker state.
 
 ## Durable broker and process ownership
 
@@ -96,10 +108,13 @@ Lock-mode waiting keeps its worker and input monitoring alive. Human completion 
 
 `diagnoseProject({repoPath,repoId,mode='copy',stateDir?,criticId?,executors,signal?,onEvent?})` returns `{ok,status:'READY'|'NOT_READY',repoId,mode,snapshotHash,scope,checkedAt,checks}`. It reads current definitions and validates actual project Viewer entry points. Exact Agent profiles are deduplicated; runtime path checks remain per Critic.
 
-The Agent readiness probe uses the same Provider/model/reasoning and MCP transport with a random nonce Artifact in a private diagnostic workspace. It never writes into the original or shared review input. READY requires the correct nonce and audited tool read. Runtime diagnosis starts Node and checks paths, without executing project tests. Human diagnosis checks registration without sending notifications. No Run, semantic verdict or review history is created. READY describes the diagnostic moment, not future availability or Critic correctness.
+The Agent readiness probe uses the same Provider/model/reasoning and Pi Agent execution path with a random nonce Artifact in a private diagnostic workspace. It never writes into the original or shared review input. READY requires the correct nonce and audited tool read. Runtime diagnosis starts Node and checks paths, without executing project tests. Human diagnosis checks registration without sending notifications. No Run, semantic verdict or review history is created. READY describes the diagnostic moment, not future availability or Critic correctness.
 
 ## Compatibility
 
 v0.3 removes `serve`, HTTP APIs, `--url`, `--commit`, and the browser/video recording implementation. Previous release assets remain historical. Use a fresh external state directory for new reviews; v0.1/v0.2 state located inside a repo is not automatically moved. An optional observer server can be added later without owning or being required for reviews.
 
 In v0.4, read calls replace byte-based offset/limit with startLine/lineCount. Custom operation descriptions are optional. Fresh demos use demo-v4; existing demo directories are never rewritten automatically.
+
+
+v0.5 replaces the bundled Codex CLI with Pi libraries and builds TypeScript into `dist/`. The installed bin remains `ccdd`; source checkout commands use `npm run build` then `node dist/src/cli.js`. `--codex` and `CCDD_CODEX_PATH` no longer configure Agent execution. Agent profiles must use Pi IDs and exact catalog-supported models; pre-v0.5 pending Agent requests retain their original profiles and fail explicitly if unsupported. Human and Runtime records retain their broker lifecycle. Fresh demos use demo-v5.

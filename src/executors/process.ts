@@ -1,17 +1,22 @@
 import { spawn } from 'node:child_process';
+import type { ChildProcessWithoutNullStreams, SpawnOptionsWithoutStdio } from 'node:child_process';
+export type SpawnImplementation = (command: string, args: readonly string[], options: SpawnOptionsWithoutStdio) => ChildProcessWithoutNullStreams;
+export interface ProcessResult { exitCode: number | null; exitSignal: NodeJS.Signals | null; stdout: string; stderr: string; outputTruncated: boolean }
+export interface ProcessOptions { cwd?: string; env?: NodeJS.ProcessEnv; input?: string; signal?: AbortSignal; timeoutMs?: number; capture?: boolean; maxOutputBytes?: number; onOutput?: (stream: 'stdout'|'stderr', bytes: Buffer) => void; spawnImpl?: SpawnImplementation }
 
 /** Spawn directly, never through a shell. Cancel the complete child process group. */
-export function runProcess(command, args, { cwd, env, input, signal, timeoutMs = 180_000, capture = true, maxOutputBytes = 128 * 1024, onOutput, spawnImpl = spawn } = {}) {
+export function runProcess(command: string, args: string[], { cwd, env, input, signal, timeoutMs = 180_000, capture = true, maxOutputBytes = 128 * 1024, onOutput, spawnImpl = spawn }: ProcessOptions = {}): Promise<ProcessResult> {
   return new Promise((resolve, reject) => {
     if (signal?.aborted) { reject(new Error('Execution aborted')); return; }
-    let child;
+    let child: ChildProcessWithoutNullStreams;
     try { child = spawnImpl(command, args, { cwd, env, stdio: ['pipe', 'pipe', 'pipe'], detached: process.platform !== 'win32', windowsHide: true }); }
     catch (error) { reject(error); return; }
-    let stdout = '', stderr = '', outputTruncated = false, failure, killTimer;
-    const stop = reason => {
+    let stdout = '', stderr = '', outputTruncated = false;
+    let failure: Error | undefined, killTimer: NodeJS.Timeout | undefined;
+    const stop = (reason: string) => {
       if (failure) return;
       failure = new Error(reason);
-      const kill = sig => {
+      const kill = (sig: NodeJS.Signals) => {
         try { if (process.platform !== 'win32' && child.pid) process.kill(-child.pid, sig); else child.kill(sig); } catch {}
       };
       kill('SIGTERM');
@@ -22,7 +27,7 @@ export function runProcess(command, args, { cwd, env, input, signal, timeoutMs =
     signal?.addEventListener('abort', abort, { once: true });
     const timer = setTimeout(() => stop(`Execution timed out after ${timeoutMs} ms`), timeoutMs);
     timer.unref();
-    const collect = key => chunk => {
+    const collect = (key: 'stdout'|'stderr') => (chunk: Buffer) => {
       onOutput?.(key, chunk);
       if (!capture) return;
       const text = chunk.toString('utf8');
