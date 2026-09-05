@@ -21,7 +21,7 @@ async function fixture(t: TestContext) {
     artifacts: [{ id: 'why', type: 'markdown', path: 'why.md' }, { id: 'spec', type: 'markdown', path: 'spec.md' }],
     artifactTypes: { markdown: { viewer: 'text' }, code: { viewer: 'files' } },
     payload: { instruction: 'Compare {why} and {spec}.' },
-    profile: { kind: 'agent', provider: 'openai-codex', model: 'gpt-5.6-sol', reasoning: 'medium', timeoutMs: 5_000 },
+    profile: { kind: 'agent', provider: 'openai-codex', model: 'gpt-6-astra', reasoning: 'medium', timeoutMs: 5_000 },
   };
   return { dir, request, worktreePath, runDir: join(dir, 'run') };
 }
@@ -39,7 +39,7 @@ test('Pi Agent uses exact profile and only scoped Artifact tools; result and aud
   const result = await registry.execute(data.request, { ...data, onEvent: event => { events.push(event); } });
   assert.equal(result.verdict, 'GREEN');
   assert.deepEqual(result.toolCalls?.map(x => x.name), ['read_why', 'read_spec']);
-  assert.equal(result.provider, 'openai-codex'); assert.equal(result.model, 'gpt-5.6-sol');
+  assert.equal(result.provider, 'openai-codex'); assert.equal(result.model, 'gpt-6-astra');
   assert.ok(calls >= 2);
   assert.doesNotMatch(JSON.stringify({ result, events }), /PRIVATE_REASONING|SECRET_TOKEN/);
   assert.ok(events.some(x => x.type === 'artifact.tools.ready'));

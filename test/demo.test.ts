@@ -16,6 +16,7 @@ test('four editable workspaces preserve the graph and real runtime regression wi
       const read=(p:string)=>readFile(join(scenario.repoPath,p),'utf8');
       const config=JSON.parse(await read('ccdd.config.json')) as RepoConfig;
       assert.deepEqual(config.critics.map(c=>c.dependsOn),[null,'spec-why','tests-spec']);
+      assert.deepEqual(config.critics.slice(0,2).map(c=>c.profile),Array(2).fill({kind:'agent',provider:'openai-codex',model:'gpt-6-astra',reasoning:'medium'}));
       assert.equal(config.artifactTypes.markdown.tools!.read!.description,'{artifactName}의 문서 내용을 줄 단위로 읽는다.');
       assert.equal(config.artifactTypes.code.tools!.list!.description,'{artifactName}의 파일 목록을 조회한다.');
       assert.equal(config.artifactTypes.code.tools!.read!.description,'{artifactName}의 소스 텍스트를 줄 단위로 읽는다.');
@@ -35,6 +36,7 @@ test('preparing a demo preserves edited current files and rejects an older manif
     const configPath=join(manifest.scenarios[0].repoPath,'ccdd.config.json');
     const config=JSON.parse(await readFile(configPath,'utf8'));
     config.artifactTypes.markdown.tools!.read!.description='{artifactName}의 사용자 지정 설명';
+    config.critics[0].profile.model='gpt-5.6-sol';
     const edited=JSON.stringify(config);
     await writeFile(configPath,edited);
     assert.deepEqual(await prepareDemo({root}),manifest);
