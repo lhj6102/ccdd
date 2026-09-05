@@ -2,7 +2,7 @@
 
 **Critic 중계 브로커와 Artifact Runner를 하나의 npm 패키지로 실행합니다.**
 
-현재 작업 폴더에서 리뷰를 요청하면 CCDD가 Agent·테스트 런타임·Human 실행기에 연결하고 판정과 근거를 저장합니다. Git commit과 상주 daemon 없이 사용합니다. Artifact Runner는 요청에 선언된 Artifact만 읽는 Viewer 도구를 Agent에 제공합니다.
+현재 작업 폴더에서 리뷰를 요청하면 CCDD가 Agent·테스트 런타임·Human 실행기에 연결하고 판정과 근거를 저장합니다. Git commit과 상주 daemon 없이 사용합니다. Artifact Runner는 요청에 선언된 Artifact를 Agent·Human 각각의 관측 도구에 연결합니다.
 
 ## 시작하기
 
@@ -71,21 +71,34 @@ ccdd doctor --repo /path/to/project --codex-auth-file "$HOME/.codex/auth.json" -
 "artifactTypes": {
   "markdown": {
     "viewer": "text",
-    "tools": {
+    "agentTools": {
       "read": {"description": "{artifactName}의 문서 내용을 줄 단위로 읽는다."}
+    },
+    "humanTools": {
+      "read": {"description": "{artifactName}을 화면에서 읽는다."},
+      "open": {
+        "description": "{artifactName}을 기본 프로그램으로 연다.",
+        "command": "/usr/bin/open",
+        "args": ["{artifactPath}"]
+      }
     }
   },
   "code": {
     "viewer": "files",
-    "tools": {
+    "agentTools": {
       "list": {"description": "{artifactName}의 파일 목록을 조회한다."},
       "read": {"description": "{artifactName}의 소스 텍스트를 줄 단위로 읽는다."}
-    }
+    },
+    "humanTools": {"list": {}, "read": {}}
   }
 }
 ```
 
-`tests`에 연결된 `read` 도구는 이름이 `read_tests`, 설명이 “tests의 소스 텍스트를 줄 단위로 읽는다.”가 됩니다. 타입 이름은 repo에서 자유롭게 정의하며, 실제 동작은 연결된 Viewer가 제공합니다. 설명을 생략한 기존 설정에는 기본 설명이 적용됩니다.
+`tests`에 연결된 Agent `read` 도구는 이름이 `read_tests`, 설명이 “tests의 소스 텍스트를 줄 단위로 읽는다.”가 됩니다. 타입 이름은 repo에서 자유롭게 정의합니다. 등록된 builtin 항목을 `{}`로 쓰면 기본 설명이 적용됩니다.
+
+`agentTools`와 `humanTools`는 독립된 도구 목록입니다. 생략하거나 `{}`로 비우면 해당 리뷰어에게 도구가 제공되지 않으며, 그 Artifact를 해당 종류의 Critic에 포함한 새 요청은 거부됩니다. 선택한 Critic의 모든 Artifact에 적용되며 Runtime은 별도의 실행 계약을 사용합니다. 기존 `tools` 설정은 과거 기록 열람을 위해 지원하지만, 새 요청에는 대상별 목록을 명시해야 합니다.
+
+위의 `open`은 macOS 예시입니다. 설치된 프로그램의 실행 파일과 고정 인자를 타입에 등록하며, `{artifactPath}`는 해당 리뷰의 Artifact 경로로 치환됩니다. 특정 앱을 지정하려면 `args`에 `"-a", "TextEdit", "{artifactPath}"`처럼 작성합니다. 도구는 기본 10초 안에 실행을 마쳐야 하며 `timeoutMs`로 최대 120초까지 지정할 수 있습니다. 프로그램을 열고 반환하는 실행기를 사용하세요. 프로그램 실행 성공과 사람의 검토 완료는 별개입니다.
 
 ```js
 read_spec({startLine: 1, lineCount: 80})
@@ -93,7 +106,7 @@ list_tests({})
 read_tests({path: "rank.test.mjs", startLine: 10, lineCount: 30})
 ```
 
-단일 파일은 `read`만 제공합니다. 디렉터리는 `list`·`read`를 제공하며, `read`에는 Artifact 내부의 파일 경로가 필요합니다. 단일 파일 `read`에는 `path`를 넣지 않습니다. 입력에 `tool` 구분자를 넣는 구조도 아닙니다.
+기본 Viewer 동작 중 단일 파일에는 `read`, 디렉터리에는 `list`·`read`를 등록할 수 있습니다. 디렉터리 `read`에는 Artifact 내부의 파일 경로가 필요하며, 단일 파일 `read`에는 `path`를 넣지 않습니다. Human 프로그램 실행 도구는 이와 별도로 등록합니다. 입력에 `tool` 구분자를 넣는 구조도 아닙니다.
 
 읽기는 1번 줄부터 시작하고 기본 80줄, 최대 500줄을 요청할 수 있습니다. 응답의 `nextStartLine`으로 이어 읽습니다. 한 번에 반환하는 내용은 64KiB 이내이며, 줄과 UTF-8 문자를 중간에서 자르지 않습니다. 한 줄 자체가 제한을 넘으면 오류를 반환합니다. 디렉터리 목록은 기존 `offset`·`limit` 방식으로 페이지를 넘깁니다.
 
@@ -135,6 +148,21 @@ ccdd human-result REQUEST_ID --reviewer reviewer-a --result-file /outside/repo/r
 
 결과 파일은 `{"verdict":"GREEN","summary":"검토 결과","evidence":["spec.md의 확인 근거"]}` 형식입니다. `--copy`는 알림이 전달되면 대기 상태를 저장하고 실행 프로세스를 종료할 수 있습니다. 이후 별도 명령으로 결과를 제출하면 필요한 후속 리뷰가 실행됩니다. `--lock`은 Human 대기 중에도 변경 감시 프로세스를 유지합니다.
 
+모니터에서도 Human 카드를 열어 **리뷰 맡기 → 도구 실행 → 성공·실패 판정 제출**을 진행할 수 있습니다. Claim한 브라우저만 해당 도구와 제출 버튼을 사용할 수 있습니다. 판정에는 요약과 최소 하나의 근거가 필요합니다. 서버를 재시작해도 같은 브라우저에서 이어갈 수 있으며, 브라우저 쿠키를 삭제하면 해당 브라우저의 담당 식별자가 사라집니다.
+
+## Artifact 도구 검사
+
+```sh
+ccdd tools check --repo /path/to/project
+ccdd tools check --artifact spec --for human
+ccdd tools check --artifact spec --for human --tool open --execute
+ccdd tools check --artifact tests --for agent --tool read --execute --args '{"path":"rank.test.mjs","startLine":1,"lineCount":30}'
+```
+
+기본 검사는 도구 정의·Artifact 경로·실행 파일 준비 여부를 확인합니다. `--execute`는 지정한 도구를 실제로 호출하며, Human `open` 도구라면 프로그램이 열립니다. 실제 실행에는 Artifact·리뷰어 종류·도구를 모두 지정합니다. `--copy`가 기본이며, `--lock`도 지원합니다.
+
+검사 결과에는 성공 여부와 실패 원인이 표시됩니다. 리뷰 기록이나 판정은 생성하지 않으며 Provider도 호출하지 않습니다. 데스크톱 프로그램을 연 복사본은 앱이 계속 읽을 수 있도록 보관합니다. 프로젝트 전체의 Provider·실행기 준비 상태는 기존 `ccdd doctor`로 검사합니다.
+
 ## CLI 데모
 
 ```sh
@@ -145,7 +173,7 @@ node dist/src/cli.js run --demo --scenario runtime-failure --copy --critic imple
 node dist/src/cli.js run --demo --scenario fixed --copy --wait
 ```
 
-새 데모는 `~/.local/share/ccdd/demo-v5.1`에 Git 없는 네 개의 수정 가능한 작업 폴더를 만듭니다. 기존 작업 폴더를 다시 초기화하지 않습니다. 별도 위치를 쓰려면 `--demo-dir PATH`를 지정합니다.
+새 데모는 `~/.local/share/ccdd/demo-v7`에 Git 없는 네 개의 수정 가능한 작업 폴더를 만듭니다. 기존 작업 폴더를 다시 초기화하지 않습니다. 별도 위치를 쓰려면 `--demo-dir PATH`를 지정합니다.
 
 ```text
 why.md → [Spec이 Why에 부합하는가] → spec.md
@@ -164,14 +192,14 @@ ccdd monitor
 
 표시되는 로컬 주소를 브라우저에서 열면 됩니다. 기본 주소는 `http://127.0.0.1:4318`입니다. `--port`로 변경할 수 있습니다.
 
-기본 CCDD 저장 위치의 프로젝트를 모아 요청명·상태·경과 시간을 보여줍니다. 프로젝트와 진행 중/확인 필요 필터로 좁히고, 요청을 선택하면 판정·근거·진행 기록을 확인할 수 있습니다. Artifact 탭에서는 요청에 제공된 파일만 줄 단위로 읽습니다.
+프로젝트를 선택하면 **요청·진행 중·성공·실패** 네 영역에 리뷰 카드가 나타납니다. 각 영역에서 이전 요청을 추가로 불러올 수 있어 최근 완료 기록이 많아도 대기 중인 리뷰가 가려지지 않습니다. 카드를 열면 판정·근거·진행 기록과 요청에 제공된 Artifact를 확인할 수 있습니다.
 
 ```sh
 ccdd monitor --repo /path/to/project
 ccdd monitor --state-dir /outside/repo/state
 ```
 
-별도 저장 위치는 `--state-dir`로 연결합니다. 모니터는 관찰 전용이며 리뷰 실행·Human claim·결과 제출·Provider 설정 변경은 기존 CLI를 사용합니다. 모니터를 종료해도 리뷰는 계속 진행됩니다. 실행 프로세스가 사라졌다면 관찰 결과로 표시하며, 화면을 열었다는 이유로 저장된 판정을 변경하지 않습니다.
+별도 저장 위치는 `--state-dir`로 연결합니다. Human 카드는 담당 전에는 요청 영역에, claim 후에는 진행 중 영역에 표시합니다. 상세에서 등록된 Human 도구를 실행하고 GREEN·RED를 제출합니다. 후속 리뷰는 독립된 작업자로 재개되므로 모니터를 종료해도 계속 진행됩니다. 화면 조회만으로 저장된 상태나 판정을 변경하지 않습니다.
 
 목록의 경과 시간은 접수 이후입니다. 기존 기록에는 입력 복사·검증 이전의 시간이 없으므로 해당 준비 시간은 포함하지 않습니다. Human의 담당 이후 시간은 실제 작업 시간이 아닌 담당 후 경과입니다.
 
@@ -182,4 +210,4 @@ npm run typecheck
 npm test
 ```
 
-동시 복사본 공유, 복사 중 변경 거부, lock 변경·복원, 프로세스 간 소유권, 대기 시간 초과, Human 응답, 실제 테스트 실행, Provider 진단을 검증합니다. 모니터는 Node 내장 HTTP 서버와 브라우저 기본 기능을 사용하며 추가 라이브러리가 필요하지 않습니다. 이전 v0.1/v0.2 문서와 영상은 당시 구현을 기록한 자료이며 현재 사용법은 이 문서를 따릅니다.
+동시 복사본 공유, 복사 중 변경 거부, lock 변경·복원, 프로세스 간 소유권, Human 담당·도구·판정 제출, 도구 검사, 실제 테스트 실행, Provider 진단을 검증합니다. 모니터는 Node 내장 HTTP 서버와 Vue 3 화면을 사용하며, 빌드된 화면 파일이 npm 패키지에 포함됩니다. 이전 릴리스 문서와 영상은 당시 구현을 기록한 자료이며 현재 사용법은 이 문서를 따릅니다.

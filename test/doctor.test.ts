@@ -22,7 +22,7 @@ async function fixture(t: TestContext) {
   const profile: AgentProfile = { kind: 'agent', provider: 'openai-codex', model: 'gpt-6-astra', reasoning: 'medium', timeoutMs: 3_000 };
   const config: RepoConfig = {
     artifacts: { why: { type: 'markdown', path: 'why.md' }, spec: { type: 'markdown', path: 'spec.md' }, tests: { type: 'code', path: 'tests' } },
-    artifactTypes: { markdown: { viewer: 'text' }, code: { viewer: 'files' } },
+    artifactTypes: { markdown: { viewer: 'text', agentTools: { read: {} }, humanTools: { read: {} } }, code: { viewer: 'files', agentTools: { list: {}, read: {} }, humanTools: { list: {}, read: {} } } },
     critics: [
       { id: 'first', title: 'first', dependsOn: null, artifacts: ['why'], profile, payload: { instruction: 'Review why' } },
       { id: 'second', title: 'second', dependsOn: 'first', artifacts: ['spec'], profile: { timeoutMs: 3_000, reasoning: 'medium', model: 'gpt-6-astra', provider: 'openai-codex', kind: 'agent' }, payload: { instruction: 'Review spec' } },
@@ -76,6 +76,21 @@ function observedCalls(result: ProbeResult): ArtifactToolCall[] {
   assert.ok(Array.isArray(result.details.toolCalls));
   return result.details.toolCalls as ArtifactToolCall[];
 }
+
+test('Human-only binary Artifact readiness checks its registered launcher without launching it', async t => {
+  const data = await fixture(t);
+  const marker = join(data.dir, 'program-started');
+  data.config.artifactTypes.markdown = { viewer: 'text', humanTools: { open: {
+    description: 'Open {artifactName}', command: process.execPath,
+    args: ['-e', `require('node:fs').writeFileSync(${JSON.stringify(marker)},'launched')`, '{artifactPath}'],
+  } } };
+  await writeFile(join(data.repoPath, 'spec.md'), Buffer.from([0, 255, 0, 128]));
+  await writeFile(join(data.repoPath, 'ccdd.config.json'), JSON.stringify(data.config));
+  const report = await diagnoseProject({ ...data, criticId: 'human', executors: createExecutorRegistry({ alarmMethods: [async () => {}] }) });
+  assert.equal(report.ok, true, JSON.stringify(report));
+  assert.equal(report.checks.find(check => check.id === 'artifacts:human')?.details?.programsLaunched, false);
+  await assert.rejects(access(marker), { code: 'ENOENT' });
+});
 
 test('readiness identifies explicit auth, model and network errors without exposing Provider output', async t => {
   const expected: Array<[ArtifactStreamOptions['mode'], string]> = [['auth-error', 'AUTHENTICATION_FAILED'], ['model-error', 'MODEL_ACCESS_FAILED'], ['network-error', 'PROVIDER_CONNECTION_FAILED'], ['unknown-error', 'PROVIDER_EXECUTION_FAILED']];

@@ -1,10 +1,11 @@
 import { constants } from 'node:fs';
 import { lstat, open, readdir, realpath, stat, type FileHandle } from 'node:fs/promises';
 import { isAbsolute, relative, resolve, sep } from 'node:path';
-import { toolDescription, validateArtifactType } from './types.js';
+import { artifactAudienceTools, toolDescription, validateArtifactType } from './types.js';
 
-import type { ArtifactOperation, ArtifactTypeDefinition, ArtifactViewerKind } from './types.js';
-export type { ArtifactOperation, ArtifactTypeDefinition, ArtifactViewerKind } from './types.js';
+import type { ArtifactAudience, ArtifactOperation, ArtifactTypeDefinition, ArtifactViewerKind } from './types.js';
+export type { ArtifactAudience, ArtifactOperation, ArtifactTypeDefinition, ArtifactViewerKind } from './types.js';
+export { assertArtifactAudience } from './types.js';
 
 export interface ArtifactReference { id: string; type: string; path: string }
 export interface ArtifactViewerOptions {
@@ -55,6 +56,9 @@ export interface ArtifactListArguments { artifactId: string; path?: string; offs
 export interface ArtifactViewer {
   readonly signal?: AbortSignal;
   listArtifacts(): ArtifactDescriptor[];
+  getTypeDefinition(artifactId: string): ArtifactTypeDefinition;
+  /** Internal runner capability; never exported as an Agent tool. */
+  resolveTarget(artifactId: string, path?: string): Promise<{ absolutePath: string; directory: boolean }>;
   list(args: unknown): Promise<ArtifactListResult>;
   read(args: unknown): Promise<ArtifactReadResult>;
 }
@@ -75,6 +79,8 @@ export interface ArtifactSchemaProperty {
   default?: number;
 }
 export interface ArtifactToolDefinition {
+  artifactId?: string;
+  operation?: ArtifactOperation;
   name: string;
   description: string;
   inputSchema: { type: 'object'; properties: Record<string, ArtifactSchemaProperty>; required?: string[]; additionalProperties: false };
@@ -228,7 +234,7 @@ export async function createArtifactViewer({ worktreePath, artifacts, artifactTy
     const declared = relativePath(artifact.path);
     const configuredType = artifactTypes[artifact.type];
     if (!configuredType) throw new Error(`Unsupported artifact type: ${artifact.type}`);
-    const type = validateArtifactType(artifact.type, configuredType);
+    const type = structuredClone(validateArtifactType(artifact.type, configuredType));
     const base = await withoutSymlinks(worktree, declared, signal);
     if (!contained(worktree, base)) throw new Error('Artifact symlink escapes the snapshot');
     signal?.throwIfAborted();
@@ -256,7 +262,20 @@ export async function createArtifactViewer({ worktreePath, artifacts, artifactTy
     signal,
     listArtifacts() {
       signal?.throwIfAborted();
-      return [...definitions.values()].map(({ id, type, path, viewer, directory, typeDefinition }) => ({ id, type, path, viewer, directory, toolDescriptions: Object.fromEntries((directory ? ['list', 'read'] as const : ['read'] as const).map(operation => [operation, toolDescription(typeDefinition, operation, id)])) }));
+      return [...definitions.values()].map(({ id, type, path, viewer, directory, typeDefinition }) => ({ id, type, path, viewer, directory, toolDescriptions: Object.fromEntries((directory ? ['list', 'read'] as const : ['read'] as const).map(operation => [operation, toolDescription(typeDefinition, operation, id, 'agent')])) }));
+    },
+    getTypeDefinition(artifactId) {
+      signal?.throwIfAborted();
+      const artifact = definitions.get(artifactId);
+      if (!artifact) throw new Error('Artifact is not in this review request');
+      return structuredClone(artifact.typeDefinition);
+    },
+    async resolveTarget(artifactId, path = '') {
+      const found = await target(artifactId, path);
+      const info = await stat(found.candidate);
+      signal?.throwIfAborted();
+      if (!info.isDirectory() && !info.isFile()) throw new Error('Artifact target must be a regular file or directory');
+      return { absolutePath: found.candidate, directory: info.isDirectory() };
     },
     async list(args: unknown) {
       signal?.throwIfAborted();
@@ -326,11 +345,14 @@ export async function readArtifact({ worktreePath, artifacts, artifactTypes, sig
 }
 
 /** Each request receives concrete viewer entry points for its own declared artifacts. */
-export function createArtifactTools(viewer: ArtifactViewer): ArtifactTools {
+export function createArtifactTools(viewer: ArtifactViewer, { audience = 'agent', allowLegacy = true }: { audience?: ArtifactAudience | 'viewer'; allowLegacy?: boolean } = {}): ArtifactTools {
   const handlers = new Map<string, (args: unknown) => Promise<ArtifactCallResult>>();
   const tools: ArtifactToolDefinition[] = [];
   for (const artifact of viewer.listArtifacts()) {
+    const typeDefinition = viewer.getTypeDefinition(artifact.id);
+    const configured = audience === 'viewer' ? { read: {}, list: {} } : artifactAudienceTools(typeDefinition, audience, { allowLegacy });
     for (const operation of artifact.directory ? ['list', 'read'] as const : ['read'] as const) {
+      if (!Object.hasOwn(configured, operation)) continue;
       const name = `${operation}_${artifact.id}`;
       const properties: Record<string, ArtifactSchemaProperty> = {
         ...(artifact.directory ? { path: { type: 'string', ...(operation === 'read' ? { minLength: 1 } : {}), description: operation === 'read' ? 'Required file path inside this artifact, relative to its root.' : 'Directory path inside this artifact. Omit or use an empty string to list its root.' } } : {}),
@@ -342,7 +364,7 @@ export function createArtifactTools(viewer: ArtifactViewer): ArtifactTools {
           limit: { type: 'integer', minimum: 1, maximum: MAX_ENTRIES, default: MAX_ENTRIES },
         }),
       };
-      tools.push({ name, description: artifact.toolDescriptions[operation] ?? '', inputSchema: { type: 'object', properties, ...(artifact.directory && operation === 'read' ? { required: ['path'] } : {}), additionalProperties: false }, annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false } });
+      tools.push({ artifactId: artifact.id, operation, name, description: toolDescription(typeDefinition, operation, artifact.id, audience === 'viewer' ? undefined : audience), inputSchema: { type: 'object', properties, ...(artifact.directory && operation === 'read' ? { required: ['path'] } : {}), additionalProperties: false }, annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false } });
       handlers.set(name, async args => {
         argumentsObject(args, Object.keys(properties));
         return viewer[operation]({ ...args, artifactId: artifact.id });
@@ -352,20 +374,7 @@ export function createArtifactTools(viewer: ArtifactViewer): ArtifactTools {
   function validateArguments(name: string, args: unknown): Record<string, unknown> {
     const tool = tools.find(candidate => candidate.name === name);
     if (!tool) throw new Error('Unknown artifact tool');
-    argumentsObject(args, Object.keys(tool.inputSchema.properties));
-    for (const name of tool.inputSchema.required ?? []) {
-      if (!Object.hasOwn(args, name) || args[name] === undefined) throw new Error(`Missing required artifact tool argument: ${name}`);
-    }
-    for (const [name, property] of Object.entries(tool.inputSchema.properties)) {
-      const value = args[name];
-      if (value === undefined) continue;
-      if (property.type === 'string') {
-        if (typeof value !== 'string' || (property.minLength !== undefined && value.length < property.minLength)) throw new Error(`Invalid ${name}`);
-      } else {
-        integer(value, property.default ?? 0, property.minimum ?? Number.MIN_SAFE_INTEGER, property.maximum ?? Number.MAX_SAFE_INTEGER, name);
-      }
-    }
-    return { ...args };
+    return validateToolArguments(tool.inputSchema, args);
   }
   async function call(name: `read_${string}`, args?: unknown): Promise<ArtifactReadResult>;
   async function call(name: `list_${string}`, args?: unknown): Promise<ArtifactListResult>;
@@ -379,6 +388,23 @@ export function createArtifactTools(viewer: ArtifactViewer): ArtifactTools {
     return result;
   }
   return { tools, call, validateArguments };
+}
+
+export function validateToolArguments(schema: ArtifactToolDefinition['inputSchema'], args: unknown): Record<string, unknown> {
+  argumentsObject(args, Object.keys(schema.properties));
+  for (const name of schema.required ?? []) {
+    if (!Object.hasOwn(args, name) || args[name] === undefined) throw new Error(`Missing required artifact tool argument: ${name}`);
+  }
+  for (const [name, property] of Object.entries(schema.properties)) {
+    const value = args[name];
+    if (value === undefined) continue;
+    if (property.type === 'string') {
+      if (typeof value !== 'string' || (property.minLength !== undefined && value.length < property.minLength)) throw new Error(`Invalid ${name}`);
+    } else {
+      integer(value, property.default ?? 0, property.minimum ?? Number.MIN_SAFE_INTEGER, property.maximum ?? Number.MAX_SAFE_INTEGER, name);
+    }
+  }
+  return { ...args };
 }
 
 /** Record the same successful observations for MCP and direct provider adapters. */

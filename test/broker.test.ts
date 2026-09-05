@@ -20,12 +20,74 @@ const green: ReviewResult = { verdict: 'GREEN', summary: 'The workspace meets it
 const red: ReviewResult = { verdict: 'RED', summary: 'The criterion is not met.', evidence: ['The expected value differs.'] };
 const defaults = (): RepoConfig => ({
   artifacts: { why: { type: 'markdown', path: 'why.md' }, spec: { type: 'markdown', path: 'spec.md' }, tests: { type: 'code', path: 'tests' }, implementation: { type: 'code', path: 'implementation' } },
-  artifactTypes: { markdown: { viewer: 'text' }, code: { viewer: 'files' } },
+    artifactTypes: { markdown: { viewer: 'text', agentTools: { read: {} }, humanTools: { read: {} } }, code: { viewer: 'files', agentTools: { list: {}, read: {} }, humanTools: { list: {}, read: {} } } },
   critics: [
     { id: 'spec-why', title: 'Spec / Why', dependsOn: null, artifacts: ['why', 'spec'], profile: { kind: 'agent', provider: 'test', model: 'test', reasoning: 'medium' }, payload: { instruction: 'Compare {why} and {spec}.' } },
     { id: 'tests-spec', title: 'Tests / Spec', dependsOn: 'spec-why', artifacts: ['spec', 'tests'], profile: { kind: 'agent', provider: 'test', model: 'test', reasoning: 'medium' }, payload: { instruction: 'Compare {spec} and {tests}.' } },
     { id: 'implementation-tests', title: 'Runtime', dependsOn: 'tests-spec', artifacts: ['tests', 'implementation'], profile: { kind: 'runtime', command: 'node', args: ['--test', 'tests/example.test.mjs'] }, payload: { instruction: 'Execute tests.' } },
   ],
+});
+
+test('Human tools require the active claimant, read the snapshot, and never submit a verdict', async t => {
+  const config = defaults();
+  config.critics[0].profile = { kind: 'human' };
+  const { repoPath, open } = await fixture(t, config);
+  const broker = open(createExecutorRegistry({ alarmMethods: [async () => {}] }));
+  const run = await broker.submit({ requesterId: 'builder', criticId: 'spec-why' });
+  await broker.run(run.id);
+  const requestId = run.requests[0].id;
+  await assert.rejects(broker.executeHumanTool(requestId, { reviewerId: 'alice', toolName: 'read_why' }), /reviewer who claimed/);
+  broker.claimHuman(requestId, 'alice');
+  await assert.rejects(broker.executeHumanTool(requestId, { reviewerId: 'bob', toolName: 'read_why' }), /reviewer who claimed/);
+  await fs.writeFile(path.join(repoPath, 'why.md'), 'Builder has a newer version.');
+  const result = await broker.executeHumanTool(requestId, { reviewerId: 'alice', toolName: 'read_why' });
+  assert.ok('content' in result);
+  assert.equal(result.content, 'Current workspace purpose.');
+  const waiting = broker.getRequest(requestId);
+  assert.equal(waiting.status, 'WAITING_HUMAN');
+  assert.equal(waiting.result, null);
+  assert.ok(broker.getRun(run.id).events.some(event => event.type === 'human.tool.executed'));
+  await assert.rejects(broker.executeHumanTool(requestId, { reviewerId: 'alice', toolName: 'read_why', arguments: { path: '../outside' } }), /argument/);
+  assert.equal(broker.getRequest(requestId).status, 'WAITING_HUMAN');
+  await broker.completeHuman(requestId, { reviewerId: 'alice', result: green });
+  await assert.rejects(broker.executeHumanTool(requestId, { reviewerId: 'alice', toolName: 'read_why' }), /not waiting/);
+});
+
+test('Human tools reject a changed copy without executing and preserve ERROR separately from a verdict', async t => {
+  const config = defaults();
+  config.critics[0].profile = { kind: 'human' };
+  const { open } = await fixture(t, config);
+  const broker = open(createExecutorRegistry({ alarmMethods: [async () => {}] }));
+  const run = await broker.submit({ requesterId: 'builder', criticId: 'spec-why' });
+  await broker.run(run.id);
+  const requestId = run.requests[0].id;
+  broker.claimHuman(requestId, 'alice');
+  const target = path.join(run.workspace.path, 'why.md');
+  await fs.chmod(target, 0o600);
+  await fs.writeFile(target, 'Tampered input');
+  await assert.rejects(broker.executeHumanTool(requestId, { reviewerId: 'alice', toolName: 'read_why' }), /changed|tampered/i);
+  assert.equal(broker.getRequest(requestId).status, 'ERROR');
+  assert.equal(broker.getRequest(requestId).result, null);
+  assert.equal(broker.getRun(run.id).events.some(event => event.type === 'human.tool.executed'), false);
+});
+
+test('a Human program that mutates its reviewed Artifact invalidates the review during launch', async t => {
+  const config = defaults();
+  config.critics[0].profile = { kind: 'human' };
+  config.artifactTypes.markdown.humanTools!.open = {
+    description: 'Open {artifactName}', command: process.execPath,
+    args: ['-e', "require('node:fs').chmodSync(process.argv[1],384);require('node:fs').writeFileSync(process.argv[1],'modified');setTimeout(()=>process.exit(0),1000)", '{artifactPath}'],
+  };
+  const { open } = await fixture(t, config);
+  const broker = open(createExecutorRegistry({ alarmMethods: [async () => {}] }));
+  const run = await broker.submit({ requesterId: 'builder', criticId: 'spec-why' });
+  await broker.run(run.id);
+  const requestId = run.requests[0].id;
+  broker.claimHuman(requestId, 'alice');
+  await assert.rejects(broker.executeHumanTool(requestId, { reviewerId: 'alice', toolName: 'open_why' }));
+  assert.equal(broker.getRequest(requestId).status, 'ERROR');
+  assert.equal(broker.getRequest(requestId).result, null);
+  assert.equal(broker.getRun(run.id).events.some(event => event.type === 'human.tool.executed'), false);
 });
 const registry = (execute: BrokerExecutors['execute']): BrokerExecutors => ({ canExecute: () => ({ ok: true }), execute });
 

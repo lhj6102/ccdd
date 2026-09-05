@@ -114,7 +114,7 @@ async function probeAgent(request: ReviewEnvelope, { piOptions, streamFn, worktr
   const diagnosticRequest:ReviewEnvelope = {
     ...request,
     artifacts: [{ id: artifactId, type: artifactId, path }],
-    artifactTypes: { [artifactId]: { viewer: 'text' } },
+    artifactTypes: { [artifactId]: { viewer: 'text', agentTools: { read: {} } } },
   };
   try {
     await writeFile(artifactPath, `${nonce}\n`, { flag: 'wx', mode: 0o600 });

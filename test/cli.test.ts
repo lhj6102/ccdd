@@ -8,6 +8,7 @@ import {execFile,fork} from 'node:child_process';
 import {promisify} from 'node:util';
 import {setTimeout as delay} from 'node:timers/promises';
 import {main} from '../src/cli.js';
+import {packageVersion} from '../src/runtime-paths.js';
 import {createBroker,type RunView} from '../src/broker/index.js';
 import {createExecutorRegistry} from '../src/executors/index.js';
 import {removeOwnedWorkspaceTree} from '../src/workspaces/index.js';
@@ -43,7 +44,7 @@ async function fixture(t:TestContext,{human=false,slow=0,red=false,chain=false}=
   await writeFile(join(repo,'test.mjs'),`import test from 'node:test';import assert from 'node:assert/strict';import {setTimeout as delay} from 'node:timers/promises';import {writeFile} from 'node:fs/promises';import {join} from 'node:path';test('actual runtime',async()=>{await delay(${slow});await writeFile(join(process.env.CCDD_OUTPUT_DIR,'result.txt'),'isolated output');assert.equal(${red?1:0},0);});`);
   const critic:CriticDefinition={id:'runtime',title:'Runtime',dependsOn:null,artifacts:['tests'],profile:{kind:'runtime',command:'node',args:['--test','test.mjs']},payload:{instruction:'Execute actual tests.'}};
   const humanCritic:CriticDefinition={id:'human',title:'Human review',dependsOn:null,artifacts:['why'],profile:{kind:'human'},payload:{instruction:'Check the basis.'}};
-  const config:RepoConfig={artifacts:{tests:{type:'code',path:'test.mjs'},why:{type:'text',path:'why.md'}},artifactTypes:{code:{viewer:'files'},text:{viewer:'text'}},critics:chain?[humanCritic,{...critic,dependsOn:'human'}]:[human?humanCritic:critic]};
+  const config:RepoConfig={artifacts:{tests:{type:'code',path:'test.mjs'},why:{type:'text',path:'why.md'}},artifactTypes:{code:{viewer:'files',agentTools:{read:{},list:{}},humanTools:{read:{},list:{}}},text:{viewer:'text',agentTools:{read:{}},humanTools:{read:{}}}},critics:chain?[humanCritic,{...critic,dependsOn:'human'}]:[human?humanCritic:critic]};
   await writeFile(join(repo,'ccdd.config.json'),JSON.stringify(config));
   const args=['--repo',repo,'--state-dir',state,'--json'];
   t.after(async()=>{
@@ -62,7 +63,7 @@ test('npm bin symlink invokes CLI without starting a server',async t=>{
   const dir=await mkdtemp(join(tmpdir(),'ccdd-bin-'));t.after(()=>removeOwnedWorkspaceTree(dir));
   const bin=join(dir,'ccdd');await symlink(cli,bin);
   const {stdout}=await promisify(execFile)(process.execPath,[bin,'help']);
-  assert.match(stdout,/CCDD 0[.]6[.]0/);assert.match(stdout,/No daemon/);assert.doesNotMatch(stdout,/ccdd serve/);
+  assert.ok(stdout.includes(`CCDD ${packageVersion}`));assert.match(stdout,/No daemon/);assert.doesNotMatch(stdout,/ccdd serve/);
 });
 
 test('CLI requires explicit exclusive workspace modes and rejects removed options',async()=>{
@@ -228,4 +229,25 @@ test('worker settings persist credential paths across Human resume without copyi
   assert.equal(completed.code,0,JSON.stringify(completed));
   assert.deepEqual(completed.data.requests.map(request=>request.status),['GREEN','GREEN']);
   assert.equal(await readFile(settingsFile,'utf8'),saved);
+});
+
+test('tools check inspects exact audience definitions without creating a review and executes only when requested', async t => {
+  const f = await fixture(t, { human: true });
+  const checked = await invoke<{ ok: boolean; status: string; checks: unknown[] }>(['tools', 'check', '--artifact', 'why', '--for', 'human', ...f.args]);
+  assert.equal(checked.code, 0, checked.output + checked.errors);
+  assert.equal(checked.data.ok, true);
+  assert.equal(checked.data.status, 'READY');
+  await assert.rejects(readFile(join(f.state, 'broker.sqlite')));
+  const result = await invoke<{ ok: boolean; result: ArtifactReadResult }>(['tools', 'check', '--artifact', 'why', '--for', 'human', '--tool', 'read_why', '--execute', '--args', '{"startLine":1,"lineCount":1}', ...f.args]);
+  assert.equal(result.code, 0, result.output + result.errors);
+  assert.equal(result.data.result.content, 'Review basis.');
+  await assert.rejects(readFile(join(f.state, 'broker.sqlite')));
+  for (const selection of [
+    ['--artifact', 'why', '--for', 'missing'], ['--args', '{}'], ['--execute'],
+    ['--artifact', 'why', '--for', 'human', '--tool', 'read_why', '--execute', '--args', '{"lineCount":"1"}'],
+    ['--artifact', 'why', '--for', 'human', '--tool', 'unregistered'], ['--wait'],
+  ]) {
+    const response = await invoke<{ ok?: boolean; error?: string }>(['tools', 'check', ...selection, ...f.args]);
+    assert.notEqual(response.code, 0, response.output);
+  }
 });
