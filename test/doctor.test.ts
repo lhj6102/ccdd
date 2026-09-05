@@ -19,13 +19,13 @@ async function fixture(t: TestContext) {
   await writeFile(join(worktreePath, 'why.md'), 'Current why.');
   await writeFile(join(worktreePath, 'spec.md'), 'Current spec.');
   await writeFile(join(worktreePath, 'tests/check.test.mjs'), "import {writeFileSync} from 'node:fs'; writeFileSync('SHOULD_NOT_RUN','bad'); throw new Error('doctor must not run this');");
-  const profile: AgentProfile = { kind: 'agent', provider: 'openai-codex', model: 'gpt-5.6-sol', reasoning: 'medium', timeoutMs: 3_000 };
+  const profile: AgentProfile = { kind: 'agent', provider: 'openai-codex', model: 'gpt-6-astra', reasoning: 'medium', timeoutMs: 3_000 };
   const config: RepoConfig = {
     artifacts: { why: { type: 'markdown', path: 'why.md' }, spec: { type: 'markdown', path: 'spec.md' }, tests: { type: 'code', path: 'tests' } },
     artifactTypes: { markdown: { viewer: 'text' }, code: { viewer: 'files' } },
     critics: [
       { id: 'first', title: 'first', dependsOn: null, artifacts: ['why'], profile, payload: { instruction: 'Review why' } },
-      { id: 'second', title: 'second', dependsOn: 'first', artifacts: ['spec'], profile: { timeoutMs: 3_000, reasoning: 'medium', model: 'gpt-5.6-sol', provider: 'openai-codex', kind: 'agent' }, payload: { instruction: 'Review spec' } },
+      { id: 'second', title: 'second', dependsOn: 'first', artifacts: ['spec'], profile: { timeoutMs: 3_000, reasoning: 'medium', model: 'gpt-6-astra', provider: 'openai-codex', kind: 'agent' }, payload: { instruction: 'Review spec' } },
       { id: 'runtime', title: 'runtime', dependsOn: 'second', artifacts: ['tests'], profile: { kind: 'runtime', command: 'node', args: ['--test', 'tests/check.test.mjs'] }, payload: { instruction: 'Run tests' } },
       { id: 'human', title: 'human', dependsOn: 'runtime', artifacts: ['spec'], profile: { kind: 'human' }, payload: { instruction: 'Human review' } },
     ],
@@ -66,7 +66,7 @@ test('Agent readiness uses Pi with the exact profile and observed Artifact nonce
   assert.equal('verdict' in result, false);
   assert.doesNotMatch(JSON.stringify({ result, events }), /PRIVATE_REASONING|SECRET_TOKEN|sk-secret/);
   assert.ok(profileCalls.length >= 2);
-  assert.ok(profileCalls.every(call => call.provider === 'openai-codex' && call.model === 'gpt-5.6-sol' && call.reasoning === 'medium'));
+  assert.ok(profileCalls.every(call => call.provider === 'openai-codex' && call.model === 'gpt-6-astra' && call.reasoning === 'medium'));
   assert.match(observedNonce, /^[0-9a-f]{64}$/);
   assert.equal(firstContext.includes(observedNonce), false);
   assert.equal((await readdir(data.worktreePath)).some(name => name.startsWith('.ccdd-doctor-')), false);
@@ -97,7 +97,7 @@ test('a fabricated nonce, unaudited response or hung provider cannot pass readin
   for (const mode of modes) {
     const data = await fixture(t);
     const registry = createExecutorRegistry({ streamFn: artifactStream({ mode, result: { ready: true, nonce: 'fabricated' } }) });
-    const request: ReviewEnvelope = mode === 'hang' ? { ...data.request, profile: { ...data.request.profile, kind: 'agent', provider: 'openai-codex', model: 'gpt-5.6-sol', reasoning: 'medium', timeoutMs: 120 } } : data.request;
+    const request: ReviewEnvelope = mode === 'hang' ? { ...data.request, profile: { ...data.request.profile, kind: 'agent', provider: 'openai-codex', model: 'gpt-6-astra', reasoning: 'medium', timeoutMs: 120 } } : data.request;
     await assert.rejects(registry.probe(request, data), error => errorCode(error) === (mode === 'hang' ? 'PROVIDER_TIMEOUT' : 'ARTIFACT_ROUNDTRIP_FAILED'));
     assert.equal((await readdir(data.runDir)).some(name => name.startsWith('diagnostic-input-')), false);
   }
@@ -178,7 +178,7 @@ test('project doctor rejects unavailable credentials and unsupported profiles be
   const report = await diagnoseProject({ ...data, criticId: 'first', executors: createExecutorRegistry({ piOptions: { authFile: join(data.dir, 'missing-auth.json') } }) });
   assert.equal(report.status, 'NOT_READY');
   assert.equal(report.checks.at(-1)?.details?.code, 'AUTHENTICATION_FAILED');
-  await assert.rejects(createExecutorRegistry().probe({ ...data.request, profile: { kind: 'agent', provider: 'unregistered', model: 'gpt-5.6-sol', reasoning: 'medium' } }, data), error => errorCode(error) === 'PROVIDER_NOT_REGISTERED');
+  await assert.rejects(createExecutorRegistry().probe({ ...data.request, profile: { kind: 'agent', provider: 'unregistered', model: 'gpt-6-astra', reasoning: 'medium' } }, data), error => errorCode(error) === 'PROVIDER_NOT_REGISTERED');
   await assert.rejects(createExecutorRegistry().probe({ ...data.request, profile: { kind: 'agent', provider: 'openai-codex', model: 'missing-model', reasoning: 'medium' } }, data), error => errorCode(error) === 'MODEL_NOT_REGISTERED');
 });
 

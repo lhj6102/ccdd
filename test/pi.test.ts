@@ -11,7 +11,7 @@ import type { AgentProfile, ExecutionEvent, ReviewEnvelope } from '../src/contra
 import { artifactStream } from './pi-fixture.js';
 
 const schema = { type: 'object', required: ['verdict', 'summary', 'evidence'], additionalProperties: false, properties: { verdict: { type: 'string', enum: ['GREEN', 'RED'] }, summary: { type: 'string' }, evidence: { type: 'array', items: { type: 'string' } } } };
-const profile: AgentProfile = { kind: 'agent', provider: 'openai-codex', model: 'gpt-5.6-sol', reasoning: 'medium', timeoutMs: 5_000 };
+const profile: AgentProfile = { kind: 'agent', provider: 'openai-codex', model: 'gpt-6-astra', reasoning: 'medium', timeoutMs: 5_000 };
 const verdict = { verdict: 'GREEN', summary: '확인 완료', evidence: ['spec.md 2번 줄을 확인했습니다.'] };
 
 async function fixture(t: TestContext): Promise<InvokePiOptions & { dir: string }> {
@@ -40,8 +40,8 @@ function scripted(calls: unknown[]): StreamFn {
   };
 }
 
-test('Pi Agent loop receives exact provider/model/reasoning and scoped tools for two providers', async t => {
-  for (const settings of [profile, { ...profile, provider: 'anthropic', model: 'claude-haiku-4-5', reasoning: 'high' }]) {
+test('Pi Agent loop receives exact provider/model/reasoning and scoped tools across models and providers', async t => {
+  for (const settings of [profile, { ...profile, model: 'gpt-5.6-sol' }, { ...profile, provider: 'anthropic', model: 'claude-haiku-4-5', reasoning: 'high' }]) {
     const data = await fixture(t);
     data.request.profile = settings;
     const events: ExecutionEvent[] = [];
@@ -66,9 +66,23 @@ test('Pi Agent loop receives exact provider/model/reasoning and scoped tools for
   }
 });
 
+test('Astra resolves exactly for both OpenAI providers and rejects unsupported effort instead of mapping it', () => {
+  for (const provider of ['openai', 'openai-codex']) {
+    for (const reasoning of ['low', 'medium', 'high', 'xhigh', 'max'] as const) {
+      const model = validatePiProfile({ ...profile, provider, reasoning });
+      assert.equal(model.id, 'gpt-6-astra');
+      assert.equal(model.provider, provider);
+      assert.equal(model.thinkingLevelMap?.[reasoning], reasoning);
+    }
+    for (const reasoning of ['off', 'minimal', 'ultra']) {
+      assert.throws(() => validatePiProfile({ ...profile, provider, reasoning }), error => (error as { code: string }).code === 'REASONING_NOT_SUPPORTED');
+    }
+  }
+});
+
 test('Pi profile rejects unknown model/provider and reasoning substitutions before transport', () => {
   for (const settings of [
-    { ...profile, provider: 'codex' }, { ...profile, model: 'gpt-6-astra' },
+    { ...profile, provider: 'codex' }, { ...profile, model: 'ccdd-nonexistent-model' },
     { ...profile, reasoning: 'ultra' }, { ...profile, reasoning: 'minimal' }, { ...profile, reasoning: 'off' },
     { ...profile, timeoutMs: 1 },
   ]) assert.throws(() => validatePiProfile(settings));

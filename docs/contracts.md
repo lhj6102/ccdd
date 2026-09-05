@@ -74,7 +74,7 @@ Executors receive the prepared input path, a distinct `runDir`, cancellation sig
 
 ## Pi Agent execution
 
-Only `src/executors` imports Pi runtime libraries. `@earendil-works/pi-agent-core` and `@earendil-works/pi-ai` are pinned to 0.85.0, reused as dependencies. The Broker delegates the common `ExecutorRegistry` contract (`src/contracts.ts`); it does not own LLM sessions. Human remains a durable broker workflow, and Runtime remains actual Node execution.
+Only `src/executors` imports Pi runtime libraries. `@earendil-works/pi-agent-core` and `@earendil-works/pi-ai` are pinned to 0.85.1, reused as dependencies. The Broker delegates the common `ExecutorRegistry` contract (`src/contracts.ts`); it does not own LLM sessions. Human remains a durable broker workflow, and Runtime remains actual Node execution.
 
 Pi receives only the request's Artifact tools. No coding harness, shell, write, network-browsing or general filesystem tools are added. `createAuditedArtifactTools` is the common execution wrapper; Pi's `prepareArguments` invokes its strict validation before Pi can coerce numeric strings or strip nulls. The same Viewer performs all filesystem scope checks.
 
@@ -118,3 +118,5 @@ In v0.4, read calls replace byte-based offset/limit with startLine/lineCount. Cu
 
 
 v0.5 replaces the bundled Codex CLI with Pi libraries and builds TypeScript into `dist/`. The installed bin remains `ccdd`; source checkout commands use `npm run build` then `node dist/src/cli.js`. `--codex` and `CCDD_CODEX_PATH` no longer configure Agent execution. Agent profiles must use Pi IDs and exact catalog-supported models; pre-v0.5 pending Agent requests retain their original profiles and fail explicitly if unsupported. Human and Runtime records retain their broker lifecycle. Fresh demos use demo-v5.
+
+v0.5.1 updates Pi to 0.85.1 and creates fresh demos in demo-v5.1 using openai-codex / gpt-6-astra / medium. Existing demo directories and request profiles remain unchanged. Astra accepts exact low/medium/high/xhigh/max reasoning; off/minimal/ultra are rejected.
