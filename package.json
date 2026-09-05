@@ -1,0 +1,12 @@
+{
+  "name": "@lhj6102/ccdd",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Snapshot-based critic broker and artifact runner demo",
+  "type": "module",
+  "engines": {"node": ">=24"},
+  "bin": {"ccdd": "./src/cli.mjs"},
+  "scripts": {"start": "node src/cli.mjs serve", "test": "node --test test/*.test.mjs", "demo:prepare": "node scripts/prepare-demo.mjs", "demo": "node src/cli.mjs serve --demo"},
+  "dependencies": {"@openai/codex": "0.153.4"},
+  "devDependencies": {"playwright": "^1.58.0"}
+}

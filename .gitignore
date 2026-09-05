@@ -1,0 +1,5 @@
+node_modules/
+.ccdd/
+output/
+*.log
+.DS_Store
