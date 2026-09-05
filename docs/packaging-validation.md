@@ -1,3 +1,5 @@
+> Historical verification of v0.1/v0.2. This file describes the previous commit/server demo; use README.md and contracts.md for v0.3.
+
 # 패키지 설치 검증
 
 2026-09-05, Node 24.19.0과 npm 10.1.0에서 확인했다.

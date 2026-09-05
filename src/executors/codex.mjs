@@ -12,7 +12,7 @@ export function diagnosticError(code, message, remedy) {
 
 const diagnoses = {
   AUTHENTICATION_FAILED: ['Provider가 인증 오류를 반환했습니다.', '이 CCDD 프로세스를 실행하는 사용자로 Codex에 다시 로그인한 뒤 doctor를 재실행하세요.'],
-  MODEL_ACCESS_FAILED: ['Provider가 요청한 모델 또는 reasoning 설정을 거부했습니다.', '커밋된 Critic의 model·reasoning 설정과 현재 계정의 접근 권한을 확인하세요.'],
+  MODEL_ACCESS_FAILED: ['Provider가 요청한 모델 또는 reasoning 설정을 거부했습니다.', 'Critic의 model·reasoning 설정과 현재 계정의 접근 권한을 확인하세요.'],
   ACCESS_DENIED: ['Provider가 접근 거부를 반환했습니다.', '현재 계정의 조직 정책과 Provider 접근 권한을 확인하세요.'],
   RATE_LIMITED: ['Provider가 사용량 제한 오류를 반환했습니다.', 'Provider의 사용량·할당량을 확인한 뒤 다시 진단하세요.'],
   MCP_UNAVAILABLE: ['Provider가 Artifact MCP 연결 실패를 보고했습니다.', 'Node 실행과 CCDD 설치 파일 접근 권한을 확인하고 doctor를 재실행하세요.'],
@@ -81,7 +81,7 @@ export async function invokeCodex({ codexPath, request, worktreePath, runDir, sc
     'mcp_servers.ccdd_artifacts.startup_timeout_sec=20', 'mcp_servers.ccdd_artifacts.tool_timeout_sec=30', 'mcp_servers.ccdd_artifacts.required=true',
     'features.skip_host_skill_discovery=true',
   ];
-  const args = ['exec', '--ignore-user-config', '--ephemeral', '--sandbox', 'read-only', '--color', 'never', '--json', '--model', request.profile.model, '--cd', worktreePath, '--output-schema', schemaPath, '--output-last-message', resultPath];
+  const args = ['exec', '--ignore-user-config', '--ephemeral', '--skip-git-repo-check', '--sandbox', 'read-only', '--color', 'never', '--json', '--model', request.profile.model, '--cd', worktreePath, '--output-schema', schemaPath, '--output-last-message', resultPath];
   for (const feature of ['shell_tool', 'unified_exec', 'apps', 'plugins', 'hooks', 'browser_use', 'computer_use', 'multi_agent', 'skill_search', 'memories', 'view_image', 'image_generation']) args.push('--disable', feature);
   for (const entry of config) args.push('-c', entry);
   args.push('-');

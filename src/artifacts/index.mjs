@@ -23,7 +23,7 @@ function integer(value, fallback, min, max, name) {
   return value;
 }
 
-/** Resolve only declared artifacts inside a detached snapshot. No writes or shell entry points. */
+/** Resolve only declared artifacts inside the prepared input. No writes or shell entry points. */
 export async function createArtifactViewer({ worktreePath, artifacts, artifactTypes = {} }) {
   const worktree = await realpath(worktreePath);
   if (!Array.isArray(artifacts) || !artifacts.length) throw new Error('At least one artifact is required');
@@ -87,7 +87,7 @@ export async function createArtifactViewer({ worktreePath, artifacts, artifactTy
   return viewer;
 }
 
-/** HTTP viewer adapter: file is relative to a directory artifact, never the repo root. */
+/** Viewer adapter: file is relative to a directory artifact, never the repo root. */
 export async function readArtifact({ worktreePath, artifacts, artifactTypes, artifactId, file = '', offset, limit }) {
   const viewer = await createArtifactViewer({ worktreePath, artifacts, artifactTypes });
   const artifact = viewer.listArtifacts().find(x => x.id === artifactId);

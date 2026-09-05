@@ -25,8 +25,8 @@ _Avoid_: Critic Run, 개별 평가
 _Avoid_: Critic 정의, 작업 목록
 
 **Snapshot**:
-리뷰의 Artifact와 Critic 정의를 함께 고정한 저장소의 특정 시점.
-_Avoid_: 현재 작업 폴더, 최신 소스
+리뷰의 Artifact와 Critic 정의를 포함하는 전체 입력 상태. 입력 내용의 hash로 식별되며, 리뷰 중 변경되지 않아야 한다.
+_Avoid_: Git commit, 최신 소스
 
 **Predecessor**:
 Chain Run에서 현재 리뷰가 시작되기 전에 GREEN 판정을 받아야 하는 바로 앞 리뷰 요청.
@@ -43,3 +43,11 @@ _Avoid_: 실패한 리뷰, RED 판정
 **Human Claim**:
 사람 리뷰어 한 명이 대기 중인 리뷰의 결과 제출을 맡았다는 약속.
 _Avoid_: 완료, 판정
+
+**Review Workspace**:
+리뷰가 입력을 읽는 전체 작업 공간. 원본의 변경을 감시하거나 불변 복사본을 사용한다.
+_Avoid_: Artifact 관측 범위, 리뷰 출력 공간
+
+**Copied Workspace**:
+원본에서 확보한 불변 리뷰 입력. 동일한 내용의 여러 리뷰가 함께 사용할 수 있다.
+_Avoid_: 판정 캐시, Builder 작업 공간

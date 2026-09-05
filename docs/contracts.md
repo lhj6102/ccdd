@@ -1,94 +1,75 @@
-# Implementation contracts — v0.2
+# Implementation contracts — v0.3
 
-One npm package, Node 24 ESM, SQLite persistence. Localhost HTTP UI; no external deployment or Docker required. The broker is the daemon/persistence bounded context. Executors are a separate context with code-runner, Agent provider, and Human implementations. Artifact Runner is the adapter that resolves request payload artifact references into scoped viewer entry-point tools.
+One npm package, Node 24 ESM, local SQLite persistence. Broker and Executors remain separate bounded contexts. A request-scoped worker runs one Run; there is no daemon, HTTP transport, observer UI, global broker-owner lock, or automatic queue scanner. An observer server may be added later as an optional adapter.
 
-## Repository config: ccdd.config.json (read from requested commit)
+## Workspace contract
+
+`run` requires exactly one CLI flag: `--copy` (recommended) or `--lock`. `doctor` defaults to copy. Git and commits are not required. Every directory entry participates, including ignored/untracked files, `.git` and dependencies. No dependency manifest or implicit exclusion list is used.
+
+- **Lock:** use the original source. Monitor filesystem events and metadata; verify the full content hash at boundaries. A detected change, including ordinary edit-and-restore or create-and-delete, invalidates the review with `ERROR`, never a semantic `RED`. Monitoring remains alive through Human waiting. A dead lock worker invalidates its unfinished Run when inspected.
+- **Copy:** capture all current files in private staging; verify stable source and copied content before atomic publication. An unstable capture fails explicitly and can be retried. Same-hash inputs share one immutable cache directory, including concurrent submissions. Original edits after capture do not invalidate the copied review. No verdict caching occurs.
+
+Snapshot hash is SHA-256 over sorted relative paths, entry types, file content hashes, executable permission bits, and relative symlink targets. Empty directories participate. Timestamps, inode numbers and write-permission bits are excluded from the content hash but metadata is separately tracked for mutation detection. Copies remove write permissions. Internal relative symlinks are supported; escaping, absolute, dangling symlinks and special files are rejected. Artifact definitions retain the stricter no-symlink policy.
+
+CCDD state must be outside the source workspace, including through symlinks. Inputs live at `stateDir/workspaces/<hash>`; review output lives at `stateDir/runs/<runId>/<requestId>/`. Only one process publishes a hash at a time. Cache entries are revalidated before reuse and retained after review completion. Automatic cache eviction is not implemented; do not delete a cache while its reviews or Human requests still need it.
+
+This is cooperative local execution, not an OS sandbox against a hostile process running as the same user. Event/metadata checks are conservative and cannot prove the absence of every adversarial transient write on every filesystem. Unsupported monitoring fails closed. Copy permissions do not isolate environment, network, external services or test side effects. Runtime output must use per-review paths rather than modify shared inputs. Lock results retain the input hash but do not preserve the old source after later edits.
+
+`prepareWorkspace({repoPath,stateDir,mode,signal?})` and `reopenWorkspace(descriptor,{signal?})` return `{descriptor,signal,assertUnchanged(),close()}`. The serializable descriptor contains `{version:1,mode,sourcePath,path,hash,stateDir,baselineMetadataHash}`. It is stored with the Run and every request. Copy source need not remain present after capture.
+
+## Repository configuration
+
+`ccdd.config.json` is read from the prepared workspace. It declares `artifacts`, `artifactTypes` and an ordered, strictly linear `critics` array. Each Artifact has a type and safe relative path. Each type uses a `text` or `files` viewer. Each Critic has a unique ID, title, referenced Artifact IDs, profile, payload, and `dependsOn` pointing only to its immediate predecessor (the first uses null).
 
 ```json
 {
-  "artifacts": {
-    "why": {"type":"markdown","path":"why.md"},
-    "spec": {"type":"markdown","path":"spec.md"},
-    "tests": {"type":"code","path":"tests"},
-    "implementation": {"type":"code","path":"implementation"}
-  },
-  "artifactTypes": {"markdown":{"viewer":"text"},"code":{"viewer":"files"}},
-  "critics": [
-    {"id":"spec-why","title":"Spec이 Why에 부합하는가","dependsOn":null,"artifacts":["why","spec"],"profile":{"kind":"agent","provider":"codex","model":"gpt-6-astra","reasoning":"medium"},"payload":{"instruction":"Compare {why} and {spec} using the artifact tools. Return a Korean verdict and evidence."}},
-    {"id":"tests-spec","title":"Tests가 Spec에 부합하는가","dependsOn":"spec-why","artifacts":["spec","tests"],"profile":{"kind":"agent","provider":"codex","model":"gpt-6-astra","reasoning":"medium"},"payload":{"instruction":"Compare {spec} and {tests} using the artifact tools. Return a Korean verdict and evidence."}},
-    {"id":"implementation-tests","title":"테스트 런타임 통과","dependsOn":"tests-spec","artifacts":["tests","implementation"],"profile":{"kind":"runtime","command":"node","args":["--test","tests/rank.test.mjs"]},"payload":{"instruction":"Run the test suite against the implementation."}}
-  ]
+  "artifacts": {"tests":{"type":"code","path":"tests"},"implementation":{"type":"code","path":"implementation"}},
+  "artifactTypes": {"code":{"viewer":"files"}},
+  "critics": [{
+    "id":"runtime", "title":"테스트 런타임 통과", "dependsOn":null,
+    "artifacts":["tests","implementation"],
+    "profile":{"kind":"runtime","command":"node","args":["--test","tests/example.test.mjs"]},
+    "payload":{"instruction":"Run the actual test suite against the implementation."}
+  }]
 }
 ```
 
-Broker validates config, linear dependency order, artifact relative paths and artifact types. Repo registered at daemon startup under id `demo`. Config AND artifact files are loaded from the requested commit, never the mutable checkout.
+Agent profile: `{kind:'agent',provider:'codex',model,reasoning,timeoutMs?}`. Human profile: `{kind:'human'}` with at least one registered alarm method. The demo Code Runner supports Node test paths. Configuration and payload are fixed with the input, including uncommitted edits.
 
-## Repo Requester
+## Request and execution
 
-`prepareReviewRequests({repoPath,repoId,snapshotCommit,criticId?})` reads committed definitions and produces full ordered review envelopes. The browser submits these artifacts, types, paths, commit, payload and profile to the broker. The broker validates that the envelopes match the committed configuration before accepting them. [Full request contract](requester-contract.md).
+`prepareReviewRequests({repoPath,repoId,snapshotHash,criticId?})` creates explicit envelopes containing `{repoId,snapshotHash,criticId,title,artifacts:[{id,type,path}],artifactTypes,payload,profile,dependsOn}`. The broker validates supplied envelopes against the prepared input. `--critic` selects exactly one envelope and validates only its required executor.
 
-## Executor-facing Request
+The Artifact Runner creates scoped Viewer entry-point tools such as `read_why`, `read_spec`, `list_tests`, and `read_tests`. Having the entire repo available as execution input does not grant an Agent visibility into every Artifact. Agent review requires observed reads of every supplied Artifact, a real Provider response, and a valid structured result.
 
-```js
-{
- id, runId, repoId, snapshotCommit, criticId, title,
- artifacts: [{id,type,path}],
- artifactTypes: {markdown:{viewer:'text'},code:{viewer:'files'}},
- payload: {instruction:'Compare {why} and {spec} ...'},
- profile: {kind:'agent',provider:'codex',model:'gpt-6-astra',reasoning:'medium'},
- predecessorId: null
-}
-```
+Executors receive the prepared input path, a distinct `runDir`, cancellation signal and event callback. Runtime environment sets `CCDD_OUTPUT_DIR`, `CCDD_TMP_DIR`, `TMPDIR`, `TMP`, `TEMP`, `HOME`, and `XDG_CACHE_HOME` to review-specific locations. Runtime cwd remains the input so relative imports work. A test failure is RED; an operational failure or detected input mutation is ERROR.
 
-## Adapter interfaces
+## Durable broker and process ownership
 
-`src/executors/index.mjs` exports `createExecutorRegistry({codexPath, alarmMethods=[]})` returning an object with:
+`createBroker({repoPath,stateDir,repoId,executors?})` provides `submit`, `run`, `getRun`, `listRuns`, `getRequest`, `claimHuman`, `completeHuman`, `cancel`, `failRun`, `reconcile`, and `close`.
 
-- `canExecute(request)` => `{ok:boolean,reason?:string}` (sync or async)
-- `execute(request, {worktreePath, runDir, signal, onEvent})` => Promise<Result>
-- Human requests: broker leaves them `WAITING_HUMAN`, after requiring at least one alarm method. Registry exposes optional `notifyHuman(request)` to call configured alarm adapters. A local inbox file is one explicit configured alarm method; the UI displays the waiting review. A test may use a fake alarm callback; no external messages in this task.
+- `submit({mode,requesterId,criticId?,reviewRequests?})` captures input, validates requirements, persists the Run, and returns its Handle. It does not start execution.
+- `run(runId,{signal?,onStarted?})` claims that Run transactionally. One live worker owns a Run; different Runs execute concurrently. Ownership stores PID, process identity and a token. Opening or closing another client never claims or cancels it.
+- CLI submission starts a detached worker with private IPC for startup only. It exposes no listening server. The worker exits after completion or a copy-mode Human wait. `status --wait` polls stored state.
+- Wait timeout returns exit 3 with the same Handle and leaves the worker running. `cancel` records ERROR and requests worker cancellation. Dead ownership is reconciled when records are inspected; there is no automatic retry or unseen background recovery service. `resume` can start persisted, unowned queued work.
+- Normal termination cancels the worker's subprocess groups. Forced process/host termination cannot guarantee cleanup of every external side effect or descendant; unfinished work is never inferred to have passed.
 
-`Result = { verdict:'GREEN'|'RED', summary:string, evidence:string[], provider?:string, model?:string, toolCalls?:Array<{name,arguments?}>, durationMs?:number, stdout?:string, stderr?:string, exitCode?:number }`.
+Run scope is `{kind:'chain'}` or `{kind:'critic',criticId}`. Selected execution has exactly one request with `predecessorId:null`; the definition's `dependsOn` remains metadata. In a chain, each GREEN unblocks only the next request; RED/ERROR blocks the remaining requests. Run status is `QUEUED|RUNNING|WAITING_HUMAN|GREEN|RED|ERROR`; request status additionally includes `BLOCKED`. Completed results are immutable, and subsequent review attempts receive new Handles.
 
-Executor errors throw; broker records ERROR separately from RED. Runtime timeout and Agent timeout abort processes. Provider raw event streams are discarded, never sent to UI or GitHub. Only concise final result and artifact tool call provenance go into result.
+## Human lifecycle
 
-## Readiness diagnostics
+The worker persists WAITING_HUMAN, invokes registered alarms, and records confirmed delivery. A registered local inbox writes `stateDir/human-inbox.jsonl`. It is a local file alarm, not an email, push notification or delivery acknowledgement by a person. Alarm failure causes ERROR.
 
-`diagnoseProject({repoPath,repoId,snapshotCommit,criticId?,executors,signal?})` returns `{ok,status:"READY"|"NOT_READY",scope,checkedAt,checks}`. It prepares a temporary snapshot worktree, validates Viewer operations and invokes `executors.probe`. Agent probes use the same Provider configuration and MCP transport as reviews, with a random diagnostic artifact nonce. Successful response plus audited nonce reading proves current model/auth/tool access. Agent profiles are deduplicated; runtime checks are per Critic. Runtime diagnosis starts Node and checks test paths without running project tests. Human diagnosis checks method registration without sending notifications. No Run or review verdict is created.
+Copy-mode waiting and owner release are coordinated transactionally. After the worker exits, another CLI process can inspect Artifacts, claim the request, and submit `{reviewerId,result:{verdict,summary,evidence}}`. Only the claimant may complete it and only once. Input integrity is revalidated at completion. A successful result queues any successor and the CLI starts a new request worker, reusing the originally saved execution configuration.
 
-`POST /api/doctor` takes `{snapshotCommit,criticId?}` and returns the diagnostic report; `NOT_READY` is a successfully returned report (HTTP 200), with failed checks and suggested remedies. It runs only on explicit request, and aborts on client disconnect/server shutdown.
+Lock-mode waiting keeps its worker and input monitoring alive. Human completion requires a live owner. Changes or owner death invalidate the review. Result files and notification output must be outside the locked workspace.
 
-## Broker adapter
+## Doctor
 
-`src/broker/index.mjs` exports `createBroker({repoPath,stateDir,repoId='demo',executors})` returning:
+`diagnoseProject({repoPath,repoId,mode='copy',stateDir?,criticId?,executors,signal?,onEvent?})` returns `{ok,status:'READY'|'NOT_READY',repoId,mode,snapshotHash,scope,checkedAt,checks}`. It reads current definitions and validates actual project Viewer entry points. Exact Agent profiles are deduplicated; runtime path checks remain per Critic.
 
-- `submit({snapshotCommit,requesterId,reviewRequests?,criticId?})` => run record with `id` and `requests` (one request per critic)
-- `listRuns()` => newest first run records with request summaries
-- `getRun(id)` => run plus full requests/results and events
-- `getRequest(id)` => full request with metadata/result/worktreePath
-- `claimHuman(requestId, reviewerId)` then `completeHuman(requestId,{reviewerId,result})`
-- `close()` => close workers/db safely (may be async)
-- optional `onChange(callback)` subscription for transport
+The Agent readiness probe uses the same Provider/model/reasoning and MCP transport with a random nonce Artifact in a private diagnostic workspace. It never writes into the original or shared review input. READY requires the correct nonce and audited tool read. Runtime diagnosis starts Node and checks paths, without executing project tests. Human diagnosis checks registration without sending notifications. No Run, semantic verdict or review history is created. READY describes the diagnostic moment, not future availability or Critic correctness.
 
-Run shape `{id,repoId,snapshotCommit,requesterId,scope,status,createdAt,requests,events}`. `scope` is `{kind:"chain"}` or `{kind:"critic",criticId}`. Omitted legacy scope is read as chain. A selected Critic runs independently with `predecessorId:null`; its committed `dependsOn` remains definition data. GREEN certifies only the requested scope. Status values `QUEUED|RUNNING|WAITING_HUMAN|GREEN|RED|ERROR`.
-Request shape extends Executor Request with `{status,createdAt,startedAt,completedAt,result,error,worktreePath}`. Requests waiting for predecessors use `BLOCKED` with an explainable dependency; RED blocks downstream. No success reuse across snapshots in this small demo. Failed reviews never rewrite the registered repo. Restart marks interrupted executions as ERROR; explicit new submission retries. A run can never be GREEN while a request is missing, blocked, running or failed.
+## Compatibility
 
-## HTTP transport owned by integration/root
-
-- `GET /api/health` liveness + version; `readinessChecked:false`, `providerReady:null`
-- `GET /api/demo` `{repoId,name,scenarios:[{id,label,description,commit,reviewRequests}],graph:[{id,artifact,title,criticTitle?}],provider}`. Scenario manifest `.ccdd/demo/manifest.json` created by prepare-demo.
-- `GET /api/runs`, `GET /api/runs/:id`
-- `POST /api/runs` `{snapshotCommit,requesterId:'web-demo',reviewRequests,criticId?}` -> run; API must return handle without waiting for evaluation.
-- `GET /api/requests/:id/artifacts/:artifactId?file=...` -> `{path,content,type,snapshotCommit}`; scoped viewer uses the same Artifact Runner as Agent.
-- `GET /api/requests/:id` -> request
-- `POST /api/requests/:id/claim` `{reviewerId}`
-- `POST /api/requests/:id/result` `{reviewerId,result}`
-- Local only: validate Origin if present; bind 127.0.0.1; cap request body; no cross-origin writes.
-
-UI polls. No React build needed: public/index.html, public/app.js, public/styles.css. Korean, professional light/dark editorial visual design, real persisted run status, request details (payload, snapshot, scoped tools/artifacts, result), 4 artifacts/3 links graph. User picks scenario and submits; can inspect earlier runs and compare the evidence.
-
-## Demo repository separate from package source
-
-`scripts/prepare-demo.mjs` creates an ignored local Git repo `.ccdd/demo/repo` with four committed snapshots: working baseline; a changed Why (top 2 instead of top 3) with old Spec, expected RED at first critic; aligned Spec/Tests plus intentionally old implementation, expected Runtime RED; final repaired implementation, expected all GREEN. Scenario IDs: baseline, why-change, runtime-failure, fixed. This is one linear graph throughout. Topic: a small pure JS task-priority selector; strict, deterministic and easily understood. Manifest records immutable commits and descriptions. Actual Agent reviews establish verdicts; expected outcomes are scenario descriptions, never substituted outputs.
-
-Production claims out of scope: remote untrusted repository sandbox, distributed worker fleet, public multi-tenant service. Local demo executes repository test code with user's authorization. Snapshot paths and tools remain scope-checked, loopback APIs reject remote browser writes.
+v0.3 removes `serve`, HTTP APIs, `--url`, `--commit`, and the browser/video recording implementation. Previous release assets remain historical. Use a fresh external state directory for new reviews; v0.1/v0.2 state located inside a repo is not automatically moved. An optional observer server can be added later without owning or being required for reviews.
