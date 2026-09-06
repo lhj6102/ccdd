@@ -1,6 +1,6 @@
 {
   "name": "@lhj6102/ccdd-default-tools",
-  "version": "0.9.0",
+  "version": "1.0.0",
   "private": true,
   "description": "Explicitly registered Agent CLI and Human desktop Artifact tools for CCDD",
   "type": "module",
@@ -12,6 +12,6 @@
     "build": "node ../../node_modules/typescript/bin/tsc -p tsconfig.json",
     "prepack": "npm run build"
   },
-  "peerDependencies": { "@lhj6102/ccdd": ">=0.9.0 <1" },
+  "peerDependencies": { "@lhj6102/ccdd": ">=1.0.0 <2" },
   "devDependencies": { "@lhj6102/ccdd": "file:../.." }
 }
