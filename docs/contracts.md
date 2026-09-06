@@ -2,7 +2,7 @@
 
 Core package `@lhj6102/ccdd`, optional library `@lhj6102/ccdd-default-tools`, strict TypeScript compiled to Node 24 ESM, and local SQLite persistence. The core does not depend on or re-export the default library. Broker and Executors remain separate bounded contexts. A request-scoped worker runs one Run; no daemon, global broker-owner lock, or automatic queue scanner is required. The optional local monitor observes persisted requests and delegates explicit Human actions to the Broker. It does not own review execution.
 
-Artifact groups and the default image tool described here are available in the current source build; the published v1.0.0 assets do not include them.
+Artifact groups and the default image tool are included in v1.1.0. Existing leaf-only configurations and recorded requests retain their contracts.
 
 ## Workspace contract
 

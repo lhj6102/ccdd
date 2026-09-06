@@ -12,13 +12,14 @@ Node.js 24 이상과 이 비공개 저장소에 접근할 수 있는 GitHub 계�
 mkdir my-project
 cd my-project
 npm init -y
+npm pkg set type=module
 mkdir -p vendor/ccdd
-gh release download v1.0.0 --repo lhj6102/ccdd --dir vendor/ccdd \
+gh release download v1.1.0 --repo lhj6102/ccdd --dir vendor/ccdd \
   --pattern '*.tgz' --pattern SHA256SUMS --pattern verification.json
 (cd vendor/ccdd && shasum -a 256 -c SHA256SUMS)
 npm install --ignore-scripts \
-  ./vendor/ccdd/lhj6102-ccdd-1.0.0.tgz \
-  ./vendor/ccdd/lhj6102-ccdd-default-tools-1.0.0.tgz
+  ./vendor/ccdd/lhj6102-ccdd-1.1.0.tgz \
+  ./vendor/ccdd/lhj6102-ccdd-default-tools-1.1.0.tgz
 npx ccdd --help
 ```
 
@@ -38,9 +39,9 @@ npx ccdd monitor
 
 `tools check`는 등록한 도구를 검사합니다. `doctor`와 Agent 리뷰는 실제 Provider를 호출하므로 유효한 인증·모델 접근 권한이 필요하고 계정 사용량을 소비합니다. 다른 인증 방식은 [Provider와 인증](#agent-provider와-인증)을 참고하세요. 모니터가 표시하는 로컬 주소를 열면 요청과 판정을 볼 수 있습니다.
 
-이하의 `ccdd` 명령은 프로젝트 로컬 설치라면 `npx ccdd`로 실행합니다. 소스 개발은 저장소를 받은 뒤 `npm ci && npm run build`로 준비하고 `node dist/src/cli.js`로 실행합니다. 배포는 `npm run release -- --commit <40자리 SHA>`로 지정한 소스를 로컬에서 검증한 뒤 게시하며, `--dry-run`으로 검증과 파일 생성만 할 수 있습니다. 자세한 배포·업그레이드 절차는 [Release 안내](docs/releases.md), 변경 사항은 [v1.0.0 릴리스 노트](docs/releases/v1.0.0.md)에 있습니다.
+이하의 `ccdd` 명령은 프로젝트 로컬 설치라면 `npx ccdd`로 실행합니다. 소스 개발은 저장소를 받은 뒤 `npm ci && npm run build`로 준비하고 `node dist/src/cli.js`로 실행합니다. 배포는 `npm run release -- --commit <40자리 SHA>`로 지정한 소스를 로컬에서 검증한 뒤 게시하며, `--dry-run`으로 검증과 파일 생성만 할 수 있습니다. 자세한 배포·업그레이드 절차는 [Release 안내](docs/releases.md), 변경 사항은 [v1.1.0 릴리스 노트](docs/releases/v1.1.0.md)에 있습니다.
 
-**Artifact 그룹과 `agent.image.view()`는 현재 소스 빌드의 기능입니다.** 위 v1.0.0 Release 파일에는 아직 포함되지 않습니다. 새 기능을 사용하려면 [이미지·그룹 예제의 소스 tarball 설치 안내](examples/artifact-groups/README.md)를 따르세요.
+v1.1.0은 **Artifact 그룹과 `agent.image.view()`**를 포함합니다. [이미지·그룹 예제](examples/artifact-groups/README.md)에서 Release 설치부터 도구 검사와 그룹 리뷰까지 확인할 수 있습니다.
 
 ## Artifact 의존 관계
 
@@ -221,9 +222,9 @@ ccdd tools check --artifact tests --for agent --tool read --execute --args '{"pa
 설치한 CLI와 Release의 두 tarball로 네 가지 시나리오를 만들 수 있습니다. tarball 환경변수는 절대경로로 지정하고, 업그레이드할 때는 새 데모 폴더를 선택하세요.
 
 ```sh
-export CCDD_DEMO_CORE_TARBALL="$PWD/vendor/ccdd/lhj6102-ccdd-1.0.0.tgz"
-export CCDD_DEMO_TOOLS_TARBALL="$PWD/vendor/ccdd/lhj6102-ccdd-default-tools-1.0.0.tgz"
-export CCDD_DEMO_DIR="$HOME/.local/share/ccdd/demo-1.0.0"
+export CCDD_DEMO_CORE_TARBALL="$PWD/vendor/ccdd/lhj6102-ccdd-1.1.0.tgz"
+export CCDD_DEMO_TOOLS_TARBALL="$PWD/vendor/ccdd/lhj6102-ccdd-default-tools-1.1.0.tgz"
+export CCDD_DEMO_DIR="$HOME/.local/share/ccdd/demo-1.1.0"
 npx ccdd prepare-demo --demo-dir "$CCDD_DEMO_DIR"
 npx ccdd run --demo --demo-dir "$CCDD_DEMO_DIR" --scenario why-change --copy --critic spec-why --wait
 npx ccdd run --demo --demo-dir "$CCDD_DEMO_DIR" --scenario runtime-failure --copy --critic implementation-tests --wait

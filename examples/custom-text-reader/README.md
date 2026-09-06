@@ -11,10 +11,10 @@ cd /tmp/ccdd-custom-reader
 npm init -y
 npm pkg set type=module
 mkdir -p vendor/ccdd
-gh release download v1.0.0 --repo lhj6102/ccdd --dir vendor/ccdd \
+gh release download v1.1.0 --repo lhj6102/ccdd --dir vendor/ccdd \
   --pattern '*.tgz' --pattern SHA256SUMS --pattern verification.json
 (cd vendor/ccdd && shasum -a 256 -c SHA256SUMS)
-npm install --ignore-scripts ./vendor/ccdd/lhj6102-ccdd-1.0.0.tgz
+npm install --ignore-scripts ./vendor/ccdd/lhj6102-ccdd-1.1.0.tgz
 npx ccdd tools check --artifact spec --for agent --tool read
 npx ccdd tools check --artifact spec --for agent --tool read --execute --args '{"startLine":1,"lineCount":20}'
 npx ccdd run --copy --critic spec-why --codex-auth-file "$HOME/.codex/auth.json" --wait

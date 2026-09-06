@@ -1,13 +1,13 @@
 # Release 설치와 배포
 
-CCDD는 비공개 GitHub Release에 설치용 tarball을 배포합니다. npm registry에는 게시하지 않습니다. 최신 설치 흐름은 [README](../README.md#시작하기), v1.0.0 변경 사항은 [릴리스 노트](releases/v1.0.0.md)에 있습니다.
+CCDD는 비공개 GitHub Release에 설치용 tarball을 배포합니다. npm registry에는 게시하지 않습니다. 최신 설치 흐름은 [README](../README.md#시작하기), v1.1.0 변경 사항은 [릴리스 노트](releases/v1.1.0.md)에 있습니다.
 
 ## 배포 파일
 
 | 파일 | 용도 |
 | --- | --- |
-| `lhj6102-ccdd-1.0.0.tgz` | CLI·Broker·Executors·Artifact Runner·빌드된 모니터 화면 |
-| `lhj6102-ccdd-default-tools-1.0.0.tgz` | 선택적으로 등록하는 Agent 읽기·목록과 Human 데스크톱 도구 |
+| `lhj6102-ccdd-1.1.0.tgz` | CLI·Broker·Executors·Artifact Runner·빌드된 모니터 화면 |
+| `lhj6102-ccdd-default-tools-1.1.0.tgz` | 선택적으로 등록하는 Agent 읽기·목록·이미지 관측과 Human 데스크톱 도구 |
 | `verification.json` | 해당 배포의 소스와 패키지 설치 검증 기록 |
 | `SHA256SUMS` | 배포 파일의 SHA-256 체크섬 |
 
@@ -19,7 +19,7 @@ GitHub가 별도로 제공하는 Source code 압축 파일은 소스이며, 설�
 
 1. Release의 파일을 프로젝트 안의 새 폴더에 다운로드하고 체크섬을 확인합니다.
 2. `npm install --ignore-scripts <core.tgz> <default-tools.tgz>`로 로컬 의존성을 갱신합니다. 사용자 도구만 쓰면 core만 설치합니다.
-3. [설정 변경 사항](releases/v1.0.0.md#기존-설정에서-이전)을 반영하고 `npx ccdd tools check`로 등록한 도구를 확인합니다.
+3. v1.0.0 설정은 그대로 사용할 수 있습니다. [새 기능 등록과 호환성](releases/v1.1.0.md#기존-설정과-호환성)을 확인하고 `npx ccdd tools check`로 등록한 도구를 검사합니다. v1.0.0 이전에서 이전한다면 [기존 설정 변경](releases/v1.0.0.md#기존-설정에서-이전)도 반영합니다.
 4. 실제 Agent를 쓸 환경에서 `npx ccdd doctor`로 인증·Provider·모델 접근을 확인한 뒤 새 리뷰를 요청합니다. 실행 중인 모니터는 새 CLI로 다시 시작합니다.
 
 `tools check --execute`는 선택한 도구를 실제로 실행합니다. `doctor`는 실제 Provider를 호출하며 계정 사용량을 소비합니다. 배포 검증의 성공이 사용자의 인증·모델 권한이나 데스크톱 프로그램 설치를 보장하지는 않습니다.
@@ -32,8 +32,8 @@ CCDD 소스 저장소에서 배포할 **40자리 커밋 SHA**를 명시합니다
 
 ```sh
 # COMMIT_SHA를 배포할 40자리 커밋 SHA로 바꿉니다.
-npm run release -- --commit COMMIT_SHA --dry-run --output-dir /tmp/ccdd-v1.0.0-check
-npm run release -- --commit COMMIT_SHA --output-dir /tmp/ccdd-v1.0.0-release
+npm run release -- --commit COMMIT_SHA --dry-run --output-dir /tmp/ccdd-v1.1.0-check
+npm run release -- --commit COMMIT_SHA --output-dir /tmp/ccdd-v1.1.0-release
 ```
 
 두 명령은 각각 실행할 수 있습니다. `--dry-run`은 전체 검증과 배포 파일 생성까지 수행하고 GitHub 인증을 요구하지 않습니다. 게시는 `--dry-run`을 뺀 명령으로 실행하며 해당 커밋을 다시 검증합니다. `--output-dir`는 선택 사항이고, 지정하면 저장소 밖의 비어 있는 디렉터리를 사용해야 합니다. 위 예시도 아직 사용하지 않은 경로를 선택하세요.
@@ -42,6 +42,6 @@ npm run release -- --commit COMMIT_SHA --output-dir /tmp/ccdd-v1.0.0-release
 
 이미 게시된 같은 버전은 수정 없이 건너뜁니다. 태그가 다른 커밋을 가리키면 거부하며 태그를 이동하지 않습니다. 같은 커밋의 Draft가 남아 있으면 명령을 다시 실행해 게시를 재시도할 수 있습니다. 게시된 배포 파일을 변경하려면 두 패키지 버전을 함께 올리고 새 커밋으로 배포합니다.
 
-본체·기본 도구의 `package.json`과 lockfile 버전을 일치시키고, 해당 커밋에 `docs/releases/v<버전>.md`를 포함하세요. 그 문서가 Release 본문으로 사용됩니다. v1.0.0은 [이 릴리스 노트](releases/v1.0.0.md)를 사용합니다.
+본체·기본 도구의 `package.json`과 lockfile 버전을 일치시키고, 해당 커밋에 `docs/releases/v<버전>.md`를 포함하세요. 그 문서가 Release 본문으로 사용됩니다. v1.1.0은 [이 릴리스 노트](releases/v1.1.0.md)를 사용합니다.
 
 빌드와 검증은 명령을 실행한 컴퓨터에서 수행하며 GitHub Actions를 사용하지 않습니다. 외부 LLM 호출이나 npm registry 게시도 없습니다. 따라서 이 배포 명령으로 Actions 실행 시간이나 Provider 사용량이 발생하지 않으며, 로컬 실행 시간과 의존성 다운로드가 필요합니다.

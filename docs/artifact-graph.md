@@ -66,7 +66,7 @@ export default defineConfig(() => ({
 
 ## Artifact 그룹
 
-현재 소스는 개별 `ArtifactDefinition`과 ID 참조로 묶는 `ArtifactGroupDefinition`을 함께 지원합니다. 이 기능은 기존 v1.0.0 배포 파일에는 없으며, [이미지·그룹 예제](../examples/artifact-groups/README.md)의 소스 빌드 설치 절차로 확인할 수 있습니다.
+v1.1.0부터 개별 `ArtifactDefinition`과 ID 참조로 묶는 `ArtifactGroupDefinition`을 함께 지원합니다. [이미지·그룹 예제](../examples/artifact-groups/README.md)에서 Release 설치와 실행 절차를 확인할 수 있습니다. 기존 개별 Artifact 설정은 변경 없이 사용할 수 있습니다.
 
 ```ts
 const artifacts = {

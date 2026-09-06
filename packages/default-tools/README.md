@@ -41,7 +41,7 @@ Agent tools invoke a packaged Node CLI directly, without a shell or a global exe
 
 ## Images
 
-`agent.image.view()` is available in the current source build, not in the already published v1.0.0 assets. The [image and group example](../../examples/artifact-groups/README.md) includes source tarball installation instructions.
+`agent.image.view()` is included in v1.1.0. The [image and group example](../../examples/artifact-groups/README.md) includes GitHub Release installation and tool verification instructions.
 
 ```ts
 // Register this type in ccdd.config.ts.
