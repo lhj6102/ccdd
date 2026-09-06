@@ -1,4 +1,5 @@
 import { assertPiAuthFilesOutsideWorkspace } from './auth.js';
+import { digestArtifactInstruction } from '../artifacts/instruction.js';
 import { constants } from 'node:fs';
 import { access, mkdir, mkdtemp, writeFile, realpath, stat, rm } from 'node:fs/promises';
 import { randomBytes } from 'node:crypto';
@@ -203,7 +204,7 @@ export function createExecutorRegistry({ piOptions, streamFn, alarmMethods = [],
           'Return only the final JSON schema result. Write a concise Korean summary and evidence with artifact paths and concrete observations; no hidden reasoning, logs, or speculative claims.',
           `Critic: ${request.title} (${request.criticId})`,
           `Workspace snapshot hash: ${request.snapshotHash}`,
-          `Review payload: ${JSON.stringify(request.payload)}`,
+          `Review payload: ${JSON.stringify({ ...request.payload, instruction: digestArtifactInstruction(request.payload.instruction, request.artifacts, tools) })}`,
           request.target ? `Target Artifact: ${request.target}. Dependency Artifacts: ${JSON.stringify(request.deps)}. The target is available to read even though it is not in deps.` : 'Historical review: Artifact roles are described in the review payload.',
           'Artifact roles and allowed observation scope follow. Do not infer access to undeclared artifacts.',
           `Artifacts: ${JSON.stringify(viewer.listArtifacts())}`,

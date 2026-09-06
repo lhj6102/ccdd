@@ -14,7 +14,7 @@ import { startMonitor } from '../src/monitor/server.js';
 import type { MonitorArtifactPage, MonitorDetail, MonitorOverview, MonitorSession, MonitorGraph, MonitorRunOverview } from '../src/monitor/types.js';
 import type { RepoConfig, ReviewRequest, WorkspaceMode } from '../src/contracts.js';
 
-async function fixture(t: TestContext, mode: WorkspaceMode = 'copy', options: { waiting?: boolean; chain?: boolean; command?: boolean; longTool?: boolean; custom?: boolean } = {}) {
+async function fixture(t: TestContext, mode: WorkspaceMode = 'copy', options: { waiting?: boolean; chain?: boolean; command?: boolean; longTool?: boolean; custom?: boolean; instruction?: string } = {}) {
   const dir = await realpath(await mkdtemp(join(tmpdir(), 'ccdd-monitor-test-')));
   const cleanup: Array<() => Promise<void>> = [];
   t.after(async () => { for (const close of cleanup.reverse()) await close(); await removeOwnedWorkspaceTree(dir); });
@@ -26,7 +26,7 @@ async function fixture(t: TestContext, mode: WorkspaceMode = 'copy', options: { 
   const config: RepoConfig = {
     artifacts: { why: { type: 'markdown', path: 'why.md' }, tests: { type: 'code', path: 'tests', basis: true } },
     artifactTypes: { markdown: { viewer: 'text', agentTools: { read: {} }, humanTools: { read: { description: '{artifactName}의 줄을 읽습니다.' } } }, code: { viewer: 'files', agentTools: { read: {}, list: {} }, humanTools: { list: { description: '{artifactName}의 파일 목록입니다.' }, read: { description: '{artifactName}의 내부 파일을 읽습니다.' } } } },
-    critics: [{ id: 'human-check', title: '<script>unsafe title</script>', target: 'why', deps: ['tests'], profile: { kind: 'human' }, payload: { instruction: '두 항목 기준을 확인하세요.', authFile: 'DO_NOT_EXPOSE_AUTH_METADATA' } }],
+    critics: [{ id: 'human-check', title: '<script>unsafe title</script>', target: 'why', deps: ['tests'], profile: { kind: 'human' }, payload: { instruction: options.instruction ?? '두 항목 기준을 확인하세요.', authFile: 'DO_NOT_EXPOSE_AUTH_METADATA' } }],
   };
   if (options.command) config.artifactTypes.markdown.humanTools = { ...config.artifactTypes.markdown.humanTools, [options.longTool ? 'o'.repeat(64) : 'open']: { description: '고정된 프로그램으로 입력을 확인합니다.', command: process.execPath, args: ['-e', `require('node:fs').writeFileSync(${JSON.stringify(join(dir, 'command-output.txt'))}, require('node:fs').readFileSync(process.argv[1], 'utf8'))`, '{artifactPath}'] } };
   if (options.longTool) {
@@ -117,6 +117,28 @@ test('monitor serves existing database state and scoped artifacts without execut
   assert.match(source.result.content, /count = 2/);
   assert.deepEqual(await readFile(join(data.stateDir, 'broker.sqlite')), before);
   assert.equal((await readdir(data.stateDir)).some(name => /owner|inbox/.test(name)), false);
+});
+
+test('instruction references preserve the stored payload and HTTP detail string without executing config or tools', async t => {
+  const instruction = String.raw`{why}를 {tests}와 비교하세요. {unrelated} {missing} {{why}} \{why} {"example":"{why}"}`;
+  const data = await fixture(t, 'copy', { custom: true, instruction });
+  const marker = join(data.dir, 'config-code-executions.txt');
+  const beforeCode = await readFile(marker, 'utf8');
+  const beforeDb = await readFile(join(data.stateDir, 'broker.sqlite'));
+  const detail = await (await fetch(data.route)).json() as MonitorDetail;
+  assert.equal(detail.instruction, instruction);
+  assert.deepEqual(detail.artifacts.map(artifact => artifact.id), ['why', 'tests']);
+  assert.deepEqual(detail.tools?.map(tool => [tool.artifactId, tool.name]), [['why', 'preview_why'], ['tests', 'preview_tests']]);
+  assert.equal('instructionParts' in detail, false);
+  assert.equal('resolvedInstruction' in detail, false);
+  const db = new DatabaseSync(join(data.stateDir, 'broker.sqlite'), { readOnly: true });
+  try {
+    const row = db.prepare('SELECT data FROM requests WHERE id=?').get(data.request.id);
+    assert.ok(row);
+    assert.equal((JSON.parse(row.data as string) as ReviewRequest).payload.instruction, instruction);
+  } finally { db.close(); }
+  assert.deepEqual(await readFile(join(data.stateDir, 'broker.sqlite')), beforeDb);
+  assert.equal(await readFile(marker, 'utf8'), beforeCode);
 });
 
 test('monitor blocks foreign browser access and all mutations; static resources use restrictive headers', async t => {
