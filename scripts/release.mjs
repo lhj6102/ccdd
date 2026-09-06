@@ -1,8 +1,8 @@
-import { lstat, readFile, readdir } from 'node:fs/promises';
+import { lstat, readFile, readdir, realpath } from 'node:fs/promises';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { resolve } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
 import { gunzipSync } from 'node:zlib';
 
 const coreName = '@lhj6102/ccdd';
@@ -225,7 +225,7 @@ export async function publishRelease({ root = process.cwd(), repository, sourceC
   return { tag: metadata.tag, published: true, already_published: false, url: published.html_url };
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+if (process.argv[1] && await realpath(process.argv[1]) === fileURLToPath(import.meta.url)) {
   console.error('Use npm run release -- --commit SHA (optionally --dry-run).');
   process.exitCode = 1;
 }

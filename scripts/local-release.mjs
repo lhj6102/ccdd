@@ -4,7 +4,7 @@ import { execFile, spawn } from 'node:child_process';
 import { mkdir, mkdtemp, open, readdir, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { createGitHubClient, planRelease, publishRelease, readReleaseMetadata, validateAssets } from './release.mjs';
 
@@ -59,7 +59,7 @@ export async function createSnapshot({ sourceRoot, commit, scratch, environment,
   await exec('git', ['checkout', '--detach', commit], { ...options, cwd: checkout });
   assert.equal((await exec('git', ['rev-parse', 'HEAD'], { ...options, cwd: checkout })).stdout.trim(), commit);
   assert.equal((await exec('git', ['status', '--porcelain', '--untracked-files=all'], { ...options, cwd: checkout })).stdout, '');
-  return checkout;
+  return realpath(checkout);
 }
 
 export async function resolveOutputDirectory(path, excludedRoots) {
@@ -163,7 +163,7 @@ export async function releaseLocally(options, { cwd = process.cwd(), environment
   }
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+if (process.argv[1] && await realpath(process.argv[1]) === fileURLToPath(import.meta.url)) {
   try {
     const options = parseArguments(process.argv.slice(2));
     if (options.help) console.log(usage);

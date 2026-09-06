@@ -5,10 +5,27 @@ import { lstat, mkdir, mkdtemp, readFile, readdir, realpath, rm, symlink, writeF
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
+import { fileURLToPath } from 'node:url';
 
 const driverUrl = new URL('../../scripts/local-release.mjs', import.meta.url);
 const { parseArguments, repositoryFromRemote, buildEnvironment, createSnapshot, resolveOutputDirectory } = await import(driverUrl.href);
 const exec = promisify(execFile), commit = 'a'.repeat(40);
+
+test('release CLI entrypoints still execute when invoked through symlinks', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'ccdd-release-entrypoint-test-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const local = join(directory, 'local.mjs'), verify = join(directory, 'verify.mjs');
+  await symlink(fileURLToPath(driverUrl), local);
+  await symlink(fileURLToPath(new URL('../../scripts/verify-release.mjs', import.meta.url)), verify);
+  const help = await exec(process.execPath, [local, '--help'], { encoding: 'utf8' });
+  assert.match(help.stdout, /npm run release -- --commit/);
+  await assert.rejects(exec(process.execPath, [verify], { encoding: 'utf8' }), (error: unknown) => {
+    const result = error as { code: number; stderr: string };
+    assert.equal(result.code, 1);
+    assert.match(result.stderr, /Missing --version/);
+    return true;
+  });
+});
 
 test('local release requires an exact commit and rejects ambiguous or repeated CLI arguments', () => {
   const options = parseArguments(['--commit', commit, '--dry-run', '--output-dir', '/tmp/release files']);

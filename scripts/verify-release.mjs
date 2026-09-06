@@ -260,7 +260,7 @@ export async function verifyRelease(argv) {
   }
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (process.argv[1] && await realpath(process.argv[1]) === fileURLToPath(import.meta.url)) {
   try { await verifyRelease(process.argv.slice(2)); }
   catch (error) { console.error(error instanceof Error ? error.message : String(error)); process.exitCode = 1; }
 }
