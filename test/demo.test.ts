@@ -16,7 +16,8 @@ const installFixtureDependencies:DemoDependencyInstaller=async({stagePath})=>{
   const tools=join(stagePath,'node_modules/@lhj6102/ccdd-default-tools');
   await mkdir(core,{recursive:true}); await mkdir(tools,{recursive:true});
   await cp(fileURLToPath(new URL('../src/sdk.js',import.meta.url)),join(core,'sdk.js'));
-  await writeFile(join(core,'package.json'),JSON.stringify({name:'@lhj6102/ccdd',version:'0.9.0',type:'module',exports:'./sdk.js'}));
+  const {version}=JSON.parse(await readFile(new URL('../../package.json',import.meta.url),'utf8'));
+  await writeFile(join(core,'package.json'),JSON.stringify({name:'@lhj6102/ccdd',version,type:'module',exports:'./sdk.js'}));
   const toolsDist=dirname(fileURLToPath(import.meta.resolve('@lhj6102/ccdd-default-tools')));
   await cp(toolsDist,join(tools,'dist'),{recursive:true});
   await cp(join(toolsDist,'../package.json'),join(tools,'package.json'));

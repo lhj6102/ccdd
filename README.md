@@ -6,16 +6,39 @@
 
 ## 시작하기
 
-Node.js 24 이상이 필요합니다. Agent 리뷰는 Pi Agent Core와 Pi AI 라이브러리로 실행하며, 요청한 Provider·모델을 사용할 인증이 필요합니다. 전체 소스와 테스트는 strict TypeScript로 작성하고 JavaScript로 빌드합니다.
+Node.js 24 이상과 이 비공개 저장소에 접근할 수 있는 GitHub 계정이 필요합니다. [GitHub Release](https://github.com/lhj6102/ccdd/releases)의 두 tarball을 **리뷰할 프로젝트 안에 설치**합니다. npm registry 게시를 전제로 하지 않습니다. 아래 명령은 GitHub CLI(`gh`)에 로그인한 상태에서 실행합니다.
 
 ```sh
-npm ci
-npm run build
-node dist/src/cli.js doctor --repo /path/to/project --json
-node dist/src/cli.js run --repo /path/to/project --copy --critic tests-spec --wait --json
+mkdir my-project
+cd my-project
+npm init -y
+mkdir -p vendor/ccdd
+gh release download v1.0.0 --repo lhj6102/ccdd --dir vendor/ccdd \
+  --pattern '*.tgz' --pattern SHA256SUMS --pattern verification.json
+(cd vendor/ccdd && shasum -a 256 -c SHA256SUMS)
+npm install --ignore-scripts \
+  ./vendor/ccdd/lhj6102-ccdd-1.0.0.tgz \
+  ./vendor/ccdd/lhj6102-ccdd-default-tools-1.0.0.tgz
+npx ccdd --help
 ```
 
-npm 패키지를 설치했다면 `node dist/src/cli.js` 대신 `ccdd`를 사용합니다. 실제 Agent 진단과 리뷰는 계정 사용량을 소비합니다.
+기존 프로젝트라면 해당 폴더에서 다운로드·설치 단계부터 실행합니다. `shasum` 대신 Linux의 `sha256sum -c SHA256SUMS`를 사용할 수 있습니다. 기본 도구를 쓰지 않고 직접 구현한다면 본체 tarball만 설치해도 됩니다. 전역 CLI 설치는 선택 사항이며, TS 설정에서 import하는 패키지는 프로젝트에도 설치해야 합니다.
+
+아래 [Artifact 도구 설정](#artifact-도구-설정)의 예제를 `ccdd.config.ts`로 저장하고, 그 설정이 가리키는 `why.md`·`spec.md`를 작성합니다. 예를 들어 `why.md`에는 “완료하지 않은 중요한 작업부터 최대 3개를 추천한다”, `spec.md`에는 필터·정렬·최대 개수 조건을 적습니다. Agent가 두 문서를 실제로 읽고 정합성을 평가합니다.
+
+```sh
+npx ccdd tools check --artifact spec --for agent --tool read --execute \
+  --args '{"startLine":1,"lineCount":80}'
+# 예제의 openai-codex Provider에 기존 Codex access token을 명시적으로 연결
+export CCDD_CODEX_AUTH_FILE="$HOME/.codex/auth.json"
+npx ccdd doctor --critic spec-why --json
+npx ccdd run --copy --critic spec-why --wait --json
+npx ccdd monitor
+```
+
+`tools check`는 등록한 도구를 검사합니다. `doctor`와 Agent 리뷰는 실제 Provider를 호출하므로 유효한 인증·모델 접근 권한이 필요하고 계정 사용량을 소비합니다. 다른 인증 방식은 [Provider와 인증](#agent-provider와-인증)을 참고하세요. 모니터가 표시하는 로컬 주소를 열면 요청과 판정을 볼 수 있습니다.
+
+이하의 `ccdd` 명령은 프로젝트 로컬 설치라면 `npx ccdd`로 실행합니다. 소스 개발은 저장소를 받은 뒤 `npm ci && npm run build`로 준비하고 `node dist/src/cli.js`로 실행합니다. 배포는 `npm run release -- --commit <40자리 SHA>`로 지정한 소스를 로컬에서 검증한 뒤 게시하며, `--dry-run`으로 검증과 파일 생성만 할 수 있습니다. 자세한 배포·업그레이드 절차는 [Release 안내](docs/releases.md), 변경 사항은 [v1.0.0 릴리스 노트](docs/releases/v1.0.0.md)에 있습니다.
 
 ## Artifact 의존 관계
 
@@ -71,7 +94,7 @@ ccdd doctor --repo /path/to/project --codex-auth-file "$HOME/.codex/auth.json" -
 
 ## Artifact 도구 설정
 
-v0.9의 설정은 `ccdd.config.ts`입니다. 설정 객체 또는 객체를 반환하는 동기·비동기 함수를 default export합니다. `@lhj6102/ccdd`는 가벼운 `defineConfig`, `defineTool`과 도구 타입을 제공하고, `@lhj6102/ccdd-default-tools`는 선택적으로 설치하는 구현 라이브러리입니다. import하거나 factory를 호출하는 것만으로 파일을 읽거나 프로그램을 실행하지 않습니다.
+설정은 `ccdd.config.ts`입니다. 설정 객체 또는 객체를 반환하는 동기·비동기 함수를 default export합니다. `@lhj6102/ccdd`는 가벼운 `defineConfig`, `defineTool`과 도구 타입을 제공하고, `@lhj6102/ccdd-default-tools`는 선택적으로 설치하는 구현 라이브러리입니다. import하거나 factory를 호출하는 것만으로 파일을 읽거나 프로그램을 실행하지 않습니다.
 
 ```ts
 import { defineConfig } from '@lhj6102/ccdd';
@@ -175,25 +198,21 @@ ccdd tools check --artifact tests --for agent --tool read --execute --args '{"pa
 
 ## CLI 데모
 
-두 패키지는 private 저장소에서 로컬 tarball로 준비합니다. npm 공개 게시를 전제로 하지 않습니다.
+설치한 CLI와 Release의 두 tarball로 네 가지 시나리오를 만들 수 있습니다. tarball 환경변수는 절대경로로 지정하고, 업그레이드할 때는 새 데모 폴더를 선택하세요.
 
 ```sh
-npm run build
-mkdir -p /tmp/ccdd-local-packages
-npm pack --ignore-scripts --pack-destination /tmp/ccdd-local-packages
-npm pack --workspace @lhj6102/ccdd-default-tools --ignore-scripts --pack-destination /tmp/ccdd-local-packages
-export CCDD_DEMO_CORE_TARBALL=/tmp/ccdd-local-packages/lhj6102-ccdd-0.9.0.tgz
-export CCDD_DEMO_TOOLS_TARBALL=/tmp/ccdd-local-packages/lhj6102-ccdd-default-tools-0.9.0.tgz
-node dist/src/cli.js prepare-demo
-CCDD_CODEX_AUTH_FILE="$HOME/.codex/auth.json" npm run demo
-node dist/src/cli.js run --demo --scenario why-change --copy --critic spec-why --wait
-node dist/src/cli.js run --demo --scenario runtime-failure --copy --critic implementation-tests --wait
-node dist/src/cli.js run --demo --scenario fixed --copy --wait
+export CCDD_DEMO_CORE_TARBALL="$PWD/vendor/ccdd/lhj6102-ccdd-1.0.0.tgz"
+export CCDD_DEMO_TOOLS_TARBALL="$PWD/vendor/ccdd/lhj6102-ccdd-default-tools-1.0.0.tgz"
+export CCDD_DEMO_DIR="$HOME/.local/share/ccdd/demo-1.0.0"
+npx ccdd prepare-demo --demo-dir "$CCDD_DEMO_DIR"
+npx ccdd run --demo --demo-dir "$CCDD_DEMO_DIR" --scenario why-change --copy --critic spec-why --wait
+npx ccdd run --demo --demo-dir "$CCDD_DEMO_DIR" --scenario runtime-failure --copy --critic implementation-tests --wait
+npx ccdd run --demo --demo-dir "$CCDD_DEMO_DIR" --scenario fixed --copy --wait
 ```
 
-새 데모는 `~/.local/share/ccdd/demo-v9`에 Git 없는 네 개의 수정 가능한 프로젝트를 만듭니다. tarball에서 의존성을 한 번 설치한 뒤 각 프로젝트에 물리적으로 복사하므로, 각 snapshot이 자신의 구현·의존성을 가집니다. 공개된 전이 의존성 설치에는 npm 접근 또는 로컬 캐시가 필요합니다. lifecycle script는 실행하지 않습니다. 각 프로젝트에 tarball·package lock도 보관합니다.
+새 데모는 Git 없는 네 개의 수정 가능한 프로젝트를 만듭니다. tarball에서 의존성을 한 번 설치한 뒤 각 프로젝트에 물리적으로 복사하므로, 각 snapshot이 자신의 구현·의존성을 가집니다. 공개된 전이 의존성 설치에는 npm 접근 또는 로컬 캐시가 필요합니다. lifecycle script는 실행하지 않습니다. 각 프로젝트에 tarball·package lock도 보관합니다.
 
-기존 v9 프로젝트는 편집한 파일을 보존하며 다시 설치하지 않습니다. 과거 데모나 파일이 있는 다른 폴더를 덮어쓰지 않습니다. 별도 위치는 `--demo-dir PATH`로 지정합니다. 설치한 CCDD CLI에서도 동일한 두 tarball 환경변수로 `ccdd prepare-demo`를 사용할 수 있습니다.
+`--demo-dir`를 생략한 기본 경로는 기존과 같은 `~/.local/share/ccdd/demo-v9`입니다. 이 이름은 데모 형식 버전이며 패키지 버전과 별개입니다. 기존 데모는 편집한 파일과 설치된 패키지를 보존하며 재설치하지 않습니다. Release 업그레이드는 위처럼 새 폴더에서 준비합니다. 소스로 tarball을 만드는 절차와 전체 시연은 [데모 안내](docs/demo.md)를 참고하세요.
 
 ```text
 why.md → spec.md → tests/ → implementation/
