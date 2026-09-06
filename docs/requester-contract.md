@@ -21,7 +21,18 @@ await broker.run(run.id);
 }
 ```
 
-`target`은 평가 대상, `deps`는 참조 Artifact ID 배열입니다. `artifacts`는 `[target, ...deps]`에서 도출한 리뷰어의 관측 범위입니다. 복사본에 다른 파일이 있어도 Artifact Runner는 요청에 선언된 Viewer 도구만 제공합니다. payload의 `{why}` 등은 Artifact ID 참조입니다. 전체 문서를 미리 프롬프트에 넣지 않습니다.
+`target`은 평가 대상, `deps`는 참조 Artifact ID 배열입니다. `artifacts`는 `[target, ...deps]`에서 도출한 리뷰어의 관측 범위입니다. 복사본에 다른 파일이 있어도 Artifact Runner는 요청에 선언된 도구만 제공합니다.
+
+`payload.instruction`은 계속 문자열이며 설정·envelope·저장 기록·HTTP 응답에서 원문을 유지합니다. Agent 프롬프트를 만들 때만 요청 범위의 `{ID}`를 실제 제공된 도구 목록으로 펼칩니다. 도구는 이름을 추측하지 않고 등록된 `artifactId`로 연결합니다.
+
+```text
+원문: {spec}이 {why}의 요구사항을 충족하는지 검토하세요.
+Agent: {"artifact":"spec","tools":["read_spec"]}이 {"artifact":"why","tools":["read_why"]}의 요구사항을 충족하는지 검토하세요.
+```
+
+Human 화면은 같은 참조를 버튼으로 표시하여 해당 Artifact의 Human 도구 선택 영역으로 연결합니다. 참조 클릭은 선택·포커스만 수행하며, 도구 실행은 기존 claim 및 명시적 실행 절차를 따릅니다. 참조를 해석하면서 Artifact 본문을 읽거나 프로그램을 실행하지 않습니다.
+
+정확한 Artifact ID만 참조합니다. JSON 객체처럼 중괄호로 묶인 구간, 중첩·이중 중괄호, `\{spec}`처럼 escape한 참조, `{unknown}` 또는 요청 범위 밖의 ID, `{spec.path}` 같은 표현식은 원문 그대로 유지하며 새로운 접수 오류를 만들지 않습니다. instruction을 일반 JSON 문서로 해석하지 않으므로 그 구간 밖의 따옴표나 배열 안에서도 `{ID}`는 참조이며, 문자 그대로 쓰려면 escape합니다. `target`·`deps`가 정한 관측 범위는 바뀌지 않습니다. 도구 설명의 `{artifactName}` 치환과 별개의 규칙이며, instruction용 예약변수나 공개 API·설정/응답 필드를 추가하지 않습니다. 다른 payload 필드도 변경하지 않습니다.
 
 선택 Critic 요청은 하나의 envelope만 만들고 참조의 선행 통과를 요구하지 않습니다. 전체 Graph Run은 참조 Artifact의 모든 필수 Critic이 GREEN이거나 명시적인 기준 Artifact이면 해당 Critic을 실행합니다. 독립적인 Critic들은 병렬 실행되며 Human 대기도 독립 분기를 멈추지 않습니다. 수정 후 재요청은 새로운 Handle과 입력 hash를 갖습니다. 같은 hash의 복사본은 공유할 수 있지만 결과는 별도로 평가합니다.
 

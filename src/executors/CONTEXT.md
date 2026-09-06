@@ -40,6 +40,10 @@ _Avoid_: 테스트 실행기, Artifact 생성기
 특정 스냅샷의 Artifact에 대해 하나의 관측 동작을 제공하는 진입점이다. Artifact 타입에 정의된 설명을 바탕으로 리뷰어에게 관측 범위와 동작을 안내한다.
 _Avoid_: 전체 파일을 미리 넣은 프롬프트, Repo 전체 접근
 
+**Instruction Artifact Reference**:
+검토 지시사항에서 요청에 포함된 특정 Artifact와 그 리뷰어가 사용할 관측 수단을 가리키는 참조다. 참조는 평가 대상과 의존 관계가 정한 관측 범위 안에서 의미를 가지며, 관측이나 판정 자체를 뜻하지 않는다.
+_Avoid_: Artifact 본문 삽입, 접근 권한 부여, 도구 실행
+
 **Artifact Tool Definition**:
 Artifact 유형이 리뷰어에게 제공할 관측 동작의 정의다. 동작의 설명, 받을 입력과 수행할 행위를 함께 가지며, 정의를 준비하는 것과 실제 Artifact를 관측하는 것은 별개다.
 _Avoid_: 도구 호출 결과, Critic 판정

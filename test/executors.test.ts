@@ -46,6 +46,32 @@ test('Pi Agent uses exact profile and only scoped Artifact tools; result and aud
   assert.equal(events.filter(x => x.type === 'artifact.tool.called').length, 2);
 });
 
+test('instruction references render only in the Agent prompt and preserve source payload and tool contracts', async t => {
+  const data = await fixture(t);
+  const instruction = String.raw`Compare {spec} with {why}. Keep {unknown}, {implementation}, {{spec}}, \{spec} and ` + '${spec}.';
+  data.request.payload = Object.freeze({ instruction, extra: { note: '{spec}' }, example: '{why}' });
+  const original = structuredClone(data.request);
+  let inspected = false;
+  const registry = createExecutorRegistry({ streamFn: artifactStream({ onRequest: ({ context }) => {
+    const user = context.messages.find(message => message.role === 'user');
+    const prompt = typeof user?.content === 'string' ? user.content
+      : user?.content.filter(block => block.type === 'text').map(block => block.text).join('\n') ?? '';
+    const payloadLine = prompt.split('\n').find(line => line.startsWith('Review payload: '));
+    assert.ok(payloadLine);
+    const payload = JSON.parse(payloadLine.slice('Review payload: '.length));
+    assert.deepEqual(payload, {
+      ...original.payload,
+      instruction: String.raw`Compare {"artifact":"spec","tools":["read_spec"]} with {"artifact":"why","tools":["read_why"]}. Keep {unknown}, {implementation}, {{spec}}, \{spec} and ` + '${spec}.',
+    });
+    assert.deepEqual(context.tools?.map(tool => tool.name), ['read_why', 'read_spec']);
+    inspected = true;
+  } }) });
+  const result = await registry.execute(data.request, data);
+  assert.equal(result.verdict, 'GREEN');
+  assert.ok(inspected);
+  assert.deepEqual(data.request, original);
+});
+
 test('provider errors, invalid final schema and missing observations fail instead of becoming RED', async t => {
   const modes: [ArtifactStreamOptions['mode'], RegExp][] = [
     ['unknown-error', /Provider 실행/], ['malformed', /final JSON/], ['no-tools', /did not inspect/], ['beyond-eof', /did not inspect/],

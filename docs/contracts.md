@@ -108,6 +108,21 @@ The Artifact Runner creates scoped Viewer entry-point tools such as `read_why`, 
 
 Executors receive the prepared input path, a distinct `runDir`, cancellation signal and event callback. Runtime environment sets `CCDD_OUTPUT_DIR`, `CCDD_TMP_DIR`, `TMPDIR`, `TMP`, `TEMP`, `HOME`, and `XDG_CACHE_HOME` to review-specific locations. Runtime cwd remains the input so relative imports work. A test failure is RED; an operational failure or detected input mutation is ERROR.
 
+### Instruction Artifact references
+
+`payload.instruction` remains a string. Configuration, prepared envelopes, stored payloads and monitor HTTP responses retain its original value; other payload fields are unchanged. Reference rendering adds no public SDK API, configuration field, request/response field or stored representation.
+
+An exact `{ID}` in that instruction refers to an Artifact in the request's existing `artifacts` scope. IDs use the existing identifier grammar: one ASCII letter or digit followed by up to 63 ASCII letters, digits, underscores or hyphens. When constructing the Agent prompt, CCDD renders the reference as inline JSON containing the Artifact ID and names from its actual Agent tool registry, joined by each tool's `artifactId`. It does not invent names or require default tools. For example, with `read_spec`, `grep_spec` and `read_why` actually registered:
+
+```text
+Source: {spec}이 {why}의 요구사항을 충족하는지 검토하세요.
+Agent: {"artifact":"spec","tools":["read_spec","grep_spec"]}이 {"artifact":"why","tools":["read_why"]}의 요구사항을 충족하는지 검토하세요.
+```
+
+Unknown or out-of-scope IDs remain literal text rather than making a previously valid request fail. Brace-delimited groups such as JSON objects, nested or doubled braces, escaped references such as `\{spec}`, and expressions such as `{spec.path}` also remain unchanged. The instruction is natural-language text, not a parsed JSON document: quotes and array brackets outside those brace groups do not suppress references. Escape `{ID}` when it should remain literal there. This is reference rendering, not expression evaluation, Artifact-body interpolation, permission granting or tool execution. The existing `target`/`deps` scope and required-observation checks remain authoritative. The `{artifactName}` placeholder in tool metadata descriptions continues its separate bound-Artifact substitution; instruction rendering introduces no reserved variable with that name.
+
+The Human frontend parses the same original instruction and presents recognized references as Artifact buttons associated with that request's Human tools. A reference click selects or focuses the corresponding tool choices; it never invokes a tool. Execution remains an explicit action under the existing active-claim and WAITING_HUMAN checks. No configuration import, Artifact read or tool execution is needed to render a reference.
+
 ## Pi Agent execution
 
 Only `src/executors` imports Pi runtime libraries. `@earendil-works/pi-agent-core` and `@earendil-works/pi-ai` are pinned to 0.85.1, reused as dependencies. The Broker delegates the common `ExecutorRegistry` contract (`src/contracts.ts`); it does not own LLM sessions. Human remains a durable broker workflow, and Runtime remains actual Node execution.

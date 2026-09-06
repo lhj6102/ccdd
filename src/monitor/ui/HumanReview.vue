@@ -12,7 +12,9 @@ const fields = ref<Record<string, string>>({}), toolResult = ref<unknown>(null),
 const jsonInput = ref('{}'), preferJson = ref(false);
 const summary = ref(''), evidence = ref(''), verdict = ref<'GREEN' | 'RED'>('GREEN');
 const toolForm = ref<HTMLFormElement | null>(null);
+const toolsRegion = ref<HTMLElement | null>(null), focusedArtifact = ref('');
 const tool = computed(() => props.detail.tools?.find(item => item.name === toolName.value));
+const visibleTools = computed(() => props.detail.tools?.filter(item => !focusedArtifact.value || item.artifactId === focusedArtifact.value) ?? []);
 const canAct = computed(() => Boolean(props.session && props.detail.human?.canComplete));
 const route = computed(() => requestRoute(props.detail.request.projectId, props.detail.request.id));
 const form = computed(() => toolInputForm(tool.value?.inputSchema ?? { type: 'object', additionalProperties: false }));
@@ -29,6 +31,17 @@ function selectTool(value: MonitorHumanTool): void {
   fields.value = initialToolFields(toolInputForm(value.inputSchema).fields, props.detail.artifactPreview !== 'tools');
   jsonInput.value = initialToolJson(value.inputSchema); preferJson.value = false;
 }
+function showArtifactTools(artifactId: string): void {
+  const registered = props.detail.tools?.find(item => item.artifactId === artifactId);
+  if (!registered || busy.value) return;
+  focusedArtifact.value = artifactId;
+  if (tool.value?.artifactId !== artifactId) selectTool(registered);
+  void nextTick(() => {
+    toolsRegion.value?.scrollIntoView({ block: 'nearest' });
+    toolsRegion.value?.focus({ preventScroll: true });
+  });
+}
+defineExpose({ showArtifactTools });
 function setField(name: string, event: Event): void {
   if (event.target instanceof HTMLInputElement) fields.value[name] = event.target.value;
 }
@@ -119,14 +132,19 @@ onUnmounted(() => { alive = false; toolController?.abort(); });
     <p v-if="sessionError" class="inline-error" role="status">{{ sessionError }}</p>
     <div v-if="detail.human?.canClaim" class="claim-callout"><div><strong>이 리뷰를 맡아 주세요.</strong><p>담당한 뒤 제공된 도구로 내용을 확인하고 결과를 제출합니다.</p></div><button class="primary-button" :disabled="!session || !!busy" @click="claim">{{ busy === 'claim' ? '담당하는 중…' : '맡아서 검토' }}</button></div>
     <p v-else-if="!detail.human?.claimedByMe" class="other-reviewer">{{ detail.request.claimedBy ? '다른 검토자가 담당하고 있습니다.' : '리뷰가 준비되기를 기다리고 있습니다.' }}</p>
-    <template v-else>
+    <section v-if="!detail.human?.claimedByMe && focusedArtifact" ref="toolsRegion" class="artifact-tool-preview" tabindex="-1" aria-labelledby="artifact-preview-title">
+      <h3 id="artifact-preview-title" class="section-title">{{ focusedArtifact }} · 제공된 도구</h3>
+      <p class="muted">{{ detail.human?.canClaim ? '검토를 맡은 후 아래 도구를 실행할 수 있습니다.' : '담당한 검토자만 도구를 실행할 수 있습니다.' }}</p>
+      <ul><li v-for="item in visibleTools" :key="item.name"><strong>{{ toolLabel(item) }}</strong><p>{{ item.description }}</p></li></ul>
+    </section>
+    <template v-if="detail.human?.claimedByMe">
       <div class="human-heading"><span class="assigned-mark">✓ 내가 담당</span><span class="muted">검토 후 결과를 제출해 주세요.</span></div>
       <p v-if="!detail.human?.canComplete" class="inline-error" role="status">{{ detail.request.waitingReason ?? '리뷰가 준비되면 도구와 결과 제출을 사용할 수 있습니다.' }}</p>
-      <section class="review-tools" aria-labelledby="human-tools-title">
-        <h3 id="human-tools-title" class="section-title">제공된 도구</h3>
+      <section ref="toolsRegion" class="review-tools" tabindex="-1" aria-labelledby="human-tools-title">
+        <div class="artifact-tool-heading"><h3 id="human-tools-title" class="section-title">{{ focusedArtifact ? `${focusedArtifact} · 제공된 도구` : '제공된 도구' }}</h3><button v-if="focusedArtifact" type="button" class="text-button" @click="focusedArtifact = ''">전체 도구</button></div>
         <p v-if="detail.toolIssue" class="inline-error" role="status">{{ detail.toolIssue }}</p>
         <p v-else-if="!detail.tools?.length" class="muted">등록된 도구가 없습니다.</p>
-        <div class="tool-choices"><button v-for="item in detail.tools" :key="item.name" class="artifact-choice" :aria-pressed="item.name === toolName" :disabled="!canAct || !!busy" @click="clickTool(item)">{{ toolLabel(item) }}</button></div>
+        <div class="tool-choices"><button v-for="item in visibleTools" :key="item.name" class="artifact-choice" :aria-pressed="item.name === toolName" :disabled="!canAct || !!busy" @click="clickTool(item)">{{ toolLabel(item) }}</button></div>
         <form v-if="tool" ref="toolForm" class="tool-form" @submit.prevent="executeTool()">
           <p class="artifact-description">{{ tool.description }}</p>
           <label v-if="jsonMode" class="form-label"><span>도구 입력 · JSON</span><textarea v-model="jsonInput" class="tool-json-input" rows="7" required spellcheck="false" :disabled="!!busy" /></label>

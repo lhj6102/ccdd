@@ -95,7 +95,7 @@ export default defineConfig(() => ({
   critics: [{
     id: 'spec-why', title: 'Spec이 Why에 부합하는가', target: 'spec', deps: ['why'],
     profile: { kind: 'agent', provider: 'openai-codex', model: 'gpt-6-astra', reasoning: 'medium' },
-    payload: { instruction: 'Why와 Spec을 관측하고 Spec이 Why를 충족하는지 평가하세요.' },
+    payload: { instruction: '{spec}이 {why}의 요구사항을 충족하는지 검토하세요.' },
   }],
 }));
 ```
@@ -111,6 +111,18 @@ export default defineConfig(() => ({
 설정과 import한 구현은 repo 안에서 해석합니다. 필요한 패키지를 **리뷰 대상 프로젝트의 `node_modules`에 실제 설치**해야 하며 상위 repo·전역 설치로 fallback하지 않습니다. 함수는 기록에 저장하지 않고 도구 명세와 구현 식별 정보를 저장합니다. 실행·Human 재개 시 동일 snapshot의 구현과 대조합니다. TS 설정은 신뢰하는 repo 코드이며 OS sandbox는 아닙니다.
 
 기존 `ccdd.config.json`의 `viewer`·`read/list`·Human 명령 설정은 이전을 위한 호환 경로로 계속 지원합니다. 과거 기록을 새 도구로 바꾸지 않으며, JSON과 TS 설정이 함께 있으면 충돌 오류입니다. 신규 예제는 TS와 명시적 등록을 사용합니다.
+
+### 지시사항의 Artifact 참조
+
+`payload.instruction`에서 `{spec}`처럼 요청 범위의 Artifact ID를 참조할 수 있습니다. 위 예제는 Agent 프롬프트에서 다음과 같이 펼쳐집니다.
+
+```text
+{"artifact":"spec","tools":["read_spec"]}이 {"artifact":"why","tools":["read_why"]}의 요구사항을 충족하는지 검토하세요.
+```
+
+`tools`에는 해당 Artifact에 실제로 제공된 Agent 도구 이름이 들어갑니다. custom 도구를 등록했다면 그 이름을 사용합니다. Human 요청에서는 참조를 버튼으로 표시하고 연결된 Human 도구의 선택 영역으로 이동합니다. 참조 버튼만 눌러서는 도구가 실행되지 않으며, claim 후 실행할 도구를 명시적으로 선택합니다.
+
+설정·저장된 요청·HTTP 응답의 `instruction` 문자열은 원문을 유지합니다. 다른 payload 필드도 바꾸지 않습니다. JSON 객체처럼 중괄호로 묶인 구간, 중첩·이중 중괄호, `\{spec}`처럼 escape한 참조, 알 수 없거나 요청 범위 밖인 ID, `{spec.path}` 같은 표현식은 그대로 둡니다. instruction을 일반 JSON 문서로 해석하지 않으므로 그 구간 밖의 따옴표나 배열 안에서도 `{spec}`은 참조입니다. 문자 그대로 쓰려면 escape합니다. 참조는 파일 본문을 삽입하거나 접근 범위를 늘리지 않습니다. 도구 설명의 `{artifactName}`은 그 도구에 연결된 ID를 치환하는 별도 규칙이며, instruction에 같은 이름의 예약변수를 추가하지 않습니다.
 
 ## 실행과 기록
 
