@@ -1,0 +1,1 @@
+import test from 'node:test';import assert from 'node:assert/strict';import {focusTasks} from '../implementation/focus.mjs';test('완료 제외, 최대 두 개, 원본 유지',()=>{const tasks=[{id:'done',done:true},{id:'a',done:false},{id:'b',done:false},{id:'c',done:false}],before=structuredClone(tasks);assert.deepEqual(focusTasks(tasks).map(t=>t.id),['a','b']);assert.deepEqual(tasks,before);});

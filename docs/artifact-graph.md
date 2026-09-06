@@ -53,7 +53,11 @@ Critic은 평가할 Artifact 하나를 `target`으로, 판단의 근거로 읽�
 
 Kanban은 ReviewRequest를 요청·진행 중·성공·실패로 보여줍니다. Graph는 하나의 프로젝트와 검증 실행을 선택해 그 Run의 snapshot에 고정된 Artifact 정의와 판정을 보여줍니다. 프로젝트·실행을 선택한 상태는 View 전환 시 유지합니다.
 
-Graph의 노드는 Artifact이며 통과한 Critic 수와 상태를 표시합니다. 동일한 Artifact 간선은 합치되 관계를 사용하는 Critic 목록을 보존합니다. 노드를 선택하면 평가 Critic들과 각자의 참조 Artifact를 확인하고 실제 요청 상세를 열 수 있습니다. Human claim·도구 실행·판정 제출은 Kanban과 같은 요청 상세를 사용합니다.
+Graph의 노드는 Artifact이며 각 Critic을 선 아이콘 하나로 표시합니다. Agent는 공통 Agent 아이콘, Human은 사람, Runtime은 터미널로 구분하며 같은 종류의 Critic도 각각 표시합니다. 아이콘 선은 요청·대기 회색, 리뷰 중 파랑, 성공 초록, 실패 빨강입니다. Human은 claim 이후 리뷰 중으로 표시합니다. 아이콘에 마우스를 올리거나 키보드로 초점을 맞추면 Critic 이름과 정확한 상태를 확인하고, 누르면 기존 요청 상세를 엽니다. 평가 실패와 실행 오류는 설명으로 구분하며, 이번 실행에 포함되지 않은 Critic은 점선과 비활성 상태로 표시합니다.
+
+캔버스를 이동·확대하거나 전체 보기로 Artifact 관계를 살펴볼 수 있습니다. 상태 갱신 중에는 노드 위치와 확대 수준을 유지합니다. 동일한 Artifact 간선은 합치되 관계를 사용하는 Critic 목록을 보존합니다. 노드를 선택하면 평가 Critic들과 각자의 참조 Artifact를 확인할 수 있습니다. Human claim·도구 실행·판정 제출은 Kanban과 같은 요청 상세를 사용합니다.
+
+세 실행 종류의 아이콘과 다중 Critic을 재현하는 입력은 [GraphView 개발 검증용 프로젝트](monitor-graph-demo.md)에 있습니다.
 
 선행 평가가 실패해 시작하지 못한 Artifact를 실패로 표시하지 않습니다. Human 대기는 담당자가 없는 경우와 검토자가 맡은 경우를 구분합니다. 서로 다른 Run이나 snapshot의 성공 결과를 합치지 않으며, 단독 Critic 실행에도 전체 정의를 표시해 미실행 평가가 가려지지 않게 합니다. Graph 조회는 상태를 변경하거나 작업을 재개하지 않습니다.
 

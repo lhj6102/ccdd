@@ -4,8 +4,21 @@ import {mkdtemp,rm,readFile,writeFile,access} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {spawnSync} from 'node:child_process';
+import {fileURLToPath} from 'node:url';
 import {prepareDemo} from '../scripts/prepare-demo.js';
+import {readWorkspaceConfig} from '../src/broker/config.js';
 import type { RepoConfig } from '../src/contracts.js';
+
+test('monitor fixture keeps semantic reviews as Agent Critics alongside Human and Runtime',async()=>{
+  const {config}=await readWorkspaceConfig(fileURLToPath(new URL('../../test/fixtures/monitor-graph/',import.meta.url)));
+  const critics=new Map(config.critics.map(critic=>[critic.id,critic]));
+  for(const id of ['spec-why','tests-spec'])assert.deepEqual(critics.get(id)?.profile,{kind:'agent',provider:'openai-codex',model:'gpt-6-astra',reasoning:'medium'});
+  assert.equal(critics.get('spec-human')?.profile.kind,'human');
+  assert.equal(critics.get('notes-independent')?.profile.kind,'runtime');
+  assert.deepEqual(critics.get('implementation-tests')?.profile,{kind:'runtime',command:'node',args:['--test','tests/focus.test.mjs']});
+  assert.deepEqual(config.critics.filter(critic=>critic.target==='spec').map(critic=>critic.id).sort(),['spec-human','spec-why']);
+  assert.deepEqual(critics.get('tests-spec')?.deps,['spec']);
+});
 
 test('four editable workspaces preserve the graph and real runtime regression without Git',async()=>{
   const root=await mkdtemp(join(tmpdir(),'ccdd-demo-test-'));

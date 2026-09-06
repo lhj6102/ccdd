@@ -1,0 +1,1 @@
+import test from 'node:test';import assert from 'node:assert/strict';import {readFileSync} from 'node:fs';test('개발 검증: Why와 Spec의 명시적 개수',()=>{for(const path of ['./spec.md','../why.md'])assert.match(readFileSync(new URL(path,import.meta.url),'utf8'),/최대 2개/);});

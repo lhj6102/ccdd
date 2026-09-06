@@ -1,10 +1,10 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, onUnmounted, reactive, ref } from 'vue';
+import { computed, defineAsyncComponent, nextTick, onMounted, onUnmounted, reactive, ref } from 'vue';
 import type { MonitorDetail, MonitorLane, MonitorOverview, MonitorProject, MonitorRequest, MonitorRun, MonitorRunOverview, MonitorSession } from '../types.js';
 import { api, requestRoute } from './api';
 import { dateLabel, elapsed, kindLabels, statusLabel } from './format';
 import RequestDrawer from './RequestDrawer.vue';
-import GraphView from './GraphView.vue';
+const GraphView = defineAsyncComponent(() => import('./GraphView.vue'));
 
 const lanes: { id: MonitorLane; label: string; empty: string }[] = [
   { id: 'requested', label: '요청', empty: '대기 중인 요청이 없습니다.' },
