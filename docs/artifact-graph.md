@@ -2,41 +2,56 @@
 
 Critic은 평가할 Artifact 하나를 `target`으로, 판단의 근거로 읽는 다른 Artifact들을 `deps` 배열로 선언합니다. `critics` 배열의 순서는 실행 순서가 아닙니다. `deps → target` 관계가 Artifact DAG를 만들며, 같은 Artifact를 여러 Critic이 평가할 수 있습니다.
 
-```json
-{
-  "artifacts": {
-    "why": {"type": "markdown", "path": "why.md", "basis": true},
-    "spec": {"type": "markdown", "path": "spec.md"}
+```ts
+import { defineConfig } from '@lhj6102/ccdd';
+import { agent, human } from '@lhj6102/ccdd-default-tools';
+
+export default defineConfig(() => ({
+  artifacts: {
+    why: { type: 'markdown', path: 'why.md', basis: true },
+    spec: { type: 'markdown', path: 'spec.md' },
   },
-  "artifactTypes": {
-    "markdown": {
-      "viewer": "text",
-      "agentTools": {"read": {}},
-      "humanTools": {"read": {}}
-    }
-  },
-  "critics": [
-    {
-      "id": "spec-why",
-      "title": "Spec이 Why를 충족하는가",
-      "target": "spec",
-      "deps": ["why"],
-      "profile": {"kind": "agent", "provider": "openai-codex", "model": "gpt-6-astra", "reasoning": "medium"},
-      "payload": {"instruction": "Why의 요구사항이 Spec에 보존됐는지 평가하세요."}
+  artifactTypes: {
+    markdown: {
+      agentTools: { read: agent.text.read() },
+      humanTools: { open: human.desktop.open() },
     },
-    {
-      "id": "spec-readability",
-      "title": "Spec을 사람이 이해할 수 있는가",
-      "target": "spec",
-      "deps": [],
-      "profile": {"kind": "human"},
-      "payload": {"instruction": "구현자가 요구사항을 명확하게 이해할 수 있는지 평가하세요."}
+  },
+  critics: [
+  {
+    "id": "spec-why",
+    "title": "Spec이 Why를 충족하는가",
+    "target": "spec",
+    "deps": [
+      "why"
+    ],
+    "profile": {
+      "kind": "agent",
+      "provider": "openai-codex",
+      "model": "gpt-6-astra",
+      "reasoning": "medium"
+    },
+    "payload": {
+      "instruction": "Why의 요구사항이 Spec에 보존됐는지 평가하세요."
     }
-  ]
-}
+  },
+  {
+    "id": "spec-readability",
+    "title": "Spec을 사람이 이해할 수 있는가",
+    "target": "spec",
+    "deps": [],
+    "profile": {
+      "kind": "human"
+    },
+    "payload": {
+      "instruction": "구현자가 요구사항을 명확하게 이해할 수 있는지 평가하세요."
+    }
+  }
+],
+}));
 ```
 
-이 예시는 Human 알림을 등록한 뒤 실행합니다. 두 Critic 모두 Spec을 읽을 수 있으며 첫 Critic만 Why를 추가로 읽습니다. Agent/Human 도구 준비 검사는 `target`과 `deps` 전체에 적용됩니다. 런타임의 경로 제한도 같은 관측 범위를 사용합니다.
+이 예시는 Human 알림을 등록한 뒤 실행합니다. Agent는 CLI Reader로, 사람은 등록된 데스크톱 앱으로 Spec을 관측하며 첫 Critic만 Why를 추가로 관측합니다. 프로그램 열기와 Human 판정 제출은 별개입니다. Agent/Human 도구 준비 검사는 `target`과 `deps` 전체에 적용됩니다. 런타임의 경로 제한도 같은 관측 범위를 사용합니다.
 
 ## 평가와 실행 규칙
 
@@ -73,6 +88,6 @@ Graph의 노드는 Artifact이며 각 Critic을 선 아이콘 하나로 표시�
 | tests-spec | tests | [spec] |
 | implementation-tests | implementation | [tests] |
 
-Why는 `basis: true`로 선언합니다. 새 데모는 `demo-v8`에 생성하며 기존 데모·사용자 설정·복사본·리뷰 기록을 덮어쓰지 않습니다.
+Why는 `basis: true`로 선언합니다. 새 데모는 로컬 core/default-tools tarball을 준비한 뒤 `demo-v9`에 생성하며 기존 데모·사용자 설정·복사본·리뷰 기록을 덮어쓰지 않습니다.
 
 과거 요청은 Kanban과 요청 상세에서 계속 읽을 수 있습니다. Artifact 역할이 저장되지 않은 과거 실행은 Graph를 추측해 그리지 않고 사용할 수 없다는 안내를 표시합니다. 과거에 대기하던 Human 요청은 기존 snapshot의 도구 범위와 실행 계약으로 이어집니다.

@@ -1,3 +1,4 @@
+import type { ConfigManifest } from '../tools/contracts.js';
 export type ArtifactOperation = 'read' | 'list';
 export type ArtifactViewerKind = 'text' | 'files';
 export type ArtifactAudience = 'agent' | 'human';
@@ -10,7 +11,9 @@ export interface HumanCommandTool {
 }
 export type HumanArtifactToolConfig = BuiltinArtifactTool | HumanCommandTool;
 export interface ArtifactTypeDefinition {
-  viewer: ArtifactViewerKind;
+  viewer?: ArtifactViewerKind;
+  /** Serialized marker for a type whose tools are in the recorded TS manifest. */
+  custom?: true;
   tools?: Partial<Record<ArtifactOperation, { description: string }>>;
   agentTools?: Partial<Record<ArtifactOperation, BuiltinArtifactTool>>;
   humanTools?: Record<string, HumanArtifactToolConfig>;
@@ -25,6 +28,7 @@ const defaults: Record<ArtifactOperation, string> = {
 };
 
 export function validateArtifactType(typeName: unknown, definition: unknown): ArtifactTypeDefinition {
+  if (typeof typeName === 'string' && identifier.test(typeName) && object(definition) && definition.custom === true && Object.keys(definition).length === 1) return { custom: true };
   if (typeof typeName !== 'string' || !identifier.test(typeName) || !object(definition) ||
       (definition.viewer !== 'text' && definition.viewer !== 'files')) {
     throw new Error(`Invalid artifact type/viewer: ${String(typeName)}`);
@@ -67,13 +71,18 @@ export function artifactAudienceTools(typeDefinition: ArtifactTypeDefinition, au
   const definition = validateArtifactType('artifact', typeDefinition);
   if (Object.hasOwn(definition, 'agentTools') || Object.hasOwn(definition, 'humanTools')) return structuredClone(definition[audience === 'agent' ? 'agentTools' : 'humanTools'] ?? {});
   if (!allowLegacy) return {};
-  return Object.fromEntries(operations[definition.viewer].map(operation => [operation, { description: definition.tools?.[operation]?.description ?? defaults[operation] }]));
+  if (definition.custom) return {};
+  return Object.fromEntries(operations[definition.viewer!].map(operation => [operation, { description: definition.tools?.[operation]?.description ?? defaults[operation] }]));
 }
 
-export function assertArtifactAudience(request: { profile: { kind: string }; artifacts: readonly { id: string; type: string }[]; artifactTypes: Readonly<Record<string, unknown>> }, { allowLegacy = false }: { allowLegacy?: boolean } = {}): void {
+export function assertArtifactAudience(request: { profile: { kind: string }; artifacts: readonly { id: string; type: string }[]; artifactTypes: Readonly<Record<string, unknown>>;configManifest?:ConfigManifest }, { allowLegacy = false }: { allowLegacy?: boolean } = {}): void {
   const audience = request.profile.kind;
   if (audience !== 'agent' && audience !== 'human') return;
   for (const artifact of request.artifacts) {
+    if(request.configManifest){
+      if(!Object.keys(request.configManifest.types[artifact.type]?.[audience==='agent'?'agentTools':'humanTools']??{}).length)throw Object.assign(new Error(`Artifact ${artifact.id} has no ${audience} tools.`),{code:'ARTIFACT_TOOLS_UNAVAILABLE'});
+      continue;
+    }
     const type = validateArtifactType(artifact.type, request.artifactTypes[artifact.type]);
     if (!Object.keys(artifactAudienceTools(type, audience, { allowLegacy })).length) throw Object.assign(new Error(`Artifact ${artifact.id} has no ${audience} tools. Register ${audience}Tools on artifact type ${artifact.type}.`), { code: 'ARTIFACT_TOOLS_UNAVAILABLE' });
   }
@@ -81,7 +90,7 @@ export function assertArtifactAudience(request: { profile: { kind: string }; art
 
 export function toolDescription(typeDefinition: unknown, toolName: string, artifactName: unknown, audience?: ArtifactAudience): string {
   const definition = validateArtifactType('artifact', typeDefinition);
-  if ((toolName !== 'read' && toolName !== 'list') || !operations[definition.viewer].includes(toolName)) {
+  if ((toolName !== 'read' && toolName !== 'list') || !definition.viewer || !operations[definition.viewer].includes(toolName)) {
     throw new Error(`Unsupported artifact tool for ${definition.viewer} viewer: ${String(toolName)}`);
   }
   if (typeof artifactName !== 'string' || !artifactName) throw new Error('Artifact name is required for its tool description.');

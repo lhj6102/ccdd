@@ -235,6 +235,7 @@ export async function createArtifactViewer({ worktreePath, artifacts, artifactTy
     const configuredType = artifactTypes[artifact.type];
     if (!configuredType) throw new Error(`Unsupported artifact type: ${artifact.type}`);
     const type = structuredClone(validateArtifactType(artifact.type, configuredType));
+    if (type.custom) throw new Error('This Artifact uses registered TS tools; select one of its declared tools.');
     const base = await withoutSymlinks(worktree, declared, signal);
     if (!contained(worktree, base)) throw new Error('Artifact symlink escapes the snapshot');
     signal?.throwIfAborted();
@@ -242,7 +243,7 @@ export async function createArtifactViewer({ worktreePath, artifacts, artifactTy
     signal?.throwIfAborted();
     if (!info.isDirectory() && !info.isFile()) throw new Error('Artifact must be a regular file or directory');
     if (type.viewer === 'text' && !info.isFile()) throw new Error('A text viewer requires a regular file artifact');
-    definitions.set(artifact.id, { ...artifact, base, directory: info.isDirectory(), viewer: type.viewer, typeDefinition: type });
+    definitions.set(artifact.id, { ...artifact, base, directory: info.isDirectory(), viewer: type.viewer!, typeDefinition: type });
   }
 
   async function target(artifactId: string, path = '') {

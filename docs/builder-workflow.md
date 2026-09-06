@@ -2,6 +2,8 @@
 
 Builder 생성과 수정 반복은 Requester가 맡습니다. CCDD는 선택한 Critic을 실행하고 판정과 근거를 돌려줍니다.
 
+`ccdd.config.ts`에 도구를 명시적으로 등록하고 필요한 패키지를 해당 프로젝트 안에 설치합니다. `doctor`의 Provider 진단은 내부 nonce로 연결을 확인합니다. 프로젝트 custom 도구의 실제 실행은 `tools check --artifact ID --for agent --tool NAME --execute --args JSON`으로 별도 검사합니다. 이 검사는 새 입력에 대한 진단이며 과거 요청의 snapshot을 대신 열지 않습니다.
+
 ```sh
 ccdd doctor --repo /path/to/repo --critic tests-spec --json
 ccdd run --repo /path/to/repo --copy --critic tests-spec --wait --json

@@ -5,6 +5,7 @@ import { prepareReviewRequests } from '../requester/index.js';
 import { prepareWorkspace, removeOwnedWorkspaceTree } from '../workspaces/index.js';
 import { createArtifactViewer, createArtifactTools, type ArtifactListResult } from '../artifacts/index.js';
 import { createHumanArtifactTools } from '../artifacts/human.js';
+import { createReviewTools } from '../tools/runner.js';
 import { errorCode, errorMessage } from '../executors/errors.js';
 import type { ReviewEnvelope, ExecutorRegistry, ExecutionEvent, WorkspaceHandle, WorkspaceMode } from '../contracts.js';
 
@@ -48,7 +49,18 @@ const scopeFor = (criticId?: string): DiagnosticScope => criticId === undefined 
 const bounded = (value: unknown): string => String(value).slice(0, 2_000);
 const remedyFor = (value: unknown): string | undefined => value && typeof value === 'object' && 'remedy' in value && typeof value.remedy === 'string' ? value.remedy : undefined;
 
-async function inspectViewers(request: ReviewEnvelope, worktreePath: string, signal?: AbortSignal) {
+async function inspectViewers(request: ReviewEnvelope, worktreePath: string, signal?: AbortSignal, runDir?: string) {
+  if (request.configManifest) {
+    // Runtime has its own path/startup contract and requires no Agent/Human tools.
+    if (request.profile.kind === 'runtime') return { toolNames: [], toolsExecuted: false, artifactPathsVerified: true };
+    const registry = await createReviewTools({ worktreePath, artifacts: request.artifacts, artifactTypes: request.artifactTypes, configManifest: request.configManifest, criticId: request.criticId, audience: request.profile.kind, signal, runDir });
+    try {
+      const checks = await registry.preflight();
+      const failed = checks.filter(check => !check.ok);
+      if (failed.length) throw new Error(failed.map(check => `${check.toolName}: ${check.message}`).join('; '));
+      return { toolNames: registry.tools.map(tool => tool.name), checks, toolsExecuted: false, programsLaunched: false };
+    } finally { await registry.close(); }
+  }
   if (request.profile.kind === 'human') {
     const registry = await createHumanArtifactTools({ worktreePath, artifacts: request.artifacts, artifactTypes: request.artifactTypes, signal });
     const checks = await registry.preflight();
@@ -114,16 +126,16 @@ export async function diagnoseProject({ repoPath, repoId = 'demo', mode = 'copy'
       await workspace.assertUnchanged();
       await add({ id: 'workspace-config', status: 'PASS', kind: 'workspace', criticIds: requests.map(x => x.criticId), message: '현재 workspace의 설정과 Artifact 정의를 확인했습니다.' });
     } catch (error) {
-      await add({ id: 'workspace-config', status: 'FAIL', kind: 'workspace', message: bounded(errorMessage(error)), remedy: '현재 ccdd.config.json, Artifact 경로와 Critic 식별자를 확인하세요.', details: { code: errorCode(error) ?? 'WORKSPACE_CONFIG_INVALID' } });
+      await add({ id: 'workspace-config', status: 'FAIL', kind: 'workspace', message: bounded(errorMessage(error)), remedy: '현재 ccdd.config.ts 또는 legacy ccdd.config.json, Artifact 경로와 Critic 식별자를 확인하세요.', details: { code: errorCode(error) ?? 'WORKSPACE_CONFIG_INVALID' } });
       return report;
     }
     const readyViewers = new Set<string>();
     for (const request of requests) {
       if (workspace.signal.aborted) break;
       try {
-        const details = await inspectViewers(request, worktreePath, workspace.signal);
+        const details = await inspectViewers(request, worktreePath, workspace.signal, resolve(scratch, `tools-${request.criticId}`));
         readyViewers.add(request.criticId);
-        await add({ id: `artifacts:${request.criticId}`, status: 'PASS', kind: 'artifacts', criticIds: [request.criticId], message: request.profile.kind === 'human' ? 'Human Artifact 도구의 등록과 실행 준비를 확인했습니다. 프로그램은 실행하지 않았습니다.' : '스냅샷의 Artifact Viewer 목록·읽기 진입점을 확인했습니다.', details });
+        await add({ id: `artifacts:${request.criticId}`, status: 'PASS', kind: 'artifacts', criticIds: [request.criticId], message: request.configManifest ? '등록된 Artifact 도구의 명세와 실행 준비를 확인했습니다. 실제 도구 실행은 tools check --execute로 별도 확인할 수 있습니다.' : request.profile.kind === 'human' ? 'Human Artifact 도구의 등록과 실행 준비를 확인했습니다. 프로그램은 실행하지 않았습니다.' : '스냅샷의 Artifact Viewer 목록·읽기 진입점을 확인했습니다.', details });
       } catch (error) {
         await add({ id: `artifacts:${request.criticId}`, status: 'FAIL', kind: 'artifacts', criticIds: [request.criticId], message: bounded(errorMessage(error)), remedy: 'Artifact 경로·유형·내용과 읽기 권한을 확인하세요.', details: { code: 'ARTIFACT_VIEWER_UNAVAILABLE' } });
       }

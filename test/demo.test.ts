@@ -1,13 +1,34 @@
-import test from 'node:test';
+import test, { type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
-import {mkdtemp,rm,readFile,writeFile,access} from 'node:fs/promises';
+import {mkdtemp,mkdir,cp,rm,readFile,writeFile,access,readdir} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
-import {join} from 'node:path';
+import {join,dirname} from 'node:path';
 import {spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
-import {prepareDemo} from '../scripts/prepare-demo.js';
+import {prepareDemo, type DemoDependencyInstaller} from '../scripts/prepare-demo.js';
 import {readWorkspaceConfig} from '../src/broker/config.js';
-import type { RepoConfig } from '../src/contracts.js';
+
+
+
+/** Avoid network in scenario tests while using the actual built SDK/default library modules. */
+const installFixtureDependencies:DemoDependencyInstaller=async({stagePath})=>{
+  const core=join(stagePath,'node_modules/@lhj6102/ccdd');
+  const tools=join(stagePath,'node_modules/@lhj6102/ccdd-default-tools');
+  await mkdir(core,{recursive:true}); await mkdir(tools,{recursive:true});
+  await cp(fileURLToPath(new URL('../src/sdk.js',import.meta.url)),join(core,'sdk.js'));
+  await writeFile(join(core,'package.json'),JSON.stringify({name:'@lhj6102/ccdd',version:'0.9.0',type:'module',exports:'./sdk.js'}));
+  const toolsDist=dirname(fileURLToPath(import.meta.resolve('@lhj6102/ccdd-default-tools')));
+  await cp(toolsDist,join(tools,'dist'),{recursive:true});
+  await cp(join(toolsDist,'../package.json'),join(tools,'package.json'));
+  await writeFile(join(stagePath,'package-lock.json'),JSON.stringify({name:'ccdd-focus-demo',lockfileVersion:3,packages:{}}));
+};
+async function demoOptions(t:TestContext){
+  const dir=await mkdtemp(join(tmpdir(),'ccdd-demo-test-'));
+  t.after(()=>rm(dir,{recursive:true,force:true}));
+  const coreTarball=join(dir,'core.tgz'),toolsTarball=join(dir,'tools.tgz');
+  await writeFile(coreTarball,'fixture-package-input');await writeFile(toolsTarball,'fixture-package-input');
+  return {root:join(dir,'demo'),coreTarball,toolsTarball,installDependencies:installFixtureDependencies};
+}
 
 test('monitor fixture keeps semantic reviews as Agent Critics alongside Human and Runtime',async()=>{
   const {config}=await readWorkspaceConfig(fileURLToPath(new URL('../../test/fixtures/monitor-graph/',import.meta.url)));
@@ -20,20 +41,22 @@ test('monitor fixture keeps semantic reviews as Agent Critics alongside Human an
   assert.deepEqual(critics.get('tests-spec')?.deps,['spec']);
 });
 
-test('four editable workspaces preserve the graph and real runtime regression without Git',async()=>{
-  const root=await mkdtemp(join(tmpdir(),'ccdd-demo-test-'));
+test('four editable workspaces preserve the graph and real runtime regression without Git',async t=>{
+  const options=await demoOptions(t), {root}=options;
   try{
-    const manifest=await prepareDemo({root});assert.equal(manifest.scenarios.length,4);assert.equal(manifest.version,8);
+    const manifest=await prepareDemo(options);assert.equal(manifest.scenarios.length,4);assert.equal(manifest.version,9);
     assert.deepEqual(await prepareDemo({root}),manifest);
     for(const scenario of manifest.scenarios){
       const read=(p:string)=>readFile(join(scenario.repoPath,p),'utf8');
-      const config=JSON.parse(await read('ccdd.config.json')) as RepoConfig;
+      const {config}=await readWorkspaceConfig(scenario.repoPath);
+      await assert.rejects(access(join(scenario.repoPath,'ccdd.config.json')));
       assert.deepEqual(config.critics.map(c=>[c.target,c.deps]),[['spec',['why']],['tests',['spec']],['implementation',['tests']]]);assert.equal(config.artifacts.why.basis,true);
       assert.deepEqual(config.critics.slice(0,2).map(c=>c.profile),Array(2).fill({kind:'agent',provider:'openai-codex',model:'gpt-6-astra',reasoning:'medium'}));
-      assert.equal(config.artifactTypes.markdown.agentTools!.read!.description,'{artifactName}의 문서 내용을 줄 단위로 읽는다.');
-      assert.equal(config.artifactTypes.code.agentTools!.list!.description,'{artifactName}의 파일 목록을 조회한다.');
-      assert.equal(config.artifactTypes.code.agentTools!.read!.description,'{artifactName}의 소스 텍스트를 줄 단위로 읽는다.');
-      assert.ok(config.artifactTypes.markdown.humanTools!.read);
+      assert.equal(config.configManifest!.types.markdown.agentTools.read.description,'{artifactName}의 문서 내용을 줄 단위로 읽는다.');
+      assert.equal(config.configManifest!.types.code.agentTools.list.description,'{artifactName}의 파일 목록을 조회한다.');
+      assert.equal(config.configManifest!.types.code.agentTools.read.description,'{artifactName}의 소스 텍스트를 줄 단위로 읽는다.');
+      assert.deepEqual(Object.keys(config.configManifest!.types.markdown.humanTools),['open']);
+      assert.deepEqual(config.configManifest!.types.markdown.humanTools.open.resultKinds,['launch']);
       await assert.rejects(access(join(scenario.repoPath,'.git')));
       if(scenario.id==='why-change'){assert.match(await read('why.md'),/최대 2개/);assert.match(await read('spec.md'),/최대 3개/);}
       const {NODE_TEST_CONTEXT,...childEnv}=process.env;
@@ -43,15 +66,12 @@ test('four editable workspaces preserve the graph and real runtime regression wi
   }finally{await rm(root,{recursive:true,force:true});}
 });
 
-test('preparing a demo preserves edited current files and rejects an older manifest without rewriting it',async()=>{
-  const root=await mkdtemp(join(tmpdir(),'ccdd-demo-preserve-'));
+test('preparing a demo preserves edited current files and rejects an older manifest without rewriting it',async t=>{
+  const options=await demoOptions(t), {root}=options;
   try{
-    const manifest=await prepareDemo({root});
-    const configPath=join(manifest.scenarios[0].repoPath,'ccdd.config.json');
-    const config=JSON.parse(await readFile(configPath,'utf8'));
-    config.artifactTypes.markdown.agentTools!.read!.description='{artifactName}의 사용자 지정 설명';
-    config.critics[0].profile.model='gpt-5.6-sol';
-    const edited=JSON.stringify(config);
+    const manifest=await prepareDemo(options);
+    const configPath=join(manifest.scenarios[0].repoPath,'ccdd.config.ts');
+    const edited=(await readFile(configPath,'utf8')).replaceAll('gpt-6-astra','gpt-5.6-sol').replace('문서 내용을 줄 단위로 읽는다','사용자 지정 설명');
     await writeFile(configPath,edited);
     assert.deepEqual(await prepareDemo({root}),manifest);
     assert.equal(await readFile(configPath,'utf8'),edited);
@@ -61,4 +81,15 @@ test('preparing a demo preserves edited current files and rejects an older manif
     assert.equal(await readFile(join(root,'manifest.json'),'utf8'),previous);
     assert.equal(await readFile(configPath,'utf8'),edited);
   }finally{await rm(root,{recursive:true,force:true});}
+});
+
+
+test('a new demo requires both package inputs before creating any directory',async t=>{
+  const dir=await mkdtemp(join(tmpdir(),'ccdd-demo-inputs-'));
+  t.after(()=>rm(dir,{recursive:true,force:true}));
+  const root=join(dir,'demo');
+  await assert.rejects(prepareDemo({root,coreTarball:'',toolsTarball:''}),/CCDD_DEMO_CORE_TARBALL/);
+  await assert.rejects(access(root),{code:'ENOENT'});
+  await assert.rejects(prepareDemo({root,coreTarball:join(dir,'missing.tgz'),toolsTarball:join(dir,'also-missing.tgz')}),/existing regular files/);
+  assert.deepEqual(await readdir(dir),[]);
 });

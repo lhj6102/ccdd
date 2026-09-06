@@ -3,6 +3,7 @@ import { lstat, readFile, readdir, realpath } from 'node:fs/promises';
 import { validateArtifactType } from '../artifacts/types.js';
 import { createGraphDefinition } from './graph.js';
 import type { RepoConfig } from '../contracts.js';
+import { openToolHost } from '../tools/host.js';
 
 export interface WorkspaceTreeEntry { path: string; type: string; mode: string }
 const errorCode = (error: unknown) => error !== null && typeof error === 'object' && 'code' in error ? error.code : undefined;
@@ -23,9 +24,14 @@ export async function readWorkspaceConfig(repoPath: string): Promise<{ config: R
   const root = await realpath(repoPath);
   const configPath = path.join(root, 'ccdd.config.json');
   const info = await lstat(configPath).catch(() => null);
-  if (!info?.isFile()) throw new Error('Workspace must contain a regular ccdd.config.json file.');
+  const tsInfo = await lstat(path.join(root, 'ccdd.config.ts')).catch(() => null);
+  if (info && tsInfo) throw new Error('Both ccdd.config.ts and ccdd.config.json exist; keep one configuration.');
+  if (!info?.isFile() && !tsInfo?.isFile()) throw new Error('Workspace must contain a regular ccdd.config.ts or ccdd.config.json file.');
   let config: unknown;
-  try { config = JSON.parse(await readFile(configPath, 'utf8')); }
+  try {
+    if (tsInfo) { const host=await openToolHost(root); try { config=host.config; } finally { await host.close(); } }
+    else { config = JSON.parse(await readFile(configPath, 'utf8')); if(object(config)&&(config.configManifest!==undefined||object(config.artifactTypes)&&Object.values(config.artifactTypes).some(value=>object(value)&&value.custom))) throw new Error('Custom tools must be registered in ccdd.config.ts.'); }
+  }
   catch (error) { throw new Error(`Cannot read workspace configuration: ${error instanceof Error ? error.message : String(error)}`); }
   // Inspect only declared Artifact roots here. The workspace engine validates the entire input tree.
   const tree: WorkspaceTreeEntry[] = [];
@@ -62,6 +68,7 @@ export function validateConfig(config: unknown, tree: WorkspaceTreeEntry[]): ass
   }
   for (const [type, definition] of Object.entries(config.artifactTypes)) {
     validateArtifactType(type, definition);
+    if (object(definition) && definition.custom && (!object(config.configManifest) || !object(config.configManifest.types) || !Object.hasOwn(config.configManifest.types,type))) throw new Error('Custom Artifact type requires a recorded tool manifest.');
   }
   for (const [id, artifact] of Object.entries(config.artifacts)) {
     if (!identifier.test(id) || !object(artifact) || typeof artifact.type !== 'string' || !Object.hasOwn(config.artifactTypes, artifact.type) || (artifact.basis !== undefined && typeof artifact.basis !== 'boolean')) {

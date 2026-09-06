@@ -1,6 +1,6 @@
-# Implementation contracts — v0.8
+# Implementation contracts — v0.9
 
-One npm package, strict TypeScript compiled to Node 24 ESM, local SQLite persistence. Broker and Executors remain separate bounded contexts. A request-scoped worker runs one Run; no daemon, global broker-owner lock, or automatic queue scanner is required. The optional local monitor observes persisted requests and delegates explicit Human actions to the Broker. It does not own review execution.
+Core package `@lhj6102/ccdd`, optional library `@lhj6102/ccdd-default-tools`, strict TypeScript compiled to Node 24 ESM, and local SQLite persistence. The core does not depend on or re-export the default library. Broker and Executors remain separate bounded contexts. A request-scoped worker runs one Run; no daemon, global broker-owner lock, or automatic queue scanner is required. The optional local monitor observes persisted requests and delegates explicit Human actions to the Broker. It does not own review execution.
 
 ## Workspace contract
 
@@ -19,68 +19,92 @@ This is cooperative local execution, not an OS sandbox against a hostile process
 
 ## Repository configuration
 
-`ccdd.config.json` is read from the prepared workspace. It declares `artifacts`, `artifactTypes` and a `critics` array whose order does not prescribe execution. Each Artifact has a type, safe relative path and optional `basis: true`. Each Critic has a unique ID, title, one `target` Artifact ID, a `deps` array of other Artifact IDs, profile and payload. The `deps → target` relations must form a DAG. A dependency must have required evaluators or be explicitly declared as a basis; a basis cannot also be a target. The old `dependsOn` and Critic-level `artifacts` fields are rejected with migration guidance. See [Artifact graph](artifact-graph.md).
+`ccdd.config.ts` is read from the prepared workspace. It default-exports a configuration object or a synchronous/asynchronous zero-argument factory. `defineConfig` is a lightweight identity helper; `defineTool` derives common argument types from a literal input schema. The SDK import starts no Broker, Provider, monitor or desktop process.
 
-```json
-{
-  "artifacts": {"tests":{"type":"code","path":"tests","basis":true},"implementation":{"type":"code","path":"implementation"}},
-  "artifactTypes": {"code":{"viewer":"files","agentTools":{"list":{},"read":{}},"humanTools":{"list":{},"read":{}}}},
-  "critics": [{
-    "id":"runtime", "title":"테스트 런타임 통과", "target":"implementation", "deps":["tests"],
-    "profile":{"kind":"runtime","command":"node","args":["--test","tests/example.test.mjs"]},
-    "payload":{"instruction":"Run the actual test suite against the implementation."}
-  }]
-}
-```
+The config declares `artifacts`, `artifactTypes`, and a `critics` array whose order does not prescribe execution. Each Artifact has a type, safe relative path and optional `basis: true`. Each Critic has a unique ID, title, one `target` Artifact ID, a `deps` array, profile and payload. The `deps → target` relations must form a DAG. Dependencies require evaluators or an explicit basis; a basis cannot also be a target. Critic `dependsOn` and `artifacts` fields remain rejected. See [Artifact graph](artifact-graph.md).
 
-Agent profile: `{kind:'agent',provider:'openai-codex',model,reasoning,timeoutMs?}`. Human profile: `{kind:'human'}` with at least one registered alarm method. The demo Code Runner supports Node test paths. Configuration and payload are fixed with the input, including uncommitted edits.
+```ts
+import { defineConfig } from '@lhj6102/ccdd';
+import { agent, human } from '@lhj6102/ccdd-default-tools';
 
-## Artifact type tools and line reads
-
-Each type explicitly declares the tools available to each reviewer audience:
-
-```json
-"code": {
-  "viewer": "files",
-  "agentTools": {
-    "list": {"description": "{artifactName}의 파일 목록을 조회한다."},
-    "read": {"description": "{artifactName}의 소스 텍스트를 줄 단위로 읽는다."}
+export default defineConfig(() => ({
+  artifacts: {
+    tests: { type: 'code', path: 'tests', basis: true },
+    implementation: { type: 'code', path: 'implementation' },
   },
-  "humanTools": {
-    "list": {},
-    "read": {},
-    "open": {
-      "description": "{artifactName}을 기본 프로그램으로 연다.",
-      "command": "/usr/bin/open",
-      "args": ["{artifactPath}"]
-    }
-  }
-}
+  artifactTypes: {
+    code: {
+      agentTools: { list: agent.files.list(), read: agent.files.read() },
+      humanTools: { open: human.desktop.open() },
+    },
+  },
+  critics: [{
+    id: 'runtime', title: '테스트 런타임 통과', target: 'implementation', deps: ['tests'],
+    profile: { kind: 'runtime', command: 'node', args: ['--test', 'tests/example.test.mjs'] },
+    payload: { instruction: 'Run the actual test suite against the implementation.' },
+  }],
+}));
 ```
 
-`agentTools` and `humanTools` are independent maps. Empty or omitted maps provide no capabilities to that audience. New Agent/Human submissions must have usable audience tools on every selected Artifact; Runtime keeps its own execution contract. Only the selected Critic is checked when `--critic` is used. A `files` type on a regular file cannot expose a list-only capability. Agent operations currently support read/list; Human supports those builtins plus registered command launchers. `text` supports read; `files` supports list/read, with the actual Artifact shape deciding which are exposed. Names remain flat `<toolName>_<artifactName>` tools. Pi and the optional stdio MCP adapter expose only the Agent registry. There is no payload `tool` discriminator.
+Agent profile is `{kind:'agent',provider,model,reasoning,timeoutMs?}`. Human profile is `{kind:'human'}` with a registered alarm method. Runtime supports Node test paths. Config and payload are fixed with the snapshot, including uncommitted edits.
 
-Builtin entries may be `{}` to use the default description. Unlike old `tools` description overrides, omitted operations are disabled. Historical snapshots containing only `viewer`/`tools` retain their old passive read/list behavior, but new submissions must explicitly migrate to the audience maps. Adding one audience map disables legacy fallback for both audiences; an omitted counterpart remains unavailable.
+TS config is trusted repository code evaluated in a separate host with an allowlisted environment. It uses Node's native supported TypeScript syntax, not a project build step. Imports resolve inside the snapshot; an applicable `.js` relative source import can resolve to `.ts`. Dependencies must be physically installed inside the reviewed project. Parent/global packages and escaping links are rejected, and hooks remain active for deferred imports. This isolation is not an OS sandbox against trusted repo code acting as the local user.
 
-Human command entries define fixed `command`, `args`, optional `timeoutMs` (1–120000, default 10000), and a description. Arguments must include a standalone `{artifactPath}` token; CCDD substitutes the scoped absolute path without a shell. A directory tool accepts an optional internal relative `path`; a file tool accepts no path. Browser callers never supply executables, argv, or environment. The launcher inherits only the desktop environment allowlist, not Provider credential variables. A launcher should return when the viewer has opened, such as `/usr/bin/open`, rather than wait for a whole interactive application session. Its successful exit confirms launch only, never Human observation or a verdict. Fixed commands are trusted repository configuration, not an OS sandbox; shared review inputs must remain unchanged.
+The requester evaluates configuration and derives serializable request/graph definitions. `configManifest` version 1 records `configHash`, imported module paths and content hashes, and per-type/audience/tool metadata. Functions are never serialized. Each tool registry opens a fresh host, reloads the same snapshot config and checks its manifest, types, and Artifact references against the recorded values. A mismatch fails rather than loading current-source code or silently substituting a newer library. Mutable imported closure state is not shared between registries. Output/cache files remain outside the input.
 
-The only description template placeholder is `{artifactName}`, replaced literally everywhere by the Artifact definition ID. Type/tool settings validate before review acceptance and also in the standalone Viewer. Explicit descriptions must be nonblank strings of at most 4000 characters. Unknown fields, unsupported operations and unsupported template braces are rejected. Registered tools operate only on their supplied Artifact paths.
+A transitional `ccdd.config.json` path retains the existing text/files Viewer and read/list/registered Human command implementation. It still requires explicit audience maps for new submissions. Legacy `viewer`/`tools` fallback remains historical-read compatibility. JSON cannot contain a TS manifest or custom type marker. If both config files exist, admission fails with an explicit conflict. Old records are not rewritten.
 
-Read inputs are `startLine` (integer >=1, default1) and `lineCount` (integer1–500, default80). Directory reads additionally require a nonempty `path` to a file inside that Artifact. File reads reject any path argument. Byte-read `offset`/`limit` and unknown arguments are rejected rather than reinterpreted. Directory listing keeps optional internal `path`, zero-based entry `offset` and entry `limit` (1–200).
+## Registered Artifact tools
 
-Read results contain plain original text, `startLine`, `endLine` (null when no lines returned), actual `lineCount`, `truncated`, and `nextStartLine` (null at EOF). `totalLines` is returned when EOF is reached; early pages do not scan the entire remaining file merely to compute a total. LF/CRLF and UTF-8 text are preserved, and a trailing newline does not create an extra empty line. Empty files and requests past EOF return empty content with lineCount0.
+A TS type declares only `agentTools` and `humanTools`. Empty or omitted maps provide no capabilities to that audience. Every target and dependency of a selected Agent/Human Critic must have usable tools; Runtime has its own contract. Names are flat `<toolName>_<artifactName>`, with collisions rejected. Tool keys can describe arbitrary operations such as `frame`, `inspectClip`, or `preview`; there is no built-in read/list restriction or required Viewer name.
 
-Responses retain a 64KiB content bound. Pagination stops before a whole line that would exceed the remaining response budget and points to that line for continuation. A requested individual line larger than the bound fails explicitly rather than returning a partial line. The reader streams through the file and avoids loading all content into memory. Binary/invalid text and escaping paths fail.
+A tool factory returns `{metadata, execute(context,args), preflight?}`. Calling the factory defines an effect; invoking `execute` performs it. The core accepts user-written functions without the default-tools library.
 
-Shared audit records used by both Pi and MCP include only successful operation names, arguments, and safe observation metadata (Artifact ID, operation and returned line range/count), never file contents. Agent inspection requires a successful read returning at least one line, or observing an actually empty file. Listing alone or reading beyond EOF of a nonempty file does not satisfy required observation. Provider prompts explain the review payload and Artifact scope before describing the available operations and line continuation.
+`metadata` fields:
 
-CLI inspection uses `artifact REQUEST_ID ARTIFACT_ID --start-line N --line-count N`, adding `--file INTERNAL_PATH` for directory reads. Listing uses `--offset` and `--limit`. The same Viewer validates both CLI and Agent access.
+- `description`: nonblank text up to 4000 characters; `{artifactName}` is replaced literally with the bound Artifact ID.
+- `inputSchema`: a JSON Schema whose root is an object. Call arguments are JSON objects up to 64KiB, checked without string/number/boolean coercion or implicit default insertion.
+- `resultKinds`: nonempty subset of `text`, `json`, `image`, `launch`.
+- `observation`: `content` allows validated result observation receipts; `none` does not.
+- `artifactKind?`: `file`, `directory`, or `any`.
+- `timeoutMs?`: integer 1–900000; host execution defaults to 120000.
+
+Supported schema keywords are `type`, `description`, `title`, `default`, `examples`, `enum`, `const`, `properties`, `required`, `additionalProperties`, `items`, item/string/numeric bounds, `uniqueItems`, `pattern`, `multipleOf`, `anyOf`, `oneOf`, `allOf`, and `not`. `$ref`, remote schemas and unrecognized keywords are rejected. Types are object, array, string, integer, number, boolean and null; use schema composition for unions. Schema nesting is limited to 20. Runtime schema validation remains authoritative; TypeScript inference covers the common literal forms rather than every JSON Schema composition.
+
+The runner supplies `{artifactId, artifactPath, artifactDirectory, outputDir, tmpDir, signal, resolvePath}`. `artifactPath` is the bound snapshot root. `resolvePath(internalPath?)` rejects traversal, symlinks and paths outside that Artifact; file Artifacts reject a nonempty internal path. Output and temporary paths are review-owned, outside the snapshot. Reviewer arguments never choose another Artifact binding.
+
+`ToolResult` contains 1–32 typed content blocks and optional `{observation:{kind:'content'|'empty',detail?}}`:
+
+```ts
+{ content: [{ type: 'text', text: 'Observed content' }], observation: { kind: 'content' } }
+{ content: [{ type: 'json', data: { frames: 24 } }] }
+{ content: [{ type: 'image', path: '/review-output/frame.png', mimeType: 'image/png' }], observation: { kind: 'content', detail: 'frame 2' } }
+{ content: [{ type: 'launch', launched: true }] }
+```
+
+Text is bounded to 64KiB per block, JSON to 512KiB, and image bytes to 4MiB. The JSON bound accommodates escaped text from a complete 64KiB reader response. PNG/JPEG/WebP bytes are checked against their declared MIME. Images use a file inside the tool output directory or bounded base64 `data`; verified images are converted to base64 before Pi/MCP/browser delivery and are not stringified as filenames. A requested model that does not accept images fails explicitly. The host JSON message limit is 8MiB. Invalid arguments, results or output paths do not count as successful observations.
+
+Common auditing records only safe successful tool name, arguments, time, bound Artifact ID, operation, and optional observation kind/detail. Required Agent inspection uses a validated `content` or `empty` receipt for every supplied Artifact, not a special `read_` name. Metadata-only operations and application launches do not imply content observation; launching alone cannot assert a content receipt. Quality remains the Critic's verdict, never the tool result. Legacy reviews retain their recorded line-read observation rules.
+
+## Default tool library
+
+`@lhj6102/ccdd-default-tools` is a separate optional package with a compatible core peer dependency and type-only SDK imports. Importing it or calling a factory performs no I/O and registers nothing. Projects explicitly import and register the definitions they want. Both packages can be installed from local tarballs without private npm publication.
+
+Agent defaults use a packaged Node CLI with fixed operation arguments; no general shell tool or global executable is installed. `agent.text.read()` supports a file Artifact. `agent.files.read()` and `agent.files.list()` support directory Artifacts. Read args are `startLine` (default 1) and `lineCount` (default 80, maximum 500); directory read also requires an internal file `path`. List args keep optional internal `path`, zero-based `offset`, and `limit` up to 200.
+
+Reads preserve UTF-8, LF/CRLF, complete lines and final-newline semantics. They return original text, line range/count, `truncated`, `nextStartLine` and `totalLines` when known. A trailing newline does not create an extra empty line. Reads stream rather than load an entire unbounded file; a requested single line above 64KiB fails. Invalid UTF-8/binary input fails. Content observation requires returned text or a truly empty file; listing and past-EOF reads of a nonempty file do not qualify.
+
+Human defaults use `human.desktop.open()` to open a snapshot file/folder with a desktop application and return a launch receipt. It does not duplicate Agent read/list behavior. macOS defaults to `/usr/bin/open`; an `app` option selects an application, or `command`/fixed `args` connect another executable. Other platforms require an explicit command. Reviewers cannot choose the executable, argv, or environment. The launcher environment excludes Provider tokens and preload hooks. App launch success is separate from Human claim, observation and final submission, and the snapshot copy remains available after the launcher returns.
+
+Factories accept description/timeout overrides. A launcher should return after opening the app, not wait for the user's editing session to end. `preflight` verifies shape/executable readiness without launching an app or rendering content. Custom tools may use functions, SDKs or commands under the same contract.
+
+For legacy JSON requests only, CLI passive inspection remains `artifact REQUEST_ID ARTIFACT_ID --start-line N --line-count N`, with `--file INTERNAL_PATH` for a directory. TS requests do not use this legacy CLI Viewer. Invoke their registered Human tools through the monitor after claim. `tools check --execute` diagnoses a newly prepared workspace, not an existing request snapshot. Passive browsing is separate from registered Human tools and does not satisfy a reviewer observation.
 
 ## Request and execution
 
-`prepareReviewRequests({repoPath,repoId,snapshotHash,criticId?})` creates explicit envelopes containing `{repoId,snapshotHash,criticId,title,artifacts:[{id,type,path}],artifactTypes,payload,profile,target,deps}`. Envelope `artifacts` is derived as `[target, ...deps]` and the broker validates supplied envelopes against the prepared input. `--critic` selects exactly one envelope and validates only its required executor.
+`prepareReviewRequests({repoPath,repoId,snapshotHash,criticId?})` creates explicit envelopes containing `{repoId,snapshotHash,criticId,title,artifacts:[{id,type,path}],artifactTypes,configManifest?,payload,profile,target,deps}`. Envelope `artifacts` is derived as `[target, ...deps]` and the broker validates supplied envelopes against the prepared input. `--critic` selects exactly one envelope and validates only its required executor.
 
-The Artifact Runner creates scoped Viewer entry-point tools such as `read_why`, `read_spec`, `list_tests`, and `read_tests`. Having the entire repo available as execution input does not grant an Agent visibility into every Artifact. Agent review requires observed reads of every supplied Artifact, a real Provider response, and a valid structured result.
+The Artifact Runner creates scoped Viewer entry-point tools such as `read_why`, `read_spec`, `list_tests`, and `read_tests`. Having the entire repo available as execution input does not grant an Agent visibility into every Artifact. Agent review requires validated content observations of every supplied Artifact, a real Provider response, and a valid structured result.
 
 Executors receive the prepared input path, a distinct `runDir`, cancellation signal and event callback. Runtime environment sets `CCDD_OUTPUT_DIR`, `CCDD_TMP_DIR`, `TMPDIR`, `TMP`, `TEMP`, `HOME`, and `XDG_CACHE_HOME` to review-specific locations. Runtime cwd remains the input so relative imports work. A test failure is RED; an operational failure or detected input mutation is ERROR.
 
@@ -88,7 +112,7 @@ Executors receive the prepared input path, a distinct `runDir`, cancellation sig
 
 Only `src/executors` imports Pi runtime libraries. `@earendil-works/pi-agent-core` and `@earendil-works/pi-ai` are pinned to 0.85.1, reused as dependencies. The Broker delegates the common `ExecutorRegistry` contract (`src/contracts.ts`); it does not own LLM sessions. Human remains a durable broker workflow, and Runtime remains actual Node execution.
 
-Pi receives only the request's Artifact tools. No coding harness, shell, write, network-browsing or general filesystem tools are added. `createAuditedArtifactTools` is the common execution wrapper; Pi's `prepareArguments` invokes its strict validation before Pi can coerce numeric strings or strip nulls. The same Viewer performs all filesystem scope checks.
+Pi receives only the request's Artifact tools. No coding harness, shell, write, network-browsing or general filesystem tools are added. `createReviewTools` is the common execution wrapper; Pi's `prepareArguments` invokes strict schema validation before Pi can coerce numeric strings or strip nulls. The runner binds each registered tool to its Artifact and validates results and observations. Historical requests use the legacy Viewer adapter.
 
 CCDD resolves the exact Provider/model in Pi's installed catalog. Unsupported reasoning, including Pi mappings that substitute a different named effort, is rejected. `off` is accepted only for models without reasoning. A model absent from that version of the catalog is rejected, never replaced. Actual Provider access remains a runtime diagnostic because catalog presence does not prove account access.
 
@@ -120,9 +144,9 @@ Lock-mode waiting keeps its worker and input monitoring alive. Human completion 
 
 ## Doctor
 
-`diagnoseProject({repoPath,repoId,mode='copy',stateDir?,criticId?,executors,signal?,onEvent?})` returns `{ok,status:'READY'|'NOT_READY',repoId,mode,snapshotHash,scope,checkedAt,checks}`. It reads current definitions and validates actual project Viewer entry points. Exact Agent profiles are deduplicated; runtime path checks remain per Critic.
+`diagnoseProject({repoPath,repoId,mode='copy',stateDir?,criticId?,executors,signal?,onEvent?})` returns `{ok,status:'READY'|'NOT_READY',repoId,mode,snapshotHash,scope,checkedAt,checks}`. It reads current definitions and validates registered project tool preflight without calling their execute functions. Legacy JSON retains its original built-in Viewer readiness checks. Exact Agent profiles are deduplicated; runtime path checks remain per Critic.
 
-The Agent readiness probe uses the same Provider/model/reasoning and Pi Agent execution path with a random nonce Artifact in a private diagnostic workspace. It never writes into the original or shared review input. READY requires the correct nonce and audited tool read. Runtime diagnosis starts Node and checks paths, without executing project tests. Human diagnosis checks registration without sending notifications. No Run, semantic verdict or review history is created. READY describes the diagnostic moment, not future availability or Critic correctness.
+The Agent readiness probe uses the same Provider/model/reasoning and Pi Agent execution path with a random nonce Artifact in a private diagnostic workspace. It never writes into the original or shared review input. READY requires the correct nonce and audited tool read. This private diagnostic tool is not a project registration and does not require the default library. The report separately records diagnostic-only Artifact verification and `projectToolsExecuted: false`; use `tools check --execute` to exercise a project tool. Runtime diagnosis starts Node and checks paths, without executing project tests. Human diagnosis checks registration without sending notifications. No Run, semantic verdict or review history is created. READY describes the diagnostic moment, not future availability or Critic correctness.
 
 ## Compatibility
 
@@ -139,7 +163,7 @@ v0.5.1 updates Pi to 0.85.1 and creates fresh demos in demo-v5.1 using openai-co
 
 `ccdd monitor` starts an optional loopback web server. It discovers existing stores under CCDD_STATE_HOME (or the standard local state home) and accepts explicitly selected stores. Project identity is based on the canonical state directory, so separate histories and projects sharing a repo label do not collide. Missing sources do not hide copied review history.
 
-The observation store opens SQLite read-only and never calls Broker getters that reconcile ownership. Stored status and process-liveness observations remain separate. A dead worker can be shown as missing without rewriting a request to ERROR. Human copy waiting without a worker is normal. No reviews, diagnoses, notifications, claims, or provider calls start when viewing the monitor.
+The observation store opens SQLite read-only and never calls Broker getters that reconcile ownership. Stored status and process-liveness observations remain separate. A dead worker can be shown as missing without rewriting a request to ERROR. Human copy waiting without a worker is normal. No reviews, diagnoses, notifications, claims, Provider calls, user config imports or registered tool functions start when viewing the monitor. Human tool buttons and forms come from stored metadata.
 
 The Vue 3/TypeScript frontend is built with Vite and bundled in the npm package. A project picker scopes a four-column board: requested (QUEUED/BLOCKED/unclaimed Human), running (RUNNING/claimed Human), success (GREEN), failure (RED/ERROR). Blocked successors retain their own waiting state and a clear blocked-by-failure reason. Each column has independently bounded pagination and counts so recent completed requests cannot hide older active work. Card details show the instruction, result, existing lifecycle times, and scoped Artifact viewer.
 
@@ -155,8 +179,11 @@ Human completion shares the CLI's saved execution configuration and detached wor
 
 `ccdd tools check [--repo PATH] [--artifact ID] [--for agent|human] [--tool NAME]` lists and checks registered capabilities without a Provider call, review history, verdict, notification, or program launch. `--execute` requires a selected Artifact, audience and tool; `--args JSON` supplies that tool's schema-validated arguments. Both preparation and actual execution use the same scoped registries as reviews. Copy is the default workspace mode; lock is explicit. Failed checks return NOT_READY and a nonzero exit code.
 
-Preparation confirms declarations, paths and launcher executable availability. Actual execution confirms the read/list response or registered launcher exit; a GUI app's rendered content and a person's reading are not inferred. A launcher copy is retained so an asynchronously opened desktop viewer keeps its input after the command exits. Copies are revalidated and normal immutable cache lifetime rules apply. `doctor` remains the whole-project readiness command, including Human tool preflight without launching applications.
+Preparation confirms declarations, paths and registered preflight results. A missing custom preflight is labeled as registration confirmed but execution unverified. Actual execution confirms a schema-validated tool result; a GUI app's rendered content and a person's reading are not inferred. A launcher copy is retained so an asynchronously opened desktop viewer keeps its input after the command exits. Copies are revalidated and normal immutable cache lifetime rules apply. `doctor` remains the whole-project readiness command, including Human tool preflight without launching applications.
 
 v0.8 replaces Critic sequencing with Artifact target/deps, persists graph definitions, and adds GraphView alongside Kanban. Fresh demos use `demo-v8` with manifest version 8, explicit bases and audience tool maps. Existing demos and historic review snapshots are never rewritten automatically.
 
 Graph APIs are read-only: `GET /api/runs?project=&limit=&offset=` lists persisted runs; `GET /api/graphs/:projectId/:runId` returns the same-Run graph projection and safe request headers. `GET /api/requests` accepts `run=ID` only with a project filter. Historical runs without graph metadata are explicitly unavailable in GraphView. Partial runs retain missing critics and cannot borrow results from another Run or snapshot.
+
+
+v0.9 adds `ccdd.config.ts`, serializable tool manifests, per-registry implementation hosts, generic results and observations, and the optional default-tools library. New demos use `demo-v9` / manifest version 9. Preparation requires explicit local core/default-tools tarballs, installs public transitive dependencies once with lifecycle scripts disabled, and physically copies dependencies into four independent scenario projects. Existing demos are preserved. JSON admission remains transitional compatibility; there is no implicit conversion of saved requests or automatic default registration in TS.

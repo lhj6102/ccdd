@@ -1,5 +1,6 @@
 import type { ArtifactReference, ArtifactTypeDefinition, ArtifactToolCall } from './artifacts/index.js';
 import type { WorkspaceDescriptor } from './workspaces/index.js';
+import type { ConfigManifest } from './tools/contracts.js';
 
 export type { ArtifactReference, ArtifactTypeDefinition, ArtifactToolCall } from './artifacts/index.js';
 export type { WorkspaceDescriptor, WorkspaceHandle, WorkspaceMode } from './workspaces/index.js';
@@ -12,12 +13,13 @@ export interface ReviewPayload { instruction: string; [key: string]: unknown }
 export interface ReviewEnvelope {
   repoId: string; snapshotHash: string; criticId: string; title: string;
   artifacts: ArtifactReference[]; artifactTypes: Record<string, ArtifactTypeDefinition>;
+  configManifest?: ConfigManifest;
   payload: ReviewPayload; profile: CriticProfile; target: string; deps: string[];
 }
 export type ReviewStatus = 'BLOCKED' | 'QUEUED' | 'RUNNING' | 'WAITING_HUMAN' | 'GREEN' | 'RED' | 'ERROR';
 export interface ReviewToolCall {
   name: string; arguments?: unknown; at?: string;
-  observation?: { artifactId: string; operation: 'read' | 'list'; startLine?: number | null; endLine?: number | null; lineCount?: number | null; totalLines?: number | null };
+  observation?: { artifactId: string; operation: string; kind?: 'content' | 'empty'; detail?: string; startLine?: number | null; endLine?: number | null; lineCount?: number | null; totalLines?: number | null };
 }
 export interface ReviewResult {
   verdict: 'GREEN' | 'RED'; summary: string; evidence: string[];
@@ -34,7 +36,7 @@ export interface ReviewRequest extends ReviewEnvelope {
 }
 export interface CriticDefinition { id: string; title: string; target: string; deps: string[]; profile: CriticProfile; payload: ReviewPayload }
 export interface ArtifactDefinition { type: string; path: string; basis?: boolean }
-export interface RepoConfig { artifacts: Record<string, ArtifactDefinition>; artifactTypes: Record<string, ArtifactTypeDefinition>; critics: CriticDefinition[] }
+export interface RepoConfig { artifacts: Record<string, ArtifactDefinition>; artifactTypes: Record<string, ArtifactTypeDefinition>; critics: CriticDefinition[]; configManifest?: ConfigManifest }
 export interface ExecutionEvent { type: string; [key: string]: unknown }
 export interface ExecutionContext { worktreePath: string; workspacePath?: string; runDir: string; signal?: AbortSignal; onEvent?: (event: ExecutionEvent) => void | Promise<void> }
 export type ExecutorReadiness = { ok: true } | { ok: false; code?: string; reason: string; remedy?: string };

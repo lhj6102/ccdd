@@ -1,6 +1,6 @@
 # CCDD
 
-**Critic 중계 브로커와 Artifact Runner를 하나의 npm 패키지로 실행합니다.**
+**Critic 중계 브로커와 Artifact Runner입니다. 기본 관측 도구는 별도 라이브러리에서 선택하여 등록합니다.**
 
 현재 작업 폴더에서 리뷰를 요청하면 CCDD가 Agent·테스트 런타임·Human 실행기에 연결하고 판정과 근거를 저장합니다. Git commit과 상주 daemon 없이 사용합니다. Artifact Runner는 요청에 선언된 Artifact를 Agent·Human 각각의 관측 도구에 연결합니다.
 
@@ -71,54 +71,46 @@ ccdd doctor --repo /path/to/project --codex-auth-file "$HOME/.codex/auth.json" -
 
 ## Artifact 도구 설정
 
-도구 이름은 `{toolName}_{artifactName}`입니다. `artifactName`은 `artifacts`의 정의 키이며, 타입에 선언한 동작별 설명의 `{artifactName}`에 치환됩니다.
+v0.9의 설정은 `ccdd.config.ts`입니다. 설정 객체 또는 객체를 반환하는 동기·비동기 함수를 default export합니다. `@lhj6102/ccdd`는 가벼운 `defineConfig`, `defineTool`과 도구 타입을 제공하고, `@lhj6102/ccdd-default-tools`는 선택적으로 설치하는 구현 라이브러리입니다. import하거나 factory를 호출하는 것만으로 파일을 읽거나 프로그램을 실행하지 않습니다.
 
-```json
-"artifactTypes": {
-  "markdown": {
-    "viewer": "text",
-    "agentTools": {
-      "read": {"description": "{artifactName}의 문서 내용을 줄 단위로 읽는다."}
+```ts
+import { defineConfig } from '@lhj6102/ccdd';
+import { agent, human } from '@lhj6102/ccdd-default-tools';
+
+export default defineConfig(() => ({
+  artifactTypes: {
+    markdown: {
+      agentTools: { read: agent.text.read() },
+      humanTools: { open: human.desktop.open() },
     },
-    "humanTools": {
-      "read": {"description": "{artifactName}을 화면에서 읽는다."},
-      "open": {
-        "description": "{artifactName}을 기본 프로그램으로 연다.",
-        "command": "/usr/bin/open",
-        "args": ["{artifactPath}"]
-      }
-    }
+    code: {
+      agentTools: { list: agent.files.list(), read: agent.files.read() },
+      humanTools: { open: human.desktop.open() },
+    },
   },
-  "code": {
-    "viewer": "files",
-    "agentTools": {
-      "list": {"description": "{artifactName}의 파일 목록을 조회한다."},
-      "read": {"description": "{artifactName}의 소스 텍스트를 줄 단위로 읽는다."}
-    },
-    "humanTools": {"list": {}, "read": {}}
-  }
-}
+  artifacts: {
+    why: { type: 'markdown', path: 'why.md', basis: true },
+    spec: { type: 'markdown', path: 'spec.md' },
+  },
+  critics: [{
+    id: 'spec-why', title: 'Spec이 Why에 부합하는가', target: 'spec', deps: ['why'],
+    profile: { kind: 'agent', provider: 'openai-codex', model: 'gpt-6-astra', reasoning: 'medium' },
+    payload: { instruction: 'Why와 Spec을 관측하고 Spec이 Why를 충족하는지 평가하세요.' },
+  }],
+}));
 ```
 
-`tests`에 연결된 Agent `read` 도구는 이름이 `read_tests`, 설명이 “tests의 소스 텍스트를 줄 단위로 읽는다.”가 됩니다. 타입 이름은 repo에서 자유롭게 정의합니다. 등록된 builtin 항목을 `{}`로 쓰면 기본 설명이 적용됩니다.
+기본 도구도 `agent.text.read()`처럼 명시적으로 등록합니다. 자동 등록, 빈 객체의 기본값, 필수 `viewer: text|files`는 TS 설정에 없습니다. `agentTools`와 `humanTools`를 비우거나 생략하면 해당 종류의 Critic은 그 Artifact를 사용할 수 없습니다. 평가 대상과 참조 모두 적용하며 Runtime은 별도 실행 계약입니다.
 
-`agentTools`와 `humanTools`는 독립된 도구 목록입니다. 생략하거나 `{}`로 비우면 해당 리뷰어에게 도구가 제공되지 않으며, 그 Artifact를 해당 종류의 Critic에 포함한 새 요청은 거부됩니다. 선택한 Critic의 모든 Artifact에 적용되며 Runtime은 별도의 실행 계약을 사용합니다. 기존 `tools` 설정은 과거 기록 열람을 위해 지원하지만, 새 요청에는 대상별 목록을 명시해야 합니다.
+기본 Agent 도구는 패키지에 포함된 Node CLI를 호출합니다. `text.read()`는 단일 파일, `files.list()`·`files.read()`는 디렉터리용입니다. 이름은 `read_spec`, `list_tests`처럼 `<toolName>_<artifactName>`이며 설명의 `{artifactName}`도 실제 Artifact ID로 치환합니다. 읽기는 1번 줄부터 기본 80줄, 최대 500줄을 요청하고 `nextStartLine`으로 이어 읽습니다. 원래 UTF-8·LF/CRLF와 완전한 줄을 보존하며 응답은 64KiB로 제한합니다.
 
-위의 `open`은 macOS 예시입니다. 설치된 프로그램의 실행 파일과 고정 인자를 타입에 등록하며, `{artifactPath}`는 해당 리뷰의 Artifact 경로로 치환됩니다. 특정 앱을 지정하려면 `args`에 `"-a", "TextEdit", "{artifactPath}"`처럼 작성합니다. 도구는 기본 10초 안에 실행을 마쳐야 하며 `timeoutMs`로 최대 120초까지 지정할 수 있습니다. 프로그램을 열고 반환하는 실행기를 사용하세요. 프로그램 실행 성공과 사람의 검토 완료는 별개입니다.
+기본 Human 도구는 텍스트를 반환하지 않고 snapshot의 파일·폴더를 데스크톱 프로그램으로 엽니다. `human.desktop.open({ app: 'TextEdit' })`처럼 앱을 지정할 수 있습니다. 기본 OS 연결은 macOS이며 다른 OS에서는 `command`와 고정 `args`를 명시합니다. 프로그램 열기 성공은 사람의 검토나 판정 완료가 아닙니다.
 
-```js
-read_spec({startLine: 1, lineCount: 80})
-list_tests({})
-read_tests({path: "rank.test.mjs", startLine: 10, lineCount: 30})
-```
+사용자 도구는 `{ metadata, execute(context, args), preflight? }`를 직접 작성합니다. `metadata`에 설명·입력 JSON Schema·결과 종류·관측 방식을 선언하고, CCDD가 실제 snapshot Artifact와 출력·임시 경로·취소 신호를 연결합니다. 함수·SDK·CLI를 선택할 수 있으며 텍스트·JSON·이미지·프로그램 열기 결과를 지원합니다. 기본 도구 라이브러리 없이 작성하는 [사용자 Reader 예제](examples/custom-text-reader/README.md)와 정확한 [도구 계약](docs/contracts.md)을 참고하세요.
 
-기본 Viewer 동작 중 단일 파일에는 `read`, 디렉터리에는 `list`·`read`를 등록할 수 있습니다. 디렉터리 `read`에는 Artifact 내부의 파일 경로가 필요하며, 단일 파일 `read`에는 `path`를 넣지 않습니다. Human 프로그램 실행 도구는 이와 별도로 등록합니다. 입력에 `tool` 구분자를 넣는 구조도 아닙니다.
+설정과 import한 구현은 repo 안에서 해석합니다. 필요한 패키지를 **리뷰 대상 프로젝트의 `node_modules`에 실제 설치**해야 하며 상위 repo·전역 설치로 fallback하지 않습니다. 함수는 기록에 저장하지 않고 도구 명세와 구현 식별 정보를 저장합니다. 실행·Human 재개 시 동일 snapshot의 구현과 대조합니다. TS 설정은 신뢰하는 repo 코드이며 OS sandbox는 아닙니다.
 
-읽기는 1번 줄부터 시작하고 기본 80줄, 최대 500줄을 요청할 수 있습니다. 응답의 `nextStartLine`으로 이어 읽습니다. 한 번에 반환하는 내용은 64KiB 이내이며, 줄과 UTF-8 문자를 중간에서 자르지 않습니다. 한 줄 자체가 제한을 넘으면 오류를 반환합니다. 디렉터리 목록은 기존 `offset`·`limit` 방식으로 페이지를 넘깁니다.
-
-```sh
-ccdd artifact REQUEST_ID tests --file rank.test.mjs --start-line 10 --line-count 30
-```
+기존 `ccdd.config.json`의 `viewer`·`read/list`·Human 명령 설정은 이전을 위한 호환 경로로 계속 지원합니다. 과거 기록을 새 도구로 바꾸지 않으며, JSON과 TS 설정이 함께 있으면 충돌 오류입니다. 신규 예제는 TS와 명시적 등록을 사용합니다.
 
 ## 실행과 기록
 
@@ -127,10 +119,11 @@ ccdd run --copy --critic tests-spec --wait --json
 ccdd status RUN_ID --wait --json
 ccdd list
 ccdd request REQUEST_ID
-ccdd artifact REQUEST_ID spec
 ccdd cancel RUN_ID
 ccdd status RUN_ID --state-dir /outside/repo/state
 ```
+
+TS 요청의 Human Artifact 도구는 모니터에서 claim한 뒤 호출합니다. `tools check --execute`는 현재 프로젝트에서 새 진단 입력을 만들어 검사하며 기존 요청의 snapshot을 여는 명령이 아닙니다. `ccdd artifact REQUEST_ID spec`은 legacy JSON 요청의 수동 텍스트 조회에만 사용합니다.
 
 원본 폴더가 삭제된 복사본 리뷰도 `--state-dir`만 지정하면 기록 조회와 Human 응답을 이어갈 수 있습니다.
 
@@ -147,7 +140,6 @@ ccdd status RUN_ID --state-dir /outside/repo/state
 ```sh
 ccdd run --copy --critic human-review --human-inbox
 ccdd request REQUEST_ID
-ccdd artifact REQUEST_ID spec
 ccdd human-claim REQUEST_ID --reviewer reviewer-a
 ccdd human-result REQUEST_ID --reviewer reviewer-a --result-file /outside/repo/result.json
 ```
@@ -165,29 +157,38 @@ ccdd tools check --artifact spec --for human --tool open --execute
 ccdd tools check --artifact tests --for agent --tool read --execute --args '{"path":"rank.test.mjs","startLine":1,"lineCount":30}'
 ```
 
-기본 검사는 도구 정의·Artifact 경로·실행 파일 준비 여부를 확인합니다. `--execute`는 지정한 도구를 실제로 호출하며, Human `open` 도구라면 프로그램이 열립니다. 실제 실행에는 Artifact·리뷰어 종류·도구를 모두 지정합니다. `--copy`가 기본이며, `--lock`도 지원합니다.
+기본 검사는 도구 정의·Artifact 경로와 등록된 `preflight`를 확인합니다. custom preflight가 없으면 등록 확인과 실제 실행 미검증을 구분하여 표시합니다. `--execute`는 지정한 도구를 실제로 호출하며, Human `open` 도구라면 프로그램이 열립니다. 실제 실행에는 Artifact·리뷰어 종류·도구를 모두 지정합니다. `--copy`가 기본이며, `--lock`도 지원합니다.
 
-검사 결과에는 성공 여부와 실패 원인이 표시됩니다. 리뷰 기록이나 판정은 생성하지 않으며 Provider도 호출하지 않습니다. 데스크톱 프로그램을 연 복사본은 앱이 계속 읽을 수 있도록 보관합니다. 프로젝트 전체의 Provider·실행기 준비 상태는 기존 `ccdd doctor`로 검사합니다.
+검사 결과에는 성공 여부와 실패 원인이 표시됩니다. 리뷰 기록이나 판정은 생성하지 않으며 Provider도 호출하지 않습니다. 데스크톱 프로그램을 연 복사본은 앱이 계속 읽을 수 있도록 보관합니다. 프로젝트 전체의 Provider·실행기 준비 상태는 `ccdd doctor`로 검사합니다. Provider 진단은 내부 nonce 도구로 연결을 확인하며 프로젝트 custom 도구를 대신 실행하지 않습니다.
 
 ## CLI 데모
 
+두 패키지는 private 저장소에서 로컬 tarball로 준비합니다. npm 공개 게시를 전제로 하지 않습니다.
+
 ```sh
-npm run demo:prepare
+npm run build
+mkdir -p /tmp/ccdd-local-packages
+npm pack --ignore-scripts --pack-destination /tmp/ccdd-local-packages
+npm pack --workspace @lhj6102/ccdd-default-tools --ignore-scripts --pack-destination /tmp/ccdd-local-packages
+export CCDD_DEMO_CORE_TARBALL=/tmp/ccdd-local-packages/lhj6102-ccdd-0.9.0.tgz
+export CCDD_DEMO_TOOLS_TARBALL=/tmp/ccdd-local-packages/lhj6102-ccdd-default-tools-0.9.0.tgz
+node dist/src/cli.js prepare-demo
 CCDD_CODEX_AUTH_FILE="$HOME/.codex/auth.json" npm run demo
 node dist/src/cli.js run --demo --scenario why-change --copy --critic spec-why --wait
 node dist/src/cli.js run --demo --scenario runtime-failure --copy --critic implementation-tests --wait
 node dist/src/cli.js run --demo --scenario fixed --copy --wait
 ```
 
-새 데모는 `~/.local/share/ccdd/demo-v8`에 Git 없는 네 개의 수정 가능한 작업 폴더를 만듭니다. 기존 작업 폴더를 다시 초기화하지 않습니다. 별도 위치를 쓰려면 `--demo-dir PATH`를 지정합니다.
+새 데모는 `~/.local/share/ccdd/demo-v9`에 Git 없는 네 개의 수정 가능한 프로젝트를 만듭니다. tarball에서 의존성을 한 번 설치한 뒤 각 프로젝트에 물리적으로 복사하므로, 각 snapshot이 자신의 구현·의존성을 가집니다. 공개된 전이 의존성 설치에는 npm 접근 또는 로컬 캐시가 필요합니다. lifecycle script는 실행하지 않습니다. 각 프로젝트에 tarball·package lock도 보관합니다.
+
+기존 v9 프로젝트는 편집한 파일을 보존하며 다시 설치하지 않습니다. 과거 데모나 파일이 있는 다른 폴더를 덮어쓰지 않습니다. 별도 위치는 `--demo-dir PATH`로 지정합니다. 설치한 CCDD CLI에서도 동일한 두 tarball 환경변수로 `ccdd prepare-demo`를 사용할 수 있습니다.
 
 ```text
-why.md → [Spec이 Why에 부합하는가] → spec.md
-       → [Tests가 Spec에 부합하는가] → tests/
-       → [실제 테스트 런타임] → implementation/
+why.md → spec.md → tests/ → implementation/
+          Agent     Agent      Runtime
 ```
 
-시연 주제는 중요한 미완료 작업을 우선 제안하는 함수입니다. 목적 변경, 구현 불일치, 수정 완료를 실제 Agent 판정과 Node 테스트로 확인합니다. [시연 순서](docs/demo.md)
+시연 주제는 중요한 미완료 작업을 우선 제안하는 함수입니다. 목적 변경, 구현 불일치, 수정 완료를 실제 Agent 판정과 Node 테스트로 확인합니다. 기본 도구는 TS config에 명시적으로 등록되며 Human 도구는 데스크톱 열기로 구성됩니다. 기본 시나리오의 Critic은 Agent 2개·Runtime 1개입니다.
 
 ## 로컬 모니터
 

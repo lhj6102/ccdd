@@ -59,8 +59,8 @@ test('Pi Agent loop receives exact provider/model/reasoning and scoped tools acr
     assert.equal((actual.final as { verdict: string }).verdict, 'GREEN');
     assert.equal(actual.toolCalls.length, 1);
     assert.deepEqual(actual.toolCalls[0]?.arguments, { startLine: 2, lineCount: 1 });
-    assert.equal(actual.toolCalls[0]?.observation.lineCount, 1);
-    assert.equal(actual.toolCalls[0]?.observation.startLine, 2);
+    assert.equal(actual.toolCalls[0]?.observation?.lineCount, 1);
+    assert.equal(actual.toolCalls[0]?.observation?.startLine, 2);
     assert.equal(events.filter(event => event.type === 'artifact.tool.called').length, 1);
     assert.doesNotMatch(JSON.stringify({ actual, events }), /PRIVATE_REASONING|둘째 줄/);
   }
