@@ -7,6 +7,7 @@ interface ProcessOptions {
   timeoutMs: number;
   input?: string;
   capture?: boolean;
+  maxOutputBytes?: number;
 }
 
 /** Never forward arbitrary environment variables, including Provider credentials or NODE_OPTIONS. */
@@ -51,7 +52,7 @@ export function runToolProcess(command: string, args: string[], options: Process
     options.signal.addEventListener('abort', abort, { once: true });
     child.stdout?.on('data', (chunk: Buffer) => {
       bytes += chunk.length;
-      if (bytes > 1024 * 1024) { stop(new Error('Artifact tool output exceeded its limit')); return; }
+      if (bytes > (options.maxOutputBytes ?? 1024 * 1024)) { stop(new Error('Artifact tool output exceeded its limit')); return; }
       chunks.push(chunk);
     });
     // CLI errors use the bounded JSON protocol. Never return raw launcher stderr to reviewers.

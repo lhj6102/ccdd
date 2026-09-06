@@ -1,6 +1,8 @@
-# Implementation contracts — v0.9
+# Implementation contracts
 
 Core package `@lhj6102/ccdd`, optional library `@lhj6102/ccdd-default-tools`, strict TypeScript compiled to Node 24 ESM, and local SQLite persistence. The core does not depend on or re-export the default library. Broker and Executors remain separate bounded contexts. A request-scoped worker runs one Run; no daemon, global broker-owner lock, or automatic queue scanner is required. The optional local monitor observes persisted requests and delegates explicit Human actions to the Broker. It does not own review execution.
+
+Artifact groups and the default image tool described here are available in the current source build; the published v1.0.0 assets do not include them.
 
 ## Workspace contract
 
@@ -21,7 +23,9 @@ This is cooperative local execution, not an OS sandbox against a hostile process
 
 `ccdd.config.ts` is read from the prepared workspace. It default-exports a configuration object or a synchronous/asynchronous zero-argument factory. `defineConfig` is a lightweight identity helper; `defineTool` derives common argument types from a literal input schema. The SDK import starts no Broker, Provider, monitor or desktop process.
 
-The config declares `artifacts`, `artifactTypes`, and a `critics` array whose order does not prescribe execution. Each Artifact has a type, safe relative path and optional `basis: true`. Each Critic has a unique ID, title, one `target` Artifact ID, a `deps` array, profile and payload. The `deps → target` relations must form a DAG. Dependencies require evaluators or an explicit basis; a basis cannot also be a target. Critic `dependsOn` and `artifacts` fields remain rejected. See [Artifact graph](artifact-graph.md).
+The config declares `artifacts`, `artifactTypes`, and a `critics` array whose order does not prescribe execution. An entry is `ArtifactDefinition | ArtifactGroupDefinition`: a leaf has a type and safe relative path; a group has `{kind:'group',members:['effect','preview']}` with no type or path. Both accept optional `basis: true`. Members reference independently defined IDs, may include other groups, and must be nonempty, unique, known and acyclic. Each Critic has a unique ID, title, one `target` ID, a `deps` array, profile and payload. The `deps → target` relations must form a DAG. Dependencies require evaluators or an explicit basis; a basis cannot also be a target. Critic `dependsOn` and `artifacts` fields remain rejected. See [Artifact graph](artifact-graph.md).
+
+Groups are independent review targets and dependencies. Their required Critics determine their verdict, without propagating it to members or inheriting member verdicts. Membership grants observation scope but adds no dependency edge or scheduling gate. A group Critic must explicitly declare member IDs in `deps` if their evaluations must pass first.
 
 ```ts
 import { defineConfig } from '@lhj6102/ccdd';
@@ -56,7 +60,7 @@ A transitional `ccdd.config.json` path retains the existing text/files Viewer an
 
 ## Registered Artifact tools
 
-A TS type declares only `agentTools` and `humanTools`. Empty or omitted maps provide no capabilities to that audience. Every target and dependency of a selected Agent/Human Critic must have usable tools; Runtime has its own contract. Names are flat `<toolName>_<artifactName>`, with collisions rejected. Tool keys can describe arbitrary operations such as `frame`, `inspectClip`, or `preview`; there is no built-in read/list restriction or required Viewer name.
+A TS type declares only `agentTools` and `humanTools`. Empty or omitted maps provide no capabilities to that audience. Targets and dependencies expand recursively into leaf Artifacts in stable order, deduplicating shared members. Every supplied leaf must have usable tools for the selected Agent/Human audience; Runtime has its own contract. Groups have no tools of their own. Names retain each leaf ID as `<toolName>_<artifactName>`, with collisions rejected. Tool keys can describe arbitrary operations such as `frame`, `inspectClip`, or `preview`; there is no built-in read/list restriction or required Viewer name.
 
 A tool factory returns `{metadata, execute(context,args), preflight?}`. Calling the factory defines an effect; invoking `execute` performs it. The core accepts user-written functions without the default-tools library.
 
@@ -90,9 +94,11 @@ Common auditing records only safe successful tool name, arguments, time, bound A
 
 `@lhj6102/ccdd-default-tools` is a separate optional package with a compatible core peer dependency and type-only SDK imports. Importing it or calling a factory performs no I/O and registers nothing. Projects explicitly import and register the definitions they want. Both packages can be installed from local tarballs without private npm publication.
 
-Agent defaults use a packaged Node CLI with fixed operation arguments; no general shell tool or global executable is installed. `agent.text.read()` supports a file Artifact. `agent.files.read()` and `agent.files.list()` support directory Artifacts. Read args are `startLine` (default 1) and `lineCount` (default 80, maximum 500); directory read also requires an internal file `path`. List args keep optional internal `path`, zero-based `offset`, and `limit` up to 200.
+Agent defaults use packaged Node CLIs with fixed operation arguments; no general shell tool or global executable is installed. `agent.text.read()` supports a file Artifact. `agent.files.read()` and `agent.files.list()` support directory Artifacts. Read args are `startLine` (default 1) and `lineCount` (default 80, maximum 500); directory read also requires an internal file `path`. List args keep optional internal `path`, zero-based `offset`, and `limit` up to 200.
 
 Reads preserve UTF-8, LF/CRLF, complete lines and final-newline semantics. They return original text, line range/count, `truncated`, `nextStartLine` and `totalLines` when known. A trailing newline does not create an extra empty line. Reads stream rather than load an entire unbounded file; a requested single line above 64KiB fails. Invalid UTF-8/binary input fails. Content observation requires returned text or a truly empty file; listing and past-EOF reads of a nonempty file do not qualify.
+
+`agent.image.view()` is explicitly registered as `agentTools: { view_image: agent.image.view() }`, producing `view_image_<artifactId>`. Its packaged CLI reuses Pi's `createReadTool()` through an adapter exposing only the bound image file. This makes no LLM call and starts no Agent session. File Artifacts accept `{}`; directory Artifacts require an internal file `path`. Only an actual PNG/JPEG/WebP image block up to 4MiB succeeds and produces a leaf content receipt. File contents determine the image type. Text-only Pi results, GIF, BMP and animated PNG fail; the tool does not resize, convert, or offer Pi's general file-reading interface. Preflight checks availability and shape without rendering the image. A model accepting image input is required for an Agent review using the result.
 
 Human defaults use `human.desktop.open()` to open a snapshot file/folder with a desktop application and return a launch receipt. It does not duplicate Agent read/list behavior. macOS defaults to `/usr/bin/open`; an `app` option selects an application, or `command`/fixed `args` connect another executable. Other platforms require an explicit command. Reviewers cannot choose the executable, argv, or environment. The launcher environment excludes Provider tokens and preload hooks. App launch success is separate from Human claim, observation and final submission, and the snapshot copy remains available after the launcher returns.
 
@@ -102,7 +108,7 @@ For legacy JSON requests only, CLI passive inspection remains `artifact REQUEST_
 
 ## Request and execution
 
-`prepareReviewRequests({repoPath,repoId,snapshotHash,criticId?})` creates explicit envelopes containing `{repoId,snapshotHash,criticId,title,artifacts:[{id,type,path}],artifactTypes,configManifest?,payload,profile,target,deps}`. Envelope `artifacts` is derived as `[target, ...deps]` and the broker validates supplied envelopes against the prepared input. `--critic` selects exactly one envelope and validates only its required executor.
+`prepareReviewRequests({repoPath,repoId,snapshotHash,criticId?})` creates explicit envelopes containing `{repoId,snapshotHash,criticId,title,artifacts:[{id,type,path}],artifactGroups?:[{id,members}],artifactTypes,configManifest?,payload,profile,target,deps}`. Expanding `[target, ...deps]` through group members yields the deduplicated leaf `artifacts` and reachable `artifactGroups`. It never follows members' Critic dependencies to grant additional access. Leaf-only scopes omit `artifactGroups`, preserving their existing shape. The broker validates supplied envelopes against the prepared input; tool reconnection also verifies recorded leaf and group scope against the snapshot. `--critic` selects exactly one envelope and validates only its required executor.
 
 The Artifact Runner creates scoped Viewer entry-point tools such as `read_why`, `read_spec`, `list_tests`, and `read_tests`. Having the entire repo available as execution input does not grant an Agent visibility into every Artifact. Agent review requires validated content observations of every supplied Artifact, a real Provider response, and a valid structured result.
 
@@ -110,22 +116,28 @@ Executors receive the prepared input path, a distinct `runDir`, cancellation sig
 
 ### Instruction Artifact references
 
-`payload.instruction` remains a string. Configuration, prepared envelopes, stored payloads and monitor HTTP responses retain its original value; other payload fields are unchanged. Reference rendering adds no public SDK API, configuration field, request/response field or stored representation.
+`payload.instruction` remains a string. Configuration, prepared envelopes, stored payloads and monitor HTTP responses retain its original value; other payload fields are unchanged. Reference rendering is derived at presentation time from the supplied leaves, optional group metadata and actual tools; the rendered text is not stored as a second instruction.
 
-An exact `{ID}` in that instruction refers to an Artifact in the request's existing `artifacts` scope. IDs use the existing identifier grammar: one ASCII letter or digit followed by up to 63 ASCII letters, digits, underscores or hyphens. When constructing the Agent prompt, CCDD renders the reference as inline JSON containing the Artifact ID and names from its actual Agent tool registry, joined by each tool's `artifactId`. It does not invent names or require default tools. For example, with `read_spec`, `grep_spec` and `read_why` actually registered:
+An exact `{ID}` in that instruction refers to a leaf or group already supplied to the request. IDs use the existing identifier grammar: one ASCII letter or digit followed by up to 63 ASCII letters, digits, underscores or hyphens. When constructing the Agent prompt, CCDD renders the reference as inline JSON containing the Artifact ID and names from its actual Agent tool registry, joined by each tool's `artifactId`. It does not invent names or require default tools. For example, with `read_spec`, `grep_spec` and `read_why` actually registered:
 
 ```text
 Source: {spec}이 {why}의 요구사항을 충족하는지 검토하세요.
 Agent: {"artifact":"spec","tools":["read_spec","grep_spec"]}이 {"artifact":"why","tools":["read_why"]}의 요구사항을 충족하는지 검토하세요.
 ```
 
+A group reference expands to its deduplicated supplied leaf members and their actual tools:
+
+```text
+{explosion} → {"artifactGroup":"explosion","members":[{"artifact":"effect","tools":["read_effect"]},{"artifact":"preview","tools":["view_image_preview"]}]}
+```
+
 Unknown or out-of-scope IDs remain literal text rather than making a previously valid request fail. Brace-delimited groups such as JSON objects, nested or doubled braces, escaped references such as `\{spec}`, and expressions such as `{spec.path}` also remain unchanged. The instruction is natural-language text, not a parsed JSON document: quotes and array brackets outside those brace groups do not suppress references. Escape `{ID}` when it should remain literal there. This is reference rendering, not expression evaluation, Artifact-body interpolation, permission granting or tool execution. The existing `target`/`deps` scope and required-observation checks remain authoritative. The `{artifactName}` placeholder in tool metadata descriptions continues its separate bound-Artifact substitution; instruction rendering introduces no reserved variable with that name.
 
-The Human frontend parses the same original instruction and presents recognized references as Artifact buttons associated with that request's Human tools. A reference click selects or focuses the corresponding tool choices; it never invokes a tool. Execution remains an explicit action under the existing active-claim and WAITING_HUMAN checks. No configuration import, Artifact read or tool execution is needed to render a reference.
+The Human frontend parses the same original instruction and presents recognized references as Artifact buttons associated with that request's Human tools. A group button offers its members' Human tools, retaining each leaf binding. A reference click selects or focuses the corresponding tool choices; it never invokes a tool. Execution remains an explicit action under the existing active-claim and WAITING_HUMAN checks. No configuration import, Artifact read or tool execution is needed to render a reference.
 
 ## Pi Agent execution
 
-Only `src/executors` imports Pi runtime libraries. `@earendil-works/pi-agent-core` and `@earendil-works/pi-ai` are pinned to 0.85.1, reused as dependencies. The Broker delegates the common `ExecutorRegistry` contract (`src/contracts.ts`); it does not own LLM sessions. Human remains a durable broker workflow, and Runtime remains actual Node execution.
+Pi Agent sessions and Provider calls belong to `src/executors`. `@earendil-works/pi-agent-core` and `@earendil-works/pi-ai` are pinned to 0.85.1, reused as dependencies. The optional default-tools package also pins Pi Agent Core to reuse its read tool inside the packaged image CLI; that adapter owns no session, Provider call or Broker state. Pi types are not part of the public tool contract. The Broker delegates the common `ExecutorRegistry` contract (`src/contracts.ts`); it does not own LLM sessions. Human remains a durable broker workflow, and Runtime remains actual Node execution.
 
 Pi receives only the request's Artifact tools. No coding harness, shell, write, network-browsing or general filesystem tools are added. `createReviewTools` is the common execution wrapper; Pi's `prepareArguments` invokes strict schema validation before Pi can coerce numeric strings or strip nulls. The runner binds each registered tool to its Artifact and validates results and observations. Historical requests use the legacy Viewer adapter.
 
@@ -182,7 +194,7 @@ The observation store opens SQLite read-only and never calls Broker getters that
 
 The Vue 3/TypeScript frontend is built with Vite and bundled in the npm package. A project picker scopes a four-column board: requested (QUEUED/BLOCKED/unclaimed Human), running (RUNNING/claimed Human), success (GREEN), failure (RED/ERROR). Blocked successors retain their own waiting state and a clear blocked-by-failure reason. Each column has independently bounded pagination and counts so recent completed requests cannot hide older active work. Card details show the instruction, result, existing lifecycle times, and scoped Artifact viewer.
 
-The overview returns bounded, paginated request summaries and project/filter counts. Request detail projects only the instruction, execution profile, result summary/evidence, safe lifecycle times, and Artifact references; it excludes credentials, worker ownership tokens, raw provider logs, and snapshot metadata dumps. Existing timestamps describe post-workspace-preparation acceptance; no missing timing is inferred.
+The overview returns bounded, paginated request summaries and project/filter counts. Request detail projects only the instruction, execution profile, result summary/evidence, safe lifecycle times, and Artifact references with validated optional group composition; it excludes credentials, worker ownership tokens, raw provider logs, and snapshot metadata dumps. The monitor derives this safe projection from persisted metadata without evaluating config. Graph group nodes show their own Critics and offer member navigation; membership is displayed separately from the dependency edges. Existing timestamps describe post-workspace-preparation acceptance; no missing timing is inferred.
 
 Artifact browsing reuses scoped Viewer tools and validates the recorded workspace before and after each read. Browser reads do not count as Agent or Human review observations. Changed lock inputs or missing copies fail explicitly instead of showing current source as the reviewed snapshot. File and directory pagination retain the Artifact contract.
 
@@ -193,6 +205,8 @@ Human completion shares the CLI's saved execution configuration and detached wor
 ## Artifact tool diagnostics
 
 `ccdd tools check [--repo PATH] [--artifact ID] [--for agent|human] [--tool NAME]` lists and checks registered capabilities without a Provider call, review history, verdict, notification, or program launch. `--execute` requires a selected Artifact, audience and tool; `--args JSON` supplies that tool's schema-validated arguments. Both preparation and actual execution use the same scoped registries as reviews. Copy is the default workspace mode; lock is explicit. Failed checks return NOT_READY and a nonzero exit code.
+
+Selecting a group with `--artifact` lists and preflights its deduplicated leaf tools. Actual `--execute` requires a leaf Artifact ID so one bound tool is selected explicitly; a group itself is not executable.
 
 Preparation confirms declarations, paths and registered preflight results. A missing custom preflight is labeled as registration confirmed but execution unverified. Actual execution confirms a schema-validated tool result; a GUI app's rendered content and a person's reading are not inferred. A launcher copy is retained so an asynchronously opened desktop viewer keeps its input after the command exits. Copies are revalidated and normal immutable cache lifetime rules apply. `doctor` remains the whole-project readiness command, including Human tool preflight without launching applications.
 

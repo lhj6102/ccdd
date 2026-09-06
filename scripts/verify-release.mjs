@@ -63,7 +63,7 @@ export function packageFileAllowed(packageName, path) {
   return /^dist\/(?:src|scripts)\/.+\.(?:js|js\.map|d\.ts)$/.test(path)
     || /^dist\/monitor-ui\/.+\.(?:html|js|css|svg|png|woff2?)$/.test(path)
     || /^docs\/.+\.md$/.test(path)
-    || /^examples\/.+\.(?:md|ts|mjs|json)$/.test(path)
+    || /^examples\/.+\.(?:md|ts|mjs|json|png|jpg|jpeg|webp)$/.test(path)
     || path === 'CONTEXT-MAP.md' || /^src\/.+\/CONTEXT\.md$/.test(path);
 }
 

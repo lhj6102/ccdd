@@ -1,7 +1,7 @@
 import type { ELK, ELKConstructorArguments, ElkNode } from 'elkjs/lib/elk-api.js';
 
 export interface LayoutGraphInput {
-  artifacts: readonly { id: string; criticIds?: readonly string[] }[];
+  artifacts: readonly { id: string; kind?: 'artifact' | 'group'; criticIds?: readonly string[] }[];
   edges: readonly { source: string; target: string; criticIds: readonly string[] }[];
 }
 export interface GraphPoint { x: number; y: number }
@@ -40,7 +40,7 @@ export async function layoutGraph(graph: LayoutGraphInput, vertical = false, sig
   // Internal identifiers prevent Artifact names from colliding with port or root IDs.
   const internalIds = new Map(artifacts.map((artifact, index) => [artifact.id, `artifact-${index}`]));
   const shapes = artifacts.map(artifact => {
-    const width = nodeWidth, height = Math.max(112, 80 + Math.ceil((artifact.criticIds?.length ?? 0) / 5) * 34);
+    const width = nodeWidth, height = Math.max(112, 80 + Math.ceil((artifact.criticIds?.length ?? 0) / 5) * 34) + (artifact.kind === 'group' ? 21 : 0);
     const sourcePort = vertical ? { x: width / 2, y: height } : { x: width, y: height / 2 };
     const targetPort = vertical ? { x: width / 2, y: 0 } : { x: 0, y: height / 2 };
     return { id: artifact.id, width, height, sourcePort, targetPort };

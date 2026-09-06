@@ -584,12 +584,12 @@ export function createBroker({ repoPath, stateDir, repoId = 'demo', executors, w
         if (!request.configManifest) {
           if (Object.values(request.artifactTypes).some(type => type.custom)) throw codedError('Stored TS Artifact configuration has no tool manifest.', 'WORKSPACE_ARTIFACT_MISMATCH');
           const expected = await readStoredArtifactScope({ repoPath: workspace.descriptor.path, criticId: request.criticId });
-          if (!expected || expected.profile.kind !== 'human' || !isDeepStrictEqual(expected.artifactTypes, request.artifactTypes) || !isDeepStrictEqual(expected.artifacts, request.artifacts)) {
+          if (!expected || expected.profile.kind !== 'human' || !isDeepStrictEqual(expected.artifactTypes, request.artifactTypes) || !isDeepStrictEqual(expected.artifacts, request.artifacts) || !isDeepStrictEqual(expected.artifactGroups ?? [], request.artifactGroups ?? [])) {
             throw codedError('Stored Artifact tools do not match the reviewed workspace configuration.', 'WORKSPACE_ARTIFACT_MISMATCH');
           }
         }
         const registry = await createReviewTools({
-          worktreePath: workspace.descriptor.path, artifacts: request.artifacts, artifactTypes: request.artifactTypes,
+          worktreePath: workspace.descriptor.path, artifacts: request.artifacts, artifactGroups: request.artifactGroups, artifactTypes: request.artifactTypes,
           configManifest: request.configManifest, criticId: request.criticId, audience: 'human',
           runDir: path.resolve(stateDir, 'runs', request.runId, request.id, 'human-tools'), signal: workspace.signal,
         });

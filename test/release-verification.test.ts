@@ -35,5 +35,6 @@ test('release archive allowlist accepts runtime/docs and rejects state, credenti
   for (const path of ['output/run.json', 'dist/src/auth.json', 'docs/credentials.json', 'dist/src/state/run.js', 'examples/.env', 'node_modules/pkg/index.js', '../package.json', '/package.json', 'dist\\src\\cli.js', 'docs/run.sqlite', 'dist/test/tool.test.js', 'src/cli.ts', 'snapshot/review.md', 'examples/default.tgz']) assert.equal(packageFileAllowed(core, path), false, path);
   for (const path of ['package.json', 'README.md', 'dist/index.js', 'dist/index.d.ts', 'dist/cli.js.map']) assert.equal(packageFileAllowed(defaults, path), true, path);
   assert.equal(packageFileAllowed(defaults, 'examples/config.ts'), false);
+  assert.equal(packageFileAllowed(core, 'examples/artifact-groups/preview.png'), true);
   assert.equal(packageFileAllowed('unknown', 'dist/index.js'), false);
 });

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { Handle, Position } from '@vue-flow/core';
+import { Layers } from '@lucide/vue';
 import type { GraphCriticState } from '../../broker/graph.js';
 import type { ArtifactNodeData } from './graph-flow';
 import CriticStatusIcon from './CriticStatusIcon.vue';
@@ -9,9 +10,10 @@ const emit = defineEmits<{ select: [id: string]; 'open-critic': [critic: GraphCr
 </script>
 
 <template>
-  <article class="graph-artifact" :class="{ selected: data.selected }">
+  <article class="graph-artifact" :class="{ selected: data.selected, 'graph-artifact-group': data.artifact.kind === 'group' }">
     <Handle id="target" type="target" :position="data.vertical ? Position.Top : Position.Left" :connectable="false" :class="{ 'graph-port-hidden': !data.hasInput }" />
     <button type="button" class="graph-artifact-heading nodrag nopan" :aria-pressed="data.selected" :aria-label="data.accessibleLabel" @click="emit('select', data.artifact.id)">
+      <span v-if="data.artifact.kind === 'group'" class="graph-group-label"><Layers :size="12" :stroke-width="1.5" aria-hidden="true" />그룹 · {{ data.artifact.members.length }}개</span>
       <strong class="graph-artifact-name" :title="data.artifact.id">{{ data.artifact.id }}</strong>
       <span class="card-status" :class="data.artifact.status.toLowerCase()">{{ data.statusLabel }}</span>
     </button>

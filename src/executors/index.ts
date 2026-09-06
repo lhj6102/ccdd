@@ -115,6 +115,7 @@ async function probeAgent(request: ReviewEnvelope, { piOptions, streamFn, worktr
   const diagnosticRequest:ReviewEnvelope = {
     ...request,
     artifacts: [{ id: artifactId, type: artifactId, path }],
+    artifactGroups: undefined,
     artifactTypes: { [artifactId]: { viewer: 'text', agentTools: { read: {} } } },
     // Private protocol diagnostic, never a project-registered default tool.
     configManifest: undefined,
@@ -204,10 +205,11 @@ export function createExecutorRegistry({ piOptions, streamFn, alarmMethods = [],
           'Return only the final JSON schema result. Write a concise Korean summary and evidence with artifact paths and concrete observations; no hidden reasoning, logs, or speculative claims.',
           `Critic: ${request.title} (${request.criticId})`,
           `Workspace snapshot hash: ${request.snapshotHash}`,
-          `Review payload: ${JSON.stringify({ ...request.payload, instruction: digestArtifactInstruction(request.payload.instruction, request.artifacts, tools) })}`,
+          `Review payload: ${JSON.stringify({ ...request.payload, instruction: digestArtifactInstruction(request.payload.instruction, request.artifacts, tools, request.artifactGroups) })}`,
           request.target ? `Target Artifact: ${request.target}. Dependency Artifacts: ${JSON.stringify(request.deps)}. The target is available to read even though it is not in deps.` : 'Historical review: Artifact roles are described in the review payload.',
           'Artifact roles and allowed observation scope follow. Do not infer access to undeclared artifacts.',
           `Artifacts: ${JSON.stringify(viewer.listArtifacts())}`,
+          ...(request.artifactGroups?.length ? [`Artifact groups: ${JSON.stringify(request.artifactGroups)}. Groups collect these supplied Artifacts for observation; membership does not imply a dependency or a shared verdict. Inspect every supplied leaf Artifact; assess only the declared target.`] : []),
           'Each tool is named <operation>_<artifactName>. Tools may return text, structured data or images. Observe relevant content rather than inferring it from filenames or metadata. Follow pagination or continuation information returned by the tool.',
           `Viewer entry points and type-defined descriptions: ${JSON.stringify(tools.map(({name,description})=>({name,description})))}`,
         ].join('\n') });

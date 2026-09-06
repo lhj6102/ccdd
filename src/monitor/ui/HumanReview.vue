@@ -3,6 +3,7 @@ import { computed, nextTick, onUnmounted, ref, watch } from 'vue';
 import type { MonitorDetail, MonitorHumanTool, MonitorSession, MonitorToolResponse } from '../types.js';
 import { api, ApiError, errorMessage, requestRoute } from './api';
 import ToolOutput from './ToolOutput.vue';
+import { artifactInstructionMembers } from '../../artifacts/instruction.js';
 import { initialToolFields, initialToolJson, parseToolFields, parseToolJson, toolInputForm, validateToolInput } from './tool-input';
 
 const props = defineProps<{ detail: MonitorDetail; session: MonitorSession | null; sessionError: string }>();
@@ -14,7 +15,8 @@ const summary = ref(''), evidence = ref(''), verdict = ref<'GREEN' | 'RED'>('GRE
 const toolForm = ref<HTMLFormElement | null>(null);
 const toolsRegion = ref<HTMLElement | null>(null), focusedArtifact = ref('');
 const tool = computed(() => props.detail.tools?.find(item => item.name === toolName.value));
-const visibleTools = computed(() => props.detail.tools?.filter(item => !focusedArtifact.value || item.artifactId === focusedArtifact.value) ?? []);
+const focusedMembers = computed(() => new Set(artifactInstructionMembers(focusedArtifact.value, props.detail.artifacts, props.detail.artifactGroups)));
+const visibleTools = computed(() => props.detail.tools?.filter(item => !focusedArtifact.value || focusedMembers.value.has(item.artifactId)) ?? []);
 const canAct = computed(() => Boolean(props.session && props.detail.human?.canComplete));
 const route = computed(() => requestRoute(props.detail.request.projectId, props.detail.request.id));
 const form = computed(() => toolInputForm(tool.value?.inputSchema ?? { type: 'object', additionalProperties: false }));
@@ -32,10 +34,11 @@ function selectTool(value: MonitorHumanTool): void {
   jsonInput.value = initialToolJson(value.inputSchema); preferJson.value = false;
 }
 function showArtifactTools(artifactId: string): void {
-  const registered = props.detail.tools?.find(item => item.artifactId === artifactId);
+  const members = new Set(artifactInstructionMembers(artifactId, props.detail.artifacts, props.detail.artifactGroups));
+  const registered = props.detail.tools?.find(item => members.has(item.artifactId));
   if (!registered || busy.value) return;
   focusedArtifact.value = artifactId;
-  if (tool.value?.artifactId !== artifactId) selectTool(registered);
+  if (!tool.value || !members.has(tool.value.artifactId)) selectTool(registered);
   void nextTick(() => {
     toolsRegion.value?.scrollIntoView({ block: 'nearest' });
     toolsRegion.value?.focus({ preventScroll: true });

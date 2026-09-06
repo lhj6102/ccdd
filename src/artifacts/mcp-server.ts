@@ -4,12 +4,13 @@ import { createInterface } from 'node:readline';
 import { pathToFileURL } from 'node:url';
 import type { ArtifactReference, ArtifactViewerOptions } from './index.js';
 import type { ConfigManifest } from '../tools/contracts.js';
+import type { ArtifactGroupReference } from '../contracts.js';
 import { createReviewTools, toToolContent } from '../tools/runner.js';
 import { packageVersion } from '../runtime-paths.js';
 
 const object = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === 'object' && !Array.isArray(value);
 const errorMessage = (error: unknown): string => error instanceof Error ? error.message : 'Artifact viewer unavailable';
-interface ArtifactManifest extends ArtifactViewerOptions { auditPath?: string; configManifest?: ConfigManifest; runDir?: string; criticId?: string }
+interface ArtifactManifest extends ArtifactViewerOptions { auditPath?: string; configManifest?: ConfigManifest; runDir?: string; criticId?: string; artifactGroups?: ArtifactGroupReference[] }
 interface McpRequest { jsonrpc: '2.0'; id?: unknown; method: string; params?: unknown }
 
 function artifactReference(value: unknown): value is ArtifactReference {
@@ -18,10 +19,11 @@ function artifactReference(value: unknown): value is ArtifactReference {
 function parseManifest(value: unknown): ArtifactManifest {
   if (!object(value) || typeof value.worktreePath !== 'string' || !Array.isArray(value.artifacts) || !value.artifacts.every(artifactReference) ||
       (value.artifactTypes !== undefined && !object(value.artifactTypes)) || (value.auditPath !== undefined && typeof value.auditPath !== 'string') ||
-      (value.runDir !== undefined && typeof value.runDir !== 'string') || (value.criticId !== undefined && typeof value.criticId !== 'string') || (value.configManifest !== undefined && !object(value.configManifest))) {
+      (value.runDir !== undefined && typeof value.runDir !== 'string') || (value.criticId !== undefined && typeof value.criticId !== 'string') || (value.configManifest !== undefined && !object(value.configManifest)) ||
+      (value.artifactGroups !== undefined && (!Array.isArray(value.artifactGroups) || !value.artifactGroups.every(group => object(group) && typeof group.id === 'string' && Array.isArray(group.members) && group.members.every(member => typeof member === 'string'))))) {
     throw new Error('Invalid Artifact MCP manifest');
   }
-  return { worktreePath: value.worktreePath, artifacts: value.artifacts, artifactTypes: value.artifactTypes, auditPath: value.auditPath, configManifest: value.configManifest as ConfigManifest | undefined, runDir: value.runDir, criticId: value.criticId };
+  return { worktreePath: value.worktreePath, artifacts: value.artifacts, artifactTypes: value.artifactTypes, auditPath: value.auditPath, configManifest: value.configManifest as ConfigManifest | undefined, runDir: value.runDir, criticId: value.criticId, artifactGroups: value.artifactGroups as ArtifactGroupReference[] | undefined };
 }
 function parseRequest(line: string): McpRequest {
   if (Buffer.byteLength(line) > 64 * 1024) throw new Error('Request too large');

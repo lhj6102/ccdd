@@ -7,7 +7,7 @@ import { prepareReviewRequests, readStoredArtifactScope } from '../src/requester
 import { createBroker } from '../src/broker/index.js';
 import { validateArtifactType, toolDescription } from '../src/artifacts/types.js';
 import { fingerprintWorkspace, prepareWorkspace, removeOwnedWorkspaceTree } from '../src/workspaces/index.js';
-import type { RepoConfig } from '../src/contracts.js';
+import type { RepoConfig, ArtifactDefinition } from '../src/contracts.js';
 
 async function fixture(t: TestContext) {
   const root = await mkdtemp(join(tmpdir(), 'ccdd-requester-'));
@@ -18,7 +18,7 @@ async function fixture(t: TestContext) {
   await writeFile(join(repoPath, 'why.md'), 'Why');
   await writeFile(join(repoPath, 'spec.md'), 'Spec');
   await writeFile(join(repoPath, 'tests', 'rank.test.mjs'), '');
-  const config: RepoConfig = {
+  const config: Omit<RepoConfig, 'artifacts'> & { artifacts: Record<string, ArtifactDefinition> } = {
     artifacts: { why: { type: 'markdown', path: 'why.md', basis: true }, spec: { type: 'markdown', path: 'spec.md' }, tests: { type: 'code', path: 'tests' } },
     artifactTypes: { markdown: { viewer: 'text', agentTools: { read: {} }, humanTools: { read: {} } }, code: { viewer: 'files', agentTools: { list: {}, read: {} }, humanTools: { list: {}, read: {} } } },
     critics: [

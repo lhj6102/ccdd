@@ -5,7 +5,8 @@ import { join, resolve } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { createArtifactViewer, createAuditedArtifactTools, type ArtifactReference } from '../artifacts/index.js';
 import { createHumanArtifactTools } from '../artifacts/human.js';
-import type { ReviewToolCall } from '../contracts.js';
+import type { ArtifactGroupReference, ReviewToolCall } from '../contracts.js';
+import { isArtifactGroup, resolveArtifactScope } from '../artifacts/groups.js';
 import type { ConfigManifest, JsonSchema, ToolMetadata, ToolResult } from './contracts.js';
 import { metadata, object, jsonCopy, validateArguments } from './schema.js';
 import { openToolHost } from './host.js';
@@ -33,6 +34,7 @@ export interface ReviewToolsOptions {
   worktreePath:string; artifacts:readonly ArtifactReference[]; artifactTypes?:Readonly<Record<string,unknown>>;
   configManifest?:ConfigManifest; audience:'agent'|'human'; runDir?:string; signal?:AbortSignal;
   criticId?: string;
+  artifactGroups?: readonly ArtifactGroupReference[];
   onCall?:(call:ReviewToolCall)=>void|Promise<void>;
 }
 export function describeReviewTools({artifacts,configManifest,audience}:{artifacts:readonly ArtifactReference[];configManifest:ConfigManifest;audience:'agent'|'human'}):ReviewToolDefinition[] {
@@ -123,9 +125,10 @@ export async function createReviewTools(options:ReviewToolsOptions):Promise<Revi
     if(!isDeepStrictEqual(host.config.configManifest,configManifest)||!isDeepStrictEqual(host.config.artifactTypes,artifactTypes))throw Object.assign(new Error('Recorded tool manifest does not match this snapshot configuration.'),{code:'WORKSPACE_ARTIFACT_MISMATCH'});
     if(options.criticId!==undefined){
       const critic=host.config.critics.find(value=>value.id===options.criticId);
-      if(!critic||critic.profile.kind!==audience||!isDeepStrictEqual([critic.target,...critic.deps],artifacts.map(artifact=>artifact.id)))throw Object.assign(new Error('Recorded Artifact scope does not match its Critic in the snapshot.'),{code:'WORKSPACE_ARTIFACT_MISMATCH'});
+      const expected=critic?resolveArtifactScope(host.config.artifacts,[critic.target,...critic.deps]):undefined;
+      if(!critic||critic.profile.kind!==audience||!isDeepStrictEqual(expected?.artifacts,artifacts)||!isDeepStrictEqual(expected?.artifactGroups??[],options.artifactGroups??[]))throw Object.assign(new Error('Recorded Artifact scope does not match its Critic in the snapshot.'),{code:'WORKSPACE_ARTIFACT_MISMATCH'});
     }
-    for(const artifact of artifacts){const saved=host.config.artifacts[artifact.id];if(!saved||saved.path!==artifact.path||saved.type!==artifact.type)throw Object.assign(new Error('Recorded Artifact does not match its snapshot.'),{code:'WORKSPACE_ARTIFACT_MISMATCH'});}
+    for(const artifact of artifacts){const saved=host.config.artifacts[artifact.id];if(!saved||isArtifactGroup(saved)||saved.path!==artifact.path||saved.type!==artifact.type)throw Object.assign(new Error('Recorded Artifact does not match its snapshot.'),{code:'WORKSPACE_ARTIFACT_MISMATCH'});}
     const base=options.runDir?resolve(options.runDir):await mkdtemp(join(tmpdir(),'ccdd-tools-'));
     await mkdir(base,{recursive:true});const actualBase=await realpath(base);if(within(root,actualBase))throw new Error('Tool output must be outside reviewed input.');
     const outputDir=await mkdtemp(join(actualBase,'tool-output-')),temporary=join(outputDir,'.tmp');

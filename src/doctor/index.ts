@@ -53,7 +53,7 @@ async function inspectViewers(request: ReviewEnvelope, worktreePath: string, sig
   if (request.configManifest) {
     // Runtime has its own path/startup contract and requires no Agent/Human tools.
     if (request.profile.kind === 'runtime') return { toolNames: [], toolsExecuted: false, artifactPathsVerified: true };
-    const registry = await createReviewTools({ worktreePath, artifacts: request.artifacts, artifactTypes: request.artifactTypes, configManifest: request.configManifest, criticId: request.criticId, audience: request.profile.kind, signal, runDir });
+    const registry = await createReviewTools({ worktreePath, artifacts: request.artifacts, artifactGroups: request.artifactGroups, artifactTypes: request.artifactTypes, configManifest: request.configManifest, criticId: request.criticId, audience: request.profile.kind, signal, runDir });
     try {
       const checks = await registry.preflight();
       const failed = checks.filter(check => !check.ok);

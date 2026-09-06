@@ -64,6 +64,28 @@ export default defineConfig(() => ({
 - `--critic ID`는 참조 Artifact의 통과를 기다리지 않고 해당 Critic만 진단합니다. 나머지 Critic들은 이번 실행에 포함되지 않은 것으로 표시합니다. 같은 대상에 다른 필수 Critic이 있다면 하나의 GREEN으로 Artifact 전체가 GREEN이 되지 않습니다.
 - 자기 참조, 중복 deps, 알 수 없는 Artifact, 순환 관계는 접수 전에 거부합니다.
 
+## Artifact 그룹
+
+현재 소스는 개별 `ArtifactDefinition`과 ID 참조로 묶는 `ArtifactGroupDefinition`을 함께 지원합니다. 이 기능은 기존 v1.0.0 배포 파일에는 없으며, [이미지·그룹 예제](../examples/artifact-groups/README.md)의 소스 빌드 설치 절차로 확인할 수 있습니다.
+
+```ts
+const artifacts = {
+  effect: { type: 'markdown', path: 'effect.md' },
+  preview: { type: 'image', path: 'preview.png' },
+  explosion: { kind: 'group', members: ['effect', 'preview'] },
+};
+```
+
+그룹에는 `type`·`path`가 없고 구성원은 독립 ID를 유지합니다. 다른 그룹을 구성원으로 참조할 수도 있습니다. 비어 있는 목록, 중복·미등록 구성원, 자기 참조와 재귀 구성 순환은 거부합니다. 구성 관계 검증과 Critic 의존성 DAG 검증은 별개입니다.
+
+- `target: 'explosion'`은 그룹 전체를 평가하고, `target: 'preview'`는 이미지 하나를 평가합니다. 그룹을 `deps`나 `basis: true`로 사용하는 규칙도 개별 Artifact와 같습니다.
+- 그룹의 판정은 그 그룹을 직접 평가하는 모든 Critic의 결과로 결정됩니다. 그룹 통과가 멤버를 통과시키지 않으며, 멤버들이 모두 통과해도 그룹은 자동 통과하지 않습니다.
+- `members`는 함께 관측할 구성입니다. 실행 순서나 선행 판정을 요구하지 않습니다. 이미지 검토 후 그룹을 평가하려면 그룹 Critic에 `deps: ['preview']`를 명시합니다.
+- 요청은 대상·참조 그룹을 재귀적으로 펼친 leaf Artifact만 도구에 연결합니다. 공유 멤버는 한 번만 제공하며 `read_effect`, `view_image_preview`처럼 원래 ID를 유지합니다. 멤버의 다른 Critic이 가진 `deps`까지 관측 범위를 넓히지 않습니다.
+- Agent/Human 도구는 모든 leaf에 준비되어야 합니다. Agent는 제공된 모든 leaf의 콘텐츠를 관측해야 하며 한 멤버의 관측으로 그룹 전체를 대신할 수 없습니다.
+
+`tools check --artifact explosion --for agent`는 그룹 구성원의 도구를 검사합니다. 실제 실행은 `--artifact preview --tool view_image --execute`처럼 leaf와 도구를 선택합니다. 그룹 참조 `{explosion}`은 Agent에게 멤버별 실제 도구 목록으로, Human에게 멤버의 도구 선택 버튼으로 제공됩니다.
+
 ## Kanban과 Graph
 
 Kanban은 ReviewRequest를 요청·진행 중·성공·실패로 보여줍니다. Graph는 하나의 프로젝트와 검증 실행을 선택해 그 Run의 snapshot에 고정된 Artifact 정의와 판정을 보여줍니다. 프로젝트·실행을 선택한 상태는 View 전환 시 유지합니다.
@@ -71,6 +93,8 @@ Kanban은 ReviewRequest를 요청·진행 중·성공·실패로 보여줍니다
 Graph의 노드는 Artifact이며 각 Critic을 선 아이콘 하나로 표시합니다. Agent는 공통 Agent 아이콘, Human은 사람, Runtime은 터미널로 구분하며 같은 종류의 Critic도 각각 표시합니다. 아이콘 선은 요청·대기 회색, 리뷰 중 파랑, 성공 초록, 실패 빨강입니다. Human은 claim 이후 리뷰 중으로 표시합니다. 아이콘에 마우스를 올리거나 키보드로 초점을 맞추면 Critic 이름과 정확한 상태를 확인하고, 누르면 기존 요청 상세를 엽니다. 평가 실패와 실행 오류는 설명으로 구분하며, 이번 실행에 포함되지 않은 Critic은 점선과 비활성 상태로 표시합니다.
 
 캔버스를 이동·확대하거나 전체 보기로 Artifact 관계를 살펴볼 수 있습니다. 상태 갱신 중에는 노드 위치와 확대 수준을 유지합니다. 동일한 Artifact 간선은 합치되 관계를 사용하는 Critic 목록을 보존합니다. 노드를 선택하면 평가 Critic들과 각자의 참조 Artifact를 확인할 수 있습니다. Human claim·도구 실행·판정 제출은 Kanban과 같은 요청 상세를 사용합니다.
+
+그룹 노드는 그룹 표시와 구성원 수를 보여줍니다. 선택하면 구성원과 각자의 판정을 확인하고 해당 노드로 이동할 수 있으며, 멤버에서도 소속 그룹을 찾을 수 있습니다. 구성 관계를 검증 의존 간선으로 그리지 않습니다. 그룹과 멤버의 판정은 각각 표시됩니다.
 
 세 실행 종류의 아이콘과 다중 Critic을 재현하는 입력은 [GraphView 개발 검증용 프로젝트](monitor-graph-demo.md)에 있습니다.
 

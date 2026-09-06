@@ -89,7 +89,7 @@ export async function invokePi({ request, worktreePath, runDir, schema, makeProm
   };
   try {
     checkAbort();
-    const activeRegistry = await createReviewTools({ worktreePath, artifacts: request.artifacts, artifactTypes: request.artifactTypes, configManifest: request.configManifest, criticId: request.criticId, audience: 'agent', runDir, signal: controller.signal, onCall: call => onEvent({ type: 'artifact.tool.called', ...call }) });
+    const activeRegistry = await createReviewTools({ worktreePath, artifacts: request.artifacts, artifactGroups: request.artifactGroups, artifactTypes: request.artifactTypes, configManifest: request.configManifest, criticId: request.criticId, audience: 'agent', runDir, signal: controller.signal, onCall: call => onEvent({ type: 'artifact.tool.called', ...call }) });
     registry = activeRegistry;
     const tools: AgentTool[] = activeRegistry.tools.map(tool => ({
       name: tool.name, label: tool.name, description: tool.description,

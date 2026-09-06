@@ -1,13 +1,15 @@
-import type { ArtifactDefinition, CriticProfile, RepoConfig, ReviewEnvelope, ReviewStatus } from '../contracts.js';
+import type { ArtifactEntryDefinition, CriticProfile, RepoConfig, ReviewEnvelope, ReviewStatus } from '../contracts.js';
+import { isArtifactGroup, validateArtifactDefinitions } from '../artifacts/groups.js';
 
 export interface GraphCriticDefinition { id: string; title: string; target: string; deps: string[]; kind: CriticProfile['kind'] }
-export interface GraphDefinition { version: 1; artifacts: Record<string, ArtifactDefinition>; critics: GraphCriticDefinition[] }
+export interface GraphDefinition { version: 1; artifacts: Record<string, ArtifactEntryDefinition>; critics: GraphCriticDefinition[] }
 export type ArtifactStatus = 'BASIS' | 'UNREVIEWED' | ReviewStatus;
 export interface GraphRequest { id: string; criticId: string; status: ReviewStatus; claimedBy?: string | null; blockedReason?: string | null }
-export interface GraphArtifactState {
-  id: string; type: string; path: string; basis: boolean; status: ArtifactStatus;
+interface GraphArtifactStateBase {
+  id: string; basis: boolean; status: ArtifactStatus;
   criticIds: string[]; passed: number; total: number; included: number;
 }
+export type GraphArtifactState = GraphArtifactStateBase & ({ kind?: 'artifact'; type: string; path: string } | { kind: 'group'; members: string[] });
 export interface GraphCriticState extends GraphCriticDefinition { requestId: string | null; status: ReviewStatus | null; claimedBy: string | null; blockedReason: string | null }
 export interface GraphProjection { artifacts: GraphArtifactState[]; critics: GraphCriticState[]; edges: { source: string; target: string; criticIds: string[] }[] }
 
@@ -18,10 +20,8 @@ const statuses = new Set(['BLOCKED', 'QUEUED', 'RUNNING', 'WAITING_HUMAN', 'GREE
 /** Validate only the immutable graph metadata; no payloads, providers or workspace reads. */
 export function validateGraphDefinition(value: unknown): asserts value is GraphDefinition {
   if (!object(value) || value.version !== 1 || !object(value.artifacts) || !Array.isArray(value.critics) || !value.critics.length || value.critics.length > 32) throw new Error('Invalid Artifact graph definition.');
+  validateArtifactDefinitions(value.artifacts);
   const artifacts = value.artifacts;
-  for (const [id, artifact] of Object.entries(artifacts)) {
-    if (!identifier.test(id) || !object(artifact) || typeof artifact.type !== 'string' || !artifact.type || typeof artifact.path !== 'string' || !artifact.path || (artifact.basis !== undefined && typeof artifact.basis !== 'boolean')) throw new Error(`Invalid graph Artifact: ${id}`);
-  }
   const seen = new Set<string>();
   const targets = new Set<string>();
   const adjacency = new Map(Object.keys(artifacts).map(id => [id, new Set<string>()]));
@@ -31,9 +31,9 @@ export function validateGraphDefinition(value: unknown): asserts value is GraphD
     seen.add(critic.id); targets.add(critic.target);
     for (const dep of critic.deps as string[]) adjacency.get(dep)!.add(critic.target);
   }
-  for (const id of targets) if ((artifacts[id] as ArtifactDefinition).basis) throw new Error(`Basis Artifact ${id} cannot also be a Critic target.`);
+  for (const id of targets) if (artifacts[id].basis) throw new Error(`Basis Artifact ${id} cannot also be a Critic target.`);
   for (const critic of value.critics as unknown as GraphCriticDefinition[]) {
-    for (const dep of critic.deps) if (!targets.has(dep) && !(artifacts[dep] as ArtifactDefinition).basis) throw new Error(`Dependency Artifact ${dep} has no Critic. Declare basis: true if it is an accepted review basis.`);
+    for (const dep of critic.deps) if (!targets.has(dep) && !artifacts[dep].basis) throw new Error(`Dependency Artifact ${dep} has no Critic. Declare basis: true if it is an accepted review basis.`);
   }
   const visiting = new Set<string>(), visited = new Set<string>();
   const visit = (id: string): void => {
@@ -47,9 +47,10 @@ export function validateGraphDefinition(value: unknown): asserts value is GraphD
 }
 
 export function createGraphDefinition(config: RepoConfig): GraphDefinition {
+  validateArtifactDefinitions(config.artifacts);
   const graph: GraphDefinition = {
     version: 1,
-    artifacts: Object.fromEntries(Object.entries(config.artifacts).map(([id, artifact]) => [id, { type: artifact.type, path: artifact.path, ...(artifact.basis === undefined ? {} : { basis: artifact.basis }) }])),
+    artifacts: Object.fromEntries(Object.entries(config.artifacts).map(([id, artifact]) => [id, { ...(isArtifactGroup(artifact) ? { kind: 'group' as const, members: [...artifact.members] } : { type: artifact.type, path: artifact.path }), ...(artifact.basis === undefined ? {} : { basis: artifact.basis }) }])),
     critics: config.critics.map(critic => ({ id: critic.id, title: critic.title, target: critic.target, deps: [...critic.deps], kind: critic.profile.kind })),
   };
   validateGraphDefinition(graph);
@@ -80,7 +81,7 @@ export function projectGraph(graph: GraphDefinition, requests: readonly GraphReq
       if (passed === own.length) status = 'GREEN';
       else status = (['ERROR', 'RED', 'RUNNING', 'WAITING_HUMAN', 'QUEUED', 'BLOCKED'] as const).find(candidate => own.some(critic => critic.status === candidate)) ?? 'UNREVIEWED';
     }
-    return { id, type: artifact.type, path: artifact.path, basis: artifact.basis === true, status, criticIds: own.map(critic => critic.id), passed, total: own.length, included };
+    return { id, ...(isArtifactGroup(artifact) ? { kind: 'group' as const, members: [...artifact.members] } : { type: artifact.type, path: artifact.path }), basis: artifact.basis === true, status, criticIds: own.map(critic => critic.id), passed, total: own.length, included };
   });
   const edges = new Map<string, GraphProjection['edges'][number]>();
   for (const critic of critics) for (const source of critic.deps) {

@@ -322,6 +322,31 @@ function artifactReferences(value: unknown): ArtifactReference[] {
   });
 }
 
+/** Project only saved composition metadata. Observation must not load config or execute tools. */
+function artifactGroupReferences(value: unknown, artifacts: ArtifactReference[]): NonNullable<MonitorDetail['artifactGroups']> | undefined {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value)) throw storageError();
+  const identifier = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
+  const groups = value.map(item => {
+    if (!object(item) || typeof item.id !== 'string' || !identifier.test(item.id) || !Array.isArray(item.members) || !item.members.length
+        || item.members.some(member => typeof member !== 'string' || !identifier.test(member)) || new Set(item.members).size !== item.members.length) throw storageError();
+    return { id: item.id, members: [...item.members] as string[] };
+  });
+  const leaves = new Set(artifacts.map(artifact => artifact.id)), byId = new Map(groups.map(group => [group.id, group]));
+  if (byId.size !== groups.length || groups.some(group => leaves.has(group.id))) throw storageError();
+  const visited = new Set<string>(), visiting = new Set<string>();
+  const visit = (id: string): void => {
+    if (leaves.has(id) || visited.has(id)) return;
+    const group = byId.get(id);
+    if (!group || visiting.has(id)) throw storageError();
+    visiting.add(id);
+    for (const member of group.members) visit(member);
+    visiting.delete(id); visited.add(id);
+  };
+  for (const group of groups) visit(group.id);
+  return groups;
+}
+
 function pagination(query: { limit?: number; offset?: number }): { limit: number; offset: number } {
   const limit = query.limit ?? 50, offset = query.offset ?? 0;
   if (!Number.isSafeInteger(limit) || limit < 1 || limit > 200 || !Number.isSafeInteger(offset) || offset < 0) throw new Error('목록 조회 범위가 올바르지 않습니다.');
@@ -396,9 +421,11 @@ export function createMonitorStore(options: MonitorSources = {}) {
         const outcome = object(raw.result) && typeof raw.result.summary === 'string' && Array.isArray(raw.result.evidence) && raw.result.evidence.every(item => typeof item === 'string')
           ? { summary: text(raw.result.summary, 12_000), evidence: (raw.result.evidence as string[]).slice(0, 100).map(item => text(item, 4_000)) } : null;
         const request = (await projectRequests(snapshot, new Map(), requestId))[0];
+        const artifacts = artifactReferences(raw.artifacts), artifactGroups = artifactGroupReferences(raw.artifactGroups, artifacts);
         return {
           request, instruction: text(string(raw.payload.instruction), 24_000), profile: profile(raw.profile), result: outcome,
-          error: typeof raw.error === 'string' ? text(raw.error, 2_000) : null, timeline: timeline(header, snapshot.events), artifacts: artifactReferences(raw.artifacts),
+          error: typeof raw.error === 'string' ? text(raw.error, 2_000) : null, timeline: timeline(header, snapshot.events), artifacts,
+          ...(artifactGroups === undefined ? {} : { artifactGroups }),
         };
       } catch { return null; }
     },

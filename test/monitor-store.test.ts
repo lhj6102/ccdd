@@ -299,6 +299,56 @@ test('kanban lanes have independent counts and pagination with claimed Human req
   await assert.rejects(store.overview({ lane: 'unknown' as 'requested' }));
 });
 
+test('group observation projects saved composition without new dependency edges or source access', async t => {
+  const f = await fixture(t), hash = 'a'.repeat(64);
+  const graph: GraphDefinition = { version: 1, artifacts: {
+    effect: { type: 'vfx', path: 'effect.vfx' }, preview: { type: 'image', path: 'preview.png' }, published: { type: 'text', path: 'published.md' },
+    bundle: { kind: 'group', members: ['effect', 'preview'] },
+  }, critics: [
+    { id: 'holistic', title: '전체 검토', target: 'bundle', deps: [], kind: 'human' },
+    { id: 'preview-check', title: 'Preview 검토', target: 'preview', deps: [], kind: 'runtime' },
+    { id: 'publish-check', title: '게시 검토', target: 'published', deps: ['bundle'], kind: 'runtime' },
+  ] };
+  const artifacts = [{ id: 'effect', type: 'vfx', path: 'effect.vfx' }, { id: 'preview', type: 'image', path: 'preview.png' }];
+  const requests = graph.critics.map(critic => f.request(critic.id, {
+    runId: 'group-run', snapshotHash: hash, criticId: critic.id, target: critic.target, deps: critic.deps,
+    status: critic.id === 'preview-check' ? 'RED' : 'GREEN', profile: critic.kind === 'human' ? { kind: 'human' } : { kind: 'runtime', command: 'node', args: ['--test', 'test.mjs'] },
+    artifacts: critic.id === 'preview-check' ? [artifacts[1]] : critic.id === 'publish-check' ? [{ id: 'published', type: 'text', path: 'published.md' }, ...artifacts] : artifacts,
+    ...(critic.id === 'preview-check' ? {} : { artifactGroups: [{ id: 'bundle', members: ['effect', 'preview'], ...{ privateData: 'GROUP_PRIVATE_SENTINEL' } }] }),
+  }));
+  const state = await f.state('group', requests, { runData: { 'group-run': { snapshotHash: hash, graph, scope: { kind: 'graph' } } } });
+  const dbPath = path.join(state.stateDir, 'broker.sqlite'), before = await fs.readFile(dbPath);
+  const store = createMonitorStore({ stateDirs: [state.stateDir] });
+  const detail = present(await store.detail(state.id, 'holistic'));
+  assert.deepEqual(detail.artifactGroups, [{ id: 'bundle', members: ['effect', 'preview'] }]);
+  assert.doesNotMatch(JSON.stringify(detail), /GROUP_PRIVATE_SENTINEL/);
+  const projection = present((await store.graph(state.id, 'group-run'))?.graph);
+  const bundle = present(projection.artifacts.find(artifact => artifact.id === 'bundle'));
+  assert.equal(bundle.kind, 'group');
+  assert.deepEqual(bundle.kind === 'group' ? bundle.members : null, ['effect', 'preview']);
+  assert.equal(bundle.status, 'GREEN');
+  assert.equal(projection.artifacts.find(artifact => artifact.id === 'preview')?.status, 'RED');
+  assert.equal(projection.artifacts.find(artifact => artifact.id === 'effect')?.status, 'UNREVIEWED');
+  assert.deepEqual(projection.edges, [{ source: 'bundle', target: 'published', criticIds: ['publish-check'] }]);
+  assert.deepEqual(await fs.readFile(dbPath), before, 'Observation must leave the database unchanged');
+  await assert.rejects(fs.stat(state.repoPath), { code: 'ENOENT' });
+});
+
+test('group detail rejects cyclic and out-of-scope saved composition while retaining legacy records', async t => {
+  const f = await fixture(t);
+  const state = await f.state('invalid-groups', [
+    f.request('legacy'),
+    f.request('nested', { artifactGroups: [{ id: 'outer', members: ['inner', 'spec'] }, { id: 'inner', members: ['spec'] }] }),
+    f.request('outside', { artifactGroups: [{ id: 'bundle', members: ['other'] }] }),
+    f.request('cycle', { artifactGroups: [{ id: 'first', members: ['second'] }, { id: 'second', members: ['first'] }] }),
+    f.request('duplicate', { artifactGroups: [{ id: 'bundle', members: ['spec', 'spec'] }] }),
+  ]);
+  const store = createMonitorStore({ stateDirs: [state.stateDir] });
+  assert.equal((await store.detail(state.id, 'legacy'))?.artifactGroups, undefined);
+  assert.equal((await store.detail(state.id, 'nested'))?.artifactGroups?.length, 2);
+  for (const id of ['outside', 'cycle', 'duplicate']) assert.equal(await store.detail(state.id, id), null);
+});
+
 const graphDefinition = (): GraphDefinition => ({
   version: 1,
   artifacts: { why: { type: 'text', path: 'why.md', basis: true }, spec: { type: 'text', path: 'spec.md' }, tests: { type: 'code', path: 'tests' }, implementation: { type: 'code', path: 'src' }, unused: { type: 'text', path: 'notes.md' } },

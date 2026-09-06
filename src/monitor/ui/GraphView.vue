@@ -29,11 +29,15 @@ const artifacts = computed(() => new Map(graph.value?.artifacts.map(artifact => 
 const requests = computed(() => new Map(data.value?.requests.map(request => [request.id, request]) ?? []));
 const selectedArtifact = computed(() => artifacts.value.get(selectedArtifactId.value));
 const selectedCritics = computed(() => graph.value?.critics.filter(critic => critic.target === selectedArtifactId.value) ?? []);
+const selectedMembers = computed(() => selectedArtifact.value?.kind === 'group'
+  ? selectedArtifact.value.members.flatMap(id => artifacts.value.get(id) ? [artifacts.value.get(id)!] : []) : []);
+const containingGroups = computed(() => graph.value?.artifacts.filter(artifact => artifact.kind === 'group' && artifact.members.includes(selectedArtifactId.value)) ?? []);
+const groupCount = computed(() => graph.value?.artifacts.filter(artifact => artifact.kind === 'group').length ?? 0);
 const partial = computed(() => data.value?.run.scope?.kind === 'critic');
 // Request state does not affect layout. Keeping this key stable preserves the user's viewport during polling.
 const topologyKey = computed(() => graph.value ? JSON.stringify([
   props.projectId, props.runId, vertical.value,
-  [...graph.value.artifacts].sort((a, b) => a.id.localeCompare(b.id)).map(artifact => [artifact.id, [...artifact.criticIds].sort()]),
+  [...graph.value.artifacts].sort((a, b) => a.id.localeCompare(b.id)).map(artifact => [artifact.id, artifact.kind ?? 'artifact', [...artifact.criticIds].sort()]),
   [...graph.value.edges].sort((a, b) => a.source.localeCompare(b.source) || a.target.localeCompare(b.target)).map(edge => [edge.source, edge.target, [...edge.criticIds].sort()]),
 ]) : '');
 const nodes = computed<Node<ArtifactNodeData>[]>(() => drawing.value?.nodes.flatMap(position => {
@@ -67,7 +71,7 @@ function artifactLabel(artifact: Artifact): string {
   if (artifact.status === 'BLOCKED' && graph.value?.critics.some(critic => critic.target === artifact.id && criticBlocked(critic))) return '진행 불가';
   return { BASIS: '기준 Artifact', UNREVIEWED: '미평가', BLOCKED: '선행 리뷰 대기', QUEUED: '실행 대기', RUNNING: '실행 중', WAITING_HUMAN: 'Human 대기', GREEN: '통과', RED: '기준 미충족', ERROR: '실행 오류' }[artifact.status];
 }
-function artifactAccessibleLabel(artifact: Artifact): string { return `${artifact.id}, ${artifactLabel(artifact)}, ${artifact.total ? `Critic ${artifact.passed}/${artifact.total} 통과` : '평가 Critic 없음'}`; }
+function artifactAccessibleLabel(artifact: Artifact): string { return `${artifact.id}${artifact.kind === 'group' ? `, 그룹, 구성원 ${artifact.members.length}개` : ''}, ${artifactLabel(artifact)}, ${artifact.total ? `Critic ${artifact.passed}/${artifact.total} 통과` : '평가 Critic 없음'}`; }
 function criticBlocked(critic: Critic): boolean {
   return Boolean(critic.requestId && requests.value.get(critic.requestId)?.blockedByFailure);
 }
@@ -181,7 +185,7 @@ defineExpose({ refresh });
     <p v-else-if="layingOut && !drawing" class="graph-placeholder">Artifact 관계를 배치하는 중…</p>
     <template v-else-if="graph && drawing">
       <header class="graph-context">
-        <span>Artifact {{ graph.artifacts.length }}개 <span class="graph-separator">·</span> Critic {{ graph.critics.length }}개</span>
+        <span>Artifact {{ graph.artifacts.length - groupCount }}개 <template v-if="groupCount"><span class="graph-separator">·</span> 그룹 {{ groupCount }}개 </template><span class="graph-separator">·</span> Critic {{ graph.critics.length }}개</span>
         <span class="muted"><span v-if="partial" class="graph-partial">선택 Critic 실행</span>snapshot <span :title="data?.run.snapshotHash ?? undefined">{{ data?.run.snapshotHash?.slice(0, 10) ?? '확인 불가' }}</span></span>
       </header>
       <div class="graph-viewport" role="region" aria-label="Artifact 관계도. 드래그하여 이동하고 확대·축소 버튼으로 크기를 조절할 수 있습니다.">
@@ -199,7 +203,9 @@ defineExpose({ refresh });
       </div>
       <div class="graph-legend"><span>참조 Artifact <span aria-hidden="true">→</span><span class="sr-only">에서</span> 평가 대상</span><span class="graph-state-legend"><span class="requested">요청</span><span class="running">리뷰 중</span><span class="success">성공</span><span class="failure">실패</span></span></div>
       <section v-if="selectedArtifact" class="graph-detail" :aria-label="`${selectedArtifact.id} 평가 Critic`">
-        <header class="graph-detail-heading"><div><h2>{{ selectedArtifact.id }} <span>평가 Critic</span></h2><p>{{ selectedArtifact.path }} <span class="graph-separator">·</span> {{ selectedArtifact.type }}</p></div><span class="graph-detail-count">{{ selectedArtifact.total ? `${selectedArtifact.passed} / ${selectedArtifact.total} 통과` : '평가 Critic 없음' }}</span></header>
+        <header class="graph-detail-heading"><div><h2>{{ selectedArtifact.id }} <span>평가 Critic</span></h2><p v-if="selectedArtifact.kind === 'group'">Artifact 그룹 <span class="graph-separator">·</span> 구성원 {{ selectedArtifact.members.length }}개</p><p v-else>{{ selectedArtifact.path }} <span class="graph-separator">·</span> {{ selectedArtifact.type }}</p></div><span class="graph-detail-count">{{ selectedArtifact.total ? `${selectedArtifact.passed} / ${selectedArtifact.total} 통과` : '평가 Critic 없음' }}</span></header>
+        <div v-if="selectedMembers.length" class="graph-members" aria-label="그룹 구성원"><span>구성원</span><button v-for="member in selectedMembers" :key="member.id" type="button" class="graph-member" @click="selectedArtifactId = member.id"><strong>{{ member.id }}</strong><span v-if="member.kind === 'group'">그룹</span><span class="card-status" :class="member.status.toLowerCase()">{{ artifactLabel(member) }}</span></button><p>그룹과 각 구성원의 판정은 개별적으로 집계됩니다.</p></div>
+        <div v-if="containingGroups.length" class="graph-members graph-memberships" aria-label="소속 그룹"><span>소속 그룹</span><button v-for="group in containingGroups" :key="group.id" type="button" class="graph-member" @click="selectedArtifactId = group.id">{{ group.id }}</button></div>
         <p v-if="!selectedCritics.length" class="graph-basis-note">이 Artifact를 평가하는 Critic이 등록되어 있지 않습니다.</p>
         <ul v-else class="graph-critic-list">
           <li v-for="critic in selectedCritics" :key="critic.id">

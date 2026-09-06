@@ -135,3 +135,39 @@ test('refocusing the same Human Artifact preserves selected custom tool argument
   view.showArtifactTools('outside'); await nextTick();
   assert.match(text(host), /spec · 제공된 도구/); assert.equal(calls, 0);
 });
+
+test('Human group references expose deduplicated scoped member tools and preserve claim gating', async t => {
+  browserGlobals(t);
+  const artifactGroups = [{ id: 'documents', members: ['spec', 'why'] }, { id: 'bundle', members: ['documents', 'spec'] }];
+  const instructionHost = node('root'), selected: string[] = [];
+  const instruction = mount(await component('ArtifactInstruction'), {
+    instruction: '검토: {bundle} 및 {outside}', artifacts: [{ id: 'spec' }, { id: 'why' }], artifactGroups,
+    tools: [tool('spec'), tool('why'), tool('outside')], active: true, onArtifact: (id: string) => selected.push(id),
+  }, instructionHost);
+  t.after(() => instruction.app.unmount());
+  const reference = matching(instructionHost, 'button', 'bundle');
+  reference.props.onClick(); assert.deepEqual(selected, ['bundle']);
+  assert.equal(all(instructionHost).filter(child => child.type === 'button').length, 1);
+  assert.match(text(instructionHost), /\{outside\}/);
+
+  const host = node('root'), requests: string[] = [];
+  const groupedDetail = (claimed: boolean): MonitorDetail => ({ ...detail(claimed, [tool('spec'), tool('why'), tool('outside')]), artifactGroups });
+  const props = reactive({ detail: groupedDetail(false), session: { reviewerId: 'me', csrfToken: 'csrf' }, sessionError: '',
+    onUpdated: (updated: MonitorDetail) => { props.detail = updated; } });
+  t.mock.method(globalThis, 'fetch', async (input: string | URL | Request) => {
+    const url = String(input); requests.push(url);
+    return new Response(JSON.stringify(url.endsWith('/claim') ? groupedDetail(true) : { result: { content: [{ type: 'launch', launched: true }] } }), { status: 200 });
+  });
+  const { app, view } = mount(await component('HumanReview'), props, host); t.after(() => app.unmount());
+  view.showArtifactTools('bundle'); await nextTick();
+  assert.equal(requests.length, 0); assert.match(text(host), /bundle · 제공된 도구/);
+  assert.match(text(host), /검토를 맡은 후/); assert.doesNotMatch(text(host), /outside/);
+  await matching(host, 'button', '맡아서 검토').props.onClick(); await nextTick();
+  view.showArtifactTools('bundle'); await nextTick();
+  const buttons = all(host).filter(child => child.type === 'button' && String(child.props.class).includes('artifact-choice'));
+  assert.deepEqual(buttons.map(text), ['spec · 열기', 'why · 열기']);
+  assert.equal(requests.length, 1, 'Choosing a group only focuses the provided tools');
+  matching(host, 'button', 'why · 열기').props.onClick();
+  await new Promise(resolve => setImmediate(resolve)); await nextTick();
+  assert.deepEqual(requests, ['/api/requests/project/request/claim', '/api/requests/project/request/tools/open_why']);
+});

@@ -1,6 +1,7 @@
 import path from 'node:path';
 import { lstat, readFile, readdir, realpath } from 'node:fs/promises';
 import { validateArtifactType } from '../artifacts/types.js';
+import { isArtifactGroup, validateArtifactDefinitions } from '../artifacts/groups.js';
 import { createGraphDefinition } from './graph.js';
 import type { RepoConfig } from '../contracts.js';
 import { openToolHost } from '../tools/host.js';
@@ -53,8 +54,9 @@ export async function readWorkspaceConfig(repoPath: string): Promise<{ config: R
     }
   };
   if (object(config) && object(config.artifacts)) {
+    validateArtifactDefinitions(config.artifacts);
     for (const artifact of Object.values(config.artifacts)) {
-      if (object(artifact)) { await walk(validateRelativePath(artifact.path)); }
+      if (!isArtifactGroup(artifact)) await walk(validateRelativePath(artifact.path));
     }
   }
   validateConfig(config, tree);
@@ -70,8 +72,10 @@ export function validateConfig(config: unknown, tree: WorkspaceTreeEntry[]): ass
     validateArtifactType(type, definition);
     if (object(definition) && definition.custom && (!object(config.configManifest) || !object(config.configManifest.types) || !Object.hasOwn(config.configManifest.types,type))) throw new Error('Custom Artifact type requires a recorded tool manifest.');
   }
+  validateArtifactDefinitions(config.artifacts);
   for (const [id, artifact] of Object.entries(config.artifacts)) {
-    if (!identifier.test(id) || !object(artifact) || typeof artifact.type !== 'string' || !Object.hasOwn(config.artifactTypes, artifact.type) || (artifact.basis !== undefined && typeof artifact.basis !== 'boolean')) {
+    if (isArtifactGroup(artifact)) continue;
+    if (!Object.hasOwn(config.artifactTypes, artifact.type)) {
       throw new Error(`Invalid artifact definition or unknown type: ${id}`);
     }
     const artifactPath = validateRelativePath(artifact.path);
