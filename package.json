@@ -22,6 +22,7 @@
     "typecheck": "node node_modules/typescript/bin/tsc -p tsconfig.json --noEmit && npm run typecheck:ui",
     "test": "npm run build && node --test dist/test/*.test.js",
     "prepack": "npm run build",
+    "release": "node scripts/local-release.mjs",
     "demo:prepare": "npm run build && node dist/src/cli.js prepare-demo",
     "demo": "npm run build && node dist/src/cli.js run --demo --copy --wait"
   },

@@ -22,16 +22,26 @@ GitHub가 별도로 제공하는 Source code 압축 파일은 소스이며, 설�
 3. [설정 변경 사항](releases/v1.0.0.md#기존-설정에서-이전)을 반영하고 `npx ccdd tools check`로 등록한 도구를 확인합니다.
 4. 실제 Agent를 쓸 환경에서 `npx ccdd doctor`로 인증·Provider·모델 접근을 확인한 뒤 새 리뷰를 요청합니다. 실행 중인 모니터는 새 CLI로 다시 시작합니다.
 
-`tools check --execute`는 선택한 도구를 실제로 실행합니다. `doctor`는 실제 Provider를 호출하며 계정 사용량을 소비합니다. Release CI의 성공이 사용자의 인증·모델 권한이나 데스크톱 프로그램 설치를 보장하지는 않습니다.
+`tools check --execute`는 선택한 도구를 실제로 실행합니다. `doctor`는 실제 Provider를 호출하며 계정 사용량을 소비합니다. 배포 검증의 성공이 사용자의 인증·모델 권한이나 데스크톱 프로그램 설치를 보장하지는 않습니다.
 
 기존 데모를 다시 준비해도 그 안의 패키지를 자동 업그레이드하지 않습니다. 편집한 데모는 유지하고 `--demo-dir`로 새 빈 폴더를 지정하세요. [데모 안내](demo.md)에 Release tarball을 사용하는 전체 명령이 있습니다.
 
-## 자동 배포
+## 커밋을 지정하여 로컬에서 배포
 
-[release.yml](../.github/workflows/release.yml)이 `main`에 머지되면 자동 배포가 활성화됩니다. 이후 버전·패키지·Release 관련 파일이 `main`에서 변경되면 아직 게시되지 않은 패키지 버전으로 GitHub Release를 만듭니다. PR에서는 쓰기 권한 없이 검증하고 Release를 게시하지 않습니다. 필요하면 Actions의 **Run workflow**로 `main`에서 수동 실행할 수 있습니다.
+CCDD 소스 저장소에서 배포할 **40자리 커밋 SHA**를 명시합니다. Node 24 이상, Git, npm과 패키지 의존성을 설치할 네트워크 또는 로컬 캐시가 필요합니다. 게시는 기존 GitHub CLI(`gh`) 로그인을 사용하며 `origin` 저장소에 지정한 커밋이 있는지 확인합니다.
 
-검증은 Node 24와 Ubuntu에서 의존성 설치, 빌드·전체 테스트, 두 tarball 생성, 별도 프로젝트의 설치·실행 검사를 수행합니다. 통과한 파일만 게시 작업으로 전달합니다. 검증 작업은 `contents: read`, 게시 작업만 `contents: write`를 가지며 추가 Provider 인증키는 필요하지 않습니다.
+```sh
+# COMMIT_SHA를 배포할 40자리 커밋 SHA로 바꿉니다.
+npm run release -- --commit COMMIT_SHA --dry-run --output-dir /tmp/ccdd-v1.0.0-check
+npm run release -- --commit COMMIT_SHA --output-dir /tmp/ccdd-v1.0.0-release
+```
 
-`main`에서 게시된 같은 버전이 있으면 재빌드와 덮어쓰기를 건너뜁니다. PR 검증은 계속 수행합니다. 배포 파일을 수정하려면 두 패키지 버전을 함께 올려 새 Release를 만듭니다. 버전은 본체·기본 도구의 `package.json`과 lockfile에 일치하도록 반영하고, `docs/releases/v<버전>.md`에 릴리스 노트를 추가합니다. v1.0.0의 본문은 이 저장소의 [릴리스 노트](releases/v1.0.0.md)를 사용합니다.
+두 명령은 각각 실행할 수 있습니다. `--dry-run`은 전체 검증과 배포 파일 생성까지 수행하고 GitHub 인증을 요구하지 않습니다. 게시는 `--dry-run`을 뺀 명령으로 실행하며 해당 커밋을 다시 검증합니다. `--output-dir`는 선택 사항이고, 지정하면 저장소 밖의 비어 있는 디렉터리를 사용해야 합니다. 위 예시도 아직 사용하지 않은 경로를 선택하세요.
 
-OS 매트릭스 없이 Ubuntu에서 검증하며, 제한 시간은 검증 20분·게시 5분입니다. 작업 간 파일 보관은 1일로 제한합니다. 외부 LLM 호출, npm 게시, 주기적인 예약 실행은 없습니다. 실제 Actions 비용은 계정의 포함 사용량·요금제와 실행 시간에 따라 달라지며, 이 시간 제한이 매번 사용되는 실행 시간은 아닙니다.
+명령은 임시 clone을 만들고 지정한 커밋을 detached checkout합니다. 그곳에서 `npm ci`, 빌드·전체 테스트, 두 tarball 생성, 별도 프로젝트의 실제 설치·도구 실행·Runtime 검증을 수행합니다. 현재 작업 폴더의 미커밋 변경은 배포에 포함하지 않습니다. 검증이 통과하면 그 커밋에 버전 태그를 만들고 파일을 GitHub Release에 올립니다. 소스 커밋과 검증 환경은 `verification.json`, 파일 무결성은 `SHA256SUMS`에 기록됩니다.
+
+이미 게시된 같은 버전은 수정 없이 건너뜁니다. 태그가 다른 커밋을 가리키면 거부하며 태그를 이동하지 않습니다. 같은 커밋의 Draft가 남아 있으면 명령을 다시 실행해 게시를 재시도할 수 있습니다. 게시된 배포 파일을 변경하려면 두 패키지 버전을 함께 올리고 새 커밋으로 배포합니다.
+
+본체·기본 도구의 `package.json`과 lockfile 버전을 일치시키고, 해당 커밋에 `docs/releases/v<버전>.md`를 포함하세요. 그 문서가 Release 본문으로 사용됩니다. v1.0.0은 [이 릴리스 노트](releases/v1.0.0.md)를 사용합니다.
+
+빌드와 검증은 명령을 실행한 컴퓨터에서 수행하며 GitHub Actions를 사용하지 않습니다. 외부 LLM 호출이나 npm registry 게시도 없습니다. 따라서 이 배포 명령으로 Actions 실행 시간이나 Provider 사용량이 발생하지 않으며, 로컬 실행 시간과 의존성 다운로드가 필요합니다.

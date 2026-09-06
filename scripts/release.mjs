@@ -1,4 +1,4 @@
-import { appendFile, lstat, readFile, readdir } from 'node:fs/promises';
+import { lstat, readFile, readdir } from 'node:fs/promises';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { resolve } from 'node:path';
@@ -46,28 +46,35 @@ export async function readReleaseMetadata(root) {
   return { version, tag, notes, coreFile: `lhj6102-ccdd-${version}.tgz`, toolsFile: `lhj6102-ccdd-default-tools-${version}.tgz` };
 }
 
-function context(env, allowPullRequest) {
-  invariant(commitPattern.test(env.GITHUB_SHA ?? ''), 'GITHUB_SHA must be an exact commit SHA.');
-  invariant(repositoryPattern.test(env.GITHUB_REPOSITORY ?? ''), 'GITHUB_REPOSITORY must identify owner/repository.');
-  if (allowPullRequest && env.GITHUB_EVENT_NAME === 'pull_request') return { sha: env.GITHUB_SHA, pullRequest: true };
-  invariant(['push', 'workflow_dispatch'].includes(env.GITHUB_EVENT_NAME) && env.GITHUB_REF === 'refs/heads/main', 'Release publication is restricted to main push or workflow_dispatch.');
-  return { sha: env.GITHUB_SHA, pullRequest: false };
+function validateRepository(repository) {
+  invariant(typeof repository === 'string' && repositoryPattern.test(repository) && repository.split('/').every(part => part !== '.' && part !== '..'), 'Repository must identify owner/repository without path traversal.');
+  return repository;
 }
 
-export function createGitHubClient(env, fetchImpl = fetch) {
-  invariant(env.GH_TOKEN, 'GH_TOKEN is required for GitHub release operations.');
-  const base = new URL((env.GITHUB_API_URL ?? 'https://api.github.com').replace(/\/?$/, '/'));
-  invariant(base.protocol === 'https:', 'GitHub API must use HTTPS.');
-  invariant(repositoryPattern.test(env.GITHUB_REPOSITORY ?? ''), 'Invalid GitHub repository.');
-  const repo = env.GITHUB_REPOSITORY.split('/').map(encodeURIComponent).join('/');
+function context({ root, repository, sourceCommit, head }) {
+  invariant(typeof sourceCommit === 'string' && commitPattern.test(sourceCommit), 'Source commit must be an exact commit SHA.');
+  validateRepository(repository);
+  const actualHead = head ?? execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim();
+  invariant(actualHead === sourceCommit, 'Release checkout must match sourceCommit exactly.');
+  return { sha: sourceCommit };
+}
+
+export function createGitHubClient({ repository, token, apiUrl = 'https://api.github.com', signal } = {}, fetchImpl = fetch) {
+  invariant(typeof token === 'string' && token.length > 0 && !/\s/.test(token), 'An authenticated GitHub token is required for release operations.');
+  validateRepository(repository);
+  const base = new URL(apiUrl.replace(/\/?$/, '/'));
+  invariant(base.protocol === 'https:' && !base.username && !base.password, 'GitHub API must use HTTPS without URL credentials.');
+  const repo = repository.split('/').map(encodeURIComponent).join('/');
   async function request(method, path, body, { binary = false, upload = false } = {}) {
+    signal?.throwIfAborted();
     const url = upload ? new URL(path) : new URL(`repos/${repo}/${path}`, base);
     if (upload) invariant(url.protocol === 'https:' && url.hostname === (base.hostname === 'api.github.com' ? 'uploads.github.com' : base.hostname), 'Unexpected GitHub upload host.');
-    const headers = { Authorization: `Bearer ${env.GH_TOKEN}`, Accept: binary ? 'application/octet-stream' : 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28' };
+    const headers = { Authorization: `Bearer ${token}`, Accept: binary ? 'application/octet-stream' : 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28' };
     if (body !== undefined) headers['Content-Type'] = upload ? 'application/octet-stream' : 'application/json';
     let response;
-    try { response = await fetchImpl(url, { method, headers, body: body === undefined ? undefined : upload ? body : JSON.stringify(body), signal: AbortSignal.timeout(60_000) }); }
-    catch { throw new Error(`GitHub ${method} request failed before receiving a response.`); }
+    const timeoutSignal = AbortSignal.timeout(60_000);
+    try { response = await fetchImpl(url, { method, headers, body: body === undefined ? undefined : upload ? body : JSON.stringify(body), signal: signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal }); }
+    catch { signal?.throwIfAborted(); throw new Error(`GitHub ${method} request failed before receiving a response.`); }
     if (!response.ok) {
       const error = new Error(`GitHub ${method} request failed (HTTP ${response.status}).`);
       error.status = response.status;
@@ -106,11 +113,11 @@ async function releaseState(api, metadata, sha) {
   return { published: false, release, tagged };
 }
 
-export async function planRelease({ root = process.cwd(), env = process.env, api } = {}) {
-  const ctx = context(env, true), metadata = await readReleaseMetadata(root);
-  if (ctx.pullRequest) return { version: metadata.version, tag: metadata.tag, should_build: true, should_publish: false };
-  const state = await releaseState(api ?? createGitHubClient(env), metadata, ctx.sha);
-  return { version: metadata.version, tag: metadata.tag, should_build: !state.published, should_publish: !state.published };
+export async function planRelease({ root = process.cwd(), repository, sourceCommit, api, head } = {}) {
+  const ctx = context({ root, repository, sourceCommit, head }), metadata = await readReleaseMetadata(root);
+  invariant(api, 'An authenticated GitHub client is required to plan the release.');
+  const state = await releaseState(api, metadata, ctx.sha);
+  return { version: metadata.version, tag: metadata.tag, should_build: !state.published, should_publish: !state.published, already_published: state.published, ...(state.published ? { url: state.release.html_url } : {}) };
 }
 
 // Read the packed manifest without extracting or executing archive contents.
@@ -177,11 +184,9 @@ async function assertDraft(api, id, metadata, sha) {
   return release;
 }
 
-export async function publishRelease({ root = process.cwd(), env = process.env, assetsDir, api, head } = {}) {
-  const ctx = context(env, false), metadata = await readReleaseMetadata(root);
-  const actualHead = head ?? execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim();
-  invariant(actualHead === ctx.sha, 'Publisher checkout must match GITHUB_SHA exactly.');
-  api ??= createGitHubClient(env);
+export async function publishRelease({ root = process.cwd(), repository, sourceCommit, assetsDir, api, head } = {}) {
+  const ctx = context({ root, repository, sourceCommit, head }), metadata = await readReleaseMetadata(root);
+  invariant(api, 'An authenticated GitHub client is required to publish the release.');
   let state = await releaseState(api, metadata, ctx.sha);
   if (state.published) return { tag: metadata.tag, published: false, already_published: true, url: state.release.html_url };
   invariant(assetsDir, '--assets-dir is required.');
@@ -220,17 +225,7 @@ export async function publishRelease({ root = process.cwd(), env = process.env, 
   return { tag: metadata.tag, published: true, already_published: false, url: published.html_url };
 }
 
-async function main() {
-  const [command, ...args] = process.argv.slice(2);
-  if (command === 'plan') {
-    invariant(args.length === 0, 'Usage: node scripts/release.mjs plan');
-    const result = await planRelease();
-    if (process.env.GITHUB_OUTPUT) await appendFile(process.env.GITHUB_OUTPUT, Object.entries(result).map(([key, value]) => `${key}=${value}\n`).join(''));
-    console.log(JSON.stringify(result));
-  } else if (command === 'publish') {
-    invariant(args.length === 2 && args[0] === '--assets-dir', 'Usage: node scripts/release.mjs publish --assets-dir PATH');
-    console.log(JSON.stringify(await publishRelease({ assetsDir: args[1] })));
-  } else throw new Error('Usage: node scripts/release.mjs plan | publish --assets-dir PATH');
+if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+  console.error('Use npm run release -- --commit SHA (optionally --dry-run).');
+  process.exitCode = 1;
 }
-
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) main().catch(error => { console.error(error.message); process.exitCode = 1; });

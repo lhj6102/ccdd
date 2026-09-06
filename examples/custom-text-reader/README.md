@@ -19,7 +19,7 @@ npx ccdd tools check --artifact spec --for agent --tool read --execute --args '{
 npx ccdd run --copy --critic spec-why --codex-auth-file "$HOME/.codex/auth.json" --wait
 ```
 
-다운로드에는 저장소 접근 권한이 있는 GitHub CLI 로그인이 필요합니다. 이 예제는 본체만 설치하며 기본 도구 라이브러리는 사용하지 않습니다. 소스에서 빌드한 같은 버전의 core tarball로도 설치할 수 있습니다. 이미 CCDD를 설치했다면 첫 `cp`의 원본을 `node_modules/@lhj6102/ccdd/examples/custom-text-reader`로 바꿉니다.
+다운로드에는 저장소 접근 권한이 있는 GitHub CLI 로그인이 필요합니다. 이 예제는 본체만 설치하며 기본 도구 라이브러리는 사용하지 않습니다. 소스 저장소에서 `npm run release -- --commit <40자리 SHA> --dry-run`으로 검증·생성한 같은 버전의 core tarball로도 설치할 수 있습니다. 이 로컬 검증에는 GitHub 인증이 필요하지 않습니다. 이미 CCDD를 설치했다면 첫 `cp`의 원본을 `node_modules/@lhj6102/ccdd/examples/custom-text-reader`로 바꿉니다.
 
 도구의 `preflight`는 생략했습니다. 기본 검사는 등록 확인과 실제 실행 미검증을 구분하며, `--execute`는 파일을 실제로 읽습니다. Agent 리뷰에는 유효한 Provider 인증이 필요합니다.
 

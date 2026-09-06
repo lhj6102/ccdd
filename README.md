@@ -38,7 +38,7 @@ npx ccdd monitor
 
 `tools check`는 등록한 도구를 검사합니다. `doctor`와 Agent 리뷰는 실제 Provider를 호출하므로 유효한 인증·모델 접근 권한이 필요하고 계정 사용량을 소비합니다. 다른 인증 방식은 [Provider와 인증](#agent-provider와-인증)을 참고하세요. 모니터가 표시하는 로컬 주소를 열면 요청과 판정을 볼 수 있습니다.
 
-이하의 `ccdd` 명령은 프로젝트 로컬 설치라면 `npx ccdd`로 실행합니다. 소스 개발은 저장소를 받은 뒤 `npm ci && npm run build`로 준비하고 `node dist/src/cli.js`로 실행합니다. 배포·업그레이드 절차는 [Release 안내](docs/releases.md), 변경 사항은 [v1.0.0 릴리스 노트](docs/releases/v1.0.0.md)에 있습니다.
+이하의 `ccdd` 명령은 프로젝트 로컬 설치라면 `npx ccdd`로 실행합니다. 소스 개발은 저장소를 받은 뒤 `npm ci && npm run build`로 준비하고 `node dist/src/cli.js`로 실행합니다. 배포는 `npm run release -- --commit <40자리 SHA>`로 지정한 소스를 로컬에서 검증한 뒤 게시하며, `--dry-run`으로 검증과 파일 생성만 할 수 있습니다. 자세한 배포·업그레이드 절차는 [Release 안내](docs/releases.md), 변경 사항은 [v1.0.0 릴리스 노트](docs/releases/v1.0.0.md)에 있습니다.
 
 ## Artifact 의존 관계
 

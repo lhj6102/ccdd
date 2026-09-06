@@ -12,7 +12,7 @@ const { validateVersions, compareVersions, planRelease, publishRelease, createGi
 const sha = 'a'.repeat(40), otherSha = 'b'.repeat(40), coreName = '@lhj6102/ccdd', toolsName = '@lhj6102/ccdd-default-tools';
 const hash = (bytes: Buffer | string) => createHash('sha256').update(bytes).digest('hex');
 const metadata = { version: '1.0.0', tag: 'v1.0.0', coreFile: 'lhj6102-ccdd-1.0.0.tgz', toolsFile: 'lhj6102-ccdd-default-tools-1.0.0.tgz' };
-const env = { GITHUB_EVENT_NAME: 'push', GITHUB_REF: 'refs/heads/main', GITHUB_SHA: sha, GITHUB_REPOSITORY: 'lhj6102/ccdd' };
+const repository = 'lhj6102/ccdd';
 
 function versions(version = '1.0.0') {
   const core = { name: coreName, version }, tools = { name: toolsName, version, peerDependencies: { [coreName]: '>=1.0.0 <2' } };
@@ -29,7 +29,7 @@ async function fixture(t: TestContext) {
   await writeFile(join(root, 'packages/default-tools/package.json'), JSON.stringify(files.tools));
   await writeFile(join(root, 'package-lock.json'), JSON.stringify(files.lock));
   await writeFile(join(root, 'docs/releases/v1.0.0.md'), '# 1.0.0\nRelease notes.\n');
-  return { root, env, head: sha };
+  return { root, repository, sourceCommit: sha, head: sha };
 }
 
 function tarball(name: string, version = '1.0.0') {
@@ -111,19 +111,19 @@ test('release versions require aligned packages, lock entries, stable semver and
   assert.equal(compareVersions('1.10.0', '1.9.0'), 1);
 });
 
-test('PR plans build read-only while publication is limited to main push or manual dispatch', async t => {
+test('local plans use explicit repository and commit inputs and only read remote release state', async t => {
   const data = await fixture(t), api = fakeApi();
-  assert.deepEqual(await planRelease({ ...data, api, env: { ...env, GITHUB_EVENT_NAME: 'pull_request', GITHUB_REF: 'refs/pull/12/merge' } }), { version: '1.0.0', tag: 'v1.0.0', should_build: true, should_publish: false });
-  assert.deepEqual(api.events, [], 'PR validation does not consult or mutate remote releases.');
-  for (const changed of [{ GITHUB_REF: 'refs/heads/feature' }, { GITHUB_EVENT_NAME: 'workflow_dispatch', GITHUB_REF: 'refs/heads/feature' }, { GITHUB_EVENT_NAME: 'pull_request_target' }]) await assert.rejects(planRelease({ ...data, api, env: { ...env, ...changed } }), /restricted/);
-  const plan = await planRelease({ ...data, api }); assert.equal(plan.should_publish, true);
-  await assert.rejects(planRelease({ ...data, api, env: { ...env, GITHUB_SHA: `${sha}\n` } }), /exact commit/);
-  await assert.rejects(planRelease({ ...data, api, env: { ...env, GITHUB_REPOSITORY: `${env.GITHUB_REPOSITORY}\n` } }), /owner\/repository/);
+  assert.deepEqual(await planRelease({ ...data, api }), { version: '1.0.0', tag: 'v1.0.0', should_build: true, should_publish: true, already_published: false });
+  assert.ok(api.events.every(event => event.startsWith('GET ')), 'Planning never creates tags, releases or assets.');
+  for (const sourceCommit of [undefined, 'main', 'abcdef0', `${sha}\n`, otherSha]) await assert.rejects(planRelease({ ...data, api, sourceCommit }), /exact commit|checkout/);
+  for (const invalidRepository of [undefined, '', '../repo', 'owner/..', 'owner/repo/extra', `${repository}\n`]) await assert.rejects(planRelease({ ...data, api, repository: invalidRepository }), /owner\/repository/);
+  await assert.rejects(planRelease({ ...data }), /authenticated GitHub client/);
+  await assert.rejects(planRelease({ ...data, api, head: otherSha }), /checkout/);
   await rm(join(data.root, 'docs/releases/v1.0.0.md'));
   await assert.rejects(planRelease({ ...data, api }), { code: 'ENOENT' });
 });
 
-test('published versions skip later main commits without rebuilding or changing any assets', async t => {
+test('published versions skip later commits without rebuilding or changing any assets', async t => {
   const data = await fixture(t), api = fakeApi({ published: true, tagged: otherSha, target: otherSha });
   const plan = await planRelease({ ...data, api }); assert.equal(plan.should_build, false); assert.equal(plan.should_publish, false);
   const published = await publishRelease({ ...data, api }); assert.equal(published.already_published, true);
@@ -153,7 +153,9 @@ test('publisher rejects failed tests, wrong commit, invalid checksums and mismat
   await assets(data.root); await writeFile(join(assetsDir, 'unexpected.txt'), 'not a release asset');
   await assert.rejects(validateAssets(assetsDir, metadata, sha), /exactly/);
   await assert.rejects(publishRelease({ ...data, assetsDir, api, head: otherSha }), /checkout/);
-  await assert.rejects(publishRelease({ ...data, assetsDir, api, env: { ...env, GITHUB_EVENT_NAME: 'pull_request' } }), /restricted/);
+  await assert.rejects(publishRelease({ ...data, assetsDir, api, sourceCommit: 'main' }), /exact commit/);
+  await assert.rejects(publishRelease({ ...data, assetsDir, api, repository: '../repo' }), /owner\/repository/);
+  await assert.rejects(publishRelease({ ...data, assetsDir }), /authenticated GitHub client/);
 });
 
 test('interrupted uploads leave a draft and retry verifies every remote asset before publishing', async t => {
@@ -182,14 +184,49 @@ test('a retry may replace changed draft validation evidence but never publishes 
 });
 
 test('API errors only treat 404 as missing and never expose response secrets or send tokens to an unexpected upload host', async () => {
-  const auth = { ...env, GH_TOKEN: 'test-token-not-for-logs' };
+  const auth = { repository, token: 'test-token-not-for-logs' };
+  for (const token of ['', 'token\n', undefined]) assert.throws(() => createGitHubClient({ ...auth, token }), /authenticated GitHub token/);
+  assert.throws(() => createGitHubClient({ ...auth, repository: '../repo' }), /owner\/repository/);
   const missing = createGitHubClient(auth, async () => new Response('missing', { status: 404 }));
   assert.equal(await missing.optional('releases/tags/v1.0.0'), null);
   const denied = createGitHubClient(auth, async () => new Response('sensitive server detail', { status: 403 }));
   await assert.rejects(denied.optional('releases/tags/v1.0.0'), (error: Error) => /HTTP 403/.test(error.message) && !/sensitive|test-token/.test(error.message));
   await assert.rejects(denied.upload({ upload_url: 'https://unrelated.example/upload{?name}' }, 'a.tgz', Buffer.from('asset')), /upload host/);
   let called = '';
-  const enterprise = createGitHubClient({ ...auth, GITHUB_API_URL: 'https://github.example/api/v3' }, async (url: URL) => { called = url.href; return Response.json({}); });
+  const enterprise = createGitHubClient({ ...auth, apiUrl: 'https://github.example/api/v3' }, async (url: URL) => { called = url.href; return Response.json({}); });
   await enterprise.request('GET', 'releases/tags/v1.0.0');
   assert.equal(called, 'https://github.example/api/v3/repos/lhj6102/ccdd/releases/tags/v1.0.0');
+});
+
+test('cancellation prevents new API mutations and aborts an in-flight request', async () => {
+  const reason = new Error('Release cancelled');
+  let calls = 0;
+  const alreadyCancelled = createGitHubClient({ repository, token: 'test-token', signal: AbortSignal.abort(reason) }, async () => { calls++; return Response.json({}); });
+  await assert.rejects(alreadyCancelled.request('POST', 'git/refs', { sha }), error => error === reason);
+  assert.equal(calls, 0, 'A cancelled release must not start another mutation.');
+  const controller = new AbortController();
+  let started!: () => void;
+  const waiting = new Promise<void>(resolve => { started = resolve; });
+  const inFlight = createGitHubClient({ repository, token: 'test-token', signal: controller.signal }, async (_url: URL, options: { signal: AbortSignal }) => {
+    started();
+    return new Promise<Response>((_resolve, reject) => { options.signal.addEventListener('abort', () => reject(options.signal.reason), { once: true }); });
+  });
+  const response = inFlight.request('GET', 'releases/tags/v1.0.0');
+  const rejected = assert.rejects(response, error => error === reason);
+  await waiting; controller.abort(reason); await rejected;
+});
+
+test('cancellation after tag creation leaves recoverable state and never starts release publication', async t => {
+  const data = await fixture(t), assetsDir = await assets(data.root), controller = new AbortController();
+  const calls: string[] = [], reason = new Error('Release cancelled after tag creation');
+  const api = createGitHubClient({ repository, token: 'test-token', signal: controller.signal }, async (url: URL, options: { method: string }) => {
+    const path = url.pathname.replace('/repos/lhj6102/ccdd/', '');
+    calls.push(`${options.method} ${path}`);
+    if (options.method === 'GET') return new Response('not found', { status: 404 });
+    assert.equal(`${options.method} ${path}`, 'POST git/refs');
+    controller.abort(reason);
+    return Response.json({ ref: 'refs/tags/v1.0.0', object: { type: 'commit', sha } });
+  });
+  await assert.rejects(publishRelease({ ...data, assetsDir, api }), error => error === reason);
+  assert.deepEqual(calls.filter(call => !call.startsWith('GET ')), ['POST git/refs']);
 });

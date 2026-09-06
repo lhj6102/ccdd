@@ -55,4 +55,6 @@ export CCDD_DEMO_CORE_TARBALL=/tmp/ccdd-local-packages/lhj6102-ccdd-1.0.0.tgz
 export CCDD_DEMO_TOOLS_TARBALL=/tmp/ccdd-local-packages/lhj6102-ccdd-default-tools-1.0.0.tgz
 ```
 
-소스 CLI는 `npx ccdd` 대신 `node dist/src/cli.js`로 실행합니다. 실제 Agent 진단·리뷰는 Provider 사용량을 소비합니다. 자동 Release의 테스트는 외부 LLM을 호출하지 않으므로 설치 환경의 인증·모델 접근 여부는 이 데모의 `doctor`로 확인합니다.
+위 명령은 현재 소스를 직접 pack합니다. 커밋에 고정된 소스를 전체 테스트·설치 검증까지 거쳐 준비하려면 `npm run release -- --commit <40자리 SHA> --dry-run --output-dir <빈 외부 디렉터리>`를 사용하고 그 출력 폴더의 두 tarball을 지정합니다. [로컬 배포 안내](releases.md#커밋을-지정하여-로컬에서-배포)에 전체 절차가 있습니다.
+
+소스 CLI는 `npx ccdd` 대신 `node dist/src/cli.js`로 실행합니다. 실제 Agent 진단·리뷰는 Provider 사용량을 소비합니다. 로컬 Release 검증은 외부 LLM을 호출하지 않으므로 설치 환경의 인증·모델 접근 여부는 이 데모의 `doctor`로 확인합니다.
