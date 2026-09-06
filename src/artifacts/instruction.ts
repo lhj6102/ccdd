@@ -1,3 +1,5 @@
+import type { ArtifactGroupReference } from '../contracts.js';
+
 export type InstructionPart = { type: 'text'; text: string } | { type: 'artifact'; artifactId: string };
 
 const identifier = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
@@ -28,8 +30,8 @@ function closingBrace(source: string, start: number): number {
 }
 
 /** Resolve only bare IDs already supplied to this request; never grant scope or evaluate code. */
-export function parseArtifactInstruction(instruction: string, artifacts: readonly { id: string }[]): InstructionPart[] {
-  const allowed = new Set(artifacts.map(artifact => artifact.id));
+export function parseArtifactInstruction(instruction: string, artifacts: readonly { id: string }[], groups: readonly ArtifactGroupReference[] = []): InstructionPart[] {
+  const allowed = new Set([...artifacts, ...groups].map(artifact => artifact.id));
   const parts: InstructionPart[] = [];
   let textStart = 0, cursor = 0;
   while (cursor < instruction.length) {
@@ -49,12 +51,30 @@ export function parseArtifactInstruction(instruction: string, artifacts: readonl
 }
 
 /** Presentation only: actual tool definitions remain in the existing tool channel. */
-export function digestArtifactInstruction(instruction: string, artifacts: readonly { id: string }[], tools: readonly { artifactId: string; name: string }[]): string {
+export function digestArtifactInstruction(instruction: string, artifacts: readonly { id: string }[], tools: readonly { artifactId: string; name: string }[], groups: readonly ArtifactGroupReference[] = []): string {
   const names = new Map<string, Set<string>>();
   for (const tool of tools) {
     if (!names.has(tool.artifactId)) names.set(tool.artifactId, new Set());
     names.get(tool.artifactId)!.add(tool.name);
   }
-  return parseArtifactInstruction(instruction, artifacts).map(part => part.type === 'text' ? part.text
-    : JSON.stringify({ artifact: part.artifactId, tools: [...(names.get(part.artifactId) ?? [])] })).join('');
+  const describe = (id: string) => ({ artifact: id, tools: [...(names.get(id) ?? [])] });
+  return parseArtifactInstruction(instruction, artifacts, groups).map(part => part.type === 'text' ? part.text
+    : JSON.stringify(groups.some(group => group.id === part.artifactId)
+      ? { artifactGroup: part.artifactId, members: artifactInstructionMembers(part.artifactId, artifacts, groups).map(describe) }
+      : describe(part.artifactId))).join('');
+}
+
+/** Expand presentation references only within the request's already granted leaf scope. */
+export function artifactInstructionMembers(id: string, artifacts: readonly { id: string }[], groups: readonly ArtifactGroupReference[] = []): string[] {
+  const leaves = new Set(artifacts.map(artifact => artifact.id));
+  const byId = new Map(groups.map(group => [group.id, group]));
+  const visited = new Set<string>(), result = new Set<string>();
+  const visit = (current: string): void => {
+    if (visited.has(current)) return;
+    visited.add(current);
+    if (leaves.has(current)) result.add(current);
+    else for (const member of byId.get(current)?.members ?? []) visit(member);
+  };
+  visit(id);
+  return [...result];
 }

@@ -28,6 +28,14 @@ _Avoid_: Critic 정의, 작업 목록
 리뷰의 Artifact와 Critic 정의를 포함하는 전체 입력 상태. 입력 내용의 hash로 식별되며, 리뷰 중 변경되지 않아야 한다.
 _Avoid_: Git commit, 최신 소스
 
+**Artifact Group**:
+독립적으로 정의된 Artifact들을 참조하여 하나의 검토 단위로 묶은 것. 구성원의 식별자는 그룹 소속과 무관하게 유지되어 개별 참조할 수 있다.
+_Avoid_: Artifact 복제, 디렉터리, 선행 Critic 목록
+
+**Group Membership**:
+어떤 Artifact가 그룹의 구성원이라는 관계. 그룹 구성은 검증 의존 관계와 구분하며, 소속 자체가 선행 검증을 요구하지 않는다.
+_Avoid_: Dependency Artifact, 검증 순서, 자동 판정 전파
+
 **Target Artifact**:
 한 Critic이 판정하는 Artifact. 같은 Artifact를 여러 Critic이 서로 다른 기준으로 평가할 수 있다.
 _Avoid_: 참조 Artifact, 생성 결과

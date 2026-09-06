@@ -30,7 +30,7 @@ export function internalPath(value: unknown = ''): string {
   return value;
 }
 
-async function target(root: string, directory: boolean, path: string): Promise<string> {
+export async function scopedTarget(root: string, directory: boolean, path: string): Promise<string> {
   if (!isAbsolute(root) || (await lstat(root)).isSymbolicLink()) throw new Error('Artifact root must be an absolute non-symlink path');
   const base = await realpath(root);
   const info = await stat(base);
@@ -115,7 +115,7 @@ export async function readerRequest(input: unknown): Promise<Record<string, unkn
     if (!request.directory && Object.hasOwn(args, 'path')) throw new Error('A file artifact read does not accept path');
     const startLine = integer(args.startLine, 1, 1, Number.MAX_SAFE_INTEGER, 'startLine');
     const lineCount = integer(args.lineCount, 80, 1, 500, 'lineCount');
-    const candidate = await target(request.root, request.directory, path);
+    const candidate = await scopedTarget(request.root, request.directory, path);
     const file = await open(candidate, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
     try {
       const info = await file.stat();
@@ -126,7 +126,7 @@ export async function readerRequest(input: unknown): Promise<Record<string, unkn
   if (!request.directory) throw new Error('Listing requires a directory artifact');
   const offset = integer(args.offset, 0, 0, Number.MAX_SAFE_INTEGER, 'offset');
   const limit = integer(args.limit, 200, 1, 200, 'limit');
-  const candidate = await target(request.root, true, path);
+  const candidate = await scopedTarget(request.root, true, path);
   const all = await readdir(candidate, { withFileTypes: true });
   all.sort((a, b) => a.name.localeCompare(b.name));
   const entries = all.slice(offset, offset + limit).map(entry => ({ name: entry.name, path: path ? `${path}/${entry.name}` : entry.name,

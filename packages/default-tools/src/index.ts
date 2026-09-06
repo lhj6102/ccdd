@@ -5,11 +5,13 @@ import { fileURLToPath } from 'node:url';
 import type { JsonSchema, JsonValue, ToolContext, ToolDefinition, ToolResult } from '@lhj6102/ccdd';
 import { internalPath, objectArguments } from './reader.js';
 import { runToolProcess, toolEnvironment } from './process.js';
+import { imageContent, MAX_IMAGE_OUTPUT_BYTES } from './image-result.js';
 
 export interface ReaderOptions { description?: string; timeoutMs?: number }
 export interface ReadArguments { startLine?: number; lineCount?: number }
 export interface FileReadArguments extends ReadArguments { path: string }
 export interface ListArguments { path?: string; offset?: number; limit?: number }
+export interface ImageViewArguments { path?: string }
 export interface DesktopOpenArguments { path?: string }
 export interface DesktopOpenOptions {
   /** Registered executable, never supplied by a reviewer. Defaults to macOS /usr/bin/open. */
@@ -165,6 +167,46 @@ function desktopOpen(options: DesktopOpenOptions = {}): DefaultToolDefinition<De
   };
 }
 
+function imageView(options: ReaderOptions = {}): DefaultToolDefinition<ImageViewArguments> {
+  const timeoutMs = timeout(options.timeoutMs, 30_000);
+  return {
+    metadata: {
+      description: options.description ?? 'View a PNG, JPEG or WebP image from {artifactName}. Omit path for a file Artifact; a directory Artifact requires an internal file path. Images must be at most 4 MiB.',
+      inputSchema: { type: 'object', properties: { path: { type: 'string', minLength: 1, description: 'Required internal image path for a directory Artifact. Omit for a file Artifact.' } }, additionalProperties: false },
+      resultKinds: ['image'], observation: 'content', artifactKind: 'any', timeoutMs,
+    },
+    async execute(context, args) {
+      const root = await prepareReader(context, context.artifactDirectory);
+      const actualArgs = objectArguments(args, ['path']);
+      const path = internalPath(actualArgs.path);
+      if (context.artifactDirectory && !path) throw new Error('Viewing an image in a directory Artifact requires an internal file path');
+      if (!context.artifactDirectory && Object.hasOwn(actualArgs, 'path')) throw new Error('A file Artifact image view does not accept path');
+      await context.resolvePath(path || undefined);
+      const raw = await runToolProcess(process.execPath, [cliPath], {
+        cwd: context.outputDir, env: toolEnvironment(context.tmpDir), signal: context.signal, timeoutMs,
+        input: JSON.stringify({ operation: 'view_image', root, directory: context.artifactDirectory, args: actualArgs }),
+        maxOutputBytes: MAX_IMAGE_OUTPUT_BYTES,
+      });
+      context.signal.throwIfAborted();
+      const response = JSON.parse(raw) as { ok: boolean; data?: unknown; message?: string };
+      if (!response.ok) throw new Error(response.message ?? 'Invalid image CLI response');
+      const content = imageContent(response.data);
+      return { content: [content], observation: { kind: 'content' } };
+    },
+    async preflight(context) {
+      try {
+        await prepareReader(context, context.artifactDirectory);
+        await access(fileURLToPath(import.meta.resolve('@earendil-works/pi-agent-core')), constants.R_OK);
+        context.signal.throwIfAborted();
+        return { ok: true, message: 'Artifact and package-local image CLI are available. No image was read.' };
+      } catch (error) {
+        context.signal.throwIfAborted();
+        return { ok: false, message: error instanceof Error ? error.message : 'Image preparation failed' };
+      }
+    },
+  };
+}
+
 /** Pure factories: importing this library or constructing tools performs no registration, I/O or process execution. */
 export const agent = {
   text: { read: (options: ReaderOptions = {}): DefaultToolDefinition<ReadArguments> => readerTool('read', false, options) },
@@ -172,5 +214,6 @@ export const agent = {
     read: (options: ReaderOptions = {}): DefaultToolDefinition<FileReadArguments> => readerTool('read', true, options),
     list: (options: ReaderOptions = {}): DefaultToolDefinition<ListArguments> => readerTool('list', true, options),
   },
+  image: { view: imageView },
 };
 export const human = { desktop: { open: desktopOpen } };

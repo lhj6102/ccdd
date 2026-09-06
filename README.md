@@ -40,11 +40,25 @@ npx ccdd monitor
 
 이하의 `ccdd` 명령은 프로젝트 로컬 설치라면 `npx ccdd`로 실행합니다. 소스 개발은 저장소를 받은 뒤 `npm ci && npm run build`로 준비하고 `node dist/src/cli.js`로 실행합니다. 배포는 `npm run release -- --commit <40자리 SHA>`로 지정한 소스를 로컬에서 검증한 뒤 게시하며, `--dry-run`으로 검증과 파일 생성만 할 수 있습니다. 자세한 배포·업그레이드 절차는 [Release 안내](docs/releases.md), 변경 사항은 [v1.0.0 릴리스 노트](docs/releases/v1.0.0.md)에 있습니다.
 
+**Artifact 그룹과 `agent.image.view()`는 현재 소스 빌드의 기능입니다.** 위 v1.0.0 Release 파일에는 아직 포함되지 않습니다. 새 기능을 사용하려면 [이미지·그룹 예제의 소스 tarball 설치 안내](examples/artifact-groups/README.md)를 따르세요.
+
 ## Artifact 의존 관계
 
 Critic 설정은 `target`(평가 대상 하나)과 `deps`(참조 Artifact 배열)를 사용합니다. 같은 Artifact의 필수 Critic이 모두 통과하면 다음 검토가 시작됩니다. `basis: true`로 명시한 기준 Artifact를 제외하고 검토 없는 입력을 자동 통과시키지 않습니다. 기존 `dependsOn`·Critic의 `artifacts` 설정은 [설정 변경 안내](docs/artifact-graph.md)를 따라 변경하세요.
 
 모니터에서 **Kanban / Graph**를 선택할 수 있습니다. Graph는 선택한 검증 실행의 Artifact 관계와 Critic별 판정을 보여주며, 노드에서 기존 Human 요청 상세로 이어집니다. 과거에 역할 정보 없이 저장한 실행은 Kanban에서 계속 확인할 수 있습니다.
+
+개별 Artifact를 ID로 참조하여 그룹으로 묶을 수도 있습니다.
+
+```ts
+artifacts: {
+  effect: { type: 'markdown', path: 'effect.md' },
+  preview: { type: 'image', path: 'preview.png' },
+  explosion: { kind: 'group', members: ['effect', 'preview'] },
+}
+```
+
+그룹에는 타입·경로가 없으며 다른 그룹도 구성원으로 참조할 수 있습니다. `target`·`deps`·`basis`는 그룹에도 적용됩니다. 그룹 판정은 그 그룹을 평가하는 Critic만 집계하며 멤버 판정과 서로 전파하지 않습니다. 구성 관계는 실행 의존성이 아니므로, 이미지 평가 후 그룹을 검토하려면 그룹 Critic에 `deps: ['preview']`를 명시합니다. 관측 도구는 중복을 제거한 모든 leaf에 제공하고 기존 ID를 유지합니다. Agent는 각 leaf를 관측해야 합니다. 자세한 규칙은 [Artifact 그룹](docs/artifact-graph.md#artifact-그룹)을 참고하세요.
 
 ## Agent Provider와 인증
 
@@ -54,7 +68,7 @@ Agent profile은 Pi의 정확한 Provider·모델 ID와 reasoning을 명시합�
 {"kind":"agent","provider":"openai-codex","model":"gpt-6-astra","reasoning":"medium"}
 ```
 
-`@earendil-works/pi-agent-core`와 `@earendil-works/pi-ai` 0.85.1을 라이브러리로 사용합니다. Pi 의존성은 Agent 실행기 내부에 있고 Broker·Human·Runtime은 Pi 세션을 사용하지 않습니다. Provider 호출과 Agent 도구 루프를 Pi에 맡기며, CCDD가 판정 스키마·필수 Artifact 관측·workspace 무결성을 검증합니다.
+`@earendil-works/pi-agent-core`와 `@earendil-works/pi-ai` 0.85.1을 라이브러리로 사용합니다. Provider 호출과 Agent 도구 루프는 Agent 실행기 내부의 Pi가 맡으며, CCDD가 판정 스키마·필수 Artifact 관측·workspace 무결성을 검증합니다. 기본 이미지 도구도 내부 CLI에서 Pi의 read를 재사용하지만 세션이나 Provider 호출은 만들지 않습니다. Broker·Human·Runtime은 Pi 세션을 사용하지 않습니다.
 
 Provider API key 환경변수는 Pi의 Provider별 규칙을 따릅니다. 파일 인증은 명시적으로 연결합니다.
 
@@ -94,7 +108,7 @@ ccdd doctor --repo /path/to/project --codex-auth-file "$HOME/.codex/auth.json" -
 
 ## Artifact 도구 설정
 
-설정은 `ccdd.config.ts`입니다. 설정 객체 또는 객체를 반환하는 동기·비동기 함수를 default export합니다. `@lhj6102/ccdd`는 가벼운 `defineConfig`, `defineTool`과 도구 타입을 제공하고, `@lhj6102/ccdd-default-tools`는 선택적으로 설치하는 구현 라이브러리입니다. import하거나 factory를 호출하는 것만으로 파일을 읽거나 프로그램을 실행하지 않습니다.
+설정은 `ccdd.config.ts`입니다. 프로젝트 `package.json`의 `type`은 `module`로 지정합니다(`npm pkg set type=module`). 설정 객체 또는 객체를 반환하는 동기·비동기 함수를 default export합니다. `@lhj6102/ccdd`는 가벼운 `defineConfig`, `defineTool`과 도구 타입을 제공하고, `@lhj6102/ccdd-default-tools`는 선택적으로 설치하는 구현 라이브러리입니다. import하거나 factory를 호출하는 것만으로 파일을 읽거나 프로그램을 실행하지 않습니다.
 
 ```ts
 import { defineConfig } from '@lhj6102/ccdd';
@@ -127,6 +141,8 @@ export default defineConfig(() => ({
 
 기본 Agent 도구는 패키지에 포함된 Node CLI를 호출합니다. `text.read()`는 단일 파일, `files.list()`·`files.read()`는 디렉터리용입니다. 이름은 `read_spec`, `list_tests`처럼 `<toolName>_<artifactName>`이며 설명의 `{artifactName}`도 실제 Artifact ID로 치환합니다. 읽기는 1번 줄부터 기본 80줄, 최대 500줄을 요청하고 `nextStartLine`으로 이어 읽습니다. 원래 UTF-8·LF/CRLF와 완전한 줄을 보존하며 응답은 64KiB로 제한합니다.
 
+이미지 타입에는 `agentTools: { view_image: agent.image.view() }`를 등록합니다. `preview`에 연결하면 `view_image_preview`가 제공됩니다. 파일 Artifact에는 `{}`, 디렉터리에는 `{"path":"frames/preview.png"}`를 전달합니다. Pi read의 실제 이미지 결과만 사용하며 지원 범위는 PNG/JPEG/WebP, 최대 4MiB입니다. 텍스트·GIF·BMP·APNG는 실패하고 자동 축소·변환은 하지 않습니다. 이미지 읽기 자체는 모델을 호출하지 않으며, 그 결과를 리뷰하는 Agent 모델은 이미지 입력을 지원해야 합니다.
+
 기본 Human 도구는 텍스트를 반환하지 않고 snapshot의 파일·폴더를 데스크톱 프로그램으로 엽니다. `human.desktop.open({ app: 'TextEdit' })`처럼 앱을 지정할 수 있습니다. 기본 OS 연결은 macOS이며 다른 OS에서는 `command`와 고정 `args`를 명시합니다. 프로그램 열기 성공은 사람의 검토나 판정 완료가 아닙니다.
 
 사용자 도구는 `{ metadata, execute(context, args), preflight? }`를 직접 작성합니다. `metadata`에 설명·입력 JSON Schema·결과 종류·관측 방식을 선언하고, CCDD가 실제 snapshot Artifact와 출력·임시 경로·취소 신호를 연결합니다. 함수·SDK·CLI를 선택할 수 있으며 텍스트·JSON·이미지·프로그램 열기 결과를 지원합니다. 기본 도구 라이브러리 없이 작성하는 [사용자 Reader 예제](examples/custom-text-reader/README.md)와 정확한 [도구 계약](docs/contracts.md)을 참고하세요.
@@ -144,6 +160,8 @@ export default defineConfig(() => ({
 ```
 
 `tools`에는 해당 Artifact에 실제로 제공된 Agent 도구 이름이 들어갑니다. custom 도구를 등록했다면 그 이름을 사용합니다. Human 요청에서는 참조를 버튼으로 표시하고 연결된 Human 도구의 선택 영역으로 이동합니다. 참조 버튼만 눌러서는 도구가 실행되지 않으며, claim 후 실행할 도구를 명시적으로 선택합니다.
+
+그룹 참조 `{explosion}`은 `{"artifactGroup":"explosion","members":[{"artifact":"effect","tools":["read_effect"]},{"artifact":"preview","tools":["view_image_preview"]}]}`처럼 구성원의 실제 도구 목록으로 펼칩니다. Human 화면에서는 해당 멤버의 도구를 고르는 버튼으로 표시합니다.
 
 설정·저장된 요청·HTTP 응답의 `instruction` 문자열은 원문을 유지합니다. 다른 payload 필드도 바꾸지 않습니다. JSON 객체처럼 중괄호로 묶인 구간, 중첩·이중 중괄호, `\{spec}`처럼 escape한 참조, 알 수 없거나 요청 범위 밖인 ID, `{spec.path}` 같은 표현식은 그대로 둡니다. instruction을 일반 JSON 문서로 해석하지 않으므로 그 구간 밖의 따옴표나 배열 안에서도 `{spec}`은 참조입니다. 문자 그대로 쓰려면 escape합니다. 참조는 파일 본문을 삽입하거나 접근 범위를 늘리지 않습니다. 도구 설명의 `{artifactName}`은 그 도구에 연결된 ID를 치환하는 별도 규칙이며, instruction에 같은 이름의 예약변수를 추가하지 않습니다.
 
@@ -194,6 +212,8 @@ ccdd tools check --artifact tests --for agent --tool read --execute --args '{"pa
 
 기본 검사는 도구 정의·Artifact 경로와 등록된 `preflight`를 확인합니다. custom preflight가 없으면 등록 확인과 실제 실행 미검증을 구분하여 표시합니다. `--execute`는 지정한 도구를 실제로 호출하며, Human `open` 도구라면 프로그램이 열립니다. 실제 실행에는 Artifact·리뷰어 종류·도구를 모두 지정합니다. `--copy`가 기본이며, `--lock`도 지원합니다.
 
+`ccdd tools check --artifact explosion --for agent`처럼 그룹을 선택하면 모든 leaf 도구를 중복 없이 검사합니다. `--execute`는 `--artifact preview --for agent --tool view_image --execute`처럼 leaf를 명시해야 합니다.
+
 검사 결과에는 성공 여부와 실패 원인이 표시됩니다. 리뷰 기록이나 판정은 생성하지 않으며 Provider도 호출하지 않습니다. 데스크톱 프로그램을 연 복사본은 앱이 계속 읽을 수 있도록 보관합니다. 프로젝트 전체의 Provider·실행기 준비 상태는 `ccdd doctor`로 검사합니다. Provider 진단은 내부 nonce 도구로 연결을 확인하며 프로젝트 custom 도구를 대신 실행하지 않습니다.
 
 ## CLI 데모
@@ -238,6 +258,8 @@ ccdd monitor --state-dir /outside/repo/state
 ```
 
 별도 저장 위치는 `--state-dir`로 연결합니다. Human 카드는 담당 전에는 요청 영역에, claim 후에는 진행 중 영역에 표시합니다. 상세에서 등록된 Human 도구를 실행하고 GREEN·RED를 제출합니다. 후속 리뷰는 독립된 작업자로 재개되므로 모니터를 종료해도 계속 진행됩니다. 화면 조회만으로 저장된 상태나 판정을 변경하지 않습니다.
+
+Graph의 그룹 노드는 자신의 판정과 구성원 수를 표시하며, 선택하면 멤버별 판정을 확인하고 해당 노드로 이동할 수 있습니다. 구성 관계는 Critic 의존 간선과 구분합니다. 모니터는 저장된 그룹 정보를 검증해 표시하고 설정 코드를 실행하지 않습니다.
 
 목록의 경과 시간은 접수 이후입니다. 기존 기록에는 입력 복사·검증 이전의 시간이 없으므로 해당 준비 시간은 포함하지 않습니다. Human의 담당 이후 시간은 실제 작업 시간이 아닌 담당 후 경과입니다.
 

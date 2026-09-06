@@ -1,4 +1,4 @@
-import type { ArtifactDefinition, CriticDefinition } from '../contracts.js';
+import type { ArtifactEntryDefinition, CriticDefinition } from '../contracts.js';
 
 export type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
 export type JsonSchema = Record<string, unknown>;
@@ -31,7 +31,7 @@ export interface ToolDefinition<Args = Record<string, unknown>> {
   preflight?(context: ToolContext): { ok: boolean; message: string } | Promise<{ ok: boolean; message: string }>;
 }
 export interface ArtifactToolsConfig { agentTools?: Record<string, ToolDefinition<any>>; humanTools?: Record<string, ToolDefinition<any>> }
-export interface Config { artifacts: Record<string, ArtifactDefinition>; artifactTypes: Record<string, ArtifactToolsConfig>; critics: CriticDefinition[] }
+export interface Config { artifacts: Record<string, ArtifactEntryDefinition>; artifactTypes: Record<string, ArtifactToolsConfig>; critics: CriticDefinition[] }
 export type ConfigFactory = () => Config | Promise<Config>;
 export interface ConfigManifest {
   version: 1;

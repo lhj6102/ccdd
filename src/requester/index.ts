@@ -6,6 +6,7 @@ import { createArtifactViewer, createArtifactTools } from '../artifacts/index.js
 import { createHumanArtifactTools } from '../artifacts/human.js';
 import type { ReviewEnvelope, RepoConfig } from '../contracts.js';
 import { describeReviewTools } from '../tools/runner.js';
+import { resolveArtifactScope } from '../artifacts/groups.js';
 
 /** Repo-side adapter: prepare explicit envelopes from one prepared workspace definition. */
 export async function prepareReviewRequests({ repoPath, repoId = 'demo', snapshotHash, criticId, allowLegacyTools = false, preparedConfig }: { repoPath: string; repoId?: unknown; snapshotHash: unknown; criticId?: unknown; allowLegacyTools?: boolean; preparedConfig?:RepoConfig }): Promise<ReviewEnvelope[]> {
@@ -22,7 +23,7 @@ export async function prepareReviewRequests({ repoPath, repoId = 'demo', snapsho
     snapshotHash,
     criticId: critic.id,
     title: critic.title,
-    artifacts: [critic.target, ...critic.deps].map(id => ({ id, type: snapshot.config.artifacts[id].type, path: snapshot.config.artifacts[id].path })),
+    ...resolveArtifactScope(snapshot.config.artifacts, [critic.target, ...critic.deps]),
     artifactTypes: snapshot.config.artifactTypes,
     ...(snapshot.config.configManifest ? {configManifest:snapshot.config.configManifest} : {}),
     payload: critic.payload,
@@ -55,7 +56,7 @@ export async function prepareReviewRequests({ repoPath, repoId = 'demo', snapsho
 
 /** Reopen the declared observation scope of a stored review, including historical snapshots.
  * This is never used for admission, scheduling or inferring a legacy target. */
-export async function readStoredArtifactScope({ repoPath, criticId }: { repoPath: string; criticId: string }): Promise<Pick<ReviewEnvelope, 'artifacts' | 'artifactTypes' | 'profile'>> {
+export async function readStoredArtifactScope({ repoPath, criticId }: { repoPath: string; criticId: string }): Promise<Pick<ReviewEnvelope, 'artifacts' | 'artifactGroups' | 'artifactTypes' | 'profile'>> {
   const object = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === 'object' && !Array.isArray(value);
   const raw: unknown = JSON.parse(await readFile(join(repoPath, 'ccdd.config.json'), 'utf8'));
   if (!object(raw) || !object(raw.artifacts) || !object(raw.artifactTypes) || !Array.isArray(raw.critics)) throw new Error('Invalid stored Artifact configuration.');
@@ -69,7 +70,9 @@ export async function readStoredArtifactScope({ repoPath, criticId }: { repoPath
   else {
     const { config } = await readWorkspaceConfig(repoPath);
     const definition = config.critics.find(item => item.id === criticId)!;
-    ids = [definition.target, ...definition.deps];
+    const scope = { ...resolveArtifactScope(config.artifacts, [definition.target, ...definition.deps]), artifactTypes: config.artifactTypes, profile: definition.profile };
+    await createArtifactViewer({ worktreePath: repoPath, artifacts: scope.artifacts, artifactTypes: scope.artifactTypes });
+    return scope;
   }
   if (!Array.isArray(ids) || !ids.length || new Set(ids).size !== ids.length || ids.some(id => typeof id !== 'string' || !Object.hasOwn(raw.artifacts as object, id))) throw new Error('Invalid stored Artifact references.');
   const definitions = raw.artifacts;

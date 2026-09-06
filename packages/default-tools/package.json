@@ -13,5 +13,6 @@
     "prepack": "npm run build"
   },
   "peerDependencies": { "@lhj6102/ccdd": ">=1.0.0 <2" },
+  "dependencies": { "@earendil-works/pi-agent-core": "0.85.1" },
   "devDependencies": { "@lhj6102/ccdd": "file:../.." }
 }

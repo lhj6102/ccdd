@@ -7,7 +7,7 @@ import { createExecutorRegistry } from '../src/executors/index.js';
 import { diagnoseProject } from '../src/doctor/index.js';
 import { fingerprintWorkspace, removeOwnedWorkspaceTree } from '../src/workspaces/index.js';
 import { errorCode, errorMessage } from '../src/executors/errors.js';
-import type { AgentProfile, RuntimeProfile, ReviewEnvelope, RepoConfig, ExecutionContext, ExecutionEvent, ProbeResult, ArtifactToolCall } from '../src/contracts.js';
+import type { AgentProfile, RuntimeProfile, ReviewEnvelope, RepoConfig, ArtifactDefinition, ExecutionContext, ExecutionEvent, ProbeResult, ArtifactToolCall } from '../src/contracts.js';
 import type { StreamFn } from '../src/executors/pi.js';
 import { artifactStream, type ArtifactStreamOptions } from './pi-fixture.js';
 
@@ -20,7 +20,7 @@ async function fixture(t: TestContext) {
   await writeFile(join(worktreePath, 'spec.md'), 'Current spec.');
   await writeFile(join(worktreePath, 'tests/check.test.mjs'), "import {writeFileSync} from 'node:fs'; writeFileSync('SHOULD_NOT_RUN','bad'); throw new Error('doctor must not run this');");
   const profile: AgentProfile = { kind: 'agent', provider: 'openai-codex', model: 'gpt-6-astra', reasoning: 'medium', timeoutMs: 3_000 };
-  const config: RepoConfig = {
+  const config: Omit<RepoConfig, 'artifacts'> & { artifacts: Record<string, ArtifactDefinition> } = {
     artifacts: { why: { type: 'markdown', path: 'why.md' }, spec: { type: 'markdown', path: 'spec.md' }, tests: { type: 'code', path: 'tests' } },
     artifactTypes: { markdown: { viewer: 'text', agentTools: { read: {} }, humanTools: { read: {} } }, code: { viewer: 'files', agentTools: { list: {}, read: {} }, humanTools: { list: {}, read: {} } } },
     critics: [

@@ -9,6 +9,7 @@
 cp -R examples/custom-text-reader /tmp/ccdd-custom-reader
 cd /tmp/ccdd-custom-reader
 npm init -y
+npm pkg set type=module
 mkdir -p vendor/ccdd
 gh release download v1.0.0 --repo lhj6102/ccdd --dir vendor/ccdd \
   --pattern '*.tgz' --pattern SHA256SUMS --pattern verification.json

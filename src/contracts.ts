@@ -12,7 +12,7 @@ export type CriticProfile = AgentProfile | HumanProfile | RuntimeProfile;
 export interface ReviewPayload { instruction: string; [key: string]: unknown }
 export interface ReviewEnvelope {
   repoId: string; snapshotHash: string; criticId: string; title: string;
-  artifacts: ArtifactReference[]; artifactTypes: Record<string, ArtifactTypeDefinition>;
+  artifacts: ArtifactReference[]; artifactGroups?: ArtifactGroupReference[]; artifactTypes: Record<string, ArtifactTypeDefinition>;
   configManifest?: ConfigManifest;
   payload: ReviewPayload; profile: CriticProfile; target: string; deps: string[];
 }
@@ -36,7 +36,10 @@ export interface ReviewRequest extends ReviewEnvelope {
 }
 export interface CriticDefinition { id: string; title: string; target: string; deps: string[]; profile: CriticProfile; payload: ReviewPayload }
 export interface ArtifactDefinition { type: string; path: string; basis?: boolean }
-export interface RepoConfig { artifacts: Record<string, ArtifactDefinition>; artifactTypes: Record<string, ArtifactTypeDefinition>; critics: CriticDefinition[]; configManifest?: ConfigManifest }
+export interface ArtifactGroupDefinition { kind: 'group'; members: string[]; basis?: boolean }
+export type ArtifactEntryDefinition = ArtifactDefinition | ArtifactGroupDefinition;
+export interface ArtifactGroupReference { id: string; members: string[] }
+export interface RepoConfig { artifacts: Record<string, ArtifactEntryDefinition>; artifactTypes: Record<string, ArtifactTypeDefinition>; critics: CriticDefinition[]; configManifest?: ConfigManifest }
 export interface ExecutionEvent { type: string; [key: string]: unknown }
 export interface ExecutionContext { worktreePath: string; workspacePath?: string; runDir: string; signal?: AbortSignal; onEvent?: (event: ExecutionEvent) => void | Promise<void> }
 export type ExecutorReadiness = { ok: true } | { ok: false; code?: string; reason: string; remedy?: string };

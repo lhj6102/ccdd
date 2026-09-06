@@ -7,6 +7,7 @@ import type { HumanToolResult } from './human.js';
 import { createReviewTools, type ReviewToolDefinition } from '../tools/runner.js';
 import type { ToolResult } from '../tools/contracts.js';
 import { assertArtifactAudience, type ArtifactAudience } from './types.js';
+import { isArtifactGroup, resolveArtifactScope } from './groups.js';
 
 export interface ArtifactToolCheck {
   artifactId?: string;
@@ -66,20 +67,25 @@ export async function diagnoseArtifactTools({ repoPath, mode = 'copy', stateDir,
     report.workspacePath = worktreePath;
     const { config } = await readWorkspaceConfig(worktreePath);
     const { configManifest } = config;
-    const allArtifacts = Object.entries(config.artifacts).map(([id, value]) => ({ id, ...value }));
-    const selected = artifactId === undefined ? allArtifacts : allArtifacts.filter(artifact => artifact.id === artifactId);
+    if (artifactId !== undefined && !Object.hasOwn(config.artifacts, artifactId)) throw new Error('Unknown selected Artifact.');
+    if (execute && artifactId !== undefined && isArtifactGroup(config.artifacts[artifactId])) {
+      report.checks.push({ artifactId, ok: false, message: 'Groups collect member tools. Select a leaf Artifact with --artifact to execute its tool.' });
+      return report;
+    }
+    const selectedScope = resolveArtifactScope(config.artifacts, artifactId === undefined ? Object.keys(config.artifacts) : [artifactId]);
+    const selected = selectedScope.artifacts;
     if (!selected.length) throw new Error('Unknown selected Artifact.');
     if (!artifactId && !audience && !toolName) {
       for (const critic of config.critics) {
         try {
-          assertArtifactAudience({ profile: critic.profile, artifacts: allArtifacts.filter(artifact => [critic.target, ...critic.deps].includes(artifact.id)), artifactTypes: config.artifactTypes, configManifest });
+          assertArtifactAudience({ profile: critic.profile, ...resolveArtifactScope(config.artifacts, [critic.target, ...critic.deps]), artifactTypes: config.artifactTypes, configManifest });
         } catch (error) {
           report.checks.push({ ok: false, ...safeFailure(error, false) });
         }
       }
     }
     for (const targetAudience of audience ? [audience] : ['agent', 'human'] as const) {
-      const registry = await createReviewTools({ worktreePath, artifacts: selected, artifactTypes: config.artifactTypes, configManifest, audience: targetAudience, runDir: join(context.stateDir, 'tool-check', randomUUID()), signal: workspace.signal });
+      const registry = await createReviewTools({ worktreePath, ...selectedScope, artifactTypes: config.artifactTypes, configManifest, audience: targetAudience, runDir: join(context.stateDir, 'tool-check', randomUUID()), signal: workspace.signal });
       try {
         // Explicit Artifact selection makes the short operation name unambiguous; published names win.
         const resolvedToolName = toolName === undefined || registry.tools.some(tool => tool.name === toolName) || artifactId === undefined ? toolName : `${toolName}_${artifactId}`;
@@ -91,7 +97,7 @@ export async function diagnoseArtifactTools({ repoPath, mode = 'copy', stateDir,
         report.tools.push(...definitions.map(tool => ({ ...tool, audience: targetAudience })));
         for (const artifact of selected) {
           if (definitions.some(tool => tool.artifactId === artifact.id)) continue;
-          const required = audience !== undefined || config.critics.some(critic => critic.profile.kind === targetAudience && [critic.target, ...critic.deps].includes(artifact.id));
+          const required = audience !== undefined || config.critics.some(critic => critic.profile.kind === targetAudience && resolveArtifactScope(config.artifacts, [critic.target, ...critic.deps]).artifacts.some(leaf => leaf.id === artifact.id));
           report.checks.push({ artifactId: artifact.id, audience: targetAudience, ok: !required, message: `No ${targetAudience} tools are available for this Artifact. It cannot be used by a ${targetAudience} Critic.` });
         }
         report.checks.push(...(await registry.preflight({ toolName: resolvedToolName })).map(check => ({ ...check, audience: targetAudience })));

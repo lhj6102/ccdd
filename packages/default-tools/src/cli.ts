@@ -9,7 +9,9 @@ try {
     if (bytes > 64 * 1024) throw new Error('Reader request exceeded its limit');
     chunks.push(data);
   }
-  const data = await readerRequest(JSON.parse(Buffer.concat(chunks).toString('utf8')));
+  const input: unknown = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+  const image = input && typeof input === 'object' && 'operation' in input && input.operation === 'view_image';
+  const data = image ? await (await import('./image.js')).imageRequest(input) : await readerRequest(input);
   process.stdout.write(`${JSON.stringify({ ok: true, data })}\n`);
 } catch (error) {
   // A single structured response distinguishes invalid input from process failures.
