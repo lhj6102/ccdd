@@ -4,6 +4,7 @@ import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypt
 import { isDeepStrictEqual } from 'node:util';
 import { createArtifactViewer, createArtifactTools } from '../artifacts/index.js';
 import { createHumanArtifactTools } from '../artifacts/human.js';
+import { describeReviewTools } from '../tools/runner.js';
 import type { MonitorStoredRequest } from './store.js';
 import { readStoredArtifactScope } from '../requester/index.js';
 import { reopenWorkspace } from '../workspaces/index.js';
@@ -44,6 +45,8 @@ function safeError(value: unknown): HttpError {
   if (code === 'HUMAN_TOOL_UNAVAILABLE') return new HttpError(409, '등록된 프로그램을 시작할 수 없습니다. 설치 여부와 도구 설정을 확인하세요.');
   if (code === 'HUMAN_TOOL_FAILED') return new HttpError(409, '등록된 프로그램이 정상적으로 끝나지 않았습니다. 프로그램과 도구 설정을 확인하세요.');
   if (code === 'HUMAN_TOOL_TIMEOUT') return new HttpError(504, '등록된 프로그램의 실행 시간이 초과되었습니다.');
+  if (code === 'ARTIFACT_TOOL_TIMEOUT') return new HttpError(504, '도구 실행 시간이 초과되었습니다.');
+  if (code === 'ARTIFACT_TOOL_FAILED') return new HttpError(409, '도구를 실행하지 못했습니다. 입력과 등록된 프로그램을 확인한 뒤 다시 시도하세요.');
   if (code === 'UNKNOWN_ARTIFACT_TOOL') return new HttpError(400, '이 Artifact에 등록되지 않은 도구입니다.');
   if (code === 'ABORTED') return new HttpError(409, '도구 실행이 중단되었습니다.');
   if (code === 'EACCES' || code === 'EPERM') return new HttpError(409, '리뷰 입력을 읽을 권한이 없습니다.');
@@ -143,11 +146,18 @@ async function decorateDetail(detail: MonitorDetail, record: MonitorStoredReques
     claimedByMe,
   };
   detail.tools = [];
+  detail.artifactPreview = record.request.configManifest ? 'tools' : 'legacy';
   if (detail.request.kind === 'human') {
     try {
-      await authorizeWorkspace(record);
-      const registry = await createHumanArtifactTools({ worktreePath: record.request.workspace.path, artifacts: record.request.artifacts, artifactTypes: record.request.artifactTypes, allowLegacy: true, signal: AbortSignal.timeout(5_000) });
-      detail.tools = registry.tools.map(tool => ({ name: tool.name, artifactId: tool.artifactId, operation: tool.operation, description: tool.description, inputSchema: tool.inputSchema }));
+      if (record.request.configManifest) {
+        // A monitor GET only projects the stored manifest. Loading a TS config is executable work.
+        detail.tools = describeReviewTools({ artifacts: record.request.artifacts, configManifest: record.request.configManifest, audience: 'human' })
+          .map(tool => ({ name: tool.name, artifactId: tool.artifactId, operation: tool.operation, description: tool.description, inputSchema: tool.inputSchema }));
+      } else {
+        await authorizeWorkspace(record);
+        const registry = await createHumanArtifactTools({ worktreePath: record.request.workspace.path, artifacts: record.request.artifacts, artifactTypes: record.request.artifactTypes, allowLegacy: true, signal: AbortSignal.timeout(5_000) });
+        detail.tools = registry.tools.map(tool => ({ name: tool.name, artifactId: tool.artifactId, operation: tool.operation, description: tool.description, inputSchema: tool.inputSchema }));
+      }
     } catch { detail.toolIssue = '이 리뷰의 도구를 준비할 수 없습니다. 보관된 입력과 도구 정의를 확인하세요.'; }
   }
   return detail;
@@ -271,6 +281,7 @@ export async function startMonitor(options: MonitorSources & { port?: number } =
         controller.signal.throwIfAborted();
         if (!record) throw new HttpError(404, '리뷰 요청을 찾을 수 없습니다.');
         if (record.request.id !== requestId) throw new HttpError(409, '저장된 리뷰 요청의 식별자가 일치하지 않습니다.');
+        if (record.request.configManifest) throw new HttpError(409, '이 Artifact는 등록된 도구로 확인하세요. Human 리뷰는 검토 탭의 제공된 프로그램을 사용할 수 있습니다.');
         await authorizeWorkspace(record);
         controller.signal.throwIfAborted();
         const handle = await reopenWorkspace(record.request.workspace, { signal: controller.signal });

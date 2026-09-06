@@ -1,6 +1,6 @@
 # Repo Requester → Broker
 
-Requester는 현재 repo와 선택한 workspace 정책을 지정합니다. 브로커가 입력을 준비한 다음, 그 입력의 `ccdd.config.json`에서 명시적인 리뷰 요청을 구성합니다. Git commit을 요구하지 않습니다.
+Requester는 현재 repo와 선택한 workspace 정책을 지정합니다. 브로커가 입력을 준비한 다음, 그 입력의 `ccdd.config.ts`(또는 이전을 위한 legacy `ccdd.config.json`)에서 명시적인 리뷰 요청을 구성합니다. Git commit을 요구하지 않습니다.
 
 ```js
 const broker = createBroker({repoPath, stateDir, repoId: 'local', executors});
@@ -17,7 +17,7 @@ await broker.run(run.id);
 {
   repoId, snapshotHash, criticId, title,
   artifacts: [{id, type, path}],
-  artifactTypes, payload, profile, target, deps
+  artifactTypes, configManifest, payload, profile, target, deps
 }
 ```
 
@@ -27,7 +27,7 @@ await broker.run(run.id);
 
 Human copy 대기는 영속 상태이며 프로세스 상주를 요구하지 않습니다. 결과 제출 명령이 다음 실행을 이어갑니다. Human lock 대기는 입력 감시 worker가 살아 있어야 합니다.
 
-타입의 `agentTools`·`humanTools` 정의는 `artifactTypes`에 포함되어 입력 hash 및 요청과 함께 고정됩니다. Artifact Runner가 설명의 `{artifactName}`을 실제 Artifact ID로 치환하고 `read_spec`, `list_tests`, `open_spec` 등의 도구를 구성합니다. 새 Agent/Human 요청은 포함된 모든 Artifact에 해당 종류의 도구가 있어야 하며, 비어 있거나 생략된 목록은 요청 전에 거부됩니다. `--critic`으로 선택한 경우 그 Critic만 검사합니다. 도구 인자는 줄 단위 `startLine`·`lineCount`이며 디렉터리 읽기에는 내부 `path`가 필요합니다. Human 프로그램 실행 도구는 repo에 등록된 실행 파일·인자를 사용하고, `{artifactPath}`를 해당 리뷰의 Artifact 경로로 치환합니다.
+TS 타입의 `agentTools`·`humanTools`에는 `{ metadata, execute, preflight? }` 정의를 명시적으로 등록합니다. 저장 시 함수는 제외하고 설명·입력 스키마·결과/관측 계약과 구현 식별 정보를 `configManifest`에 고정합니다. `artifactTypes`는 직렬화 가능한 타입 식별 정보만 전달합니다. 과거 JSON 요청에는 `configManifest`가 없으며 기존 Viewer 계약으로 실행합니다. Artifact Runner가 설명의 `{artifactName}`을 실제 Artifact ID로 치환하고 `read_spec`, `list_tests`, `open_spec` 등의 도구를 구성합니다. 새 Agent/Human 요청은 포함된 모든 Artifact에 해당 종류의 도구가 있어야 하며, 비어 있거나 생략된 목록은 요청 전에 거부됩니다. `--critic`으로 선택한 경우 그 Critic만 검사합니다. 도구 인자는 각 metadata의 JSON Schema로 검증하며 임의의 동작 이름·텍스트/JSON/이미지/앱 열기 결과를 지원합니다. 기본 Agent Reader는 줄 단위 `startLine`·`lineCount`와 디렉터리 내부 `path`를 사용합니다. 기본 Human 도구는 등록된 데스크톱 앱을 엽니다. Artifact Runner가 snapshot 경로와 출력·임시 디렉터리·취소 신호를 연결하며, 실행·Human 재개 시 당시 manifest와 구현을 대조합니다. 기본 도구 라이브러리 설치나 import만으로는 등록되지 않습니다.
 
 
 Agent는 Pi 실행기로 전달합니다. 공통 요청·결과 타입은 `src/contracts.ts`에 있으며 Pi 라이브러리 타입을 Broker 계약으로 노출하지 않습니다. 인증 파일의 경로는 실행 환경 설정이고 repo payload나 Artifact 정의에 credential을 넣지 않습니다.

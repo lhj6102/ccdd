@@ -1,9 +1,12 @@
 {
   "name": "@lhj6102/ccdd",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "private": true,
   "description": "Daemon-free critic broker and artifact runner with whole-workspace lock/copy",
   "type": "module",
+  "types": "./dist/src/sdk.d.ts",
+  "exports": { ".": { "types": "./dist/src/sdk.d.ts", "import": "./dist/src/sdk.js" } },
+  "workspaces": ["packages/default-tools"],
   "engines": {
     "node": ">=24"
   },
@@ -11,7 +14,9 @@
     "ccdd": "./dist/src/cli.js"
   },
   "scripts": {
-    "build": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && node node_modules/typescript/bin/tsc -p tsconfig.json && npm run build:ui",
+    "build": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && npm run build:core && npm run build:tools && node node_modules/typescript/bin/tsc -p tsconfig.json && npm run build:ui",
+    "build:core": "node node_modules/typescript/bin/tsc -p tsconfig.runtime.json",
+    "build:tools": "npm run build --workspace @lhj6102/ccdd-default-tools",
     "build:ui": "npm run typecheck:ui && vite build --config vite.config.ts",
     "typecheck:ui": "node src/monitor/ui/typecheck.cjs -p tsconfig.ui.json --noEmit",
     "typecheck": "node node_modules/typescript/bin/tsc -p tsconfig.json --noEmit && npm run typecheck:ui",
@@ -35,6 +40,7 @@
     "dist/scripts/",
     "dist/monitor-ui/",
     "README.md",
+    "examples/",
     "docs/",
     "CONTEXT-MAP.md",
     "src/**/CONTEXT.md"

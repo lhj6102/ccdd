@@ -3,28 +3,21 @@ import { computed, nextTick, onUnmounted, ref, watch } from 'vue';
 import type { MonitorDetail, MonitorHumanTool, MonitorSession, MonitorToolResponse } from '../types.js';
 import { api, ApiError, errorMessage, requestRoute } from './api';
 import ToolOutput from './ToolOutput.vue';
+import { initialToolFields, initialToolJson, parseToolFields, parseToolJson, toolInputForm, validateToolInput } from './tool-input';
 
 const props = defineProps<{ detail: MonitorDetail; session: MonitorSession | null; sessionError: string }>();
 const emit = defineEmits<{ updated: [detail: MonitorDetail]; refresh: []; sessionExpired: [] }>();
 const busy = ref<'claim' | 'complete' | 'tool' | null>(null), error = ref(''), toolName = ref('');
 const fields = ref<Record<string, string>>({}), toolResult = ref<unknown>(null), lastArguments = ref<Record<string, unknown>>({});
+const jsonInput = ref('{}'), preferJson = ref(false);
 const summary = ref(''), evidence = ref(''), verdict = ref<'GREEN' | 'RED'>('GREEN');
 const toolForm = ref<HTMLFormElement | null>(null);
 const tool = computed(() => props.detail.tools?.find(item => item.name === toolName.value));
 const canAct = computed(() => Boolean(props.session && props.detail.human?.canComplete));
 const route = computed(() => requestRoute(props.detail.request.projectId, props.detail.request.id));
-const record = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === 'object' && !Array.isArray(value);
-const fieldLabels: Record<string, string> = { path: '내부 경로', startLine: '시작 줄', lineCount: '읽을 줄 수', offset: '시작 항목', limit: '항목 수' };
-const defaults: Record<string, string> = { path: '', startLine: '1', lineCount: '80', offset: '0', limit: '100' };
-const definitions = computed(() => {
-  const schema = tool.value?.inputSchema;
-  if (!schema || !record(schema.properties)) return [];
-  const required = Array.isArray(schema.required) ? schema.required : [];
-  return Object.entries(schema.properties).flatMap(([name, value]) => record(value) ? [{
-    name, label: fieldLabels[name] ?? name, numeric: value.type === 'integer' || value.type === 'number', required: required.includes(name),
-    minimum: typeof value.minimum === 'number' ? value.minimum : undefined, maximum: typeof value.maximum === 'number' ? value.maximum : undefined,
-  }] : []);
-});
+const form = computed(() => toolInputForm(tool.value?.inputSchema ?? { type: 'object', additionalProperties: false }));
+const definitions = computed(() => form.value.fields);
+const jsonMode = computed(() => form.value.json || preferJson.value);
 let toolController: AbortController | undefined, alive = true;
 
 function toolLabel(value: MonitorHumanTool): string {
@@ -33,14 +26,17 @@ function toolLabel(value: MonitorHumanTool): string {
 }
 function selectTool(value: MonitorHumanTool): void {
   toolName.value = value.name; fields.value = {}; error.value = ''; toolResult.value = null;
-  const properties = value.inputSchema.properties;
-  if (record(properties)) for (const [name, schema] of Object.entries(properties)) fields.value[name] = record(schema) && (typeof schema.default === 'string' || typeof schema.default === 'number') ? String(schema.default) : defaults[name] ?? '';
+  fields.value = initialToolFields(toolInputForm(value.inputSchema).fields, props.detail.artifactPreview !== 'tools');
+  jsonInput.value = initialToolJson(value.inputSchema); preferJson.value = false;
+}
+function setField(name: string, event: Event): void {
+  if (event.target instanceof HTMLInputElement) fields.value[name] = event.target.value;
 }
 function clickTool(value: MonitorHumanTool): void {
   if (!canAct.value || busy.value) return;
   selectTool(value);
-  if (definitions.value.some(field => field.required && !fields.value[field.name]?.trim())) {
-    void nextTick(() => toolForm.value?.querySelector<HTMLInputElement>('input[required]')?.focus());
+  if (jsonMode.value || definitions.value.some(field => field.required && !fields.value[field.name])) {
+    void nextTick(() => toolForm.value?.querySelector<HTMLElement>('input[required], select[required], textarea, input')?.focus());
     return;
   }
   void executeTool(undefined, value);
@@ -60,24 +56,27 @@ async function claim(): Promise<void> {
   catch (problem) { if (alive) report(problem); }
   finally { busy.value = null; }
 }
-function argumentsFromFields(): Record<string, unknown> {
-  const arguments_: Record<string, unknown> = {};
-  for (const field of definitions.value) {
-    const value = fields.value[field.name]?.trim() ?? '';
-    if (!value) { if (field.required) throw new Error(`${field.label}을 입력해 주세요.`); continue; }
-    if (field.numeric) {
-      const parsed = Number(value);
-      if (!Number.isSafeInteger(parsed) || (field.minimum !== undefined && parsed < field.minimum) || (field.maximum !== undefined && parsed > field.maximum)) throw new Error(`${field.label}의 범위를 확인해 주세요.`);
-      arguments_[field.name] = parsed;
-    } else arguments_[field.name] = value;
+function toggleJson(): void {
+  if (!tool.value) return;
+  if (!preferJson.value) {
+    try { jsonInput.value = JSON.stringify(parseToolFields(tool.value.inputSchema, definitions.value, fields.value), null, 2); }
+    catch { jsonInput.value = initialToolJson(tool.value.inputSchema); }
+  } else {
+    try {
+      const input = parseToolJson(tool.value.inputSchema, jsonInput.value);
+      if (Object.keys(input).some(name => !definitions.value.some(field => field.name === name))) throw new Error('추가한 항목은 JSON 입력에서 편집해 주세요.');
+      fields.value = initialToolFields(definitions.value.map(field => ({ ...field, default: input[field.name] })));
+    } catch (problem) { error.value = errorMessage(problem); return; }
   }
-  return arguments_;
+  preferJson.value = !preferJson.value;
 }
 async function executeTool(arguments_?: Record<string, unknown>, selectedTool = tool.value): Promise<void> {
   if (!selectedTool || !props.session || !canAct.value || busy.value) return;
   error.value = '';
   try {
-    const input = arguments_ ?? argumentsFromFields();
+    const input = arguments_ ? validateToolInput(selectedTool.inputSchema, arguments_) : jsonMode.value
+      ? parseToolJson(selectedTool.inputSchema, jsonInput.value)
+      : parseToolFields(selectedTool.inputSchema, definitions.value, fields.value);
     busy.value = 'tool'; toolController = new AbortController(); toolResult.value = null;
     const response = await api<MonitorToolResponse>(`${route.value}/tools/${encodeURIComponent(selectedTool.name)}`, { body: { arguments: input }, csrfToken: props.session.csrfToken, signal: toolController.signal });
     if (!alive) return;
@@ -88,7 +87,9 @@ async function executeTool(arguments_?: Record<string, unknown>, selectedTool = 
 }
 function nextPage(values: Record<string, unknown>): void {
   for (const [key, value] of Object.entries(values)) fields.value[key] = String(value);
-  void executeTool({ ...lastArguments.value, ...values });
+  const input = { ...lastArguments.value, ...values };
+  jsonInput.value = JSON.stringify(input, null, 2);
+  void executeTool(input);
 }
 function navigate(operation: 'read' | 'list', path: string): void {
   const target = props.detail.tools?.find(item => item.artifactId === tool.value?.artifactId && item.operation === operation);
@@ -128,7 +129,18 @@ onUnmounted(() => { alive = false; toolController?.abort(); });
         <div class="tool-choices"><button v-for="item in detail.tools" :key="item.name" class="artifact-choice" :aria-pressed="item.name === toolName" :disabled="!canAct || !!busy" @click="clickTool(item)">{{ toolLabel(item) }}</button></div>
         <form v-if="tool" ref="toolForm" class="tool-form" @submit.prevent="executeTool()">
           <p class="artifact-description">{{ tool.description }}</p>
-          <div v-if="definitions.length" class="tool-fields"><label v-for="field in definitions" :key="field.name" :class="{ wide: !field.numeric }"><span>{{ field.label }}<small v-if="!field.required && !field.numeric">선택</small></span><input v-model="fields[field.name]" :type="field.numeric ? 'number' : 'text'" :min="field.minimum" :max="field.maximum" :step="field.numeric ? 1 : undefined" :required="field.required" :placeholder="field.name === 'path' ? 'Artifact 안의 경로' : undefined" :disabled="!!busy" /></label></div>
+          <label v-if="jsonMode" class="form-label"><span>도구 입력 · JSON</span><textarea v-model="jsonInput" class="tool-json-input" rows="7" required spellcheck="false" :disabled="!!busy" /></label>
+          <div v-else-if="definitions.length" class="tool-fields">
+            <label v-for="field in definitions" :key="field.name" :class="{ wide: field.kind === 'string' }">
+              <span>{{ field.label }}<small v-if="!field.required">선택</small></span>
+              <select v-if="field.kind === 'enum'" v-model="fields[field.name]" :required="field.required" :disabled="!!busy"><option value="">선택하세요</option><option v-for="(option, index) in field.options" :key="index" :value="String(index)">{{ typeof option === 'string' ? option : JSON.stringify(option) }}</option></select>
+              <select v-else-if="field.kind === 'boolean'" v-model="fields[field.name]" :required="field.required" :disabled="!!busy"><option value="">선택하세요</option><option value="true">예</option><option value="false">아니요</option></select>
+              <input v-else :value="fields[field.name]" :type="field.kind === 'string' ? 'text' : 'number'" :min="field.minimum" :max="field.maximum" :step="field.kind === 'integer' ? 1 : field.kind === 'number' ? 'any' : undefined" :minlength="field.minLength" :maxlength="field.maxLength" :required="field.required && (field.kind !== 'string' || !!field.minLength)" :placeholder="field.name === 'path' ? 'Artifact 안의 경로' : undefined" :disabled="!!busy" @input="setField(field.name, $event)" />
+              <span v-if="field.description" class="tool-field-description">{{ field.description }}</span>
+            </label>
+          </div>
+          <details v-if="jsonMode" class="tool-schema"><summary>입력 형식 보기</summary><pre>{{ JSON.stringify(tool.inputSchema, null, 2) }}</pre></details>
+          <button v-if="!form.json && (definitions.length || tool.inputSchema.additionalProperties !== false)" class="text-button tool-input-mode" type="button" :disabled="!!busy" @click="toggleJson">{{ preferJson ? '입력 필드로 전환' : 'JSON으로 입력' }}</button>
           <button class="secondary-button" type="submit" :disabled="!canAct || !!busy">{{ busy === 'tool' ? '실행 중…' : tool.operation === 'read' ? '읽기' : tool.operation === 'list' ? '목록 보기' : '도구 실행' }}</button>
         </form>
         <ToolOutput v-if="toolResult !== null" :result="toolResult" :can-read="!!detail.tools?.some(item => item.artifactId === tool?.artifactId && item.operation === 'read')" :can-list="!!detail.tools?.some(item => item.artifactId === tool?.artifactId && item.operation === 'list')" :busy="!!busy" @page="nextPage" @navigate="navigate" />

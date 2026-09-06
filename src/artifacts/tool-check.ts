@@ -1,10 +1,11 @@
-import { constants } from 'node:fs';
-import { access } from 'node:fs/promises';
+import { join } from 'node:path';
+import { randomUUID } from 'node:crypto';
 import { localContext } from '../local.js';
 import { readWorkspaceConfig } from '../broker/config.js';
 import { prepareWorkspace, type WorkspaceHandle, type WorkspaceMode } from '../workspaces/index.js';
-import { createArtifactViewer, createArtifactTools, type ArtifactToolDefinition } from './index.js';
-import { createHumanArtifactTools, type HumanToolDefinition, type HumanToolResult } from './human.js';
+import type { HumanToolResult } from './human.js';
+import { createReviewTools, type ReviewToolDefinition } from '../tools/runner.js';
+import type { ToolResult } from '../tools/contracts.js';
 import { assertArtifactAudience, type ArtifactAudience } from './types.js';
 
 export interface ArtifactToolCheck {
@@ -23,8 +24,8 @@ export interface ArtifactToolCheckReport {
   snapshotHash?: string;
   workspacePath?: string;
   checks: ArtifactToolCheck[];
-  tools: Array<(ArtifactToolDefinition | HumanToolDefinition) & { audience: ArtifactAudience }>;
-  result?: HumanToolResult;
+  tools: Array<ReviewToolDefinition & { audience: ArtifactAudience }>;
+  result?: HumanToolResult | ToolResult;
 }
 export interface DiagnoseArtifactToolsOptions {
   repoPath: string;
@@ -64,56 +65,44 @@ export async function diagnoseArtifactTools({ repoPath, mode = 'copy', stateDir,
     // Cached copies are retained: a desktop viewer can continue reading after its launcher exits.
     report.workspacePath = worktreePath;
     const { config } = await readWorkspaceConfig(worktreePath);
+    const { configManifest } = config;
     const allArtifacts = Object.entries(config.artifacts).map(([id, value]) => ({ id, ...value }));
     const selected = artifactId === undefined ? allArtifacts : allArtifacts.filter(artifact => artifact.id === artifactId);
     if (!selected.length) throw new Error('Unknown selected Artifact.');
     if (!artifactId && !audience && !toolName) {
       for (const critic of config.critics) {
         try {
-          assertArtifactAudience({ profile: critic.profile, artifacts: allArtifacts.filter(artifact => [critic.target, ...critic.deps].includes(artifact.id)), artifactTypes: config.artifactTypes });
+          assertArtifactAudience({ profile: critic.profile, artifacts: allArtifacts.filter(artifact => [critic.target, ...critic.deps].includes(artifact.id)), artifactTypes: config.artifactTypes, configManifest });
         } catch (error) {
           report.checks.push({ ok: false, ...safeFailure(error, false) });
         }
       }
     }
     for (const targetAudience of audience ? [audience] : ['agent', 'human'] as const) {
-      const options = { worktreePath, artifacts: selected, artifactTypes: config.artifactTypes, signal: workspace.signal };
-      const viewer = await createArtifactViewer(options);
-      const registry = targetAudience === 'human' ? await createHumanArtifactTools(options) : createArtifactTools(viewer, { allowLegacy: false });
-      // Explicit Artifact selection makes the short operation name unambiguous; published names win.
-      const resolvedToolName = toolName === undefined || registry.tools.some(tool => tool.name === toolName) || artifactId === undefined ? toolName : `${toolName}_${artifactId}`;
-      const definitions = registry.tools.filter(tool => resolvedToolName === undefined || tool.name === resolvedToolName);
-      if (toolName !== undefined && !definitions.length) {
-        report.checks.push({ artifactId, audience: targetAudience, toolName, ok: false, message: 'The selected tool is not registered for this Artifact and reviewer kind.' });
-        continue;
-      }
-      report.tools.push(...definitions.map(tool => ({ ...tool, audience: targetAudience })));
-      for (const artifact of selected) {
-        if (definitions.some(tool => tool.artifactId === artifact.id)) continue;
-        const required = audience !== undefined || config.critics.some(critic => critic.profile.kind === targetAudience && [critic.target, ...critic.deps].includes(artifact.id));
-        report.checks.push({ artifactId: artifact.id, audience: targetAudience, ok: !required, message: `No ${targetAudience} tools are available for this Artifact. It cannot be used by a ${targetAudience} Critic.` });
-      }
-      if (targetAudience === 'human' && 'preflight' in registry) {
-        report.checks.push(...(await registry.preflight({ toolName: resolvedToolName })).map(check => ({ ...check, audience: targetAudience })));
-      } else {
-        for (const tool of definitions) {
-          try {
-            const target = await viewer.resolveTarget(tool.artifactId!);
-            await access(target.absolutePath, constants.R_OK);
-            report.checks.push({ artifactId: tool.artifactId, audience: targetAudience, toolName: tool.name, ok: true, message: 'The registered Viewer operation and Artifact are available. No tool was called.' });
-          } catch {
-            workspace.signal.throwIfAborted();
-            report.checks.push({ artifactId: tool.artifactId, audience: targetAudience, toolName: tool.name, ok: false, message: 'The registered Artifact is unavailable.' });
-          }
+      const registry = await createReviewTools({ worktreePath, artifacts: selected, artifactTypes: config.artifactTypes, configManifest, audience: targetAudience, runDir: join(context.stateDir, 'tool-check', randomUUID()), signal: workspace.signal });
+      try {
+        // Explicit Artifact selection makes the short operation name unambiguous; published names win.
+        const resolvedToolName = toolName === undefined || registry.tools.some(tool => tool.name === toolName) || artifactId === undefined ? toolName : `${toolName}_${artifactId}`;
+        const definitions = registry.tools.filter(tool => resolvedToolName === undefined || tool.name === resolvedToolName);
+        if (toolName !== undefined && !definitions.length) {
+          report.checks.push({ artifactId, audience: targetAudience, toolName, ok: false, message: 'The selected tool is not registered for this Artifact and reviewer kind.' });
+          continue;
         }
-      }
-      if (execute && targetAudience === audience && definitions.length === 1 && report.checks.every(check => check.ok)) {
-        await workspace.assertUnchanged();
-        const result = await registry.call(definitions[0].name, args ?? {});
-        await workspace.assertUnchanged();
-        report.result = result;
-        report.checks.push({ artifactId, audience, toolName: definitions[0].name, ok: true, message: 'The selected registered tool completed successfully. No review result was created.' });
-      }
+        report.tools.push(...definitions.map(tool => ({ ...tool, audience: targetAudience })));
+        for (const artifact of selected) {
+          if (definitions.some(tool => tool.artifactId === artifact.id)) continue;
+          const required = audience !== undefined || config.critics.some(critic => critic.profile.kind === targetAudience && [critic.target, ...critic.deps].includes(artifact.id));
+          report.checks.push({ artifactId: artifact.id, audience: targetAudience, ok: !required, message: `No ${targetAudience} tools are available for this Artifact. It cannot be used by a ${targetAudience} Critic.` });
+        }
+        report.checks.push(...(await registry.preflight({ toolName: resolvedToolName })).map(check => ({ ...check, audience: targetAudience })));
+        if (execute && targetAudience === audience && definitions.length === 1 && report.checks.every(check => check.ok)) {
+          await workspace.assertUnchanged();
+          const result = await registry.call(definitions[0].name, args ?? {});
+          await workspace.assertUnchanged();
+          report.result = result;
+          report.checks.push({ artifactId, audience, toolName: definitions[0].name, ok: true, message: 'The selected registered tool completed successfully. No review result was created.' });
+        }
+      } finally { await registry.close(); }
     }
     await workspace.assertUnchanged();
   } catch (error) {

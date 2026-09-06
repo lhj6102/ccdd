@@ -8,7 +8,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { prepareReviewRequests, readStoredArtifactScope } from '../requester/index.js';
 import { readWorkspaceConfig } from './config.js';
 import { createGraphDefinition, prerequisiteCriticIds, type GraphDefinition } from './graph.js';
-import { createHumanArtifactTools } from '../artifacts/human.js';
+import { createReviewTools } from '../tools/runner.js';
 import { prepareWorkspace, reopenWorkspace, type WorkspaceDescriptor, type WorkspaceHandle, type WorkspaceMode } from '../workspaces/index.js';
 import type { ReviewEnvelope, ReviewRequest, ReviewResult, ReviewStatus, ReviewToolCall, ExecutionContext, ExecutorReadiness } from '../contracts.js';
 
@@ -46,6 +46,18 @@ const fatalExecutionError = (error: unknown): boolean => {
   return Boolean(code?.startsWith('WORKSPACE_') || ['RUN_OWNERSHIP_LOST', 'REVIEW_CANCELED', 'WORKER_STOPPED', 'WORKER_EXITED', 'REVIEW_GRAPH_INVALID'].includes(code ?? ''));
 };
 
+function storedObservation(value: unknown): ReviewToolCall['observation'] {
+  if (!object(value) || typeof value.artifactId !== 'string' || typeof value.operation !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(value.operation)) return undefined;
+  const observation: NonNullable<ReviewToolCall['observation']> = { artifactId: value.artifactId.slice(0, 64), operation: value.operation };
+  if (value.kind === 'content' || value.kind === 'empty') observation.kind = value.kind;
+  if (typeof value.detail === 'string') observation.detail = value.detail.slice(0, 2000);
+  for (const key of ['startLine', 'endLine', 'lineCount', 'totalLines'] as const) {
+    const number = value[key];
+    if (number === null || (typeof number === 'number' && Number.isSafeInteger(number) && number >= 0)) observation[key] = number;
+  }
+  return observation;
+}
+
 function validateResult(value: unknown): ReviewResult {
   if (!object(value) || (value.verdict !== 'GREEN' && value.verdict !== 'RED') || typeof value.summary !== 'string' || !value.summary.trim() ||
       !Array.isArray(value.evidence) || value.evidence.some(item => typeof item !== 'string')) {
@@ -56,14 +68,8 @@ function validateResult(value: unknown): ReviewResult {
   for (const key of ['durationMs', 'exitCode'] as const) { const field = value[key]; if (typeof field === 'number' && Number.isFinite(field)) result[key] = field; }
   if (Array.isArray(value.toolCalls)) result.toolCalls = value.toolCalls.slice(0, 100).filter((item): item is Record<string, unknown> & { name: string } => object(item) && typeof item.name === 'string').map(item => {
     const call: ReviewToolCall = { name: item.name, ...(item.arguments === undefined ? {} : { arguments: copy(item.arguments) }) };
-    const observation = item.observation;
-    if (object(observation) && typeof observation.artifactId === 'string' && (observation.operation === 'read' || observation.operation === 'list')) {
-      call.observation = { artifactId: observation.artifactId.slice(0, 64), operation: observation.operation };
-      for (const key of ['startLine', 'endLine', 'lineCount', 'totalLines'] as const) {
-        const number = observation[key];
-        if (number === null || (typeof number === 'number' && Number.isSafeInteger(number) && number >= 0)) call.observation[key] = number;
-      }
-    }
+    const observation = storedObservation(item.observation);
+    if (observation) call.observation = observation;
     return call;
   });
   if (JSON.stringify(result).length > 256_000) throw new Error('Review result exceeds the supported size.');
@@ -354,6 +360,11 @@ export function createBroker({ repoPath, stateDir, repoId = 'demo', executors, w
           if (closed || closing || signal.aborted || !event || requestData(requestId)?.status !== 'RUNNING' || !['executor.started', 'artifact.tools.ready', 'artifact.tool.called', 'executor.completed'].includes(event.type)) return;
           const safe: Record<string, unknown> = {};
           for (const key of ['name', 'provider', 'model', 'kind', 'artifactId', 'path']) if (typeof event[key] === 'string') safe[key] = (event[key] as string).slice(0, 1000);
+          if (object(event.observation)) {
+            // Persist the same bounded metadata as final results, even if the Provider later fails.
+            const observed = storedObservation(event.observation);
+            if (observed) safe.observation = observed;
+          }
           if (Array.isArray(event.tools)) safe.tools = event.tools.slice(0, 32).map(tool => typeof tool === 'string' ? tool : tool?.name).filter(value => typeof value === 'string');
           appendEvent(runId, requestId, event.type, String(event.message ?? event.type).slice(0, 2000), safe);
           changed();
@@ -485,8 +496,9 @@ export function createBroker({ repoPath, stateDir, repoId = 'demo', executors, w
       const workspace = await workspaceAdapter.prepareWorkspace({ repoPath, stateDir, mode });
       try {
         const descriptor = copy(workspace.descriptor);
-        const graph = createGraphDefinition((await readWorkspaceConfig(descriptor.path)).config);
-        const expected = await prepareReviewRequests({ repoPath: descriptor.path, repoId, snapshotHash: descriptor.hash, criticId });
+        const { config } = await readWorkspaceConfig(descriptor.path);
+        const graph = createGraphDefinition(config);
+        const expected = await prepareReviewRequests({ repoPath: descriptor.path, repoId, snapshotHash: descriptor.hash, criticId, preparedConfig: config });
         const supplied = reviewRequests === undefined ? expected : reviewRequests;
         if (!isDeepStrictEqual(supplied, expected)) throw new Error('Submitted review request envelopes must exactly match the Artifact definitions, payload, profiles and dependencies in the requested workspace.');
         const id = randomUUID();
@@ -569,23 +581,32 @@ export function createBroker({ repoPath, stateDir, repoId = 'demo', executors, w
         workspace = await workspaceAdapter.reopenWorkspace(request.workspace, { signal });
         await workspace.assertUnchanged(); workspace.signal.throwIfAborted();
         inputsValidated = true;
-        const expected = await readStoredArtifactScope({ repoPath: workspace.descriptor.path, criticId: request.criticId });
-        if (!expected || expected.profile.kind !== 'human' || !isDeepStrictEqual(expected.artifactTypes, request.artifactTypes) || !isDeepStrictEqual(expected.artifacts, request.artifacts)) {
-          throw codedError('Stored Artifact tools do not match the reviewed workspace configuration.', 'WORKSPACE_ARTIFACT_MISMATCH');
+        if (!request.configManifest) {
+          if (Object.values(request.artifactTypes).some(type => type.custom)) throw codedError('Stored TS Artifact configuration has no tool manifest.', 'WORKSPACE_ARTIFACT_MISMATCH');
+          const expected = await readStoredArtifactScope({ repoPath: workspace.descriptor.path, criticId: request.criticId });
+          if (!expected || expected.profile.kind !== 'human' || !isDeepStrictEqual(expected.artifactTypes, request.artifactTypes) || !isDeepStrictEqual(expected.artifacts, request.artifacts)) {
+            throw codedError('Stored Artifact tools do not match the reviewed workspace configuration.', 'WORKSPACE_ARTIFACT_MISMATCH');
+          }
         }
-        const registry = await createHumanArtifactTools({ worktreePath: workspace.descriptor.path, artifacts: request.artifacts, artifactTypes: request.artifactTypes, signal: workspace.signal, allowLegacy: true });
-        registry.validateArguments(toolName, args);
-        assertClaim();
-        const result = await registry.call(toolName, args);
-        await workspace.assertUnchanged(); workspace.signal.throwIfAborted();
-        assertClaim();
-        const tool = registry.tools.find(tool => tool.name === toolName)!;
-        transaction(() => {
-          assertClaim();
-          appendEvent(request.runId, requestId, 'human.tool.executed', 'The claimed reviewer executed a registered Artifact tool.', { name: tool.name, artifactId: tool.artifactId, operation: tool.operation });
+        const registry = await createReviewTools({
+          worktreePath: workspace.descriptor.path, artifacts: request.artifacts, artifactTypes: request.artifactTypes,
+          configManifest: request.configManifest, criticId: request.criticId, audience: 'human',
+          runDir: path.resolve(stateDir, 'runs', request.runId, request.id, 'human-tools'), signal: workspace.signal,
         });
-        changed();
-        return result;
+        try {
+          registry.validateArguments(toolName, args);
+          assertClaim();
+          const result = await registry.call(toolName, args);
+          await workspace.assertUnchanged(); workspace.signal.throwIfAborted();
+          assertClaim();
+          const tool = registry.tools.find(tool => tool.name === toolName)!;
+          transaction(() => {
+            assertClaim();
+            appendEvent(request.runId, requestId, 'human.tool.executed', 'The claimed reviewer executed a registered Artifact tool.', { name: tool.name, artifactId: tool.artifactId, operation: tool.operation });
+          });
+          changed();
+          return result;
+        } finally { await registry.close(); }
       } catch (error) {
         const failure = workspace?.signal.aborted && !signal?.aborted ? workspace.signal.reason ?? error : error;
         if (!signal?.aborted && (!inputsValidated || errorCode(failure)?.startsWith('WORKSPACE_'))) {

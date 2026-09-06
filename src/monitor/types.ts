@@ -24,7 +24,7 @@ export interface MonitorSession { reviewerId: string; csrfToken: string }
 export interface MonitorHumanState { canClaim: boolean; canComplete: boolean; claimedByMe: boolean }
 export interface MonitorHumanTool {
   name: string; description: string; inputSchema: Record<string, unknown>;
-  artifactId: string; operation: 'read' | 'list' | 'command';
+  artifactId: string; operation: string;
 }
 export interface MonitorToolResponse { result: unknown }
 export interface MonitorDetail {
@@ -34,6 +34,7 @@ export interface MonitorDetail {
   error: string | null;
   timeline: { label: string; at: string }[];
   artifacts: ArtifactReference[];
+  artifactPreview?: 'legacy' | 'tools';
   human?: MonitorHumanState;
   tools?: MonitorHumanTool[];
   toolIssue?: string;

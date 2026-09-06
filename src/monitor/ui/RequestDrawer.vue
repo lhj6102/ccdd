@@ -35,7 +35,7 @@ onUnmounted(() => { dialog.value?.close(); document.body.classList.remove('drawe
           <HumanReview v-if="detail.profile.kind === 'human' && detail.request.status === 'WAITING_HUMAN'" :detail="detail" :session="session" :session-error="sessionError" @updated="value => emit('updated', value)" @refresh="emit('refresh')" @session-expired="emit('sessionExpired')" />
           <section v-if="detail.timeline.length" class="detail-section"><h3 class="section-title">진행 기록</h3><ol class="timeline"><li v-for="(item, index) in detail.timeline" :key="`${item.label}/${index}`"><span>{{ item.label }}</span><time :datetime="item.at">{{ dateLabel(item.at) }}</time></li></ol></section>
         </div>
-        <div v-if="tab === 'artifacts'" id="artifacts-panel" role="tabpanel" aria-labelledby="artifacts-tab"><ArtifactBrowser :project-id="selection.projectId" :request-id="selection.id" :artifacts="detail.artifacts" /></div>
+        <div v-if="tab === 'artifacts'" id="artifacts-panel" role="tabpanel" aria-labelledby="artifacts-tab"><ArtifactBrowser :project-id="selection.projectId" :request-id="selection.id" :artifacts="detail.artifacts" :preview="detail.artifactPreview" :human-review="detail.profile.kind === 'human' && detail.request.status === 'WAITING_HUMAN'" @review="tab = 'review'" /></div>
       </template>
     </div>
   </dialog>

@@ -14,7 +14,7 @@ import { startMonitor } from '../src/monitor/server.js';
 import type { MonitorArtifactPage, MonitorDetail, MonitorOverview, MonitorSession, MonitorGraph, MonitorRunOverview } from '../src/monitor/types.js';
 import type { RepoConfig, ReviewRequest, WorkspaceMode } from '../src/contracts.js';
 
-async function fixture(t: TestContext, mode: WorkspaceMode = 'copy', options: { waiting?: boolean; chain?: boolean; command?: boolean; longTool?: boolean } = {}) {
+async function fixture(t: TestContext, mode: WorkspaceMode = 'copy', options: { waiting?: boolean; chain?: boolean; command?: boolean; longTool?: boolean; custom?: boolean } = {}) {
   const dir = await realpath(await mkdtemp(join(tmpdir(), 'ccdd-monitor-test-')));
   const cleanup: Array<() => Promise<void>> = [];
   t.after(async () => { for (const close of cleanup.reverse()) await close(); await removeOwnedWorkspaceTree(dir); });
@@ -34,7 +34,27 @@ async function fixture(t: TestContext, mode: WorkspaceMode = 'copy', options: { 
     config.critics[0].target = 'a'.repeat(64);
   }
   if (options.chain) { config.artifacts.implementation = { type: 'code', path: 'tests/example.test.mjs' }; config.critics.push({ id: 'runtime', title: '후속 Runtime', target: 'implementation', deps: ['why', 'tests'], profile: { kind: 'runtime', command: 'node', args: ['--test', 'tests/example.test.mjs'] }, payload: { instruction: '실제 테스트 실행' } }); }
-  await writeFile(join(repoPath, 'ccdd.config.json'), JSON.stringify(config));
+  if (options.custom) {
+    config.artifacts.unrelated = { type: 'markdown', path: 'private.md', basis: true };
+    const marker = join(dir, 'config-code-executions.txt');
+    const metadata = { description: '{artifactName}의 프레임을 확인합니다.', inputSchema: { type: 'object', properties: { frame: { type: 'number', minimum: 0 }, overlay: { type: 'boolean' }, channels: { type: 'array', items: { type: 'string' } } }, required: ['frame', 'overlay', 'channels'], additionalProperties: false }, resultKinds: ['text', 'json', 'image'], observation: 'none' };
+    await writeFile(join(repoPath, 'ccdd.config.ts'), `
+import { appendFileSync, readFileSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+appendFileSync(${JSON.stringify(marker)}, 'load\\n');
+const preview = {
+  metadata: ${JSON.stringify(metadata)},
+  execute(context, args) {
+    appendFileSync(${JSON.stringify(marker)}, 'execute\\n');
+    if (args.frame === 13) throw new Error('program unavailable');
+    const imagePath = join(context.outputDir, 'frame.png');
+    writeFileSync(imagePath, Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aL1sAAAAASUVORK5CYII=', 'base64'));
+    return { content: [{ type: 'text', text: readFileSync(context.artifactPath, 'utf8') }, { type: 'json', data: args }, { type: 'image', path: imagePath, mimeType: 'image/png' }] };
+  },
+};
+export default () => ({ ...${JSON.stringify({ artifacts: config.artifacts, critics: config.critics })}, artifactTypes: { markdown: { humanTools: { preview } }, code: { humanTools: { preview } } } });
+`);
+  } else await writeFile(join(repoPath, 'ccdd.config.json'), JSON.stringify(config));
   const broker = createBroker({ repoPath, stateDir, executors: { canExecute: () => ({ ok: true }), execute: async () => { throw new Error('Monitor must not execute reviews'); }, notifyHuman: async () => { if (!options.waiting) throw new Error('Monitor must not send notifications'); } } });
   cleanup.push(() => broker.close());
   const run = await broker.submit({ mode, requesterId: 'monitor-test' });
@@ -383,4 +403,90 @@ test('run and graph HTTP views are read-only and share one project/run scope wit
   assert.equal((await raw(graphRoute, { method: 'POST', headers: { origin: data.monitor.url } })).status, 405);
   assert.doesNotMatch(JSON.stringify({ graph, runs }), /DO_NOT_EXPOSE_AUTH|privatePayload|authFile|piOptions|workspace|owner|instruction/);
   assert.deepEqual(await readFile(join(data.stateDir, 'broker.sqlite')), before);
+});
+
+test('TS Human detail and graph GET use stored tool manifests without importing project code or implicit text viewers', async t => {
+  const data = await fixture(t, 'copy', { custom: true, waiting: true });
+  const marker = join(data.dir, 'config-code-executions.txt');
+  const executions = await readFile(marker, 'utf8');
+  const database = await readFile(join(data.stateDir, 'broker.sqlite'));
+  for (let index = 0; index < 3; index++) {
+    const detail = await (await fetch(data.route)).json() as MonitorDetail;
+    assert.equal(detail.artifactPreview, 'tools');
+    assert.equal(detail.toolIssue, undefined);
+    const tool = detail.tools?.find(item => item.name === 'preview_why');
+    assert.ok(tool);
+    assert.equal(tool.operation, 'preview');
+    assert.equal(tool.description, 'why의 프레임을 확인합니다.');
+    assert.deepEqual(tool.inputSchema.required, ['frame', 'overlay', 'channels']);
+    assert.equal((await fetch(`${data.monitor.url}/api/graphs/${data.request.projectId}/${data.run.id}`)).status, 200);
+    const artifact = await fetch(`${data.route}/artifacts/why`);
+    assert.equal(artifact.status, 409);
+    assert.match(await artifact.text(), /등록된 도구/);
+  }
+  assert.equal(await readFile(marker, 'utf8'), executions);
+  assert.deepEqual(await readFile(join(data.stateDir, 'broker.sqlite')), database);
+  // The inspector can still describe the captured tools after their executable files are unavailable.
+  await removeOwnedWorkspaceTree(data.run.workspace.path);
+  const unavailable = await (await fetch(data.route)).json() as MonitorDetail;
+  assert.ok(unavailable.tools?.some(tool => tool.name === 'preview_why'));
+  assert.equal(unavailable.toolIssue, undefined);
+  assert.equal(await readFile(marker, 'utf8'), executions);
+});
+
+test('custom Human POST validates schema, returns generic content, retries tool failure and resumes from the copied snapshot', async t => {
+  const data = await fixture(t, 'copy', { custom: true, waiting: true });
+  const session = await browserSession(data.monitor.url);
+  const input = { frame: 0.5, overlay: false, channels: ['color', 'alpha'] };
+  assert.equal((await post(`${data.route}/tools/preview_why`, session, { arguments: input })).status, 403);
+  assert.equal((await post(`${data.route}/claim`, session)).status, 200);
+  const malformed = await post(`${data.route}/tools/preview_why`, session, { arguments: { ...input, frame: '0.5' } });
+  assert.equal(malformed.status, 400, await malformed.clone().text());
+  const failed = await post(`${data.route}/tools/preview_why`, session, { arguments: { ...input, frame: 13 } });
+  assert.equal(failed.status, 409, await failed.clone().text());
+  assert.equal((await (await fetch(data.route)).json() as MonitorDetail).request.status, 'WAITING_HUMAN');
+  await data.monitor.close();
+  await removeOwnedWorkspaceTree(data.repoPath);
+  const resumed = await startMonitor({ stateDirs: [data.stateDir], stateHome: data.stateHome, port: 0 });
+  t.after(() => resumed.close());
+  const renewed = await (await fetch(`${resumed.url}/api/session`, { headers: { cookie: session.cookie } })).json() as MonitorSession;
+  const sameReviewer = { cookie: session.cookie, ...renewed };
+  assert.equal(renewed.reviewerId, session.reviewerId);
+  const route = `${resumed.url}/api/requests/${data.request.projectId}/${data.request.id}`;
+  const response = await post(`${route}/tools/preview_why`, sameReviewer, { arguments: input });
+  assert.equal(response.status, 200, await response.clone().text());
+  const result = await response.json() as { result: { content: Array<Record<string, unknown>> } };
+  assert.deepEqual(result.result.content[0], { type: 'text', text: '# 목적\n두 항목 선택\n' });
+  assert.deepEqual(result.result.content[1], { type: 'json', data: input });
+  assert.equal(result.result.content[2].type, 'image');
+  assert.equal(result.result.content[2].mimeType, 'image/png');
+  assert.equal(typeof result.result.content[2].data, 'string');
+  assert.equal('path' in result.result.content[2], false);
+  assert.doesNotMatch(JSON.stringify(result), /workspaces|outputDir|tmpDir/);
+  const afterTool = await (await fetch(route)).json() as MonitorDetail;
+  assert.equal(afterTool.request.status, 'WAITING_HUMAN');
+  assert.equal(afterTool.result, null, 'A successful program/tool invocation does not submit a verdict');
+  const completed = await post(`${route}/complete`, sameReviewer, { verdict: 'GREEN', summary: '프레임을 확인했습니다.', evidence: ['제공된 프레임과 입력을 확인했습니다.'] });
+  assert.equal(completed.status, 200, await completed.clone().text());
+  assert.equal((await completed.json() as MonitorDetail).request.status, 'GREEN');
+});
+
+test('Human execution marks mismatched or corrupt captured TS tool manifests ERROR before user tool code runs', async t => {
+  for (const edit of [
+    (request: ReviewRequest) => { request.configManifest!.configHash = '0'.repeat(64); },
+    (request: ReviewRequest) => { request.configManifest!.types.markdown.humanTools.preview.inputSchema = { type: 'not-a-type' }; },
+    (request: ReviewRequest) => { request.artifacts.push({ id: 'unrelated', type: 'markdown', path: 'private.md' }); },
+    (request: ReviewRequest) => { request.artifacts = request.artifacts.filter(artifact => artifact.id === 'why'); },
+  ]) {
+    const data = await fixture(t, 'copy', { custom: true, waiting: true });
+    const session = await browserSession(data.monitor.url);
+    assert.equal((await post(`${data.route}/claim`, session)).status, 200);
+    editStoredRequest(data.stateDir, data.request.id, edit);
+    const response = await post(`${data.route}/tools/preview_why`, session, { arguments: { frame: 0.5, overlay: false, channels: [] } });
+    assert.equal(response.status, 409, await response.clone().text());
+    const detail = await (await fetch(data.route)).json() as MonitorDetail;
+    assert.equal(detail.request.status, 'ERROR');
+    assert.doesNotMatch(await readFile(join(data.dir, 'config-code-executions.txt'), 'utf8'), /execute/);
+    assert.equal((await post(`${data.route}/complete`, session, { verdict: 'GREEN', summary: '통과', evidence: ['입력 확인'] })).status, 409);
+  }
 });

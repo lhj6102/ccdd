@@ -2,8 +2,9 @@ import { Agent, type AgentTool, type StreamFn } from '@earendil-works/pi-agent-c
 import { Type, getSupportedThinkingLevels, hasApi, type Api, type Model, type TSchema } from '@earendil-works/pi-ai';
 import { builtinModels } from '@earendil-works/pi-ai/providers/all';
 import { Compile } from 'typebox/compile';
-import { createArtifactViewer, createAuditedArtifactTools, type ArtifactViewer, type ArtifactToolDefinition, type ArtifactToolCall } from '../artifacts/index.js';
-import type { AgentProfile, CriticProfile, ExecutionEvent, ReviewEnvelope } from '../contracts.js';
+import type { ArtifactReference } from '../artifacts/index.js';
+import { createReviewTools, toToolContent, type ReviewToolRegistry, type ReviewToolDefinition } from '../tools/runner.js';
+import type { AgentProfile, CriticProfile, ExecutionEvent, ReviewEnvelope, ReviewToolCall } from '../contracts.js';
 import { createPiCredentialStore, PiAuthError, validatePiOptions, type PiOptions } from './auth.js';
 import { diagnosticError as createDiagnosticError } from './errors.js';
 
@@ -61,20 +62,22 @@ export interface InvokePiOptions {
   signal?: AbortSignal;
   onEvent?: (event: ExecutionEvent) => void | Promise<void>;
   schema: Record<string, unknown>;
-  makePrompt: (input: { viewer: ArtifactViewer; tools: ArtifactToolDefinition[] }) => string;
+  makePrompt: (input: { viewer: { listArtifacts(): readonly ArtifactReference[] }; tools: ReviewToolDefinition[] }) => string;
   piOptions?: PiOptions;
   /** Test seam: replaces only transport; catalog validation, Agent loop and tools remain real. */
   streamFn?: StreamFn;
 }
 
 /** The same direct Artifact adapter and Pi Agent loop serve reviews and doctor. */
-export async function invokePi({ request, worktreePath, schema, makePrompt, signal, onEvent = () => {}, piOptions = {}, streamFn }: InvokePiOptions): Promise<{ final: unknown; toolCalls: ArtifactToolCall[] }> {
+export async function invokePi({ request, worktreePath, runDir, schema, makePrompt, signal, onEvent = () => {}, piOptions = {}, streamFn }: InvokePiOptions): Promise<{ final: unknown; toolCalls: ReviewToolCall[] }> {
   const model = validatePiProfile(request.profile, piOptions);
   const profile = request.profile as AgentProfile;
   const controller = new AbortController();
   let timedOut = false;
   let agent: Agent | undefined;
   let identityMismatch = false;
+  let registry: ReviewToolRegistry | undefined;
+  let toolFailure: Error | undefined;
   const abort = () => { controller.abort(); agent?.abort(); };
   if (signal?.aborted) abort();
   signal?.addEventListener('abort', abort, { once: true });
@@ -86,17 +89,23 @@ export async function invokePi({ request, worktreePath, schema, makePrompt, sign
   };
   try {
     checkAbort();
-    const viewer = await createArtifactViewer({ worktreePath, artifacts: request.artifacts, artifactTypes: request.artifactTypes, signal: controller.signal });
-    const registry = createAuditedArtifactTools(viewer, { onCall: call => onEvent({ type: 'artifact.tool.called', ...call }) });
-    const tools: AgentTool[] = registry.tools.map(tool => ({
+    const activeRegistry = await createReviewTools({ worktreePath, artifacts: request.artifacts, artifactTypes: request.artifactTypes, configManifest: request.configManifest, criticId: request.criticId, audience: 'agent', runDir, signal: controller.signal, onCall: call => onEvent({ type: 'artifact.tool.called', ...call }) });
+    registry = activeRegistry;
+    const tools: AgentTool[] = activeRegistry.tools.map(tool => ({
       name: tool.name, label: tool.name, description: tool.description,
       parameters: Type.Unsafe<Record<string, unknown>>(tool.inputSchema as TSchema),
-      prepareArguments: args => registry.validateArguments(tool.name, args),
+      prepareArguments: args => activeRegistry.validateArguments(tool.name, args),
       async execute(_id, args, toolSignal) {
         checkAbort(); toolSignal?.throwIfAborted();
-        const result = await registry.call(tool.name, args);
+        const result = await activeRegistry.call(tool.name, args);
         checkAbort(); toolSignal?.throwIfAborted();
-        return { content: [{ type: 'text', text: JSON.stringify(result) }], details: {} };
+        const content = await toToolContent(result);
+        if (content.some(block => block.type === 'image') && !model.input.includes('image')) {
+          toolFailure = diagnosticError('ARTIFACT_IMAGE_UNSUPPORTED', '요청한 모델은 Artifact 도구의 이미지 결과를 받을 수 없습니다.', '이미지를 지원하는 모델 또는 텍스트 관측 도구를 명시하세요.');
+          agent?.abort();
+          throw toolFailure;
+        }
+        return { content, details: {} };
       },
     }));
     let invoke = streamFn;
@@ -130,10 +139,11 @@ export async function invokePi({ request, worktreePath, schema, makePrompt, sign
         agent?.abort();
       }
     });
-    const prompt = makePrompt({ viewer, tools: registry.tools });
+    const prompt = makePrompt({ viewer: { listArtifacts: () => request.artifacts }, tools: activeRegistry.tools });
     checkAbort();
     await agent.prompt(prompt);
     checkAbort();
+    if (toolFailure) throw toolFailure;
     if (identityMismatch) throw diagnosticError('PROVIDER_IDENTITY_MISMATCH', 'Provider가 요청과 다른 Provider 또는 모델의 응답을 반환했습니다.', '요청한 모델 ID를 그대로 반환하는 모델을 지정하세요. CCDD는 모델 fallback이나 다른 모델의 판정을 수락하지 않습니다.');
     if (agent.state.errorMessage) throw providerFailure(agent.state.errorMessage);
     const last = agent.state.messages.at(-1);
@@ -151,11 +161,13 @@ export async function invokePi({ request, worktreePath, schema, makePrompt, sign
     return { final, toolCalls: registry.toolCalls };
   } catch (error) {
     checkAbort();
+    if (toolFailure) throw toolFailure;
     if (error instanceof Error && trustedErrors.has(error)) throw error;
     throw providerFailure(error);
   } finally {
     clearTimeout(timer);
     signal?.removeEventListener('abort', abort);
     agent?.reset();
+    await registry?.close();
   }
 }

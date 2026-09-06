@@ -1,6 +1,6 @@
 # GraphView 개발 검증용 프로젝트
 
-`test/fixtures/monitor-graph`는 Agent·Human·Runtime 아이콘과 다중 Critic, 분기·합류를 확인하는 작은 합성 프로젝트입니다. 소스 체크아웃에서 사용하는 검증 입력이며 npm 패키지에는 포함되지 않습니다. 기본 `prepare-demo`의 선형 Why → Spec → Tests → Implementation 시연은 그대로 사용합니다.
+`test/fixtures/monitor-graph`는 Agent·Human·Runtime 아이콘과 다중 Critic, 분기·합류를 확인하는 작은 합성 프로젝트입니다. 소스 체크아웃에서 사용하는 검증 입력이며 npm 패키지에는 포함되지 않습니다. 이 입력은 기존 모니터 화면과 과거 기록 호환을 확인하기 위해 legacy JSON Viewer 등록을 유지합니다. 새 TS 설정과 기본 Human 데스크톱 도구를 시연하려면 [v9 CLI 데모](demo.md)를 사용합니다. 기본 `prepare-demo`는 선형 Why → Spec → Tests → Implementation을 유지합니다.
 
 | Critic | 종류 | 평가 대상 | 참조 |
 | --- | --- | --- | --- |
@@ -20,7 +20,7 @@ node dist/src/cli.js run --repo test/fixtures/monitor-graph --copy --human-inbox
 node dist/src/cli.js monitor --repo test/fixtures/monitor-graph
 ```
 
-Graph에서 새 실행을 선택합니다. Spec의 Agent 아이콘과 Human 아이콘은 각각의 요청 상세를 엽니다. Human 검토자가 Why와 Spec을 읽고 claim·판정을 제출해야 Spec의 모든 Critic이 완료됩니다. 둘 다 GREEN이면 Tests의 Agent 검토가 시작되고, 필요한 Artifact가 모두 통과하면 구현 테스트가 실행됩니다. 사람의 판정을 자동으로 제출하거나 Agent 판정을 고정하지 않습니다.
+Graph에서 새 실행을 선택합니다. Spec의 Agent 아이콘과 Human 아이콘은 각각의 요청 상세를 엽니다. 이 legacy 입력의 Human 검토자가 화면에서 Why와 Spec을 읽고 claim·판정을 제출해야 Spec의 모든 Critic이 완료됩니다. 둘 다 GREEN이면 Tests의 Agent 검토가 시작되고, 필요한 Artifact가 모두 통과하면 구현 테스트가 실행됩니다. 사람의 판정을 자동으로 제출하거나 Agent 판정을 고정하지 않습니다.
 
 설정을 바꾼 뒤에는 새 실행이 필요합니다. 이미 기록된 Runtime 요청은 과거 snapshot의 종류와 판정을 유지합니다.
 
