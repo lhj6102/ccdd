@@ -147,4 +147,6 @@ Artifact의 기본 전략은 `{kind:'file-hash'}`이며 자신의 `path`를 재�
 
 `npm run test:packages`는 세 tarball의 파일 경계를 검사하고, 기본 도구를 쓰는 구성과 사용자 도구만 쓰는 구성에 실제 production 설치를 수행한다. Runtime 설치는 검토할 입력 밖에 두고, 실제 설치한 SDK·선택한 텍스트 도구 파일은 검토 입력에 포함한다. 두 구성 모두 실제 도구 실행, 분리된 worker의 검증, 새 티켓 없는 PASS 재사용을 통과했다. Provider 판정을 대신 생성하거나 데스크톱 프로그램을 띄우는 검증은 아니다.
 
-전체 기존 테스트 모음은 이 Windows 환경의 Unix 경로·symlink 권한·프로세스 종료 가정에서 실패했고, 일부 테스트가 멈춰 중단했다. 전체 통과로 기록하지 않는다. 별도로, production 설치 폴더 전체와 모든 의존성을 검토 입력으로 삼은 copy 검증은 5분 안에 완료되지 않았다. 모든 입력을 검사하는 workspace 계약은 유지하며, 대규모 snapshot의 성능 개선은 이번 변경에 포함하지 않는다.
+v2.0.0 배포 준비에서는 별도 Linux / Node 24.18.0의 격리된 clone으로 빌드·전체 테스트 302개와 세 tarball의 두 가지 production 설치·실행 검증을 모두 통과했다. 실패·취소·건너뛴 테스트는 0개다. 배포 커밋의 최종 검증 결과는 Release의 `verification.json`에 기록한다.
+
+Windows 전체 테스트에는 Unix 경로·symlink 권한·프로세스 종료 가정으로 인한 실패가 남아 있다. 별도로, production 설치 폴더 전체와 모든 의존성을 검토 입력으로 삼은 copy 검증은 5분 안에 완료되지 않았다. 모든 입력을 검사하는 workspace 계약은 유지하며, 대규모 snapshot의 성능 개선은 이번 변경에 포함하지 않는다.
