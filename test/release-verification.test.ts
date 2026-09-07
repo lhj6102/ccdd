@@ -29,9 +29,10 @@ test('release verification rejects failed, unfinished, truncated and inconsisten
   ]) assert.throws(() => readTestSummary(invalid));
 });
 
-test('release archive allowlist accepts runtime/docs and rejects state, credentials, bundles and traversal', () => {
-  const core = '@lhj6102/ccdd', defaults = '@lhj6102/ccdd-default-tools';
-  for (const path of ['package.json', 'dist/src/executors/auth.js', 'dist/src/sdk.d.ts', 'dist/scripts/prepare-demo.js.map', 'dist/monitor-ui/index.html', 'dist/monitor-ui/assets/index-hash.css', 'README.md', 'docs/contracts.md', 'examples/custom-text-reader/ccdd.config.ts', 'src/executors/CONTEXT.md']) assert.equal(packageFileAllowed(core, path), true, path);
+test('release archives separate pure definitions from runtime and reject state and credentials', () => {
+  const core = '@lhj6102/ccdd', defaults = '@lhj6102/ccdd-default-tools', project = '@lhj6102/ccdd-project';
+  for (const path of ['package.json', 'dist/src/sdk.d.ts', 'dist/src/definitions.js', 'dist/src/tools/contracts.d.ts', 'README.md', 'examples/custom-text-reader/ccdd.config.ts']) assert.equal(packageFileAllowed(core, path), true, path);
+  for (const path of ['dist/src/executors/auth.js', 'dist/scripts/prepare-demo.js.map', 'dist/monitor-ui/index.html', 'dist/monitor-ui/assets/index-hash.css', 'docs/contracts.md', 'src/executors/CONTEXT.md']) { assert.equal(packageFileAllowed(project, path), true, path); assert.equal(packageFileAllowed(core, path), false, path); }
   for (const path of ['output/run.json', 'dist/src/auth.json', 'docs/credentials.json', 'dist/src/state/run.js', 'examples/.env', 'node_modules/pkg/index.js', '../package.json', '/package.json', 'dist\\src\\cli.js', 'docs/run.sqlite', 'dist/test/tool.test.js', 'src/cli.ts', 'snapshot/review.md', 'examples/default.tgz']) assert.equal(packageFileAllowed(core, path), false, path);
   for (const path of ['package.json', 'README.md', 'dist/index.js', 'dist/index.d.ts', 'dist/cli.js.map']) assert.equal(packageFileAllowed(defaults, path), true, path);
   assert.equal(packageFileAllowed(defaults, 'examples/config.ts'), false);

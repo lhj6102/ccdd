@@ -45,13 +45,13 @@ function tarball(name: string, version = '1.0.0') {
 
 async function assets(root: string, reportOverrides: Record<string, unknown> = {}) {
   const assetsDir = join(root, 'assets'); await mkdir(assetsDir, { recursive: true });
-  const packages = [[coreName, metadata.coreFile], [toolsName, metadata.toolsFile]].map(([name, file]) => {
+  const packages = [[coreName, metadata.coreFile], [toolsName, metadata.toolsFile], ...(typeof reportOverrides.projectFile === 'string' ? [['@lhj6102/ccdd-project', reportOverrides.projectFile]] : [])].map(([name, file]) => {
     const bytes = tarball(name); return { name, version: '1.0.0', file, sha256: hash(bytes), bytes: bytes.length, content: bytes };
   });
   for (const item of packages) await writeFile(join(assetsDir, item.file), item.content);
   const installations = [
-    { name: 'core-and-default-tools', productionInstall: true, installScripts: false, cliHelpVersion: '1.0.0', defaultToolsInstalled: true, tool: 'read_spec', actualToolExecution: true, workspaceMode: 'copy', runtime: 'GREEN' },
-    { name: 'core-only-custom-tool', productionInstall: true, installScripts: false, cliHelpVersion: '1.0.0', defaultToolsInstalled: false, tool: 'inspect_spec', actualToolExecution: true, workspaceMode: 'copy' },
+    { name: 'core-and-default-tools', productionInstall: true, installScripts: false, cliHelpVersion: '1.0.0', defaultToolsInstalled: true, tool: 'read_spec', actualToolExecution: true, workspaceMode: 'copy', runtime: 'GREEN', projectValidation: true },
+    { name: 'core-only-custom-tool', productionInstall: true, installScripts: false, cliHelpVersion: '1.0.0', defaultToolsInstalled: false, tool: 'inspect_spec', actualToolExecution: true, workspaceMode: 'copy', projectValidation: true },
   ];
   const report = { schemaVersion: 1, status: 'PASS', ...metadata, sourceCommit: sha, tests: { total: 2, passed: 2, failed: 0, skipped: 0, cancelled: 0, todo: 0, reportSha256: 'c'.repeat(64) }, packages: packages.map(({ content, ...item }) => item), installations, providerCalls: false, desktopLaunches: false, ...reportOverrides };
   const reportText = JSON.stringify(report); await writeFile(join(assetsDir, 'verification.json'), reportText);
@@ -60,6 +60,14 @@ async function assets(root: string, reportOverrides: Record<string, unknown> = {
 }
 
 interface Draft { id: number; draft: boolean; tag_name: string; target_commitish: string; html_url: string; upload_url: string }
+
+test('split-package releases require the Project tarball and its installed validation proof', async t => {
+  const f = await fixture(t), projectFile = 'lhj6102-ccdd-project-1.0.0.tgz';
+  const directory = await assets(f.root, { projectFile });
+  const files = await validateAssets(directory, { ...metadata, projectFile }, sha);
+  assert.equal(files.size, 5); assert.ok(files.has(projectFile));
+  await assert.rejects(validateAssets(directory, metadata, sha), /exactly/);
+});
 interface Asset { id: number; name: string; bytes: Buffer }
 function fakeApi(options: { published?: boolean; draft?: boolean; target?: string; tagged?: string; annotated?: boolean; failUpload?: boolean; corruptDownload?: boolean } = {}) {
   let nextAsset = 1;

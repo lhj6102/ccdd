@@ -34,3 +34,12 @@ test('evaluation failure and execution error share the failure color but keep di
   assert.equal(red.tone, 'failure'); assert.equal(error.tone, 'failure');
   assert.notEqual(red.mark, error.mark); assert.match(red.label, /평가 실패/); assert.match(error.label, /실행 오류/);
 });
+
+test('pull states distinguish needed validation and actual reused evidence from queued tickets', () => {
+  const needed = criticPresentation({ ...critic, requestId: null, status: null, validationStatus: 'STALE' });
+  assert.equal(needed.actionable, false); assert.equal(needed.label, '재검증 필요');
+  const blocked = criticPresentation({ ...critic, status: 'BLOCKED', validationStatus: 'BLOCKED' });
+  assert.equal(blocked.label, '선행 검증 필요'); assert.equal(blocked.actionable, true, 'earlier actual evidence remains inspectable');
+  const reused = criticPresentation({ ...critic, status: 'GREEN', validationStatus: 'PASS', reusedFrom: { requestId: 'request-one', runId: 'earlier', completedAt: '2026-01-01T00:00:00.000Z' } });
+  assert.match(reused.label, /이전 판정 재사용/); assert.equal(reused.actionable, true);
+});

@@ -5,8 +5,11 @@ import { homedir } from 'node:os';
 import { basename, isAbsolute, join, resolve } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { promisify } from 'node:util';
-import type { ArtifactReference, CriticProfile, ReviewRequest, ReviewStatus } from '../contracts.js';
+import type { ArtifactReference, CriticProfile, ReviewRequest, ReviewStatus, RunStatus } from '../contracts.js';
 import { projectGraph, validateGraphDefinition } from '../broker/graph.js';
+import { storedRun } from '../project/store.js';
+import { projectValidationGraph } from '../project/graph.js';
+import type { ProjectPlan } from '../project/types.js';
 import type { MonitorDetail, MonitorLane, MonitorOverview, MonitorProject, MonitorQuery, MonitorRequest, MonitorSources, MonitorRun, MonitorRunOverview, MonitorRunQuery, MonitorGraph } from './types.js';
 
 interface Source { id: string; stateDir: string; issue?: string }
@@ -19,7 +22,7 @@ interface Header {
 interface Owner { pid: number; identity: string | null }
 interface Event { id: number; requestId: string | null; type: string; at: string }
 interface Snapshot {
-  source: Source; project: MonitorProject; identity: Identity | null; requests: Header[]; runs: MonitorRun[]; graph: unknown;
+  source: Source; project: MonitorProject; identity: Identity | null; requests: Header[]; runs: MonitorRun[]; graph: unknown; validation?: ProjectPlan;
   owners: Map<string, Owner>; activity: Map<string, string>; events: Event[]; target: Record<string, unknown> | null;
 }
 export interface MonitorStoredRequest { request: ReviewRequest; repoPath: string; stateDir: string; repoId: string }
@@ -94,14 +97,14 @@ const runSql = `SELECT id,status,created_at,
   FROM runs`;
 function readRun(row: Record<string, unknown>, project: string): MonitorRun {
   const status = string(row.status);
-  if (!statuses.has(status) || row.id !== row.json_id || row.json_status !== status) throw storageError();
+  if ((!statuses.has(status) && status !== 'INCOMPLETE') || row.id !== row.json_id || row.json_status !== status) throw storageError();
   let scope: MonitorRun['scope'] = null;
   if (typeof row.scope === 'string') {
     const raw = json(row.scope);
-    if (raw.kind === 'chain' || raw.kind === 'graph') scope = { kind: raw.kind };
+    if (raw.kind === 'chain' || raw.kind === 'graph' || raw.kind === 'project') scope = { kind: raw.kind };
     else if (raw.kind === 'critic' && typeof raw.criticId === 'string') scope = { kind: 'critic', criticId: text(raw.criticId, 128) };
   }
-  return { id: string(row.id), projectId: project, snapshotHash: nullableString(row.snapshot_hash), status: status as ReviewStatus, createdAt: date(row.created_at), completedAt: nullableDate(row.completed_at), scope, graphAvailable: row.graph_type === 'object' && row.graph_version === 1 };
+  return { id: string(row.id), projectId: project, snapshotHash: nullableString(row.snapshot_hash), status: status as RunStatus, createdAt: date(row.created_at), completedAt: nullableDate(row.completed_at), scope, graphAvailable: row.graph_type === 'object' && row.graph_version === 1 };
 }
 
 /** Open only existing databases. All reads for one source share one SQLite snapshot. */
@@ -129,6 +132,7 @@ async function readSnapshot(source: Source, requestId?: string, runId?: string):
       if (row?.graph != null) {
         try { snapshot.graph = JSON.parse(string(row.graph)); } catch { snapshot.graph = false; }
       }
+      if (snapshot.runs.find(run => run.id === runId)?.scope?.kind === 'project') snapshot.validation = storedRun(db, runId)?.validation;
     }
     for (const owner of db.prepare('SELECT run_id,pid,process_identity FROM run_owners').all()) {
       snapshot.owners.set(string(owner.run_id), { pid: typeof owner.pid === 'number' ? owner.pid : NaN, identity: nullableString(owner.process_identity) });
@@ -363,7 +367,8 @@ function graphFrom(snapshot: Snapshot, run: MonitorRun): Pick<MonitorGraph, 'ava
       const expected = definitions.get(request.criticId);
       if (request.snapshotHash !== run.snapshotHash || !expected || request.kind !== expected.kind || request.target !== expected.target || JSON.stringify(request.deps) !== JSON.stringify(expected.deps)) throw storageError();
     }
-    return { available: true, unavailableReason: null, graph: projectGraph(snapshot.graph, requests.map(request => ({ id: request.id, criticId: request.criticId, status: request.status, claimedBy: request.claimedBy, blockedReason: request.blockedReason }))) };
+    const graphRequests = requests.map(request => ({ id: request.id, criticId: request.criticId, status: request.status, claimedBy: request.claimedBy, blockedReason: request.blockedReason }));
+    return { available: true, unavailableReason: null, graph: snapshot.validation ? projectValidationGraph(snapshot.graph, snapshot.validation, graphRequests, run.id) : projectGraph(snapshot.graph, graphRequests) };
   } catch { return { available: false, unavailableReason: '저장된 그래프와 이 실행의 입력·리뷰 기록이 일치하지 않습니다.', graph: null }; }
 }
 
@@ -382,6 +387,12 @@ export function createMonitorStore(options: MonitorSources = {}) {
       const rows = snapshots.filter(snapshot => query.project === undefined || snapshot.project.id === query.project).flatMap(snapshot => snapshot.runs)
         .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt) || a.projectId.localeCompare(b.projectId) || a.id.localeCompare(b.id));
       return { projects, runs: rows.slice(offset, offset + limit), total: rows.length, hasMore: offset + limit < rows.length, observedAt: new Date().toISOString() };
+    },
+    async projectContext(project: string) {
+      const source = (await discover()).find(candidate => candidate.id === project);
+      if (!source) return null;
+      const snapshot = await readSnapshot(source);
+      return snapshot.identity && !snapshot.project.issue ? { ...snapshot.identity, stateDir: source.stateDir } : null;
     },
     async graph(project: string, runId: string): Promise<MonitorGraph | null> {
       const source = (await discover()).find(candidate => candidate.id === project);

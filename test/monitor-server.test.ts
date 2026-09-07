@@ -11,7 +11,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { createBroker } from '../src/broker/index.js';
 import { removeOwnedWorkspaceTree } from '../src/workspaces/index.js';
 import { startMonitor } from '../src/monitor/server.js';
-import type { MonitorArtifactPage, MonitorDetail, MonitorOverview, MonitorSession, MonitorGraph, MonitorRunOverview } from '../src/monitor/types.js';
+import type { MonitorArtifactPage, MonitorDetail, MonitorOverview, MonitorSession, MonitorGraph, MonitorRunOverview, MonitorValidation } from '../src/monitor/types.js';
 import type { RepoConfig, ReviewRequest, WorkspaceMode } from '../src/contracts.js';
 
 async function fixture(t: TestContext, mode: WorkspaceMode = 'copy', options: { waiting?: boolean; chain?: boolean; command?: boolean; longTool?: boolean; custom?: boolean; instruction?: string } = {}) {
@@ -269,6 +269,25 @@ async function browserSession(url: string) {
 async function post(url: string, session: { cookie: string; csrfToken: string }, value: unknown = {}, extras: Record<string, string> = {}) {
   return fetch(url, { method: 'POST', headers: { origin: new URL(url).origin, cookie: session.cookie, 'content-type': 'application/json', 'x-ccdd-csrf': session.csrfToken, ...extras }, body: JSON.stringify(value) });
 }
+
+test('current validation requires an explicit authenticated observation and never creates review state', async t => {
+  const data = await fixture(t, 'copy', { custom: true });
+  const marker = join(data.dir, 'config-code-executions.txt');
+  const loaded = await readFile(marker, 'utf8'), database = await readFile(join(data.stateDir, 'broker.sqlite'));
+  const route = `${data.monitor.url}/api/projects/${data.request.projectId}/validation`;
+  assert.equal((await fetch(route)).status, 404);
+  const session = await browserSession(data.monitor.url);
+  assert.equal((await post(route, session, {}, { 'x-ccdd-csrf': '' })).status, 403);
+  assert.equal(await readFile(marker, 'utf8'), loaded);
+  const response = await post(route, session);
+  assert.equal(response.status, 200, await response.clone().text());
+  const value = await response.json() as MonitorValidation;
+  assert.equal(value.plan.satisfied, false);
+  assert.equal(value.plan.critics.find(c => c.id === 'human-check')?.status, 'UNREVIEWED', 'legacy verdicts have no matching validation identity');
+  assert.equal(await readFile(marker, 'utf8'), loaded + 'load\n');
+  assert.deepEqual(await readFile(join(data.stateDir, 'broker.sqlite')), database);
+  assert.doesNotMatch(JSON.stringify(value), /DO_NOT_EXPOSE_AUTH|configManifest|execute\(/);
+});
 
 test('Human actions require the browser claimant, valid CSRF and strict bounded JSON', async t => {
   const data = await fixture(t, 'copy', { waiting: true, command: true });

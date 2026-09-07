@@ -1,47 +1,64 @@
 # CCDD
 
-**Critic 중계 브로커와 Artifact Runner입니다. 기본 관측 도구는 별도 라이브러리에서 선택하여 등록합니다.**
+**CCDD는 Artifact·Critic·관계와 도구를 정의합니다. 프로젝트 검증과 실행 이력은 별도 Project 패키지가 담당합니다.**
 
-현재 작업 폴더에서 리뷰를 요청하면 CCDD가 Agent·테스트 런타임·Human 실행기에 연결하고 판정과 근거를 저장합니다. Git commit과 상주 daemon 없이 사용합니다. Artifact Runner는 요청에 선언된 Artifact를 Agent·Human 각각의 관측 도구에 연결합니다.
+| 패키지 | 책임 |
+| --- | --- |
+| `@lhj6102/ccdd` | `defineConfig`, `defineTool`, Artifact·Critic·stale 전략 타입. 실행 의존성과 DB가 없습니다. |
+| `@lhj6102/ccdd-project` | 현재 검증 조회, 필요한 검증 의뢰, 실제 판정 이력, Broker·실행기·모니터. |
+| `@lhj6102/ccdd-default-tools` | 프로젝트가 선택하여 명시적으로 등록하는 관측 도구. |
 
 ## 시작하기
 
-Node.js 24 이상과 이 비공개 저장소에 접근할 수 있는 GitHub 계정이 필요합니다. [GitHub Release](https://github.com/lhj6102/ccdd/releases)의 두 tarball을 **리뷰할 프로젝트 안에 설치**합니다. npm registry 게시를 전제로 하지 않습니다. 아래 명령은 GitHub CLI(`gh`)에 로그인한 상태에서 실행합니다.
+Node.js 24 이상이 필요합니다. [v2.0.0 Release](https://github.com/lhj6102/ccdd/releases/tag/v2.0.0)의 파일을 내려받아 체크섬을 확인한 뒤 리뷰 대상 프로젝트에 설치합니다. 다운로드에는 저장소 접근 권한이 있는 GitHub CLI 로그인이 필요합니다.
 
 ```sh
-mkdir my-project
-cd my-project
 npm init -y
 npm pkg set type=module
 mkdir -p vendor/ccdd
-gh release download v1.1.0 --repo lhj6102/ccdd --dir vendor/ccdd \
+gh release download v2.0.0 --repo lhj6102/ccdd --dir vendor/ccdd \
   --pattern '*.tgz' --pattern SHA256SUMS --pattern verification.json
 (cd vendor/ccdd && shasum -a 256 -c SHA256SUMS)
 npm install --ignore-scripts \
-  ./vendor/ccdd/lhj6102-ccdd-1.1.0.tgz \
-  ./vendor/ccdd/lhj6102-ccdd-default-tools-1.1.0.tgz
-npx ccdd --help
+  ./vendor/ccdd/lhj6102-ccdd-2.0.0.tgz \
+  ./vendor/ccdd/lhj6102-ccdd-project-2.0.0.tgz \
+  ./vendor/ccdd/lhj6102-ccdd-default-tools-2.0.0.tgz
+npx ccdd-project help
 ```
 
-기존 프로젝트라면 해당 폴더에서 다운로드·설치 단계부터 실행합니다. `shasum` 대신 Linux의 `sha256sum -c SHA256SUMS`를 사용할 수 있습니다. 기본 도구를 쓰지 않고 직접 구현한다면 본체 tarball만 설치해도 됩니다. 전역 CLI 설치는 선택 사항이며, TS 설정에서 import하는 패키지는 프로젝트에도 설치해야 합니다.
-
-아래 [Artifact 도구 설정](#artifact-도구-설정)의 예제를 `ccdd.config.ts`로 저장하고, 그 설정이 가리키는 `why.md`·`spec.md`를 작성합니다. 예를 들어 `why.md`에는 “완료하지 않은 중요한 작업부터 최대 3개를 추천한다”, `spec.md`에는 필터·정렬·최대 개수 조건을 적습니다. Agent가 두 문서를 실제로 읽고 정합성을 평가합니다.
+Linux에서는 `sha256sum -c SHA256SUMS`도 사용할 수 있습니다. v1에서 업그레이드할 때는 CLI가 포함된 Project 패키지를 함께 설치합니다. [v2.0.0 변경과 이전 안내](docs/releases/v2.0.0.md)를 참고하세요. 소스 저장소에서 개발할 때는 다음 명령을 사용합니다.
 
 ```sh
-npx ccdd tools check --artifact spec --for agent --tool read --execute \
-  --args '{"startLine":1,"lineCount":80}'
-# 예제의 openai-codex Provider에 기존 Codex access token을 명시적으로 연결
-export CCDD_CODEX_AUTH_FILE="$HOME/.codex/auth.json"
-npx ccdd doctor --critic spec-why --json
-npx ccdd run --copy --critic spec-why --wait --json
-npx ccdd monitor
+npm ci
+npm run build
+node dist/src/project/cli.js help
+node dist/src/project/cli.js config check --repo /path/to/project
+node dist/src/project/cli.js plan spec --recursive --repo /path/to/project
+node dist/src/project/cli.js verify spec --recursive --wait --repo /path/to/project
+node dist/src/project/cli.js status spec --repo /path/to/project
 ```
 
-`tools check`는 등록한 도구를 검사합니다. `doctor`와 Agent 리뷰는 실제 Provider를 호출하므로 유효한 인증·모델 접근 권한이 필요하고 계정 사용량을 소비합니다. 다른 인증 방식은 [Provider와 인증](#agent-provider와-인증)을 참고하세요. 모니터가 표시하는 로컬 주소를 열면 요청과 판정을 볼 수 있습니다.
+리뷰할 프로젝트에는 아래 예제처럼 `ccdd.config.ts`와 그 설정이 가리키는 파일을 둡니다. 설정이 import하는 core와 선택한 도구 라이브러리는 그 프로젝트에도 설치해야 합니다. 세 패키지의 tarball을 설치하면 `npx ccdd-project`를 사용할 수 있습니다. 기본 도구 없이 custom 도구를 사용한다면 core와 Project를 설치합니다. 정의만 사용하는 프로젝트는 core만 설치할 수 있습니다.
 
-이하의 `ccdd` 명령은 프로젝트 로컬 설치라면 `npx ccdd`로 실행합니다. 소스 개발은 저장소를 받은 뒤 `npm ci && npm run build`로 준비하고 `node dist/src/cli.js`로 실행합니다. 배포는 `npm run release -- --commit <40자리 SHA>`로 지정한 소스를 로컬에서 검증한 뒤 게시하며, `--dry-run`으로 검증과 파일 생성만 할 수 있습니다. 자세한 배포·업그레이드 절차는 [Release 안내](docs/releases.md), 변경 사항은 [v1.1.0 릴리스 노트](docs/releases/v1.1.0.md)에 있습니다.
+`status`·`plan`은 현재 입력에 적용 가능한 실제 판정을 조회합니다. `verify`는 필요한 검증을 의뢰하며 기본 입력 정책은 copy입니다. `--recursive`가 없으면 선택한 Critic 중 실행 가능한 것부터 진행하고, 선행 검증이 필요한 항목은 미완료로 보고합니다. 검증 조회는 Provider나 리뷰 도구를 실행하지 않습니다. TS 설정의 평가는 명시적인 현재 입력 조회 시 일어납니다.
 
-v1.1.0은 **Artifact 그룹과 `agent.image.view()`**를 포함합니다. [이미지·그룹 예제](examples/artifact-groups/README.md)에서 Release 설치부터 도구 검사와 그룹 리뷰까지 확인할 수 있습니다.
+```ts
+artifacts: {
+  why: { type: 'markdown', path: 'why.md', basis: true },
+  spec: { type: 'markdown', path: 'spec.md',
+    stale: { kind: 'file-hash', paths: ['spec.md', 'references'] } },
+}
+```
+
+기본 동일성 기준은 Artifact 경로의 파일 내용 hash입니다. `paths`로 별도 입력 경로들을 선언하거나 `{ kind: 'always' }`로 요청마다 검증하게 할 수 있습니다. 설정한 경로들은 Artifact의 의미에 영향을 주는 입력을 빠짐없이 포함해야 합니다.
+
+Why → Spec → Tests → Implementation에서 Why가 바뀌면 Spec의 검증 입력이 바뀝니다. Spec이 내용 수정 없이 다시 PASS하면 Tests의 target·직접 deps hash는 그대로이므로 이전 실제 PASS를 재사용합니다. 하위 노드에 stale 상태를 전파하거나 저장하지 않고 조회마다 DAG를 재귀적으로 평가합니다.
+
+상태 저장 위치는 repo 밖의 `~/.local/state/ccdd/<repo 경로 식별자>/broker.sqlite`입니다. 실제 판정과 검증 당시 입력 hash, 실행·티켓 이력을 저장합니다. `--state-dir` 또는 `CCDD_STATE_HOME`으로 변경할 수 있습니다. [프로젝트 검증 명령과 저장 계약](docs/project-validation.md)에 전체 UX와 종료 코드를 설명합니다.
+
+`ccdd-project monitor`의 **현재 입력**에서 명시적으로 입력을 확인하고, Kanban·Graph에서 실행과 실제 판정을 볼 수 있습니다. 자동 GET 갱신은 설정을 평가하거나 리뷰 상태를 변경하지 않습니다. Graph의 재사용 항목은 원래 리뷰 요청으로 연결됩니다.
+
+기존 `ccdd` 명령도 Project 패키지에 호환용으로 포함합니다. 아래의 `ccdd run`, `status RUN_ID`, Human·진단 명령은 기존 실행 계약을 유지합니다. 새 pull 검증은 `ccdd-project verify`를 사용합니다. 소스 개발에서 기존 CLI는 `node dist/src/cli.js`입니다.
 
 ## Artifact 의존 관계
 
@@ -222,9 +239,9 @@ ccdd tools check --artifact tests --for agent --tool read --execute --args '{"pa
 설치한 CLI와 Release의 두 tarball로 네 가지 시나리오를 만들 수 있습니다. tarball 환경변수는 절대경로로 지정하고, 업그레이드할 때는 새 데모 폴더를 선택하세요.
 
 ```sh
-export CCDD_DEMO_CORE_TARBALL="$PWD/vendor/ccdd/lhj6102-ccdd-1.1.0.tgz"
-export CCDD_DEMO_TOOLS_TARBALL="$PWD/vendor/ccdd/lhj6102-ccdd-default-tools-1.1.0.tgz"
-export CCDD_DEMO_DIR="$HOME/.local/share/ccdd/demo-1.1.0"
+export CCDD_DEMO_CORE_TARBALL="$PWD/vendor/ccdd/lhj6102-ccdd-2.0.0.tgz"
+export CCDD_DEMO_TOOLS_TARBALL="$PWD/vendor/ccdd/lhj6102-ccdd-default-tools-2.0.0.tgz"
+export CCDD_DEMO_DIR="$HOME/.local/share/ccdd/demo-2.0.0"
 npx ccdd prepare-demo --demo-dir "$CCDD_DEMO_DIR"
 npx ccdd run --demo --demo-dir "$CCDD_DEMO_DIR" --scenario why-change --copy --critic spec-why --wait
 npx ccdd run --demo --demo-dir "$CCDD_DEMO_DIR" --scenario runtime-failure --copy --critic implementation-tests --wait

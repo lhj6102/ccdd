@@ -9,6 +9,7 @@ import type { MonitorStoredRequest } from './store.js';
 import { readStoredArtifactScope } from '../requester/index.js';
 import { reopenWorkspace } from '../workspaces/index.js';
 import { createMonitorStore } from './store.js';
+import { inspectProject } from '../project/index.js';
 import { MonitorActionError, authorizeWorkspace, claimReview, completeReview, executeReviewTool } from './actions.js';
 import type { MonitorArtifactPage, MonitorDetail, MonitorFilter, MonitorLane, MonitorSession, MonitorSources } from './types.js';
 
@@ -193,6 +194,25 @@ export async function startMonitor(options: MonitorSources & { port?: number } =
         json(response, session(sessionSecret, token)); return;
       }
       if (request.method === 'POST') {
+        const validation = /^\/api\/projects\/([^/]+)\/validation$/.exec(url.pathname);
+        if (validation) {
+          parameters(url, []); authenticate(request, sessionSecret); bodyShape(await body(request), []);
+          if (active.size >= MAX_ARTIFACT_READS) throw new HttpError(429, '다른 입력을 확인하고 있습니다. 잠시 후 다시 시도하세요.');
+          const context = await store.projectContext(id(validation[1]));
+          if (!context) throw new HttpError(404, '프로젝트를 찾을 수 없습니다.');
+          const controller = new AbortController();
+          const disconnect = () => { if (!response.writableEnded) controller.abort(new Error('Monitor client disconnected')); };
+          request.once('aborted', disconnect); response.once('close', disconnect); active.add(controller);
+          const timer = setTimeout(() => controller.abort(new HttpError(504, '현재 입력 확인 시간이 초과되었습니다. CLI에서 다시 확인하세요.')), 30_000);
+          try {
+            const { plan } = await inspectProject({ ...context, recursive: true, signal: controller.signal });
+            json(response, { plan, observedAt: new Date().toISOString() });
+          } catch (error) {
+            if (controller.signal.aborted) throw controller.signal.reason;
+            throw new HttpError(409, '현재 입력을 확인할 수 없습니다. ccdd-project config check로 설정과 입력을 확인하세요.');
+          } finally { clearTimeout(timer); request.off('aborted', disconnect); response.off('close', disconnect); active.delete(controller); }
+          return;
+        }
         const action = /^\/api\/requests\/([^/]+)\/([^/]+)\/(claim|complete|tools\/([^/]+))$/.exec(url.pathname);
         if (!action) throw new HttpError(405, '이 주소는 조회 요청만 허용합니다.');
         parameters(url, []);

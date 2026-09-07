@@ -10,14 +10,20 @@ import { readWorkspaceConfig } from './config.js';
 import { createGraphDefinition, prerequisiteCriticIds, type GraphDefinition } from './graph.js';
 import { createReviewTools } from '../tools/runner.js';
 import { prepareWorkspace, reopenWorkspace, type WorkspaceDescriptor, type WorkspaceHandle, type WorkspaceMode } from '../workspaces/index.js';
+import { createProjectSnapshot } from '../project/identity.js';
+import { includedCritics, planProject } from '../project/query.js';
+import { readEvidence } from '../project/store.js';
+import type { ProjectRunDefinition, ProjectSelection } from '../project/types.js';
+import type { RunStatus } from '../contracts.js';
 import type { ReviewEnvelope, ReviewRequest, ReviewResult, ReviewStatus, ReviewToolCall, ExecutionContext, ExecutorReadiness } from '../contracts.js';
 
 interface OwnerRecord { run_id: string; pid: number; process_identity: string | null; token: string; claimed_at: string }
 export interface RunRecord {
   id: string; repoId: string; snapshotHash: string; workspace: WorkspaceDescriptor;
-  requesterId: string; scope?: { kind: 'graph' } | { kind: 'chain' } | { kind: 'critic'; criticId: string };
+  requesterId: string; scope?: { kind: 'graph' } | { kind: 'chain' } | { kind: 'critic'; criticId: string } | { kind: 'project' };
+  project?: ProjectRunDefinition;
   graph?: GraphDefinition;
-  status: ReviewStatus; createdAt: string; completedAt?: string; error?: string;
+  status: RunStatus; createdAt: string; completedAt?: string; error?: string;
 }
 export interface BrokerEvent { id: number; runId: string; requestId: string | null; createdAt: string; type: string; message: string; data?: unknown }
 export interface RunView extends RunRecord { scope: NonNullable<RunRecord['scope']>; owner: { pid: number; claimedAt: string } | null; requests: ReviewRequest[]; events: BrokerEvent[] }
@@ -35,7 +41,7 @@ const parseStored = <T>(value: unknown): T => { if (typeof value !== 'string') t
 const required = <T>(value: T | null | undefined, label: string): T => { if (value == null) throw new Error(`Unknown ${label}.`); return value; };
 
 
-const terminal = new Set(['GREEN', 'RED', 'ERROR']);
+const terminal = new Set(['GREEN', 'RED', 'ERROR', 'INCOMPLETE']);
 const now = () => new Date().toISOString();
 const errorText = (error: unknown) => String(object(error) && typeof error.message === 'string' ? error.message : error).slice(0, 2000);
 const copy = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
@@ -152,6 +158,7 @@ export function createBroker({ repoPath, stateDir, repoId = 'demo', executors, w
       CREATE TABLE IF NOT EXISTS runs (id TEXT PRIMARY KEY, created_at TEXT NOT NULL, status TEXT NOT NULL, data TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS requests (id TEXT PRIMARY KEY, run_id TEXT NOT NULL REFERENCES runs(id), ordinal INTEGER NOT NULL, status TEXT NOT NULL, data TEXT NOT NULL);
       CREATE INDEX IF NOT EXISTS requests_run ON requests(run_id, ordinal);
+      CREATE INDEX IF NOT EXISTS requests_validation_input ON requests(json_extract(data, '$.validationInput.key'));
       CREATE TABLE IF NOT EXISTS events (id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL REFERENCES runs(id), request_id TEXT, created_at TEXT NOT NULL, type TEXT NOT NULL, message TEXT NOT NULL, data TEXT);
       CREATE TABLE IF NOT EXISTS metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS run_owners (run_id TEXT PRIMARY KEY REFERENCES runs(id), pid INTEGER NOT NULL, process_identity TEXT, token TEXT NOT NULL, claimed_at TEXT NOT NULL);`);
@@ -194,6 +201,7 @@ export function createBroker({ repoPath, stateDir, repoId = 'demo', executors, w
   };
   const changed = () => { for (const callback of listeners) { try { callback(); } catch {} } };
   function prerequisites(request: ReviewRequest, run: RunRecord, requests: ReviewRequest[]): ReviewRequest[] {
+    if (run.project) return []; // Project requests are issued only after a pull readiness check.
     if (run.scope?.kind === 'critic') return [];
     if (run.graph) {
       const byCritic = new Map(requests.map(item => [item.criticId, item]));
@@ -221,6 +229,21 @@ export function createBroker({ repoPath, stateDir, repoId = 'demo', executors, w
   }
   function refreshReadinessWithin(runId: string): void {
     const run = required(runData(runId), 'Run'), requests = runRequests(runId);
+    if (run.project) {
+      if (terminal.has(run.status)) return;
+      const plan = planProject(run.project.snapshot, readEvidence(db), { selection: run.project.selection, recursive: run.project.recursive, force: run.project.force, runId, attempts: requests });
+      for (const item of plan.items.filter(item => item.action === 'EXECUTE')) {
+        const envelope = run.project.templates.find(template => template.criticId === item.id);
+        if (!envelope) throw codedError(`Missing prepared Critic ${item.id}.`, 'REVIEW_GRAPH_INVALID');
+        const request: ReviewRequest = { ...copy(envelope), validationInput: copy(item.input), id: randomUUID(), runId,
+          workspace: run.workspace, worktreePath: run.workspace.path, status: 'QUEUED', createdAt: now(),
+          startedAt: null, completedAt: null, claimedBy: null, claimedAt: null, notifiedAt: null, result: null, error: null, blockedReason: null };
+        db.prepare('INSERT INTO requests(id,run_id,ordinal,status,data) VALUES (?,?,?,?,?)').run(request.id, runId, requests.length, request.status, JSON.stringify(request));
+        requests.push(request);
+        appendEvent(runId, request.id, 'request.queued', 'Pull validation found an executable Critic requiring an actual review.');
+      }
+      return;
+    }
     for (const request of requests) {
       if (request.status !== 'BLOCKED') continue;
       const dependencies = prerequisites(request, run, requests);
@@ -236,11 +259,26 @@ export function createBroker({ repoPath, stateDir, repoId = 'demo', executors, w
   }
   const updateRunStatus = (runId: string) => {
     const states = runRequests(runId).map(request => request.status);
+    const run = required(runData(runId), 'Run');
+    if (run.project) {
+      if (terminal.has(run.status)) return;
+      const plan = planProject(run.project.snapshot, readEvidence(db), { selection: run.project.selection, recursive: run.project.recursive, force: run.project.force, runId, attempts: runRequests(runId) });
+      const status: RunStatus = states.includes('RUNNING') ? 'RUNNING' : states.includes('QUEUED') ? 'QUEUED' : states.includes('WAITING_HUMAN') ? 'WAITING_HUMAN' :
+        states.includes('ERROR') ? 'ERROR' : states.includes('RED') ? 'RED' : plan.satisfied ? 'GREEN' : 'INCOMPLETE';
+      if (run.status !== status) {
+        run.status = status;
+        if (terminal.has(status)) {
+          run.completedAt = now();
+          run.project.evidenceRequestIds = [...new Set(plan.critics.flatMap(c => c.result ? [c.result.requestId] : []))];
+        }
+        saveRun(run); appendEvent(runId, null, 'run.status', `Run ${status}`, { status });
+      }
+      return;
+    }
     // A branch failure is a verdict for that branch, not a stop signal for its siblings.
     const status = states.includes('RUNNING') ? 'RUNNING' : states.includes('QUEUED') ? 'QUEUED' :
       states.includes('WAITING_HUMAN') ? 'WAITING_HUMAN' : states.includes('ERROR') ? 'ERROR' : states.includes('RED') ? 'RED' :
       states.length > 0 && states.every(state => state === 'GREEN') ? 'GREEN' : 'ERROR';
-    const run = required(runData(runId), 'Run');
     if (run.status !== status) {
       run.status = status;
       if (terminal.has(status)) run.completedAt = now();
@@ -274,6 +312,10 @@ export function createBroker({ repoPath, stateDir, repoId = 'demo', executors, w
       request.status = 'ERROR'; request.result = null; request.error = errorText(error); request.errorCode = errorCode(error) ?? null;
       request.completedAt = now(); request.blockedReason = null; saveRequest(request);
       appendEvent(runId, request.id, 'request.error', request.error, { status: request.status, ...(request.errorCode ? { code: request.errorCode } : {}) });
+    }
+    if (run.project) {
+      const plan = planProject(run.project.snapshot, readEvidence(db), { selection: run.project.selection, recursive: run.project.recursive, force: run.project.force, runId, attempts: runRequests(runId) });
+      run.project.evidenceRequestIds = [...new Set(plan.critics.flatMap(c => c.result ? [c.result.requestId] : []))];
     }
     run.status = 'ERROR'; run.error = errorText(error); run.completedAt = now(); saveRun(run);
     appendEvent(runId, null, 'run.error', run.error);
@@ -333,6 +375,10 @@ export function createBroker({ repoPath, stateDir, repoId = 'demo', executors, w
       const request = required(requestData(requestId), 'Request');
       const runDir = path.join(stateDir, 'runs', runId, request.id);
       fs.mkdirSync(runDir, { recursive: true, mode: 0o700 });
+      if (required(runData(runId), 'Run').project) {
+        const capability = await requireExecutors().canExecute(copy(request));
+        if (!capability?.ok) throw codedError(capability?.reason ?? 'No compatible executor.', capability?.code ?? 'EXECUTOR_UNAVAILABLE');
+      }
       if (request.profile.kind === 'human') {
         if (typeof requireExecutors().notifyHuman !== 'function') throw new Error('Human execution requires a registered alarm method.');
         transaction(() => {
@@ -487,6 +533,30 @@ export function createBroker({ repoPath, stateDir, repoId = 'demo', executors, w
   }
 
   return {
+    async submitProject({ mode = 'copy', requesterId = 'cli', selection, recursive = false, force = false }: { mode?: WorkspaceMode; requesterId?: string; selection: ProjectSelection; recursive?: boolean; force?: boolean }) {
+      ensureOpen(); requireExecutors();
+      if (!requesterId.trim() || requesterId.length > 200) throw new Error('requesterId is required (maximum 200 characters).');
+      if (!['lock', 'copy'].includes(mode)) throw new Error('mode must be lock or copy.');
+      await requireExecutors().validateWorkspace?.(repoPath);
+      const workspace = await workspaceAdapter.prepareWorkspace({ repoPath, stateDir, mode });
+      try {
+        const { config } = await readWorkspaceConfig(workspace.descriptor.path);
+        const snapshot = await createProjectSnapshot(config, workspace.descriptor.path, workspace.descriptor.hash, workspace.signal);
+        const ids = includedCritics(snapshot, selection, recursive);
+        const templates: ReviewEnvelope[] = [];
+        for (const id of ids) templates.push(...await prepareReviewRequests({ repoPath: workspace.descriptor.path, repoId, snapshotHash: workspace.descriptor.hash, criticId: id, preparedConfig: config }));
+        const id = randomUUID(), createdAt = now();
+        const record: RunRecord = { id, repoId, snapshotHash: workspace.descriptor.hash, workspace: workspace.descriptor, requesterId,
+          scope: { kind: 'project' }, graph: createGraphDefinition(config), project: { version: 1, snapshot, selection, recursive, force, templates }, status: 'QUEUED', createdAt };
+        await workspace.assertUnchanged(); workspace.signal.throwIfAborted();
+        transaction(() => {
+          db.prepare('INSERT INTO runs(id,created_at,status,data) VALUES (?,?,?,?)').run(id, createdAt, record.status, JSON.stringify(record));
+          appendEvent(id, null, 'run.submitted', 'Project validation requested against fixed input.', { selection, recursive, force });
+          refreshReadinessWithin(id); updateRunStatus(id);
+        });
+        changed(); return required(getRun(id), 'Run');
+      } finally { await workspace.close(); }
+    },
     async submit({ mode = 'copy', requesterId, reviewRequests, criticId, snapshotCommit }: { mode?: WorkspaceMode; requesterId?: unknown; reviewRequests?: unknown; criticId?: unknown; snapshotCommit?: unknown } = {}) {
       ensureOpen(); requireExecutors();
       if (snapshotCommit !== undefined) throw new Error('snapshotCommit is no longer accepted; use mode copy or lock with the current workspace.');

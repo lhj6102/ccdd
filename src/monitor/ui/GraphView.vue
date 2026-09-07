@@ -68,6 +68,7 @@ function criticLabel(critic: Critic): string {
   return criticPresentation(critic, critic.requestId ? requests.value.get(critic.requestId) : undefined).label;
 }
 function artifactLabel(artifact: Artifact): string {
+  if (artifact.validationStatus === 'STALE') return '재검증 필요';
   if (artifact.status === 'BLOCKED' && graph.value?.critics.some(critic => critic.target === artifact.id && criticBlocked(critic))) return '진행 불가';
   return { BASIS: '기준 Artifact', UNREVIEWED: '미평가', BLOCKED: '선행 리뷰 대기', QUEUED: '실행 대기', RUNNING: '실행 중', WAITING_HUMAN: 'Human 대기', GREEN: '통과', RED: '기준 미충족', ERROR: '실행 오류' }[artifact.status];
 }

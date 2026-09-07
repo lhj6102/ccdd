@@ -24,7 +24,7 @@ export type { WorkerOptions } from './worker-client.js';
 type Output = { write(text: string): unknown };
 type Options = Record<string, string | boolean>;
 
-const terminal=new Set(['GREEN','RED','ERROR']);
+const terminal=new Set(['GREEN','RED','ERROR','INCOMPLETE']);
 const booleanFlags=new Set(['--demo','--human-inbox','--wait','--json','--help','--lock','--copy','--execute']);
 const valueFlags=new Set(['--repo','--state-dir','--pi-auth-file','--codex-auth-file','--requester','--critic','--timeout-ms','--scenario','--demo-dir','--reviewer','--result-file','--file','--start-line','--line-count','--offset','--limit','--port','--artifact','--for','--tool','--args']);
 function parse(argv: string[]){
@@ -47,7 +47,7 @@ function timeoutValue(value: string | undefined,fallback=600000){
   if(!Number.isSafeInteger(ms)||ms<1||ms>86400000)throw new Error('--timeout-ms must be between 1 and 86400000.');
   return ms;
 }
-const exitForRun=(run:Run)=>run.status==='GREEN'?0:run.status==='RED'?1:2;
+const exitForRun=(run:Run)=>run.status==='GREEN'?0:run.status==='RED'?1:run.status==='INCOMPLETE'?4:2;
 
 /** Waiting clients do not own execution; timeout never cancels the review worker. */
 export async function waitForRun({broker,run,timeoutMs=600000,pollMs=100,signal}: {broker:Broker;run:Run;timeoutMs?:number;pollMs?:number;signal?:AbortSignal}){

@@ -5,6 +5,7 @@ import { api, requestRoute } from './api';
 import { dateLabel, elapsed, kindLabels, statusLabel } from './format';
 import RequestDrawer from './RequestDrawer.vue';
 const GraphView = defineAsyncComponent(() => import('./GraphView.vue'));
+const ValidationView = defineAsyncComponent(() => import('./ValidationView.vue'));
 
 const lanes: { id: MonitorLane; label: string; empty: string }[] = [
   { id: 'requested', label: '요청', empty: '대기 중인 요청이 없습니다.' },
@@ -13,8 +14,8 @@ const lanes: { id: MonitorLane; label: string; empty: string }[] = [
   { id: 'failure', label: '실패', empty: '기준 미충족과 실행 오류를 확인합니다.' },
 ];
 const projects = ref<MonitorProject[]>([]), project = ref(''), connected = ref(false), observedAt = ref('');
-type View = 'kanban' | 'graph';
-function savedView(): View { try { return localStorage.getItem('ccdd.monitor.view') === 'graph' ? 'graph' : 'kanban'; } catch { return 'kanban'; } }
+type View = 'kanban' | 'graph' | 'validation';
+function savedView(): View { try { const value = localStorage.getItem('ccdd.monitor.view'); return value === 'graph' || value === 'kanban' ? value : 'validation'; } catch { return 'validation'; } }
 const view = ref<View>(savedView()), run = ref(''), runs = ref<MonitorRun[]>([]), runsLoading = ref(false), runsError = ref(''), runsMore = ref(false);
 const graphView = ref<InstanceType<typeof GraphView> | null>(null);
 const initialLoading = ref(true), refreshing = ref(false), boardError = ref(''), now = ref(Date.now());
@@ -129,11 +130,11 @@ function changeProject(): void {
 }
 function changeRun(): void { closeDetail(); resetBoard(); void refreshBoard(true); }
 function ensureGraphScope(): void {
-  if (view.value !== 'graph') return;
+  if (view.value === 'kanban') return;
   if (!project.value && projects.value.length) {
     project.value = selected.value?.projectId ?? projects.value.find(item => !item.issue)?.id ?? projects.value[0].id;
     resetRuns(); resetBoard(); void refreshBoard(true); void refreshRuns(true);
-  } else if (project.value && !run.value && runs.value.length) {
+  } else if (view.value === 'graph' && project.value && !run.value && runs.value.length) {
     run.value = detail.value?.request.projectId === project.value ? detail.value.request.runId : runs.value[0].id;
     resetBoard(); void refreshBoard(true);
   }
@@ -178,11 +179,11 @@ onUnmounted(() => {
       <div><p class="eyebrow">REVIEW REQUESTS</p><h1>리뷰 보드</h1><p class="page-caption">{{ project ? projectName(project) : '모든 프로젝트' }}<span v-if="!initialLoading"> · {{ total }}개 요청</span></p></div>
       <div class="board-controls">
         <label class="project-picker"><span>프로젝트</span><select v-model="project" @change="changeProject"><option value="">모든 프로젝트</option><option v-for="item in projects" :key="item.id" :value="item.id">{{ item.name }}{{ projects.filter(other => other.name === item.name).length > 1 ? ` · ${item.path}` : '' }}</option></select></label>
-        <label v-if="project" class="project-picker run-picker"><span>실행</span><select v-model="run" @change="changeRun"><option value="" :disabled="view === 'graph'">{{ runsLoading && !runs.length ? '불러오는 중…' : !runs.length ? '저장된 실행 없음' : '모든 실행' }}</option><option v-if="run && !runs.some(item => item.id === run)" :value="run">선택한 실행 · {{ run.slice(0, 8) }}</option><option v-for="item in runs" :key="item.id" :value="item.id">{{ dateLabel(item.createdAt) }} · {{ item.id.slice(0, 8) }}{{ item.scope?.kind === 'critic' ? ' · 선택 Critic' : '' }}</option></select></label>
+        <label v-if="project && view !== 'validation'" class="project-picker run-picker"><span>실행</span><select v-model="run" @change="changeRun"><option value="" :disabled="view === 'graph'">{{ runsLoading && !runs.length ? '불러오는 중…' : !runs.length ? '저장된 실행 없음' : '모든 실행' }}</option><option v-if="run && !runs.some(item => item.id === run)" :value="run">선택한 실행 · {{ run.slice(0, 8) }}</option><option v-for="item in runs" :key="item.id" :value="item.id">{{ dateLabel(item.createdAt) }} · {{ item.id.slice(0, 8) }}{{ item.scope?.kind === 'critic' ? ' · 선택 Critic' : '' }}</option></select></label>
         <button class="icon-button refresh-button" aria-label="새로고침" :disabled="refreshing" @click="refresh"><svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="M16.3 8A6.5 6.5 0 1 0 16 13M16.5 3.5V8H12" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" /></svg></button>
       </div>
     </div>
-    <div class="view-toolbar"><div class="view-switch" role="group" aria-label="모니터 보기 방식"><button type="button" :aria-pressed="view === 'kanban'" @click="changeView('kanban')"><svg viewBox="0 0 18 18" aria-hidden="true" fill="none"><rect x="2.5" y="3" width="5" height="12" rx="1" /><rect x="10.5" y="3" width="5" height="8" rx="1" /></svg>Kanban</button><button type="button" :aria-pressed="view === 'graph'" @click="changeView('graph')"><svg viewBox="0 0 18 18" aria-hidden="true" fill="none"><rect x="1.5" y="6" width="5" height="6" rx="1" /><rect x="11.5" y="1.5" width="5" height="5" rx="1" /><rect x="11.5" y="11.5" width="5" height="5" rx="1" /><path d="M6.5 9h2.5V4h2.5M9 9v5h2.5" /></svg>Graph</button></div><button v-if="project && runsMore" type="button" class="text-button" :disabled="runsLoading" @click="loadMoreRuns">이전 실행 더 보기</button></div>
+    <div class="view-toolbar"><div class="view-switch" role="group" aria-label="모니터 보기 방식"><button type="button" :aria-pressed="view === 'validation'" @click="changeView('validation')">현재 입력</button><button type="button" :aria-pressed="view === 'kanban'" @click="changeView('kanban')"><svg viewBox="0 0 18 18" aria-hidden="true" fill="none"><rect x="2.5" y="3" width="5" height="12" rx="1" /><rect x="10.5" y="3" width="5" height="8" rx="1" /></svg>Kanban</button><button type="button" :aria-pressed="view === 'graph'" @click="changeView('graph')"><svg viewBox="0 0 18 18" aria-hidden="true" fill="none"><rect x="1.5" y="6" width="5" height="6" rx="1" /><rect x="11.5" y="1.5" width="5" height="5" rx="1" /><rect x="11.5" y="11.5" width="5" height="5" rx="1" /><path d="M6.5 9h2.5V4h2.5M9 9v5h2.5" /></svg>Graph</button></div><button v-if="project && runsMore" type="button" class="text-button" :disabled="runsLoading" @click="loadMoreRuns">이전 실행 더 보기</button></div>
     <p v-if="boardError" class="inline-error" role="status">{{ boardError }}</p>
     <p v-if="runsError" class="inline-error" role="status">{{ runsError }}</p>
     <p v-for="issue in issues" :key="issue.id" class="inline-error" role="status">{{ issue.name }}: {{ issue.issue }}</p>
@@ -205,6 +206,7 @@ onUnmounted(() => {
         <button v-if="more[lane.id]" class="text-button lane-more" :disabled="refreshing" @click="loadMore(lane.id)">이전 요청 더 보기 <span>{{ rows[lane.id].length }} / {{ counts[lane.id] }}</span></button>
       </section>
     </div>
+    <ValidationView v-if="view === 'validation'" :project-id="project" :session="session" @open-request="openDetail" @session-expired="renewSession" />
     <GraphView v-if="view === 'graph'" ref="graphView" :project-id="project" :run-id="run" :selected-request-id="selected?.projectId === project ? selected.id : undefined" @open-request="openDetail" />
   </main>
   <RequestDrawer v-if="selected" :key="`${selected.projectId}/${selected.id}`" :selection="selected" :detail="detail" :error="detailError" :session="session" :session-error="sessionError" :project-name="projectName(selected.projectId)" @close="closeDetail()" @refresh="refreshDetail(true)" @updated="acceptDetail" @session-expired="renewSession" />

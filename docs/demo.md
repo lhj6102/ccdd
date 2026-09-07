@@ -1,17 +1,17 @@
 # CCDD CLI 시연
 
-Node 24 이상에서 [Release 설치](../README.md#시작하기)를 마친 프로젝트를 기준으로 합니다. Agent 시나리오에는 Pi Provider 인증이 필요하며 profile은 openai-codex / gpt-6-astra / medium입니다. CLI만으로 시연할 수 있고 모니터는 선택 사항입니다.
+Node 24 이상에서 core·Project·기본 도구의 [Release 설치](../README.md#시작하기)를 마친 프로젝트를 기준으로 합니다. Project의 CLI로 실행하고, 각 시나리오에는 설정이 import하는 core·기본 도구만 설치합니다. Agent 시나리오에는 Pi Provider 인증이 필요하며 profile은 openai-codex / gpt-6-astra / medium입니다. CLI만으로 시연할 수 있고 모니터는 선택 사항입니다.
 
 ```sh
-export CCDD_DEMO_CORE_TARBALL="$PWD/vendor/ccdd/lhj6102-ccdd-1.1.0.tgz"
-export CCDD_DEMO_TOOLS_TARBALL="$PWD/vendor/ccdd/lhj6102-ccdd-default-tools-1.1.0.tgz"
-export CCDD_DEMO_DIR="$HOME/.local/share/ccdd/demo-1.1.0"
+export CCDD_DEMO_CORE_TARBALL="$PWD/vendor/ccdd/lhj6102-ccdd-2.0.0.tgz"
+export CCDD_DEMO_TOOLS_TARBALL="$PWD/vendor/ccdd/lhj6102-ccdd-default-tools-2.0.0.tgz"
+export CCDD_DEMO_DIR="$HOME/.local/share/ccdd/demo-2.0.0"
 export CCDD_CODEX_AUTH_FILE="$HOME/.codex/auth.json" # 기존 Codex access token을 명시적으로 연결하는 예
 npx ccdd prepare-demo --demo-dir "$CCDD_DEMO_DIR"
 npx ccdd doctor --demo --demo-dir "$CCDD_DEMO_DIR" --scenario fixed --json
 ```
 
-위 예시는 새 `demo-1.1.0` 폴더를 사용합니다. `--demo-dir`를 생략하면 기존 기본 경로인 `~/.local/share/ccdd/demo-v9`를 사용합니다. `v9`는 데모 형식 버전이며 CCDD 패키지 버전과 별개입니다. 이전 데모 폴더와 사용자 설정은 보존합니다. 네 시나리오는 Git 없는 별도 폴더이며 현재 파일을 직접 수정할 수 있습니다. 새 데모는 `ccdd.config.ts`에서 별도 기본 도구 라이브러리를 import하여 Agent CLI 읽기·목록과 Human 데스크톱 열기를 명시적으로 등록합니다. 기본 Critic은 Agent 2개·Runtime 1개이며 Human 도구 등록 자체로 Human 요청이 생성되지는 않습니다.
+위 예시는 새 `demo-2.0.0` 폴더를 사용합니다. `--demo-dir`를 생략하면 기존 기본 경로인 `~/.local/share/ccdd/demo-v9`를 사용합니다. `v9`는 데모 형식 버전이며 CCDD 패키지 버전과 별개입니다. 이전 데모 폴더와 사용자 설정은 보존합니다. 네 시나리오는 Git 없는 별도 폴더이며 현재 파일을 직접 수정할 수 있습니다. 새 데모는 `ccdd.config.ts`에서 별도 기본 도구 라이브러리를 import하여 Agent CLI 읽기·목록과 Human 데스크톱 열기를 명시적으로 등록합니다. 기본 Critic은 Agent 2개·Runtime 1개이며 Human 도구 등록 자체로 Human 요청이 생성되지는 않습니다.
 
 준비 과정은 명시한 로컬 tarball에서 의존성을 한 번 설치하고 각 시나리오 안에 물리적으로 복사합니다. npm 공개 게시를 가정하지 않으며 공개된 전이 의존성 설치에는 네트워크 또는 로컬 캐시가 필요할 수 있습니다. 네 프로젝트의 package lock·tarball·node_modules를 함께 보존하므로 이후 snapshot은 상위 프로젝트 없이 도구를 해석합니다. 기존 데모 재사용은 재설치하지 않으므로 새 Release를 시험할 때는 비어 있는 `--demo-dir`를 선택합니다.
 
@@ -51,8 +51,8 @@ npm run build
 mkdir -p /tmp/ccdd-local-packages
 npm pack --ignore-scripts --pack-destination /tmp/ccdd-local-packages
 npm pack --workspace @lhj6102/ccdd-default-tools --ignore-scripts --pack-destination /tmp/ccdd-local-packages
-export CCDD_DEMO_CORE_TARBALL=/tmp/ccdd-local-packages/lhj6102-ccdd-1.1.0.tgz
-export CCDD_DEMO_TOOLS_TARBALL=/tmp/ccdd-local-packages/lhj6102-ccdd-default-tools-1.1.0.tgz
+export CCDD_DEMO_CORE_TARBALL=/tmp/ccdd-local-packages/lhj6102-ccdd-2.0.0.tgz
+export CCDD_DEMO_TOOLS_TARBALL=/tmp/ccdd-local-packages/lhj6102-ccdd-default-tools-2.0.0.tgz
 ```
 
 위 명령은 현재 소스를 직접 pack합니다. 커밋에 고정된 소스를 전체 테스트·설치 검증까지 거쳐 준비하려면 `npm run release -- --commit <40자리 SHA> --dry-run --output-dir <빈 외부 디렉터리>`를 사용하고 그 출력 폴더의 두 tarball을 지정합니다. [로컬 배포 안내](releases.md#커밋을-지정하여-로컬에서-배포)에 전체 절차가 있습니다.
