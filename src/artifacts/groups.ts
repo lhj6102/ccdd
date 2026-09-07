@@ -14,6 +14,12 @@ export function validateArtifactDefinitions(value: unknown): asserts value is Re
     if (!identifier.test(id) || !object(artifact) || (artifact.basis !== undefined && typeof artifact.basis !== 'boolean')) {
       throw new Error(`Invalid Artifact definition: ${id}`);
     }
+    if (artifact.stale !== undefined) {
+      const strategy = artifact.stale as unknown;
+      if (!object(strategy) || !['file-hash', 'always'].includes(String(strategy.kind)) || Object.keys(strategy).some(key => !['kind', 'paths'].includes(key))) throw new Error(`Invalid stale strategy for Artifact ${id}.`);
+      if (strategy.kind === 'always' && strategy.paths !== undefined) throw new Error('The always strategy does not accept paths.');
+      if (strategy.paths !== undefined && (!Array.isArray(strategy.paths) || !strategy.paths.length || new Set(strategy.paths).size !== strategy.paths.length || strategy.paths.some(p => typeof p !== 'string' || !p || p.length > 1024 || /[\\\\:*?\[\]{}\x00-\x1f\x7f]/.test(p) || p.split('/').some(part => !part || part === '.' || part === '..')))) throw new Error(`Stale paths for ${id} must be unique literal repository-relative file or directory paths.`);
+    }
     if (isArtifactGroup(artifact)) {
       if (Object.hasOwn(artifact, 'type') || Object.hasOwn(artifact, 'path')) throw new Error(`Artifact group ${id} cannot declare type or path; reference independent Artifacts in members.`);
       if (!Array.isArray(artifact.members) || artifact.members.length === 0 || new Set(artifact.members).size !== artifact.members.length || artifact.members.some(member => typeof member !== 'string' || !identifier.test(member) || !Object.hasOwn(value, member))) {

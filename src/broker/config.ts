@@ -21,7 +21,8 @@ export function validateRelativePath(value: unknown): string {
   return value;
 }
 
-export async function readWorkspaceConfig(repoPath: string): Promise<{ config: RepoConfig }> {
+export async function readWorkspaceConfig(repoPath: string, signal?: AbortSignal): Promise<{ config: RepoConfig }> {
+  signal?.throwIfAborted();
   const root = await realpath(repoPath);
   const configPath = path.join(root, 'ccdd.config.json');
   const info = await lstat(configPath).catch(() => null);
@@ -30,7 +31,7 @@ export async function readWorkspaceConfig(repoPath: string): Promise<{ config: R
   if (!info?.isFile() && !tsInfo?.isFile()) throw new Error('Workspace must contain a regular ccdd.config.ts or ccdd.config.json file.');
   let config: unknown;
   try {
-    if (tsInfo) { const host=await openToolHost(root); try { config=host.config; } finally { await host.close(); } }
+    if (tsInfo) { const host=await openToolHost(root, signal); try { config=host.config; } finally { await host.close(); } }
     else { config = JSON.parse(await readFile(configPath, 'utf8')); if(object(config)&&(config.configManifest!==undefined||object(config.artifactTypes)&&Object.values(config.artifactTypes).some(value=>object(value)&&value.custom))) throw new Error('Custom tools must be registered in ccdd.config.ts.'); }
   }
   catch (error) { throw new Error(`Cannot read workspace configuration: ${error instanceof Error ? error.message : String(error)}`); }
@@ -38,6 +39,7 @@ export async function readWorkspaceConfig(repoPath: string): Promise<{ config: R
   const tree: WorkspaceTreeEntry[] = [];
   const visited = new Set<string>();
   const walk = async (relative: string): Promise<void> => {
+    signal?.throwIfAborted();
     if (visited.has(relative)) return;
     visited.add(relative);
     const absolute = path.join(root, relative);

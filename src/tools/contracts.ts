@@ -1,4 +1,4 @@
-import type { ArtifactEntryDefinition, CriticDefinition } from '../contracts.js';
+import type { ArtifactEntryDefinition, CriticDefinition } from '../definitions.js';
 
 export type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
 export type JsonSchema = Record<string, unknown>;

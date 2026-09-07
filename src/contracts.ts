@@ -1,15 +1,13 @@
 import type { ArtifactReference, ArtifactTypeDefinition, ArtifactToolCall } from './artifacts/index.js';
 import type { WorkspaceDescriptor } from './workspaces/index.js';
 import type { ConfigManifest } from './tools/contracts.js';
+import type { CriticProfile, ReviewPayload, CriticDefinition, ArtifactEntryDefinition, ArtifactGroupReference } from './definitions.js';
+import type { ValidationInput } from './project/types.js';
+export type * from './definitions.js';
 
 export type { ArtifactReference, ArtifactTypeDefinition, ArtifactToolCall } from './artifacts/index.js';
 export type { WorkspaceDescriptor, WorkspaceHandle, WorkspaceMode } from './workspaces/index.js';
 
-export interface AgentProfile { kind: 'agent'; provider: string; model: string; reasoning: string; timeoutMs?: number }
-export interface HumanProfile { kind: 'human' }
-export interface RuntimeProfile { kind: 'runtime'; command: string; args: string[]; timeoutMs?: number }
-export type CriticProfile = AgentProfile | HumanProfile | RuntimeProfile;
-export interface ReviewPayload { instruction: string; [key: string]: unknown }
 export interface ReviewEnvelope {
   repoId: string; snapshotHash: string; criticId: string; title: string;
   artifacts: ArtifactReference[]; artifactGroups?: ArtifactGroupReference[]; artifactTypes: Record<string, ArtifactTypeDefinition>;
@@ -17,6 +15,7 @@ export interface ReviewEnvelope {
   payload: ReviewPayload; profile: CriticProfile; target: string; deps: string[];
 }
 export type ReviewStatus = 'BLOCKED' | 'QUEUED' | 'RUNNING' | 'WAITING_HUMAN' | 'GREEN' | 'RED' | 'ERROR';
+export type RunStatus = ReviewStatus | 'INCOMPLETE';
 export interface ReviewToolCall {
   name: string; arguments?: unknown; at?: string;
   observation?: { artifactId: string; operation: string; kind?: 'content' | 'empty'; detail?: string; startLine?: number | null; endLine?: number | null; lineCount?: number | null; totalLines?: number | null };
@@ -27,6 +26,8 @@ export interface ReviewResult {
   durationMs?: number; exitCode?: number; toolCalls?: ReviewToolCall[];
 }
 export interface ReviewRequest extends ReviewEnvelope {
+  /** Identity of the input actually reviewed. Absent on historical requests. */
+  validationInput?: ValidationInput;
   id: string; runId: string; workspace: WorkspaceDescriptor; worktreePath: string;
   /** Present only on historical Critic-chain requests. New requests use target/deps. */
   predecessorId?: string | null; status: ReviewStatus; createdAt: string;
@@ -34,11 +35,6 @@ export interface ReviewRequest extends ReviewEnvelope {
   notifiedAt?: string | null; errorCode?: string | null; blockedReason?: string | null;
   result?: ReviewResult | null; error?: string | null;
 }
-export interface CriticDefinition { id: string; title: string; target: string; deps: string[]; profile: CriticProfile; payload: ReviewPayload }
-export interface ArtifactDefinition { type: string; path: string; basis?: boolean }
-export interface ArtifactGroupDefinition { kind: 'group'; members: string[]; basis?: boolean }
-export type ArtifactEntryDefinition = ArtifactDefinition | ArtifactGroupDefinition;
-export interface ArtifactGroupReference { id: string; members: string[] }
 export interface RepoConfig { artifacts: Record<string, ArtifactEntryDefinition>; artifactTypes: Record<string, ArtifactTypeDefinition>; critics: CriticDefinition[]; configManifest?: ConfigManifest }
 export interface ExecutionEvent { type: string; [key: string]: unknown }
 export interface ExecutionContext { worktreePath: string; workspacePath?: string; runDir: string; signal?: AbortSignal; onEvent?: (event: ExecutionEvent) => void | Promise<void> }

@@ -1,6 +1,7 @@
-import type { ArtifactGroupReference, ArtifactReference, CriticProfile, ReviewStatus } from '../contracts.js';
+import type { ArtifactGroupReference, ArtifactReference, CriticProfile, ReviewStatus, RunStatus } from '../contracts.js';
 import type { GraphProjection } from '../broker/graph.js';
 import type { ArtifactCallResult } from '../artifacts/index.js';
+import type { ProjectPlan } from '../project/types.js';
 
 export type MonitorLane = 'requested' | 'running' | 'success' | 'failure';
 export type MonitorFilter = 'all' | 'active' | 'attention';
@@ -21,6 +22,7 @@ export interface MonitorOverview {
   hasMore: boolean; observedAt: string;
 }
 export interface MonitorSession { reviewerId: string; csrfToken: string }
+export interface MonitorValidation { plan: ProjectPlan; observedAt: string }
 export interface MonitorHumanState { canClaim: boolean; canComplete: boolean; claimedByMe: boolean }
 export interface MonitorHumanTool {
   name: string; description: string; inputSchema: Record<string, unknown>;
@@ -48,9 +50,9 @@ export interface MonitorQuery { run?: string; lane?: MonitorLane; project?: stri
 export interface MonitorSources { stateHome?: string; stateDirs?: string[] }
 
 export interface MonitorRun {
-  id: string; projectId: string; snapshotHash: string | null; status: ReviewStatus;
+  id: string; projectId: string; snapshotHash: string | null; status: RunStatus;
   createdAt: string; completedAt: string | null;
-  scope: { kind: 'graph' | 'chain' } | { kind: 'critic'; criticId: string } | null;
+  scope: { kind: 'graph' | 'chain' | 'project' } | { kind: 'critic'; criticId: string } | null;
   graphAvailable: boolean;
 }
 export interface MonitorRunQuery { project?: string; limit?: number; offset?: number }

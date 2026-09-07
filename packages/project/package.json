@@ -1,0 +1,25 @@
+{
+  "name": "@lhj6102/ccdd-project",
+  "version": "2.0.0",
+  "private": true,
+  "description": "Pull-based project validation, review history and request-scoped CCDD execution",
+  "type": "module",
+  "engines": { "node": ">=24" },
+  "exports": { ".": { "types": "./dist/src/project/index.d.ts", "import": "./dist/src/project/index.js" } },
+  "types": "./dist/src/project/index.d.ts",
+  "bin": { "ccdd-project": "./dist/src/project/cli.js", "ccdd": "./dist/src/cli.js" },
+  "files": ["dist/", "README.md"],
+  "scripts": { "build": "node ../../scripts/build-project.mjs", "prepack": "npm run build" },
+  "peerDependencies": { "@lhj6102/ccdd": ">=2.0.0 <3" },
+  "dependencies": {
+    "@earendil-works/pi-agent-core": "0.85.1",
+    "@earendil-works/pi-ai": "0.85.1",
+    "@lucide/vue": "1.41.0",
+    "@vue-flow/background": "1.3.2",
+    "@vue-flow/core": "1.48.2",
+    "elkjs": "0.12.0",
+    "typebox": "1.3.7",
+    "vue": "3.5.42"
+  },
+  "devDependencies": { "@lhj6102/ccdd": "file:../.." }
+}

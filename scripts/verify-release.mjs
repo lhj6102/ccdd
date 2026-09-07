@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
-import { chmod, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from 'node:fs/promises';
+import { chmod, cp, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -12,6 +12,7 @@ const exec = promisify(execFile);
 const sourceDirectory = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const coreName = '@lhj6102/ccdd';
 const toolsName = '@lhj6102/ccdd-default-tools';
+const projectName = '@lhj6102/ccdd-project';
 const sha256 = bytes => createHash('sha256').update(bytes).digest('hex');
 const within = (parent, child) => { const path = relative(parent, child); return path === '' || (!path.startsWith(`..${sep}`) && path !== '..' && !isAbsolute(path)); };
 
@@ -51,15 +52,15 @@ export function readTestSummary(tap) {
   return summary;
 }
 
-/** Only distributable code and documentation may enter either release package. */
+/** Only distributable code and documentation may enter release packages. */
 export function packageFileAllowed(packageName, path) {
-  if (packageName !== coreName && packageName !== toolsName) return false;
+  if (![coreName, toolsName, projectName].includes(packageName)) return false;
   if (typeof path !== 'string' || path.includes('\\') || path.includes('\0') || path.startsWith('/') || path.split('/').some(part => part === '..' || part === '.' || part === '')) return false;
   if (path.split('/').some(part => /^(?:node_modules|output|worktrees?|snapshots?|state|sources|\.git|\.ccdd|\.codex|\.ssh|\.aws|\.npmrc)$/i.test(part))) return false;
   if (/(?:^|\/)(?:\.env(?:\..*)?|auth\.json|credentials(?:\.[^/]*)?)$/i.test(path) || /\.(?:db|sqlite(?:3)?|pem|key|tgz|zip)$/i.test(path)) return false;
   if (/^(?:package\.json|README\.md|LICENSE(?:\.[A-Za-z]+)?)$/.test(path)) return true;
   if (packageName === toolsName) return /^dist\/.+\.(?:js|js\.map|d\.ts)$/.test(path);
-  if (packageName !== coreName) return false;
+  if (packageName === coreName) return /^dist\/src\/(?:sdk|definitions|tools\/contracts)\.(?:js|js\.map|d\.ts)$/.test(path) || /^examples\/.+\.(?:md|ts|mjs|json|png|jpg|jpeg|webp)$/.test(path);
   return /^dist\/(?:src|scripts)\/.+\.(?:js|js\.map|d\.ts)$/.test(path)
     || /^dist\/monitor-ui\/.+\.(?:html|js|css|svg|png|woff2?)$/.test(path)
     || /^docs\/.+\.md$/.test(path)
@@ -69,7 +70,10 @@ export function packageFileAllowed(packageName, path) {
 
 async function command(program, args, options = {}) {
   try {
-    return await exec(program, args, { cwd: sourceDirectory, timeout: 300_000, maxBuffer: 16 * 1024 * 1024, ...options });
+    const windowsNpm = program === 'npm' && process.platform === 'win32';
+    const target = windowsNpm || program.endsWith('.js') ? process.execPath : program;
+    const argv = windowsNpm ? [process.env.npm_execpath ?? join(dirname(process.execPath), 'node_modules/npm/bin/npm-cli.js'), ...args] : program.endsWith('.js') ? [program, ...args] : args;
+    return await exec(target, argv, { cwd: sourceDirectory, timeout: 300_000, maxBuffer: 16 * 1024 * 1024, windowsHide: true, ...options });
   } catch (error) {
     // Commands only handle synthetic files and public packages. Keep raw command output out of the published report.
     const stderr = typeof error.stderr === 'string' ? error.stderr.slice(-6000) : '';
@@ -82,7 +86,7 @@ async function jsonCommand(program, args, options) {
   return JSON.parse((await command(program, args, options)).stdout);
 }
 
-async function packPackage(cwd, expectedName, version, outputDirectory, environment) {
+export async function packPackage(cwd, expectedName, version, outputDirectory, environment) {
   const packed = await jsonCommand('npm', ['pack', '--json', '--ignore-scripts', '--pack-destination', outputDirectory], { cwd, env: environment });
   assert.equal(packed.length, 1, 'Each pack command must produce one package');
   const [metadata] = packed;
@@ -103,8 +107,10 @@ async function packPackage(cwd, expectedName, version, outputDirectory, environm
   assert.equal(manifest.version, version);
   assert.equal(manifest.private, true, 'GitHub Releases must not change npm publication policy');
   const required = expectedName === coreName
-    ? ['dist/src/cli.js', 'dist/src/sdk.js', 'dist/src/sdk.d.ts', 'dist/src/worker.js', 'dist/scripts/prepare-demo.js', 'dist/monitor-ui/index.html', 'examples/custom-text-reader/ccdd.config.ts']
+    ? ['dist/src/sdk.js', 'dist/src/sdk.d.ts', 'dist/src/definitions.d.ts', 'dist/src/tools/contracts.d.ts', 'examples/custom-text-reader/ccdd.config.ts']
+    : expectedName === projectName ? ['dist/src/cli.js', 'dist/src/project/cli.js', 'dist/src/project/index.js', 'dist/src/worker.js', 'dist/scripts/prepare-demo.js', 'dist/monitor-ui/index.html']
     : ['dist/index.js', 'dist/index.d.ts', 'dist/cli.js', 'dist/reader.js', 'dist/process.js'];
+  if (expectedName === coreName) { assert.equal(manifest.bin, undefined); assert.equal(Object.keys(manifest.dependencies ?? {}).length, 0); }
   for (const path of required) assert.ok(paths.includes(path), `Missing packaged runtime file: ${path}`);
   const bytes = await readFile(tarball);
   return { name: expectedName, version, file: metadata.filename, bytes: bytes.length, sha256: sha256(bytes), fileCount: paths.length };
@@ -126,7 +132,7 @@ function fixtureConfig(withDefaults) {
   return `${imports}
 export default defineConfig(() => ({
   artifactTypes: { document: { agentTools: { ${withDefaults ? 'read' : 'inspect'}: ${reader} } } },
-  artifacts: { spec: { type: 'document', path: 'spec.md' } },
+  artifacts: { spec: { type: 'document', path: 'spec.md', stale: { kind: 'file-hash', paths: ['spec.md', 'checks'] } } },
   critics: [{ id: 'package-runtime', title: 'Packaged runtime verification', target: 'spec', deps: [],
     profile: { kind: 'runtime', command: 'node', args: ['--test', 'checks/release.test.mjs'] },
     payload: { instruction: 'Run the synthetic package test for {spec}.' } }],
@@ -134,17 +140,19 @@ export default defineConfig(() => ({
 `;
 }
 
-async function verifyInstallation({ scratch, outputDirectory, packages, version, withDefaults, environment }) {
+export async function verifyInstallation({ scratch, outputDirectory, packages, version, withDefaults, environment }) {
   const name = withDefaults ? 'core-and-default-tools' : 'core-only-custom-tool';
   const project = join(scratch, name);
+  const input = join(project, 'review-input');
   const state = join(scratch, `${name}-state`);
-  await mkdir(join(project, 'checks'), { recursive: true });
-  const dependencies = Object.fromEntries(packages.filter(pkg => withDefaults || pkg.name === coreName).map(pkg => [pkg.name, `file:${join(outputDirectory, pkg.file)}`]));
+  await mkdir(join(input, 'checks'), { recursive: true });
+  const dependencies = Object.fromEntries(packages.filter(pkg => withDefaults || pkg.name !== toolsName).map(pkg => [pkg.name, `file:${join(outputDirectory, pkg.file)}`]));
   await writeFile(join(project, 'package.json'), JSON.stringify({ name: `ccdd-release-${name}`, private: true, type: 'module', dependencies }, null, 2));
   const sample = `CCDD ${version} package verification.\nSecond line.\n`;
-  await writeFile(join(project, 'spec.md'), sample);
-  await writeFile(join(project, 'ccdd.config.ts'), fixtureConfig(withDefaults));
-  await writeFile(join(project, 'checks/release.test.mjs'), `import test from 'node:test';\nimport assert from 'node:assert/strict';\nimport { readFile } from 'node:fs/promises';\ntest('read the copied synthetic Artifact', async () => assert.equal(await readFile(new URL('../spec.md', import.meta.url), 'utf8'), ${JSON.stringify(sample)}));\n`);
+  await writeFile(join(input, 'package.json'), JSON.stringify({ name: 'ccdd-review-input', private: true, type: 'module' }));
+  await writeFile(join(input, 'spec.md'), sample);
+  await writeFile(join(input, 'ccdd.config.ts'), fixtureConfig(withDefaults));
+  await writeFile(join(input, 'checks/release.test.mjs'), `import test from 'node:test';\nimport assert from 'node:assert/strict';\nimport { readFile } from 'node:fs/promises';\ntest('read the copied synthetic Artifact', async () => assert.equal(await readFile(new URL('../spec.md', import.meta.url), 'utf8'), ${JSON.stringify(sample)}));\n`);
   await command('npm', ['install', '--omit=dev', '--ignore-scripts', '--no-audit', '--no-fund', '--package-lock=true'], { cwd: project, env: environment });
   const dependencyTree = await jsonCommand('npm', ['ls', '--omit=dev', '--depth=0', '--json'], { cwd: project, env: environment });
   assert.deepEqual(Object.keys(dependencyTree.dependencies).sort(), Object.keys(dependencies).sort());
@@ -156,10 +164,16 @@ async function verifyInstallation({ scratch, outputDirectory, packages, version,
   }
   if (!withDefaults) await assert.rejects(lstat(join(project, 'node_modules', toolsName)), { code: 'ENOENT' });
   for (const devPackage of ['typescript', 'typescript-ui', 'vite', 'vue-tsc']) await assert.rejects(lstat(join(project, 'node_modules', devPackage)), { code: 'ENOENT' });
-  const cli = join(project, 'node_modules/.bin/ccdd');
+  // The application install is outside the reviewed input, like a global CLI install.
+  // Include exact installed SDK/tool files used by this text-only config inside the input.
+  // Nothing inside the reviewed input is excluded from snapshot capture or hashing.
+  for (const name of [coreName, ...(withDefaults ? [toolsName] : [])]) await cp(join(project, 'node_modules', name), join(input, 'node_modules', name), { recursive: true });
+  const cli = join(project, 'node_modules', projectName, 'dist/src/cli.js');
+  const projectCli = join(project, 'node_modules', projectName, 'dist/src/project/cli.js');
+  assert.match((await command('npm', ['exec', '--offline', '--', 'ccdd-project', 'help'], { cwd: project, env: environment })).stdout, /CCDD Project/);
   assert.match((await command(cli, ['help'], { cwd: project, env: environment })).stdout, new RegExp(`^CCDD ${version.replaceAll('.', '\\.')} —`, 'm'));
   const toolName = withDefaults ? 'read_spec' : 'inspect_spec';
-  const report = await jsonCommand(cli, ['tools', 'check', '--repo', project, '--state-dir', state, '--artifact', 'spec', '--for', 'agent', '--tool', toolName, '--execute', '--copy', '--args', withDefaults ? '{"startLine":2,"lineCount":1}' : '{}', '--json'], { cwd: project, env: environment });
+  const report = await jsonCommand(cli, ['tools', 'check', '--repo', input, '--state-dir', state, '--artifact', 'spec', '--for', 'agent', '--tool', toolName, '--execute', '--copy', '--args', withDefaults ? '{"startLine":2,"lineCount":1}' : '{}', '--json'], { cwd: project, env: environment });
   assert.equal(report.ok, true, JSON.stringify(report.checks));
   assert.equal(report.status, 'READY');
   assert.equal(report.mode, 'copy');
@@ -167,7 +181,7 @@ async function verifyInstallation({ scratch, outputDirectory, packages, version,
   assert.equal(report.tools[0].name, toolName);
   assert.ok(within(state, report.workspacePath) && !within(project, report.workspacePath), 'Tool execution must use an independent copied workspace');
   assert.equal(await readFile(join(report.workspacePath, 'spec.md'), 'utf8'), sample);
-  assert.equal(await readFile(join(project, 'spec.md'), 'utf8'), sample);
+  assert.equal(await readFile(join(input, 'spec.md'), 'utf8'), sample);
   const content = report.result?.content;
   assert.ok(Array.isArray(content) && content.length === 1, 'Expected an actual tool result');
   if (withDefaults) {
@@ -181,11 +195,16 @@ async function verifyInstallation({ scratch, outputDirectory, packages, version,
   }
   let runtime = undefined;
   if (withDefaults) {
-    const run = await jsonCommand(cli, ['run', '--repo', project, '--state-dir', state, '--critic', 'package-runtime', '--copy', '--wait', '--timeout-ms', '120000'], { cwd: project, env: environment });
+    const run = await jsonCommand(cli, ['run', '--repo', input, '--state-dir', state, '--critic', 'package-runtime', '--copy', '--wait', '--timeout-ms', '120000'], { cwd: project, env: environment });
     assert.equal(run.status, 'GREEN', 'The installed detached Runtime worker must finish the actual test');
     runtime = 'GREEN';
   }
-  return { name, productionInstall: true, installScripts: false, cliHelpVersion: version, defaultToolsInstalled: withDefaults, tool: toolName, actualToolExecution: true, workspaceMode: 'copy', ...(runtime ? { runtime } : {}) };
+  const validationArgs = ['verify', '--critic', 'package-runtime', '--repo', input, '--state-dir', state, '--wait', '--timeout-ms', '120000', '--json'];
+  const reviewed = await jsonCommand(projectCli, validationArgs, { cwd: project, env: environment });
+  assert.equal(reviewed.status, 'GREEN'); assert.equal(reviewed.requests.length, 1);
+  const reused = await jsonCommand(projectCli, validationArgs, { cwd: project, env: environment });
+  assert.equal(reused.status, 'GREEN'); assert.equal(reused.requests.length, 0); assert.equal(reused.validation.counts.reuse, 1);
+  return { name, productionInstall: true, installScripts: false, cliHelpVersion: version, defaultToolsInstalled: withDefaults, tool: toolName, actualToolExecution: true, workspaceMode: 'copy', projectValidation: true, ...(runtime ? { runtime } : {}) };
 }
 
 async function removeScratch(directory) {
@@ -207,11 +226,12 @@ export async function verifyRelease(argv) {
   const sourceCommit = (await command('git', ['rev-parse', 'HEAD'])).stdout.trim();
   assert.equal(sourceCommit, options['--source-commit'], 'Source commit differs from the checked-out HEAD');
   assert.equal((await command('git', ['status', '--porcelain', '--untracked-files=all'])).stdout.trim(), '', 'Commit all source changes before release verification; ignored build outputs are allowed');
-  for (const path of ['package.json', 'packages/default-tools/package.json']) assert.equal(JSON.parse(await readFile(join(sourceDirectory, path), 'utf8')).version, version, `${path} version differs from release version`);
+  for (const path of ['package.json', 'packages/default-tools/package.json', 'packages/project/package.json']) assert.equal(JSON.parse(await readFile(join(sourceDirectory, path), 'utf8')).version, version, `${path} version differs from release version`);
   const lock = JSON.parse(await readFile(join(sourceDirectory, 'package-lock.json'), 'utf8'));
   assert.equal(lock.version, version, 'Lockfile root version differs');
   assert.equal(lock.packages[''].version, version, 'Lockfile core version differs');
   assert.equal(lock.packages['packages/default-tools'].version, version, 'Lockfile default-tools version differs');
+  assert.equal(lock.packages['packages/project'].version, version, 'Lockfile project version differs');
   const testBytes = await readFile(resolve(options['--test-report']));
   const tests = readTestSummary(testBytes.toString('utf8'));
   const outputDirectory = resolve(options['--output-dir']);
@@ -236,6 +256,7 @@ export async function verifyRelease(argv) {
     const packages = [];
     packages.push(await packPackage(sourceDirectory, coreName, version, outputDirectory, environment));
     packages.push(await packPackage(join(sourceDirectory, 'packages/default-tools'), toolsName, version, outputDirectory, environment));
+    packages.push(await packPackage(join(sourceDirectory, 'packages/project'), projectName, version, outputDirectory, environment));
     const installations = [];
     for (const withDefaults of [true, false]) {
       console.log(`Verifying production installation: ${withDefaults ? 'core + default tools' : 'core only + custom tool'}…`);

@@ -7,6 +7,7 @@ import { gunzipSync } from 'node:zlib';
 
 const coreName = '@lhj6102/ccdd';
 const toolsName = '@lhj6102/ccdd-default-tools';
+const projectName = '@lhj6102/ccdd-project';
 const stable = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?![\s\S])/;
 const commitPattern = /^[0-9a-f]{40}(?![\s\S])/;
 const hashPattern = /^[0-9a-f]{64}(?![\s\S])/;
@@ -41,9 +42,17 @@ export async function readReleaseMetadata(root) {
     jsonFile(resolve(root, 'package.json')), jsonFile(resolve(root, 'packages/default-tools/package.json')), jsonFile(resolve(root, 'package-lock.json')),
   ]);
   const version = validateVersions(core, tools, lock), tag = `v${version}`;
+  // Historical two-package releases remain verifiable; current workspaces must include Project.
+  const project = await jsonFile(resolve(root, 'packages/project/package.json')).catch(error => { if (error.code === 'ENOENT' && !core.workspaces?.includes('packages/project')) return null; throw error; });
+  if (project) {
+    invariant(project.name === projectName && project.version === version, 'Project package name or version differs from core.');
+    const peer = project.peerDependencies?.[coreName], range = typeof peer === 'string' && /^>=(\d+\.\d+\.\d+) <(0|[1-9]\d*)$/.exec(peer);
+    invariant(range && compareVersions(version, range[1]) >= 0 && BigInt(version.split('.')[0]) < BigInt(range[2]), 'Project peer range must include this core version.');
+    invariant(lock.packages?.['packages/project']?.version === version && lock.packages['packages/project'].peerDependencies?.[coreName] === peer, 'Project package-lock version or peer range is stale.');
+  }
   const notes = await readFile(resolve(root, `docs/releases/${tag}.md`), 'utf8');
   invariant(notes.trim(), `Release notes docs/releases/${tag}.md must not be empty.`);
-  return { version, tag, notes, coreFile: `lhj6102-ccdd-${version}.tgz`, toolsFile: `lhj6102-ccdd-default-tools-${version}.tgz` };
+  return { version, tag, notes, coreFile: `lhj6102-ccdd-${version}.tgz`, toolsFile: `lhj6102-ccdd-default-tools-${version}.tgz`, ...(project ? { projectFile: `lhj6102-ccdd-project-${version}.tgz` } : {}) };
 }
 
 function validateRepository(repository) {
@@ -144,8 +153,9 @@ function packedManifest(bytes) {
 }
 
 export async function validateAssets(directory, metadata, sha) {
-  const names = [metadata.coreFile, metadata.toolsFile, 'verification.json', 'SHA256SUMS'].sort();
-  invariant(JSON.stringify((await readdir(directory)).sort()) === JSON.stringify(names), 'Release assets must contain exactly two package tarballs, verification.json and SHA256SUMS.');
+  const packages = [[coreName, metadata.coreFile], [toolsName, metadata.toolsFile], ...(metadata.projectFile ? [[projectName, metadata.projectFile]] : [])];
+  const names = [...packages.map(([, file]) => file), 'verification.json', 'SHA256SUMS'].sort();
+  invariant(JSON.stringify((await readdir(directory)).sort()) === JSON.stringify(names), 'Release assets must contain exactly the declared package tarballs, verification.json and SHA256SUMS.');
   const files = new Map();
   for (const name of names) {
     const file = resolve(directory, name), stat = await lstat(file);
@@ -158,7 +168,7 @@ export async function validateAssets(directory, metadata, sha) {
     invariant(found && !sums.has(found[2]), 'Invalid or duplicate SHA256SUMS entry.');
     sums.set(found[2], found[1]);
   }
-  invariant(sums.size === 3 && [metadata.coreFile, metadata.toolsFile, 'verification.json'].every(name => sums.get(name) === sha256(files.get(name))), 'Release asset SHA-256 verification failed.');
+  invariant(sums.size === packages.length + 1 && [...packages.map(([, file]) => file), 'verification.json'].every(name => sums.get(name) === sha256(files.get(name))), 'Release asset SHA-256 verification failed.');
   const report = JSON.parse(files.get('verification.json').toString('utf8'));
   invariant(report.schemaVersion === 1 && report.status === 'PASS' && report.version === metadata.version && report.tag === metadata.tag && report.sourceCommit === sha, 'Verification report does not match the tested commit and version.');
   const tests = report.tests;
@@ -168,9 +178,10 @@ export async function validateAssets(directory, metadata, sha) {
   for (const [name, defaults, tool] of [['core-and-default-tools', true, 'read_spec'], ['core-only-custom-tool', false, 'inspect_spec']]) {
     const run = report.installations.find(item => item.name === name);
     invariant(run?.productionInstall === true && run.installScripts === false && run.cliHelpVersion === metadata.version && run.defaultToolsInstalled === defaults && run.tool === tool && run.actualToolExecution === true && run.workspaceMode === 'copy' && (!defaults || run.runtime === 'GREEN'), `Verification report is missing the ${name} installation check.`);
+    if (metadata.projectFile) invariant(run.projectValidation === true, 'Project package must prove actual validation and reuse in both installation modes.');
   }
-  invariant(Array.isArray(report.packages) && report.packages.length === 2, 'Verification report must identify both packages.');
-  for (const [name, file] of [[coreName, metadata.coreFile], [toolsName, metadata.toolsFile]]) {
+  invariant(Array.isArray(report.packages) && report.packages.length === packages.length, 'Verification report must identify all declared packages.');
+  for (const [name, file] of packages) {
     const bytes = files.get(file), record = report.packages.find(item => item.name === name), manifest = packedManifest(bytes);
     invariant(record?.file === file && record.version === metadata.version && record.sha256 === sha256(bytes) && record.bytes === bytes.length && manifest.name === name && manifest.version === metadata.version, `Packed ${name} does not match the verification report.`);
   }

@@ -10,7 +10,7 @@
 
 ## 실행
 
-Node 24 이상에서 [v1.1.0 Release](https://github.com/lhj6102/ccdd/releases/tag/v1.1.0)의 두 tarball을 설치합니다. 아래 명령은 CCDD 소스 저장소에서 시작하며, 예제를 저장소 밖의 새 프로젝트로 복사합니다. 다운로드에는 이 비공개 저장소에 접근할 수 있는 GitHub CLI 로그인이 필요합니다.
+Node 24 이상에서 [v2.0.0 Release](https://github.com/lhj6102/ccdd/releases/tag/v2.0.0)의 세 tarball을 설치합니다. 아래 명령은 CCDD 소스 저장소에서 시작하며, 예제를 저장소 밖의 새 프로젝트로 복사합니다. 다운로드에는 이 비공개 저장소에 접근할 수 있는 GitHub CLI 로그인이 필요합니다.
 
 ```sh
 CCDD_EXAMPLE_ROOT=$(mktemp -d /tmp/ccdd-groups.XXXXXX)
@@ -19,12 +19,13 @@ cd "$CCDD_EXAMPLE_ROOT/project"
 npm init -y
 npm pkg set type=module
 mkdir -p vendor/ccdd
-gh release download v1.1.0 --repo lhj6102/ccdd --dir vendor/ccdd \
+gh release download v2.0.0 --repo lhj6102/ccdd --dir vendor/ccdd \
   --pattern '*.tgz' --pattern SHA256SUMS --pattern verification.json
 (cd vendor/ccdd && shasum -a 256 -c SHA256SUMS)
 npm install --ignore-scripts \
-  ./vendor/ccdd/lhj6102-ccdd-1.1.0.tgz \
-  ./vendor/ccdd/lhj6102-ccdd-default-tools-1.1.0.tgz
+  ./vendor/ccdd/lhj6102-ccdd-2.0.0.tgz \
+  ./vendor/ccdd/lhj6102-ccdd-project-2.0.0.tgz \
+  ./vendor/ccdd/lhj6102-ccdd-default-tools-2.0.0.tgz
 
 # Provider 호출 없이 그룹 구성원의 도구 준비 상태를 확인합니다.
 npx ccdd tools check --artifact explosion --for agent
@@ -52,13 +53,14 @@ npx ccdd monitor
 
 ## 로컬 소스 빌드 사용
 
-수정한 소스를 시험할 때는 CCDD 저장소에서 두 tarball을 준비합니다.
+수정한 소스를 시험할 때는 CCDD 저장소에서 세 tarball을 준비합니다.
 
 ```sh
 npm ci
 npm run build
 CCDD_LOCAL_PACKAGES=$(mktemp -d /tmp/ccdd-group-packages.XXXXXX)
 npm pack --ignore-scripts --pack-destination "$CCDD_LOCAL_PACKAGES"
+npm pack --ignore-scripts --workspace @lhj6102/ccdd-project --pack-destination "$CCDD_LOCAL_PACKAGES"
 npm pack --ignore-scripts --workspace @lhj6102/ccdd-default-tools --pack-destination "$CCDD_LOCAL_PACKAGES"
 ```
 
