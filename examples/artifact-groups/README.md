@@ -10,7 +10,7 @@ In a full Run, both group Critics must wait for the image review to pass because
 
 ## Running the example
 
-Install the three v3.0.0 packages on Node 24 or later. The following command works after npm publication; before that, use the local source build below. Start in the CCDD source repository and copy the example into a new project outside it.
+Install the three v3.1.0 packages on Node 22 LTS (22.19.0 or later) or Node 24 or later. The following command works after npm publication; before that, use the local source build below. Start in the CCDD source repository and copy the example into a new project outside it.
 
 ```sh
 CCDD_EXAMPLE_ROOT=$(mktemp -d /tmp/ccdd-groups.XXXXXX)
@@ -18,7 +18,7 @@ cp -R examples/artifact-groups "$CCDD_EXAMPLE_ROOT/project"
 cd "$CCDD_EXAMPLE_ROOT/project"
 npm init -y
 npm pkg set type=module
-npm install --ignore-scripts @ccdd/core@3.0.0 @ccdd/project@3.0.0 @ccdd/default-tools@3.0.0
+npm install --ignore-scripts @ccdd/core@3.1.0 @ccdd/project@3.1.0 @ccdd/default-tools@3.1.0
 
 # Check group member tool readiness without calling a Provider.
 npx ccdd tools check --artifact explosion --for agent

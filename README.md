@@ -68,7 +68,9 @@ Artifact types act as plugin slots through explicit registration. Importing a to
 
 ## Try your first review
 
-You need **Node.js 24 or later**. For published packages, install:
+CCDD supports **Node.js 22 LTS (22.19.0 or later) and Node.js 24 or later**. Use the latest patch of a supported LTS release.
+
+For published packages, install:
 
 ```sh
 npm install --ignore-scripts @ccdd/core @ccdd/project
@@ -115,3 +117,7 @@ An optional local monitor shows current-input checks and saved reviews. Start it
 | `@ccdd/default-tools` | Optional ready-made Artifact tools. |
 
 The repository, examples, CLI, monitor, and built-in review instructions use English. See [Contributing](CONTRIBUTING.md) for setup and checks, [the context map](CONTEXT-MAP.md) for architecture, and [release instructions](docs/releases.md) for packaging and publication.
+
+## License
+
+Licensed under the [MIT License](LICENSE).

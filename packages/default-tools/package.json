@@ -1,14 +1,15 @@
 {
   "name": "@ccdd/default-tools",
-  "version": "3.0.0",
+  "version": "3.1.0",
+  "license": "MIT",
   "publishConfig": { "access": "public", "registry": "https://registry.npmjs.org/" },
   "repository": { "type": "git", "url": "git+https://github.com/lhj6102/ccdd.git", "directory": "packages/default-tools" },
   "description": "Explicitly registered Agent CLI and Human desktop Artifact tools for CCDD",
   "type": "module",
-  "engines": { "node": ">=24" },
+  "engines": { "node": "^22.19.0 || >=24.0.0" },
   "exports": { ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" } },
   "types": "./dist/index.d.ts",
-  "files": ["dist/", "README.md"],
+  "files": ["dist/", "LICENSE", "README.md"],
   "scripts": {
     "build": "node ../../node_modules/typescript/bin/tsc -p tsconfig.json",
     "prepack": "npm run build"

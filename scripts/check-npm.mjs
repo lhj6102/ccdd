@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
+import { supportsNodeVersion } from '../src/node-version.ts';
 
 const exec = promisify(execFile);
 const registry = 'https://registry.npmjs.org/';
@@ -27,7 +28,7 @@ async function npmRead(args, environment) {
 
 // All requests are read-only; the result contains no tokens, email or raw profile.
 export async function checkNpmEnvironment({ environment = process.env, nodeVersion = process.version, read = args => npmRead(args, environment) } = {}) {
-  const checks = [{ id: 'node', ok: Number(nodeVersion.replace(/^v/, '').split('.')[0]) >= 24, detail: nodeVersion }];
+  const checks = [{ id: 'node', ok: supportsNodeVersion(nodeVersion), detail: nodeVersion }];
   let npm, account, role, twoFactor, emailVerified;
   try { npm = await read(['--version']); checks.push({ id: 'npm', ok: true, detail: npm }); }
   catch (error) { checks.push({ id: 'npm', ok: false, detail: error.code }); }

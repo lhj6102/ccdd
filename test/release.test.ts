@@ -34,8 +34,8 @@ async function fixture(t: TestContext) {
   return { root, repository, sourceCommit: sha, head: sha };
 }
 
-function tarball(name: string, version = '1.0.0', publishConfig?: Record<string, unknown>) {
-  const contents = Buffer.from(JSON.stringify({ name, version, publishConfig })), header = Buffer.alloc(512);
+function tarball(name: string, version = '1.0.0', publishConfig?: Record<string, unknown>, nodeRange = '>=24') {
+  const contents = Buffer.from(JSON.stringify({ name, version, publishConfig, engines: { node: nodeRange } })), header = Buffer.alloc(512);
   header.write('package/package.json');
   header.write('0000644\0', 100); header.write('0000000\0', 108); header.write('0000000\0', 116);
   header.write(`${contents.length.toString(8).padStart(11, '0')}\0`, 124);
@@ -48,7 +48,7 @@ function tarball(name: string, version = '1.0.0', publishConfig?: Record<string,
 async function assets(root: string, reportOverrides: Record<string, unknown> = {}) {
   const assetsDir = join(root, 'assets'); await mkdir(assetsDir, { recursive: true });
   const packages = [[coreName, metadata.coreFile], [toolsName, metadata.toolsFile], ...(typeof reportOverrides.projectFile === 'string' ? [['@ccdd/project', reportOverrides.projectFile]] : [])].map(([name, file]) => {
-    const bytes = tarball(name, '1.0.0', reportOverrides.publishConfig as Record<string, unknown> | undefined); return { name, version: '1.0.0', file, sha256: hash(bytes), bytes: bytes.length, content: bytes };
+    const bytes = tarball(name, '1.0.0', reportOverrides.publishConfig as Record<string, unknown> | undefined, reportOverrides.nodeRange as string | undefined); return { name, version: '1.0.0', file, sha256: hash(bytes), bytes: bytes.length, content: bytes };
   });
   for (const item of packages) await writeFile(join(assetsDir, item.file), item.content);
   const installations = [
@@ -72,9 +72,9 @@ test('split-package releases require the Project tarball and its installed valid
 });
 interface Asset { id: number; name: string; bytes: Buffer }
 
-async function npmFixture(t: TestContext) {
+async function npmFixture(t: TestContext, nodeRange = '>=24') {
   const data = await fixture(t), npmMetadata = { ...metadata, projectFile: 'ccdd-project-1.0.0.tgz' };
-  const assetsDir = await assets(data.root, { projectFile: npmMetadata.projectFile, publishConfig: { access: 'public', registry: 'https://registry.npmjs.org/' } });
+  const assetsDir = await assets(data.root, { projectFile: npmMetadata.projectFile, publishConfig: { access: 'public', registry: 'https://registry.npmjs.org/' }, nodeRange });
   const files = await validateAssets(assetsDir, npmMetadata, sha);
   const events: string[] = [], published = new Map<string, unknown>();
   const client = {
@@ -225,6 +225,15 @@ test('successful npm publication automatically creates an npm announcement and r
   api.events.length = 0; data.events.length = 0;
   assert.equal((await publishNpmAndAnnounce({ ...data, api })).announcement.status, 'ALREADY_ANNOUNCED');
   assert.ok([...api.events, ...data.events].every(event => event.startsWith('GET')));
+});
+
+test('announcement recovery preserves the Node requirement of the verified package version', async t => {
+  for (const [range, requirement] of [['>=24', 'Node.js 24 or later'], ['^22.19.0 || >=24.0.0', 'Node.js 22 (>=22.19.0) or 24+']]) {
+    const data = await npmFixture(t, range), api = announcementApi();
+    await publishNpmRelease(data);
+    await publishNpmAndAnnounce({ ...data, api, announceOnly: true });
+    assert.ok(String(api.getRelease()!.body).includes(`${requirement} is required.`));
+  }
 });
 
 test('dry runs, partial npm publication and tag conflicts cannot create an announcement', async t => {

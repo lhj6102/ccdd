@@ -10,6 +10,7 @@ import { createGitHubClient, readReleaseMetadata, validateAssets } from './relea
 import { createNpmClient } from './npm-release.mjs';
 import { planNpmAnnouncement, publishNpmAndAnnounce } from './npm-announcement.mjs';
 import { checkNpmEnvironment } from './check-npm.mjs';
+import { nodeRequirement, supportsNodeVersion } from '../src/node-version.ts';
 
 const exec = promisify(execFile);
 const commitPattern = /^[a-f0-9]{40}(?![\s\S])/;
@@ -114,7 +115,7 @@ async function runStep(program, args, { cwd, env, logFile, timeout = 600_000, si
 }
 
 export async function releaseLocally(options, { cwd = process.cwd(), environment = process.env, progress = console.log } = {}) {
-  assert.ok(Number(process.versions.node.split('.')[0]) >= 24, 'Local releases require Node.js 24 or later');
+  assert.ok(supportsNodeVersion(process.versions.node), `Local releases require ${nodeRequirement}`);
   assert.ok(options.npm || options.dryRun, 'GitHub package downloads have moved to npm. Use npm run release:npm -- --commit SHA to publish packages and their announcement; use --dry-run for local tarballs only.');
   const sourceRoot = await realpath((await exec('git', ['rev-parse', '--show-toplevel'], { cwd, encoding: 'utf8' })).stdout.trim());
   const scratch = await mkdtemp(join(tmpdir(), 'ccdd-release-checkout-'));

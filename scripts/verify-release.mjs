@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
+import { nodeRequirement, supportedNodeRange, supportsNodeVersion } from '../src/node-version.ts';
 
 const exec = promisify(execFile);
 const sourceDirectory = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -105,6 +106,10 @@ export async function packPackage(cwd, expectedName, version, outputDirectory, e
   const manifest = JSON.parse((await command('tar', ['-xOf', tarball, 'package/package.json'], { env: environment })).stdout);
   assert.equal(manifest.name, expectedName);
   assert.equal(manifest.version, version);
+  assert.equal(manifest.engines?.node, supportedNodeRange, 'Every package must declare the verified Node support range');
+  assert.equal(manifest.license, 'MIT', 'Every package must declare the MIT license');
+  const license = await readFile(join(sourceDirectory, 'LICENSE'), 'utf8');
+  assert.equal((await command('tar', ['-xOf', tarball, 'package/LICENSE'], { env: environment })).stdout, license, 'Every package must include the complete repository license');
   const sourceManifest = JSON.parse(await readFile(join(cwd, 'package.json'), 'utf8'));
   assert.equal(manifest.private, sourceManifest.private, 'Packing must preserve npm publication policy');
   assert.deepEqual(manifest.publishConfig, sourceManifest.publishConfig, 'Packing must preserve npm registry and access settings');
@@ -223,7 +228,7 @@ async function removeScratch(directory) {
 
 export async function verifyRelease(argv) {
   const options = parseArguments(argv);
-  assert.ok(Number(process.versions.node.split('.')[0]) >= 24, 'Release verification requires Node 24 or newer');
+  assert.ok(supportsNodeVersion(process.versions.node), `Release verification requires ${nodeRequirement}`);
   const version = options['--version'];
   const sourceCommit = (await command('git', ['rev-parse', 'HEAD'])).stdout.trim();
   assert.equal(sourceCommit, options['--source-commit'], 'Source commit differs from the checked-out HEAD');

@@ -1,6 +1,6 @@
 # CCDD default tools
 
-Published versions can be installed with `npm install --ignore-scripts @ccdd/core @ccdd/default-tools` on Node.js 24 or later. Install `@ccdd/project` as well to use the project CLI.
+CCDD 3.1.0 supports Node.js 22 LTS (22.19.0 or later) and Node.js 24 or later. Install published versions with `npm install --ignore-scripts @ccdd/core @ccdd/default-tools`. Install `@ccdd/project` as well to use the project CLI.
 
 Optional tool implementations for `@ccdd/core`. This library does not register tools automatically. Import a factory and explicitly put its returned definition in your repository's `ccdd.config.ts`:
 
@@ -94,3 +94,7 @@ completion. The immutable input copy remains available for the application.
 
 Use project `envRequirements` for external prerequisites that cannot be bundled.
 See [remote Human review](../../docs/remote-human-review.md) for the full workflow.
+
+## License
+
+Licensed under the [MIT License](LICENSE).
