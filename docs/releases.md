@@ -22,9 +22,9 @@ For older projects, follow the [package and import migration](releases/v2.0.1.md
 
 ## Publishing a version
 
-Releases build and verify an exact committed snapshot locally; GitHub Actions runs CI without publishing. You need Git, Node.js 22 LTS (22.19.0 or later) or Node.js 24 or later, npm, dependency download access or a populated cache, an npm account with publication rights in the `@ccdd` organization, and a GitHub CLI (`gh`) login with write access to the origin repository.
+Releases build and verify an exact committed snapshot locally, without GitHub Actions. You need Git, Node.js 22 LTS (22.19.0 or later) or Node.js 24 or later, npm, dependency download access or a populated cache, an npm account with publication rights in the `@ccdd` organization, and a GitHub CLI (`gh`) login with write access to the origin repository.
 
-CCDD 3.1.0 adds Node 22 LTS support and the MIT license. Older packages retain their original requirements. Verify each release on the minimum and current supported LTS runtimes.
+CCDD 3.1.0 adds Node 22 LTS support and the MIT license. Older packages retain their original requirements. Run release verification locally with Node 22 LTS, selected by `.nvmrc`.
 
 Keep all three package versions and their lockfile entries aligned. Commit `docs/releases/v<version>.md` with the release notes and push the requested commit to origin. Published npm versions cannot be replaced; use a new coordinated version for changed package contents.
 
