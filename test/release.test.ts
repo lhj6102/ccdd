@@ -228,7 +228,7 @@ test('successful npm publication automatically creates an npm announcement and r
 });
 
 test('announcement recovery preserves the Node requirement of the verified package version', async t => {
-  for (const [range, requirement] of [['>=24', 'Node.js 24 or later'], ['^22.19.0 || >=24.0.0', 'Node.js 22 (>=22.19.0) or 24+']]) {
+  for (const [range, requirement] of [['>=24', 'Node.js 24 or later'], ['^22.19.0', 'Node.js 22 LTS (>=22.19.0)']]) {
     const data = await npmFixture(t, range), api = announcementApi();
     await publishNpmRelease(data);
     await publishNpmAndAnnounce({ ...data, api, announceOnly: true });

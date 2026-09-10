@@ -1,6 +1,6 @@
 # CCDD CLI demo
 
-This guide assumes core, Project, and default tools installed using the [installation guide](getting-started.md) on Node 22 LTS (22.19.0 or later) or Node 24 or later. Run the Project CLI; each scenario installs only the core and default-tools packages imported by its configuration. Agent scenarios require Pi Provider authentication and use the profile openai-codex / gpt-6-astra / medium. The CLI is sufficient for the demo; the monitor is optional.
+This guide assumes core, Project, and default tools installed using the [installation guide](getting-started.md) on Node 22 LTS (22.19.0 or later). Run the Project CLI; each scenario installs only the core and default-tools packages imported by its configuration. Agent scenarios require Pi Provider authentication and use the profile openai-codex / gpt-6-astra / medium. The CLI is sufficient for the demo; the monitor is optional.
 
 The demo also needs two actual tarball files. Installing packages with `npm install` does not create them. First follow [Preparing tarballs from source](#preparing-tarballs-from-source) below, which writes matching core and default-tools tarballs to `/tmp/ccdd-local-packages`. The following commands use that exact output location. If you prepared packages elsewhere, substitute their absolute paths.
 

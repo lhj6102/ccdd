@@ -131,8 +131,13 @@ export async function releaseLocally(options, { cwd = process.cwd(), environment
     const metadata = await readReleaseMetadata(root);
     let api, repository;
     if (options.npm && !options.dryRun && !options.announceOnly) {
-      const preflight = await checkNpmEnvironment({ environment });
-      assert.equal(preflight.status, 'READY', `npm environment is not ready: ${preflight.checks.filter(check => !check.ok).map(check => `${check.id}: ${check.detail}`).join('; ')}. Run npm run release:npm:check.`);
+      if (environment.GITHUB_ACTIONS === 'true' && environment.ACTIONS_ID_TOKEN_REQUEST_URL && environment.ACTIONS_ID_TOKEN_REQUEST_TOKEN) {
+        assert.equal(environment.GITHUB_REF, `refs/tags/${metadata.tag}`, 'The release tag must match the package version');
+        // npm validates OIDC against the package's trusted publisher during publish.
+      } else {
+        const preflight = await checkNpmEnvironment({ environment });
+        assert.equal(preflight.status, 'READY', `npm environment is not ready: ${preflight.checks.filter(check => !check.ok).map(check => `${check.id}: ${check.detail}`).join('; ')}. Run npm run release:npm:check.`);
+      }
     }
     if (!options.dryRun) {
       const remote = (await exec('git', ['remote', 'get-url', 'origin'], { cwd: sourceRoot, encoding: 'utf8', signal: controller.signal })).stdout.trim();

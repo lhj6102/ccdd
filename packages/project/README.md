@@ -2,7 +2,7 @@
 
 CCDD's project validation tool. `@ccdd/core` provides definitions only; this package provides validation history, the CLI, Broker, Executors, and optional monitor. Default tools are available separately in `@ccdd/default-tools`.
 
-CCDD 3.1.0 supports Node.js 22 LTS (22.19.0 or later) and Node.js 24 or later. For versions published to npm, install with `npm install --ignore-scripts @ccdd/core @ccdd/project` and run `npx ccdd-project`. Also install `@ccdd/default-tools` if you use its tools.
+CCDD 3.1.0 supports Node.js 22 LTS (22.19.0 or later). For versions published to npm, install with `npm install --ignore-scripts @ccdd/core @ccdd/project` and run `npx ccdd-project`. Also install `@ccdd/default-tools` if you use its tools.
 
 ```sh
 ccdd-project status

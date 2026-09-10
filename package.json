@@ -10,7 +10,7 @@
   "exports": { ".": { "types": "./dist/src/sdk.d.ts", "import": "./dist/src/sdk.js" } },
   "workspaces": ["packages/default-tools", "packages/project"],
   "engines": {
-    "node": "^22.19.0 || >=24.0.0"
+    "node": "^22.19.0"
   },
   "scripts": {
     "build": "node scripts/clean-build.mjs && npm run build:core && npm run build:tools && node node_modules/typescript/bin/tsc -p tsconfig.json && npm run build:ui && npm run build:project",
