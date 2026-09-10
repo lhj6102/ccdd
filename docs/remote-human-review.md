@@ -103,6 +103,7 @@ On the reviewer computer:
 
 ```sh
 ccdd-project review list --server http://127.0.0.1:4320 --token-file /private/my-token
+ccdd-project review show REQUEST_ID --server http://127.0.0.1:4320 --token-file /private/my-token
 ccdd-project review claim REQUEST_ID --server http://127.0.0.1:4320 --token-file /private/my-token
 ccdd-project review tool REQUEST_ID --tool open_model --server http://127.0.0.1:4320 --token-file /private/my-token
 ccdd-project review submit REQUEST_ID --result-file /private/verdict.json --server http://127.0.0.1:4320 --token-file /private/my-token
@@ -111,6 +112,10 @@ ccdd-project review submit REQUEST_ID --result-file /private/verdict.json --serv
 The loopback URL above can be the local end of your tunnel. The result file uses
 the usual `{ "verdict": "GREEN" | "RED", "summary": "...", "evidence": ["..."] }`
 shape and contains the reviewer's actual judgment.
+
+`review show` displays the instruction, scoped tools, and environment requirements
+without executing project code. For large files on a slow connection, increase
+`--timeout-ms` (default 900000 ms per HTTP request, maximum 86400000 ms).
 
 The claim action first enters **Try Claim**. It reserves the request, prepares
 the snapshot, runs environment checks, and preflights the scoped tools. It then

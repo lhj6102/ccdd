@@ -59,7 +59,7 @@ async function load(workspace: string) {
   const executionPaths=Object.values(types).flatMap(type=>[...Object.values(type.agentTools),...Object.values(type.humanTools)].flatMap(tool=>tool.executionPaths??[]));
   const executionInputs=executionPaths.length?await hashExecutionInputs(root,executionPaths):undefined;
   const extensions={...(envRequirements===undefined?{}:{envRequirements,environmentInputs}),...(executionInputs===undefined?{}:{executionInputs})};
-  const moduleList=[...modules].sort(([a],[b])=>a.localeCompare(b)).map(([path,hash])=>({path,hash}));
+  const moduleList=[...modules].sort(([a],[b])=>a<b?-1:a>b?1:0).map(([path,hash])=>({path,hash}));
   const manifest:ConfigManifest={version:1,configHash:hash(JSON.stringify({values,types,modules:moduleList,...extensions})),modules:moduleList,types,...extensions};
   loaded={config:{...values,artifactTypes:Object.fromEntries(Object.keys(types).map(type=>[type,{custom:true}])),configManifest:manifest}};
   // Keep hooks installed throughout execution so deferred imports cannot escape the snapshot.
@@ -75,9 +75,10 @@ process.on('message',async (message:any)=>{
     const {artifact,type,audience,toolKey,args,outputDir,tmpDir}=message;
     // Human environment requirements inspect these same reviewer-local values. Set them
     // only after snapshot configuration has loaded in its existing restricted environment.
-    if (audience==='human'&&object(message.reviewerEnvironment)) for (const name of ['HOME','USERPROFILE','CARGO_HOME','RUSTUP_HOME']) {
+    if (audience==='human'&&object(message.reviewerEnvironment)) for (const name of ['HOME','USERPROFILE','CARGO_HOME','RUSTUP_HOME','DISPLAY','WAYLAND_DISPLAY','XAUTHORITY','XDG_RUNTIME_DIR','DBUS_SESSION_BUS_ADDRESS']) {
       const value=message.reviewerEnvironment[name];
       if (typeof value==='string') process.env[name]=value;
+      else delete process.env[name];
     }
     const definition=registry.get(`${type}/${audience==='agent'?'agentTools':'humanTools'}/${toolKey}`);
     if (!definition) throw new Error('Unknown tool.');

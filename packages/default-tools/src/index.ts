@@ -239,7 +239,13 @@ function projectOpen(options: ProjectOpenOptions): DefaultToolDefinition<Desktop
       const actualArgs = objectArguments(args, ['path']);
       if (!context.artifactDirectory && Object.hasOwn(actualArgs, 'path')) throw new Error('A file Artifact open does not accept path');
       const target = await context.resolvePath(internalPath(actualArgs.path) || undefined);
-      const env = { ...toolEnvironment(context.tmpDir, true), HOME: context.tmpDir, USERPROFILE: context.tmpDir, XDG_CONFIG_HOME: join(context.tmpDir, 'config'), XDG_CACHE_HOME: join(context.tmpDir, 'cache'), CCDD_OUTPUT_DIR: context.outputDir, CCDD_TMP_DIR: context.tmpDir };
+      const env = toolEnvironment(context.tmpDir, true);
+      // Keep the reviewer's display connection when application settings use a private HOME.
+      if (env.XAUTHORITY === undefined && env.HOME && isAbsolute(env.HOME)) {
+        const authority = join(env.HOME, '.Xauthority');
+        if (await stat(authority).then(info => info.isFile(), () => false)) env.XAUTHORITY = authority;
+      }
+      Object.assign(env, { HOME: context.tmpDir, USERPROFILE: context.tmpDir, XDG_CONFIG_HOME: join(context.tmpDir, 'config'), XDG_CACHE_HOME: join(context.tmpDir, 'cache'), CCDD_OUTPUT_DIR: context.outputDir, CCDD_TMP_DIR: context.tmpDir });
       await launchToolProcess(await executable(context), argv.map(arg => arg === '{artifactPath}' ? target : arg), { cwd: context.outputDir, env, signal: context.signal, timeoutMs });
       context.signal.throwIfAborted();
       return { content: [{ type: 'launch', launched: true }] };

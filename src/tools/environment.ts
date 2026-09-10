@@ -29,7 +29,7 @@ async function outputDirectory(root: string, directory: string): Promise<string>
 
 /** Checks inspect the reviewer's installed environment without inheriting Provider credentials or Node preload hooks. */
 function checkEnvironment(outputDir: string, tmpDir: string): NodeJS.ProcessEnv {
-  const names = ['PATH', 'HOME', 'USERPROFILE', 'USER', 'LOGNAME', 'LANG', 'LC_ALL', 'SYSTEMROOT', 'WINDIR', 'CARGO_HOME', 'RUSTUP_HOME'];
+  const names = ['PATH', 'HOME', 'USERPROFILE', 'USER', 'LOGNAME', 'LANG', 'LC_ALL', 'SYSTEMROOT', 'WINDIR', 'CARGO_HOME', 'RUSTUP_HOME', 'DISPLAY', 'WAYLAND_DISPLAY', 'XAUTHORITY', 'XDG_RUNTIME_DIR', 'DBUS_SESSION_BUS_ADDRESS'];
   return {
     ...Object.fromEntries(names.flatMap(name => process.env[name] === undefined ? [] : [[name, process.env[name]!] ])),
     CCDD_OUTPUT_DIR: outputDir, CCDD_TMP_DIR: tmpDir, TMPDIR: tmpDir, TMP: tmpDir, TEMP: tmpDir,

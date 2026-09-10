@@ -1,15 +1,17 @@
 import { readFile, realpath } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { isAbsolute, join, relative, resolve } from 'node:path';
+import { join, resolve } from 'node:path';
+import { within } from '../tools/paths.js';
 import { readStateContext } from '../broker/index.js';
 import { startReviewServer } from './server.js';
-import { claimRemoteReview, executeRemoteHumanTool, listRemoteReviews, submitRemoteHumanReview, type RemoteReviewOptions } from './client.js';
+import { claimRemoteReview, executeRemoteHumanTool, listRemoteReviews, showRemoteReview, submitRemoteHumanReview, type RemoteReviewOptions } from './client.js';
 
 type Output = { write(value: string): unknown };
 const help = `Remote Human review
 
   ccdd-project review serve --state-dir PATH --credentials-file PATH [--host HOST] [--port PORT]
   ccdd-project review list --server URL --token-file PATH [--limit N] [--offset N]
+  ccdd-project review show REQUEST_ID --server URL --token-file PATH
   ccdd-project review claim REQUEST_ID --server URL --token-file PATH [--cache-dir PATH]
   ccdd-project review tool REQUEST_ID --tool NAME [--args JSON] --server URL --token-file PATH
   ccdd-project review submit REQUEST_ID --result-file PATH --server URL --token-file PATH
@@ -18,6 +20,7 @@ Claim reserves the request while downloading its fixed snapshot and checking the
 local environment. Failed preparation releases the reservation and keeps cached files.
 Tools run on this computer. Verdicts are submitted to the original Broker.
 Client state defaults to ~/.local/state/ccdd-reviewer; override with --cache-dir.
+--timeout-ms sets each HTTP request budget (default 900000 ms), including file transfer.
 The server credentials file maps reviewer IDs to distinct random base64url tokens
 (at least 32 characters). Each client token file contains only its own token.
 Keep credential files outside reviewed projects. Use HTTPS or an authenticated
@@ -40,10 +43,7 @@ function parse(argv: string[]) {
 }
 async function credentialFile(filename: string, source?: string): Promise<string> {
   const absolute = await realpath(resolve(filename));
-  if (source) {
-    const scope = relative(source, absolute);
-    if (!scope || !scope.startsWith('..') && !isAbsolute(scope)) throw new Error('Reviewer credentials must stay outside the reviewed project.');
-  }
+  if (source && within(source, absolute)) throw new Error('Reviewer credentials must stay outside the reviewed project.');
   const value = await readFile(absolute, 'utf8');
   if (Buffer.byteLength(value) > 65536) throw new Error('Credential file exceeds 64 KiB.');
   return value;
@@ -56,9 +56,9 @@ export async function reviewMain(argv: string[], { stdout = process.stdout, stde
   try {
     const { options, positional } = parse(argv), [action, id] = positional;
     if (!action || action === 'help' || options['--help']) { stdout.write(help); return 0; }
-    if (!['serve', 'list', 'claim', 'tool', 'submit'].includes(action)) throw new Error('Use review serve, list, claim, tool, or submit.');
-    if (positional.length !== (['claim', 'tool', 'submit'].includes(action) ? 2 : 1)) throw new Error('Unexpected review command arguments.');
-    const allowed = new Set(['--json', ...(action === 'serve' ? ['--state-dir', '--credentials-file', '--host', '--port'] : ['--server', '--token-file', '--cache-dir']),
+    if (!['serve', 'list', 'show', 'claim', 'tool', 'submit'].includes(action)) throw new Error('Use review serve, list, show, claim, tool, or submit.');
+    if (positional.length !== (['show', 'claim', 'tool', 'submit'].includes(action) ? 2 : 1)) throw new Error('Unexpected review command arguments.');
+    const allowed = new Set(['--json', ...(action === 'serve' ? ['--state-dir', '--credentials-file', '--host', '--port'] : ['--server', '--token-file', '--cache-dir', '--timeout-ms']),
       ...(action === 'list' ? ['--limit', '--offset'] : []), ...(action === 'tool' ? ['--tool', '--args'] : []), ...(action === 'submit' ? ['--result-file'] : [])]);
     for (const key of Object.keys(options)) if (!allowed.has(key)) throw new Error(`${key} is not supported by review ${action}.`);
     const required = (key: string) => { if (!options[key]) throw new Error(`${key} is required.`); return options[key]; };
@@ -75,6 +75,7 @@ export async function reviewMain(argv: string[], { stdout = process.stdout, stde
     let phase = '';
     const client: RemoteReviewOptions = { server: required('--server'), token: (await credentialFile(required('--token-file'))).trim(),
       stateDir: resolve(options['--cache-dir'] ?? join(homedir(), '.local', 'state', 'ccdd-reviewer')), signal: controller.signal,
+      timeoutMs: options['--timeout-ms'] === undefined ? undefined : Number(options['--timeout-ms']),
       onProgress: event => {
         if (options['--json'] || event.phase === phase) return;
         phase = event.phase;
@@ -83,6 +84,7 @@ export async function reviewMain(argv: string[], { stdout = process.stdout, stde
     };
     let result: unknown;
     if (action === 'list') result = await listRemoteReviews(client, { limit: options['--limit'] === undefined ? undefined : Number(options['--limit']), offset: options['--offset'] === undefined ? undefined : Number(options['--offset']) });
+    else if (action === 'show') result = await showRemoteReview(id, client);
     else if (action === 'claim') result = await claimRemoteReview(id, client);
     else if (action === 'tool') result = await executeRemoteHumanTool(id, required('--tool'), JSON.parse(options['--args'] ?? '{}'), client);
     else {

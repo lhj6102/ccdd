@@ -6,7 +6,7 @@ import type { HumanTryClaim } from '../broker/human-claims.js';
 import { materializeWorkspace, validateWorkspaceManifest, type WorkspaceTransferProgress } from '../workspaces/transfer.js';
 import { reopenWorkspace } from '../workspaces/index.js';
 import { prepareHumanReview } from '../executors/human-preparation.js';
-import { createReviewTools } from '../tools/runner.js';
+import { createReviewTools, describeReviewTools } from '../tools/runner.js';
 import { packageVersion } from '../runtime-paths.js';
 import type { PortableReview } from './types.js';
 
@@ -15,6 +15,7 @@ export interface RemoteReviewOptions {
   token: string;
   stateDir: string;
   signal?: AbortSignal;
+  timeoutMs?: number;
   onProgress?: (event: { phase: 'download' | 'environment' | 'claimed'; transfer?: WorkspaceTransferProgress }) => void;
 }
 interface LocalReviewSession {
@@ -42,12 +43,14 @@ function transport(options: RemoteReviewOptions) {
     throw new Error('Use the HTTP(S) origin of the review server without credentials or a path.');
   }
   if (!/^[A-Za-z0-9_-]{32,256}$/.test(options.token)) throw new Error('Invalid reviewer token format.');
+  const timeoutMs = options.timeoutMs ?? 900_000;
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 86_400_000) throw new Error('Review request timeout must be between 1 and 86400000 ms.');
   const send = async (route: string, input?: unknown, signal = options.signal): Promise<Response> => {
     signal?.throwIfAborted();
     const response = await fetch(new URL(route, server), { method: input === undefined ? 'GET' : 'POST',
       headers: { authorization: `Bearer ${options.token}`, ...(input === undefined ? {} : { 'content-type': 'application/json' }) },
       ...(input === undefined ? {} : { body: JSON.stringify(input) }),
-      signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(120_000)]) : AbortSignal.timeout(120_000), redirect: 'error' });
+      signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]) : AbortSignal.timeout(timeoutMs), redirect: 'error' });
     if (!response.ok) {
       const message = await response.json().catch(() => ({})) as { error?: string };
       throw new Error(message.error ?? `Review server returned HTTP ${response.status}.`);
@@ -69,6 +72,7 @@ async function connect(options: RemoteReviewOptions) {
   const readSession = async (id: string): Promise<LocalReviewSession> => {
     const stored = JSON.parse(await readFile(sessionPath(id), 'utf8')) as LocalReviewSession;
     if (stored.version !== 1 || stored.server !== api.server || stored.reviewerId !== identity.reviewerId || stored.request?.id !== id || stored.request.packageVersion !== packageVersion || stored.workspace?.hash !== stored.request.snapshotHash || stored.workspace.stateDir !== root) throw new Error('Prepared review session does not match this client. Claim this review again.');
+    requestId(stored.request.runId); requestId(stored.attemptId);
     return stored;
   };
   const saveSession = async (session: LocalReviewSession) => {
@@ -83,6 +87,17 @@ async function connect(options: RemoteReviewOptions) {
 export async function listRemoteReviews(options: RemoteReviewOptions, { limit = 100, offset = 0 }: { limit?: number; offset?: number } = {}): Promise<unknown> {
   const api = await connect(options);
   return api.json(`/requests?limit=${limit}&offset=${offset}`);
+}
+
+export async function showRemoteReview(id: string, options: RemoteReviewOptions): Promise<unknown> {
+  const api = await connect(options);
+  const { request, status } = await api.json<{ request: PortableReview; status: string }>(`/requests/${requestId(id)}`);
+  return { id: request.id, title: request.title, status, claimedBy: request.claimedBy,
+    instruction: request.payload.instruction, artifacts: request.artifacts,
+    ...(request.artifactGroups ? { artifactGroups: request.artifactGroups } : {}),
+    environmentRequirements: request.configManifest?.envRequirements ?? {},
+    tools: request.configManifest ? describeReviewTools({ artifacts: request.artifacts, configManifest: request.configManifest, audience: 'human' }) : [],
+  };
 }
 
 export async function claimRemoteReview(id: string, options: RemoteReviewOptions): Promise<PreparedRemoteReview> {
@@ -109,6 +124,7 @@ export async function claimRemoteReview(id: string, options: RemoteReviewOptions
   }, 20_000);
   try {
     if (request.id !== id || request.packageVersion !== packageVersion || attempt.reviewerId !== api.reviewerId) throw new Error('Invalid Try Claim response.');
+    requestId(request.runId); requestId(attempt.id);
     const manifest = validateWorkspaceManifest(await api.json(`${route}/snapshot`, undefined, signal));
     if (manifest.hash !== request.snapshotHash) throw new Error('Downloaded manifest does not match this review.');
     options.onProgress?.({ phase: 'download' });

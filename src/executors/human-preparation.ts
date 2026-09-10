@@ -31,9 +31,9 @@ export async function prepareHumanReview(request: ReviewEnvelope, workspace: Wor
       criticId: request.criticId, audience: 'human', runDir: join(outputDir, 'tools'), signal: handle.signal });
     try {
       const environment = await checkEnvironmentRequirements({ workspacePath: workspace.path, configManifest: request.configManifest, outputDir: join(outputDir, 'environment'), signal: handle.signal });
-      if (!environment.ok) throw new Error(environment.checks.filter(check => !check.ok).map(check => `${check.id}: ${check.message}`).join('\n'));
+      if (!environment.ok) throw Object.assign(new Error(environment.checks.filter(check => !check.ok).map(check => `${check.id}: ${check.message}`).join('\n').slice(0, 8000)), { code: 'HUMAN_PREPARATION_FAILED' });
       const tools = await registry.preflight();
-      if (tools.some(check => !check.ok)) throw new Error(tools.filter(check => !check.ok).map(check => `${check.toolName}: ${check.message}`).join('\n'));
+      if (tools.some(check => !check.ok)) throw Object.assign(new Error(tools.filter(check => !check.ok).map(check => `${check.toolName}: ${check.message}`).join('\n').slice(0, 8000)), { code: 'HUMAN_PREPARATION_FAILED' });
       await handle.assertUnchanged(); handle.signal.throwIfAborted();
       return { snapshotHash: request.snapshotHash, ...(request.configManifest ? { configHash: request.configManifest.configHash } : {}), environment: environment.checks, tools };
     } finally { await registry.close(); }

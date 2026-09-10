@@ -12,7 +12,7 @@ export { projectHistory, projectRun, projectRuns, projectRequests } from './stor
 export { createBroker } from '../broker/index.js';
 export { createExecutorRegistry } from '../executors/index.js';
 export { startReviewServer } from '../review/server.js';
-export { claimRemoteReview, executeRemoteHumanTool, submitRemoteHumanReview, listRemoteReviews } from '../review/client.js';
+export { claimRemoteReview, executeRemoteHumanTool, submitRemoteHumanReview, listRemoteReviews, showRemoteReview } from '../review/client.js';
 export type { RemoteReviewOptions, PreparedRemoteReview } from '../review/client.js';
 
 /** Explicit CLI query: briefly observe the current workspace without creating a store. */

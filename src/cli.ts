@@ -10,6 +10,7 @@ import {createExecutorRegistry} from './executors/index.js';
 import {diagnoseProject} from './doctor/index.js';
 import {diagnoseArtifactTools} from './artifacts/tool-check.js';
 import {createBroker,readStateContext} from './broker/index.js';
+import {claimHumanFromCli} from './review/local-claim.js';
 import {localContext,createLocalAlarmMethods} from './local.js';
 import {readArtifact} from './artifacts/index.js';
 import {reopenWorkspace} from './workspaces/index.js';
@@ -217,7 +218,7 @@ Only credential paths are saved for worker/resume; credentials are never copied 
         return 0;
       }
       const reviewerId=get('--reviewer');if(!reviewerId)throw new Error(`${command} requires --reviewer.`);
-      if(command==='human-claim'){print(await activeBroker.claimHuman(request.id,reviewerId));return 0;}
+      if(command==='human-claim'){print(await claimHumanFromCli(activeBroker,request.id,reviewerId,stderr));return 0;}
       const resultFile=get('--result-file');if(!resultFile)throw new Error('human-result requires --result-file containing {verdict,summary,evidence}.');
       const content=await readFile(resolve(resultFile),'utf8');if(Buffer.byteLength(content)>256000)throw new Error('Human result file is too large.');
       await activeBroker.completeHuman(request.id,{reviewerId,result:JSON.parse(content)});

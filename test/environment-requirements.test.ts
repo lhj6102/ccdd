@@ -1,6 +1,6 @@
 import test, { type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
-import { chmod, cp, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
+import { chmod, cp, mkdir, mkdtemp, readFile, readdir, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -202,6 +202,41 @@ test('the default project opener executes the bundled launcher through the snaps
   await workspace.assertUnchanged(); await workspace.close();
   await rm(data.root, { recursive: true });
   assert.equal(await readFile(join(snapshotRoot, 'spec.txt'), 'utf8'), 'Review input', 'The desktop application retains its immutable input after the original source is removed.');
+});
+
+test('bundled viewers retain reviewer desktop connections with a private writable home', async t => {
+  if (process.platform === 'win32') return;
+  const data = await fixture(t), reviewerHome = join(data.dir, 'reviewer-home');
+  await mkdir(reviewerHome);
+  const defaultAuthority = join(reviewerHome, '.Xauthority'), explicitAuthority = join(data.dir, 'reviewer-x11-cookie');
+  await writeFile(defaultAuthority, 'Deterministic X11 test fixture');
+  await writeFile(explicitAuthority, 'Deterministic explicit X11 test fixture');
+  const desktopEnv = { HOME: reviewerHome, XAUTHORITY: explicitAuthority, DISPLAY: ':123', WAYLAND_DISPLAY: 'wayland-test', XDG_RUNTIME_DIR: join(data.dir, 'reviewer-runtime'), DBUS_SESSION_BUS_ADDRESS: 'unix:path=/test/reviewer-bus', OPENAI_API_KEY: 'not-for-project-code' };
+  const previous = Object.fromEntries(Object.keys(desktopEnv).map(name => [name, process.env[name]]));
+  Object.assign(process.env, desktopEnv);
+  t.after(() => { for (const [name, value] of Object.entries(previous)) if (value === undefined) delete process.env[name]; else process.env[name] = value; });
+  await cp(dirname(fileURLToPath(import.meta.resolve('@ccdd/default-tools'))), join(data.root, 'tool-library'), { recursive: true });
+  await writeFile(join(data.root, 'runtime', 'viewer'), '#!/bin/sh\nprintf "%s\\n" "$HOME" "$XAUTHORITY" "$DISPLAY" "$WAYLAND_DISPLAY" "$XDG_RUNTIME_DIR" "$DBUS_SESSION_BUS_ADDRESS" "$OPENAI_API_KEY" > "$CCDD_OUTPUT_DIR/environment.txt"\nprintf "private settings" > "$HOME/viewer-settings.txt"\n');
+  await chmod(join(data.root, 'runtime', 'viewer'), 0o755);
+  await writeFile(join(data.root, 'ccdd.config.ts'), `import { human } from './tool-library/index.js';
+    if (process.env.HOME !== undefined || process.env.XDG_RUNTIME_DIR !== undefined) throw new Error('Reviewer home and runtime directory must not enter config evaluation.');
+    ${data.source.replace(`humanTools: { inspect: ${tool} }`, `humanTools: { inspect: human.project.open({ runtime: 'runtime', executable: 'viewer' }) }`)}`);
+  const config = await data.config();
+  const launchRoot = join(data.dir, 'launch');
+  const registry = await createReviewTools({ worktreePath: data.root, artifacts: [{ id: 'spec', type: 'text', path: 'spec.txt' }], artifactTypes: config.artifactTypes, configManifest: config.configManifest, audience: 'human', runDir: launchRoot });
+  try {
+    for (const authority of [explicitAuthority, defaultAuthority]) {
+      if (authority === defaultAuthority) delete process.env.XAUTHORITY;
+      assert.equal((await registry.preflight())[0].ok, true);
+      assert.deepEqual(await registry.call('inspect_spec'), { content: [{ type: 'launch', launched: true }] });
+      const [output] = await readdir(launchRoot), outputDir = join(launchRoot, output);
+      const [home, ...observed] = (await readFile(join(outputDir, 'environment.txt'), 'utf8')).split('\n');
+      assert.equal(home, join(outputDir, '.tmp'));
+      assert.deepEqual(observed, [authority, desktopEnv.DISPLAY, desktopEnv.WAYLAND_DISPLAY, desktopEnv.XDG_RUNTIME_DIR, desktopEnv.DBUS_SESSION_BUS_ADDRESS, '', '']);
+      assert.equal(await readFile(join(home, 'viewer-settings.txt'), 'utf8'), 'private settings');
+      await assert.rejects(readFile(join(reviewerHome, 'viewer-settings.txt')), { code: 'ENOENT' });
+    }
+  } finally { await registry.close(); }
 });
 
 test('desktop process handoff reports startup failure and cancellation without leaving an owned process', async t => {

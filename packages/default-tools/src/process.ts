@@ -13,7 +13,7 @@ interface ProcessOptions {
 /** Never forward arbitrary environment variables, including Provider credentials or NODE_OPTIONS. */
 export function toolEnvironment(tmpDir: string, desktop = false): NodeJS.ProcessEnv {
   const names = desktop
-    ? ['PATH', 'HOME', 'USER', 'LOGNAME', 'DISPLAY', 'WAYLAND_DISPLAY', 'XDG_RUNTIME_DIR', 'DBUS_SESSION_BUS_ADDRESS', 'LANG', 'LC_ALL', 'SYSTEMROOT', 'WINDIR']
+    ? ['PATH', 'HOME', 'USER', 'LOGNAME', 'DISPLAY', 'WAYLAND_DISPLAY', 'XAUTHORITY', 'XDG_RUNTIME_DIR', 'DBUS_SESSION_BUS_ADDRESS', 'LANG', 'LC_ALL', 'SYSTEMROOT', 'WINDIR']
     : ['LANG', 'LC_ALL', 'SYSTEMROOT', 'WINDIR'];
   return { ...Object.fromEntries(names.flatMap(name => process.env[name] === undefined ? [] : [[name, process.env[name]!]])), TMPDIR: tmpDir, TMP: tmpDir, TEMP: tmpDir };
 }

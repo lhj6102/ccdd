@@ -42,6 +42,7 @@ function errorCode(value: unknown): string | undefined {
 function safeError(value: unknown): HttpError {
   if (value instanceof MonitorActionError) return value;
   const code = errorCode(value);
+  if (code === 'HUMAN_PREPARATION_FAILED' && value instanceof Error) return new HttpError(409, value.message.slice(0, 8000));
   if (['WORKSPACE_CHANGED', 'WORKSPACE_CACHE_TAMPERED', 'WORKSPACE_ARTIFACT_MISMATCH'].includes(code ?? '')) return new HttpError(409, 'The review input has changed; this Artifact cannot be inspected.');
   if (code === 'ENOENT' || code === 'ENOTDIR') return new HttpError(409, 'The stored review input could not be found. The original or copy may have been moved or deleted.');
   if (code === 'HUMAN_TOOL_UNAVAILABLE') return new HttpError(409, 'Unable to start the registered program. Check its installation and tool settings.');
