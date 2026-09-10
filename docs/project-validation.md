@@ -85,7 +85,7 @@ A Review Request remains the unit users refer to as a review ticket. Assignment 
 | `ccdd-project run cancel RUN_ID` | Cancels unfinished work in the execution. |
 | `ccdd-project request list` | Lists individual review tickets. Supports `--run RUN_ID`. |
 | `ccdd-project request show REQUEST_ID` | Shows review instructions, fixed input, actual result, and evidence. |
-| `ccdd-project request claim REQUEST_ID --reviewer ID` | Claims a Human review. |
+| `ccdd-project request claim REQUEST_ID --reviewer ID` | Reserves Try Claim, checks the local input/environment, and confirms the Human assignment on success. |
 | `ccdd-project request tool REQUEST_ID --reviewer ID --tool NAME --args JSON` | Executes a registered tool for a claimed Human request. |
 | `ccdd-project request submit REQUEST_ID --reviewer ID --result-file PATH` | Submits an actual Human verdict and evidence. |
 

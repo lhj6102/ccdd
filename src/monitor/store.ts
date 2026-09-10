@@ -18,6 +18,7 @@ interface Header {
   id: string; runId: string; title: string; criticId: string; status: ReviewStatus; kind: CriticProfile['kind'];
   predecessorId: string | null; target: string | null; deps: string[] | null; snapshotHash: string | null; blockedReason: string | null; createdAt: string; startedAt: string | null; completedAt: string | null;
   claimedAt: string | null; claimedBy: string | null; notifiedAt: string | null; mode: 'copy' | 'lock' | null;
+  preparingBy: string | null; preparationExpiresAt: string | null;
 }
 interface Owner { pid: number; identity: string | null }
 interface Event { id: number; requestId: string | null; type: string; at: string }
@@ -75,12 +76,14 @@ function readHeader(row: Record<string, unknown>): Header {
     target: nullableString(row.target), deps: row.deps == null ? null : strings(JSON.parse(string(row.deps))), snapshotHash: nullableString(row.snapshot_hash), blockedReason: row.blocked_reason == null ? null : text(string(row.blocked_reason), 2_000),
     createdAt: date(row.created_at), startedAt: nullableDate(row.started_at), completedAt: nullableDate(row.completed_at),
     claimedAt: nullableDate(row.claimed_at), claimedBy: nullableString(row.claimed_by), notifiedAt: nullableDate(row.notified_at),
+    preparingBy: nullableString(row.preparing_by), preparationExpiresAt: nullableDate(row.preparation_expires_at),
     mode: row.workspace_mode === 'copy' || row.workspace_mode === 'lock' ? row.workspace_mode : null,
   };
 }
 
 // The overview query deliberately never selects review payloads, result logs, tool arguments, or credential settings.
 const headerSql = `SELECT id,run_id,status,
+  json_extract(data,'$.tryClaim.reviewerId') AS preparing_by,json_extract(data,'$.tryClaim.expiresAt') AS preparation_expires_at,
   json_extract(data,'$.id') AS json_id,json_extract(data,'$.runId') AS json_run_id,json_extract(data,'$.status') AS json_status,
   json_extract(data,'$.title') AS title,json_extract(data,'$.criticId') AS critic_id,json_extract(data,'$.profile.kind') AS kind,
   json_extract(data,'$.blockedReason') AS blocked_reason,json_extract(data,'$.target') AS target,json_extract(data,'$.deps') AS deps,json_extract(data,'$.snapshotHash') AS snapshot_hash,
@@ -258,6 +261,7 @@ function waitingReason(request: Header, state: MonitorRequest['workerState'], by
   }
   if (request.status === 'WAITING_HUMAN') {
     if (!request.notifiedAt) return request.claimedBy ? `Claimed by ${text(request.claimedBy, 200)}; checking notification delivery.` : 'Waiting for the review notification to be delivered.';
+    if (!request.claimedBy && request.preparingBy && request.preparationExpiresAt && Date.parse(request.preparationExpiresAt) > Date.now()) return `${text(request.preparingBy, 200)} is preparing the review input and environment (Try Claim).`;
     return request.claimedBy ? `Waiting for ${text(request.claimedBy, 200)} to submit a review result.` : 'Waiting for a reviewer to claim this review.';
   }
   if (state === 'unknown') return 'Unable to determine whether the worker process is running.';
@@ -293,6 +297,7 @@ function timeline(request: Header, events: Event[]): MonitorDetail['timeline'] {
   const eventLabels: Record<string, string> = {
     'run.submitted': 'Submitted', 'request.queued': 'Queued', 'request.started': 'Started',
     'human.waiting': 'Awaiting Human', 'human.notified': 'Notification delivered', 'human.claimed': 'Claimed',
+    'human.claim.preparing': 'Try Claim', 'human.claim.released': 'Preparation released', 'human.claim.expired': 'Preparation expired',
     'request.completed': 'Completed', 'request.error': 'Completed',
   };
   for (const event of events) {

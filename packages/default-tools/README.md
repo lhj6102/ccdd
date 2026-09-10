@@ -76,3 +76,21 @@ human.desktop.open({ command: '/path/to/viewer', args: ['--read-only', '{artifac
 `args` are fixed repository configuration and require a standalone `{artifactPath}` token; without `args`, an explicit command receives the Artifact path as its only argument. Reviewers cannot supply a command, argv or environment. The process receives only a small desktop environment allowlist, excluding Provider secrets and `NODE_OPTIONS`. CCDD configuration and custom executables are trusted repository code, not an OS sandbox.
 
 The package contains no runtime import from CCDD and owns no Broker state. Its peer dependency supplies only the shared public tool contract; custom tools may implement that same contract without installing this library.
+
+## Bundled project applications
+
+`human.project.open({ runtime: 'tools/blender', executable: 'blender' })` opens an
+Artifact with a portable application included in the project. `runtime` is a
+project-relative directory and `executable` is relative to it. Optional fixed
+`args` must include `{artifactPath}`; the default passes the Artifact path alone.
+The complete runtime directory participates in the tool's input identity, including
+supported internal relative symlinks. Reviewers cannot choose a different program.
+
+The actual application is launched with isolated writable home/config/cache
+directories in the review output. After successful process launch and the brief
+startup handoff, the reviewer owns the desktop session; it remains open after the
+tool host exits. A launch receipt does not prove rendered content or review
+completion. The immutable input copy remains available for the application.
+
+Use project `envRequirements` for external prerequisites that cannot be bundled.
+See [remote Human review](../../docs/remote-human-review.md) for the full workflow.

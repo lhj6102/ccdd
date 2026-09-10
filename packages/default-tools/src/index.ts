@@ -4,7 +4,7 @@ import { delimiter, isAbsolute, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { JsonSchema, JsonValue, ToolContext, ToolDefinition, ToolResult } from '@ccdd/core';
 import { internalPath, objectArguments } from './reader.js';
-import { runToolProcess, toolEnvironment } from './process.js';
+import { launchToolProcess, runToolProcess, toolEnvironment } from './process.js';
 import { imageContent, MAX_IMAGE_OUTPUT_BYTES } from './image-result.js';
 
 export interface ReaderOptions { description?: string; timeoutMs?: number }
@@ -20,6 +20,15 @@ export interface DesktopOpenOptions {
   args?: string[];
   /** macOS application name or bundle path, passed to /usr/bin/open -a. */
   app?: string;
+  description?: string;
+  timeoutMs?: number;
+}
+export interface ProjectOpenOptions {
+  /** Project-relative directory containing the executable and all of its runtime files. */
+  runtime: string;
+  /** Fixed executable path relative to runtime. It is never resolved through host PATH. */
+  executable: string;
+  args?: string[];
   description?: string;
   timeoutMs?: number;
 }
@@ -207,6 +216,52 @@ function imageView(options: ReaderOptions = {}): DefaultToolDefinition<ImageView
   };
 }
 
+function projectOpen(options: ProjectOpenOptions): DefaultToolDefinition<DesktopOpenArguments> {
+  const safe = (value: unknown): value is string => typeof value === 'string' && !!value && value.length <= 1024 && !/^[A-Za-z]:/.test(value) && !isAbsolute(value) && !/[\\\x00-\x1f\x7f]/.test(value) && value.split('/').every(part => !!part && part !== '.' && part !== '..');
+  if (!safe(options.runtime) || !safe(options.executable)) throw new Error('runtime and executable must be safe relative paths.');
+  const argv = options.args === undefined ? ['{artifactPath}'] : [...options.args];
+  if (!argv.includes('{artifactPath}') || argv.some(arg => typeof arg !== 'string' || arg.includes('\0') || (arg.includes('{artifactPath}') && arg !== '{artifactPath}'))) throw new Error('args must include a standalone {artifactPath} token.');
+  const runtime = options.runtime, executablePath = `${runtime}/${options.executable}`, timeoutMs = timeout(options.timeoutMs, 10000);
+  const executable = async (context: ToolContext): Promise<string> => {
+    context.signal.throwIfAborted();
+    if (!context.resolveExecutionPath) throw new Error('Project executables require a CCDD Runner with execution path support.');
+    const directory = await context.resolveExecutionPath(runtime);
+    if (!(await stat(directory)).isDirectory()) throw new Error('The registered project runtime must be a directory.');
+    return availableExecutable(await context.resolveExecutionPath(executablePath), context.signal);
+  };
+  return {
+    metadata: {
+      description: options.description ?? 'Open {artifactName} with the project-provided application. Opening does not submit a verdict.',
+      inputSchema: { type: 'object', properties: { path: { type: 'string', description: 'Optional internal path for a directory Artifact.' } }, additionalProperties: false },
+      resultKinds: ['launch'], observation: 'none', artifactKind: 'any', timeoutMs, executionPaths: [runtime],
+    },
+    async execute(context, args) {
+      const actualArgs = objectArguments(args, ['path']);
+      if (!context.artifactDirectory && Object.hasOwn(actualArgs, 'path')) throw new Error('A file Artifact open does not accept path');
+      const target = await context.resolvePath(internalPath(actualArgs.path) || undefined);
+      const env = toolEnvironment(context.tmpDir, true);
+      // Keep the reviewer's display connection when application settings use a private HOME.
+      if (env.XAUTHORITY === undefined && env.HOME && isAbsolute(env.HOME)) {
+        const authority = join(env.HOME, '.Xauthority');
+        if (await stat(authority).then(info => info.isFile(), () => false)) env.XAUTHORITY = authority;
+      }
+      Object.assign(env, { HOME: context.tmpDir, USERPROFILE: context.tmpDir, XDG_CONFIG_HOME: join(context.tmpDir, 'config'), XDG_CACHE_HOME: join(context.tmpDir, 'cache'), CCDD_OUTPUT_DIR: context.outputDir, CCDD_TMP_DIR: context.tmpDir });
+      await launchToolProcess(await executable(context), argv.map(arg => arg === '{artifactPath}' ? target : arg), { cwd: context.outputDir, env, signal: context.signal, timeoutMs });
+      context.signal.throwIfAborted();
+      return { content: [{ type: 'launch', launched: true }] };
+    },
+    async preflight(context) {
+      try {
+        await context.resolvePath(); await executable(context);
+        return { ok: true, message: 'Artifact and project-provided executable are available. No application was launched.' };
+      } catch (error) {
+        context.signal.throwIfAborted();
+        return { ok: false, message: error instanceof Error ? error.message : 'Project executable preparation failed.' };
+      }
+    },
+  };
+}
+
 /** Pure factories: importing this library or constructing tools performs no registration, I/O or process execution. */
 export const agent = {
   text: { read: (options: ReaderOptions = {}): DefaultToolDefinition<ReadArguments> => readerTool('read', false, options) },
@@ -216,4 +271,4 @@ export const agent = {
   },
   image: { view: imageView },
 };
-export const human = { desktop: { open: desktopOpen } };
+export const human = { desktop: { open: desktopOpen }, project: { open: projectOpen } };

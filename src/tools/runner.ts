@@ -10,6 +10,7 @@ import { isArtifactGroup, resolveArtifactScope } from '../artifacts/groups.js';
 import type { ConfigManifest, JsonSchema, ToolMetadata, ToolResult } from './contracts.js';
 import { metadata, object, jsonCopy, validateArguments } from './schema.js';
 import { openToolHost } from './host.js';
+import { matchesToolManifest } from './manifest.js';
 import { scopedPath, within } from './paths.js';
 
 export interface ReviewToolDefinition {
@@ -122,7 +123,7 @@ export async function createReviewTools(options:ReviewToolsOptions):Promise<Revi
   const root=await realpath(worktreePath);
   const host=await openToolHost(root,signal);
   try{
-    if(!isDeepStrictEqual(host.config.configManifest,configManifest)||!isDeepStrictEqual(host.config.artifactTypes,artifactTypes))throw Object.assign(new Error('Recorded tool manifest does not match this snapshot configuration.'),{code:'WORKSPACE_ARTIFACT_MISMATCH'});
+    if(!matchesToolManifest(host.config,configManifest)||!isDeepStrictEqual(host.config.artifactTypes,artifactTypes))throw Object.assign(new Error('Recorded tool manifest does not match this snapshot configuration.'),{code:'WORKSPACE_ARTIFACT_MISMATCH'});
     if(options.criticId!==undefined){
       const critic=host.config.critics.find(value=>value.id===options.criticId);
       const expected=critic?resolveArtifactScope(host.config.artifacts,[critic.target,...critic.deps]):undefined;
@@ -139,7 +140,8 @@ export async function createReviewTools(options:ReviewToolsOptions):Promise<Revi
       const artifact=artifacts.find(value=>value.id===tool.artifactId)!;
       const path=await scopedPath(root,artifact.path),info=await lstat(path),shape=tool.metadata?.artifactKind;
       if(shape==='file'&&!info.isFile()||shape==='directory'&&!info.isDirectory())throw new Error('Tool does not support this Artifact shape.');
-      return host.call({action,artifact,type:artifact.type,audience,toolKey:tool.operation,args:arguments_,outputDir,tmpDir:temporary},action==='preflight'?10000:tool.metadata?.timeoutMs??120000);
+      const reviewerEnvironment=audience==='human'?Object.fromEntries(['HOME','USERPROFILE','CARGO_HOME','RUSTUP_HOME','DISPLAY','WAYLAND_DISPLAY','XAUTHORITY','XDG_RUNTIME_DIR','DBUS_SESSION_BUS_ADDRESS'].flatMap(name=>process.env[name]===undefined?[]:[[name,process.env[name]!]])):undefined;
+      return host.call({action,artifact,type:artifact.type,audience,toolKey:tool.operation,args:arguments_,outputDir,tmpDir:temporary,...(reviewerEnvironment?{reviewerEnvironment}:{})},action==='preflight'?10000:tool.metadata?.timeoutMs??120000);
     };
     return {tools,toolCalls,validateArguments:args,close:host.close,
       async call(name,value={}){

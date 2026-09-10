@@ -11,6 +11,9 @@ export { queryProject, planProject } from './query.js';
 export { projectHistory, projectRun, projectRuns, projectRequests } from './store.js';
 export { createBroker } from '../broker/index.js';
 export { createExecutorRegistry } from '../executors/index.js';
+export { startReviewServer } from '../review/server.js';
+export { claimRemoteReview, executeRemoteHumanTool, submitRemoteHumanReview, listRemoteReviews, showRemoteReview } from '../review/client.js';
+export type { RemoteReviewOptions, PreparedRemoteReview } from '../review/client.js';
 
 /** Explicit CLI query: briefly observe the current workspace without creating a store. */
 export async function inspectProject({ repoPath, stateDir, selection, recursive = false, force = false, signal }: { repoPath: string; stateDir: string; selection?: ProjectSelection; recursive?: boolean; force?: boolean; signal?: AbortSignal }) {

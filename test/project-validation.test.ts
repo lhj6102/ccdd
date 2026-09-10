@@ -128,7 +128,7 @@ test('force reviews only the selected Critic; a later actual RED is not hidden b
   for (const verdict of ['GREEN', 'RED'] as const) {
     const run = await broker.submitProject({ selection: { kind: 'critic', criticId: 'b-own' }, force: true });
     await broker.run(run.id); const id = broker.getRun(run.id)!.requests[0].id;
-    broker.claimHuman(id, 'reviewer');
+    await broker.claimHuman(id, 'reviewer');
     await broker.completeHuman(id, { reviewerId: 'reviewer', result: { verdict, summary: `Human submitted ${verdict}`, evidence: ['Explicit test reviewer submission.'] } });
   }
   const q = await f.inspect({ kind: 'critic', criticId: 'b-own' });

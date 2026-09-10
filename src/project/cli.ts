@@ -16,6 +16,8 @@ import { inspectProject } from './index.js';
 import { projectHistory, projectRun, projectRuns, projectRequests, type ProjectRunView } from './store.js';
 import type { ProjectPlan, ProjectSelection } from './types.js';
 import type { PiOptions } from '../executors/pi.js';
+import { reviewMain } from '../review/cli.js';
+import { claimHumanFromCli } from '../review/local-claim.js';
 
 type Output = { write(value: string): unknown };
 const terminal = new Set(['GREEN', 'RED', 'ERROR', 'INCOMPLETE']);
@@ -38,6 +40,7 @@ const help = `CCDD Project — pull validation and explicit review execution
   ccdd-project request claim REQUEST_ID --reviewer ID
   ccdd-project request tool REQUEST_ID --reviewer ID --tool NAME --args JSON
   ccdd-project request submit REQUEST_ID --reviewer ID --result-file PATH
+  ccdd-project review serve | list | show | claim | tool | submit   (remote Human review)
   ccdd-project doctor | tools check | monitor   (existing diagnostics and UI)
 
 Individual verification runs ready selected Critics and reports blocked Critics as incomplete.
@@ -80,6 +83,7 @@ export async function main(argv = process.argv.slice(2), { stdout = process.stdo
   const print = (value: unknown, plain?: string) => stdout.write((!json && plain !== undefined ? plain : JSON.stringify(value, null, 2)) + '\n');
   try {
     const command = argv[0] ?? 'help';
+    if (command === 'review') return await reviewMain(argv.slice(1), { stdout, stderr });
     if (['doctor', 'tools', 'monitor'].includes(command)) return await legacyMain(argv, { stdout, stderr });
     const { options, positional } = parse(argv.slice(1)); json = Boolean(options['--json']);
     const get = (key: string) => typeof options[key] === 'string' ? options[key] as string : undefined;
@@ -189,7 +193,7 @@ export async function main(argv = process.argv.slice(2), { stdout = process.stdo
     }
     const reviewerId = get('--reviewer'); if (!reviewerId) throw new Error('--reviewer is required for Human actions.');
     const request = broker.getRequest(id); if (!request) throw new Error('Review request not found.');
-    if (action === 'claim') print(broker.claimHuman(id, reviewerId));
+    if (action === 'claim') print(await claimHumanFromCli(broker, id, reviewerId, stderr));
     else if (action === 'tool') {
       const toolName = get('--tool'); if (!toolName) throw new Error('--tool is required.');
       print(await broker.executeHumanTool(id, { reviewerId, toolName, arguments: JSON.parse(get('--args') ?? '{}') }));

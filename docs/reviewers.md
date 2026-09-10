@@ -77,11 +77,16 @@ npx ccdd-project verify spec --human-inbox
 npx ccdd-project monitor
 ```
 
-Open the local address printed by the monitor. Choose the project, switch to Kanban, and open the Human review card. Select **Claim review**, use the provided tools to inspect the materials, then enter a verdict, a summary, and at least one item of evidence before selecting **Submit result**.
+Open the local address printed by the monitor. Choose the project, switch to Kanban, and open the Human review card. Select **Claim review**. The request enters **Try Claim** while its input and environment are prepared; successful preparation confirms the assignment. Use the provided tools to inspect the materials, then enter a verdict, a summary, and at least one item of evidence before selecting **Submit result**.
 
 Artifact references in the instruction are buttons that take you to the relevant tool choices. Selecting a reference does not itself execute a tool. Opening an application does not automatically approve the review.
 
 For a terminal-only workflow, use `request claim`, `request tool`, and `request submit`. See [Human actions and review history](project-validation.md#execution-history-and-human-actions).
+
+For teammates on another computer, use [remote Human review](remote-human-review.md)
+to download the fixed project, check their environment, run the same tools
+locally, and submit the result to the original Broker. Cached files are reused
+across reviews. Projects can include their own portable viewer executables.
 
 ## Combine reviewers
 

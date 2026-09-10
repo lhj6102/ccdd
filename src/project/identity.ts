@@ -68,7 +68,11 @@ export async function createProjectSnapshot(config: RepoConfig, root: string, sn
     // the identity rather than falsely treating identical function text as identical behavior.
     const modules = config.configManifest?.modules;
     const tools = config.configManifest ? Object.fromEntries(Object.keys(types).map(type => [type, config.configManifest!.types[type]])) : types;
-    const criticHash = inputHash({ version: 1, executorVersion: packageVersion, critic, tools, modules, runtime: critic.profile.kind === 'runtime' ? { node: process.versions.node, platform: process.platform, arch: process.arch } : undefined });
+    const audience = critic.profile.kind === 'human' ? 'humanTools' : critic.profile.kind === 'agent' ? 'agentTools' : undefined;
+    const executionPaths = new Set(audience ? Object.keys(types).flatMap(type => Object.values(config.configManifest?.types[type]?.[audience] ?? {}).flatMap(tool => tool.executionPaths ?? [])) : []);
+    const executionInputs = config.configManifest?.executionInputs?.filter(input => executionPaths.has(input.path));
+    const environment = critic.profile.kind === 'human' && config.configManifest?.envRequirements ? { requirements: config.configManifest.envRequirements, inputs: config.configManifest.environmentInputs } : undefined;
+    const criticHash = inputHash({ version: 1, executorVersion: packageVersion, critic, tools, modules, ...(executionInputs?.length ? { executionInputs } : {}), ...(environment ? { environment } : {}), runtime: critic.profile.kind === 'runtime' ? { node: process.versions.node, platform: process.platform, arch: process.arch } : undefined });
     const target = { id: critic.target, hash: artifactHashes[critic.target] };
     const deps = critic.deps.slice().sort().map(id => ({ id, hash: artifactHashes[id] }));
     inputs[critic.id] = { version: 1, key: inputHash({ criticHash, target, deps }), criticHash, target, deps, reusable: [critic.target, ...critic.deps].every(id => reusable[id]) };

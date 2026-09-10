@@ -1,6 +1,6 @@
 {
   "name": "@ccdd/project",
-  "version": "2.0.2",
+  "version": "3.0.0",
   "publishConfig": { "access": "public", "registry": "https://registry.npmjs.org/" },
   "repository": { "type": "git", "url": "git+https://github.com/lhj6102/ccdd.git", "directory": "packages/project" },
   "description": "Pull-based project validation, review history and request-scoped CCDD execution",
@@ -11,7 +11,7 @@
   "bin": { "ccdd-project": "./dist/src/project/cli.js", "ccdd": "./dist/src/cli.js" },
   "files": ["dist/", "README.md"],
   "scripts": { "build": "node ../../scripts/build-project.mjs", "prepack": "npm run build" },
-  "peerDependencies": { "@ccdd/core": ">=2.0.0 <3" },
+  "peerDependencies": { "@ccdd/core": ">=3.0.0 <4" },
   "dependencies": {
     "@earendil-works/pi-agent-core": "0.85.1",
     "@earendil-works/pi-ai": "0.85.1",

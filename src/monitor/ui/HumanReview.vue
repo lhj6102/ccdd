@@ -22,7 +22,7 @@ const route = computed(() => requestRoute(props.detail.request.projectId, props.
 const form = computed(() => toolInputForm(tool.value?.inputSchema ?? { type: 'object', additionalProperties: false }));
 const definitions = computed(() => form.value.fields);
 const jsonMode = computed(() => form.value.json || preferJson.value);
-let toolController: AbortController | undefined, alive = true;
+let toolController: AbortController | undefined, claimController: AbortController | undefined, alive = true;
 
 function toolLabel(value: MonitorHumanTool): string {
   const action = value.operation === 'read' ? 'Read' : value.operation === 'list' ? 'List' : value.name.startsWith('open_') ? 'Open' : value.name.slice(0, -(value.artifactId.length + 1));
@@ -68,7 +68,8 @@ function report(problem: unknown): void {
 async function claim(): Promise<void> {
   if (!props.session || busy.value || !props.detail.human?.canClaim) return;
   busy.value = 'claim'; error.value = '';
-  try { const value = await api<MonitorDetail>(`${route.value}/claim`, { body: {}, csrfToken: props.session.csrfToken }); if (alive) emit('updated', value); }
+  claimController = new AbortController();
+  try { const value = await api<MonitorDetail>(`${route.value}/claim`, { body: {}, csrfToken: props.session.csrfToken, signal: claimController.signal }); if (alive) emit('updated', value); }
   catch (problem) { if (alive) report(problem); }
   finally { busy.value = null; }
 }
@@ -127,13 +128,14 @@ async function complete(): Promise<void> {
   } catch (problem) { if (alive) report(problem); }
   finally { busy.value = null; }
 }
-onUnmounted(() => { alive = false; toolController?.abort(); });
+onUnmounted(() => { alive = false; toolController?.abort(); claimController?.abort(); });
 </script>
 
 <template>
   <section class="human-review" aria-label="Human review">
     <p v-if="sessionError" class="inline-error" role="status">{{ sessionError }}</p>
-    <div v-if="detail.human?.canClaim" class="claim-callout"><div><strong>Claim this review.</strong><p>Claim the review, inspect the content with the provided tools, and submit your result.</p></div><button class="primary-button" :disabled="!session || !!busy" @click="claim">{{ busy === 'claim' ? 'Claiming…' : 'Claim review' }}</button></div>
+    <div v-if="detail.human?.canClaim || busy === 'claim'" class="claim-callout"><div><strong>{{ busy === 'claim' ? 'Try Claim: preparing your review.' : 'Claim this review.' }}</strong><p>The input and environment are checked before your assignment is confirmed.</p></div><button class="primary-button" :disabled="!session || !!busy" @click="claim">{{ busy === 'claim' ? 'Preparing…' : 'Claim review' }}</button></div>
+    <p v-else-if="detail.human?.tryClaim" class="other-reviewer">{{ detail.human.tryClaim.preparingByMe ? 'Your review input and environment are being prepared.' : 'Another reviewer is preparing this review.' }}</p>
     <p v-else-if="!detail.human?.claimedByMe" class="other-reviewer">{{ detail.request.claimedBy ? 'Another reviewer has claimed this review.' : 'Waiting for the review to be ready.' }}</p>
     <section v-if="!detail.human?.claimedByMe && focusedArtifact" ref="toolsRegion" class="artifact-tool-preview" tabindex="-1" aria-labelledby="artifact-preview-title">
       <h3 id="artifact-preview-title" class="section-title">{{ focusedArtifact }} · Available tools</h3>

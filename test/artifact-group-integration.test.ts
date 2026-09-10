@@ -140,7 +140,7 @@ test('copy Human group claim and tools survive restart; group verdict gates only
   assert.equal(first!.requests.find(r=>r.criticId==='preview-review')?.status,'WAITING_HUMAN');
   assert.equal(first!.requests.find(r=>r.criticId==='group-review')?.status,'BLOCKED');
   const preview = first!.requests.find(r=>r.criticId==='preview-review')!;
-  broker.claimHuman(preview.id,'reviewer');
+  await broker.claimHuman(preview.id,'reviewer');
   await broker.completeHuman(preview.id,{reviewerId:'reviewer',result:{verdict:'GREEN',summary:'Preview reviewed',evidence:['Preview matches brief.']}});
   const next = await broker.run(submitted.id);
   const group = next!.requests.find(r=>r.criticId==='group-review')!;
@@ -149,7 +149,7 @@ test('copy Human group claim and tools survive restart; group verdict gates only
   assert.equal(next!.requests.find(r=>r.criticId==='delivery-review')?.status,'BLOCKED');
   await broker.close();
   broker = createBroker({...data,executors});
-  broker.claimHuman(group.id,'reviewer');
+  await broker.claimHuman(group.id,'reviewer');
   await broker.executeHumanTool(group.id,{reviewerId:'reviewer',toolName:'open_effect'});
   assert.equal(await readFile(data.launched,'utf8'),join(group.workspace.path,'effect.md'));
   await broker.completeHuman(group.id,{reviewerId:'reviewer',result:{verdict:'GREEN',summary:'Group reviewed',evidence:['Effect and preview agree.']}});

@@ -39,6 +39,15 @@ This is cooperative local execution, not an OS sandbox against a hostile process
 
 `prepareWorkspace({repoPath,stateDir,mode,signal?})` and `reopenWorkspace(descriptor,{signal?})` return `{descriptor,signal,assertUnchanged(),close()}`. The serializable descriptor contains `{version:1,mode,sourcePath,path,hash,stateDir,baselineMetadataHash}`. It is stored with the Run and every request. Copy source need not remain present after capture.
 
+Remote Human review transfers complete copy-mode snapshots with a file manifest.
+Clients cache verified file bytes by content hash and construct a new immutable
+snapshot using local paths and metadata. They never patch an earlier snapshot or
+copy the publisher's absolute workspace paths. Changed files transfer in full;
+unchanged cached content is reused across snapshots. Manifest paths, symlinks,
+file sizes, hashes, executable bits, and the assembled snapshot hash are checked.
+Mutable blob downloads and local output stay outside published input. A corrupted
+published snapshot fails explicitly. See [remote review](remote-human-review.md).
+
 ## Repository configuration
 
 `ccdd.config.ts` is read from the prepared workspace. It default-exports a configuration object or a synchronous/asynchronous zero-argument factory. `defineConfig` is a lightweight identity helper; `defineTool` derives common argument types from a literal input schema. The SDK import starts no Broker, Provider, monitor or desktop process.
@@ -80,6 +89,12 @@ A transitional `ccdd.config.json` path retains the existing text/files Viewer an
 
 ## Registered Artifact tools
 
+New TS manifests order imported module paths independently of the machine's
+locale. Historical version-1 manifests can retain their saved module order only
+after the runner verifies identical module path/hash pairs and recomputes the
+recorded configuration hash from the actual snapshot definitions. This preserves
+pending requests without accepting changed code, tools, or configuration.
+
 A TS type declares only `agentTools` and `humanTools`. Empty or omitted maps provide no capabilities to that audience. Targets and dependencies expand recursively into leaf Artifacts in stable order, deduplicating shared members. Every supplied leaf must have usable tools for the selected Agent/Human audience; Runtime has its own contract. Groups have no tools of their own. Names retain each leaf ID as `<toolName>_<artifactName>`, with collisions rejected. Tool keys can describe arbitrary operations such as `frame`, `inspectClip`, or `preview`; there is no built-in read/list restriction or required Viewer name.
 
 A tool factory returns `{metadata, execute(context,args), preflight?}`. Calling the factory defines an effect; invoking `execute` performs it. The core accepts user-written functions without the default-tools library.
@@ -92,10 +107,19 @@ A tool factory returns `{metadata, execute(context,args), preflight?}`. Calling 
 - `observation`: `content` allows validated result observation receipts; `none` does not.
 - `artifactKind?`: `file`, `directory`, or `any`.
 - `timeoutMs?`: integer 1–900000; host execution defaults to 120000.
+- `executionPaths?`: safe project-relative runtime files/directories read or executed
+  by this tool. Their identities are frozen in the manifest and included in the
+  effective definitions of Critics using those tools. Runtime directories may use
+  relative symlinks that remain entirely inside that declared directory.
 
 Supported schema keywords are `type`, `description`, `title`, `default`, `examples`, `enum`, `const`, `properties`, `required`, `additionalProperties`, `items`, item/string/numeric bounds, `uniqueItems`, `pattern`, `multipleOf`, `anyOf`, `oneOf`, `allOf`, and `not`. `$ref`, remote schemas and unrecognized keywords are rejected. Types are object, array, string, integer, number, boolean and null; use schema composition for unions. Schema nesting is limited to 20. Runtime schema validation remains authoritative; TypeScript inference covers the common literal forms rather than every JSON Schema composition.
 
 The runner supplies `{artifactId, artifactPath, artifactDirectory, outputDir, tmpDir, signal, resolvePath}`. `artifactPath` is the bound snapshot root. `resolvePath(internalPath?)` rejects traversal, symlinks and paths outside that Artifact; file Artifacts reject a nonempty internal path. Output and temporary paths are review-owned, outside the snapshot. Reviewer arguments never choose another Artifact binding.
+
+New runners also supply `resolveExecutionPath(path)`, limited to that tool's
+registered `executionPaths`. This capability does not widen `resolvePath` or the
+reviewer's Artifact scope. The optional TypeScript signature permits historical
+direct-call adapters; tools requiring it fail explicitly on an older runner.
 
 `ToolResult` contains 1–32 typed content blocks and optional `{observation:{kind:'content'|'empty',detail?}}`:
 
@@ -180,6 +204,41 @@ Credentials come from Pi's supported Provider environment variables or explicit 
 Run scope is `{kind:'graph'}` or `{kind:'critic',criticId}`. Every new Run persists its full graph definition, including evaluators omitted by a selected-Critic run. Full runs gate on all evaluators of every dependency Artifact being GREEN in that Run; explicit bases require no verdict. Ready Agent/Runtime critics execute with a per-Run limit of four, while Human waiting never blocks independent work. RED/operational ERROR blocks dependents but leaves independent branches running. Active Run status takes precedence until independent work settles. Workspace/cancellation/owner failures invalidate all unfinished requests. Selected execution bypasses dependency gates and has one request; absent evaluators never contribute GREEN to Artifact aggregation. Run status is `QUEUED|RUNNING|WAITING_HUMAN|GREEN|RED|ERROR`; request status additionally includes `BLOCKED`. Old runs retain their stored chain semantics and optional predecessor IDs. Completed results are immutable, and subsequent review attempts receive new Handles.
 
 ## Human lifecycle
+
+Claim is now asynchronous: an explicit claim action first creates a **Try Claim**
+reservation while `claimedBy` remains empty. The client prepares the exact input,
+runs the project's environment scripts, and preflights its registered Human tools.
+Only successful preparation confirms Claim. Local CLI and monitor actions use the
+same preparation contract. Preparation failure or cancellation releases only that
+attempt and returns a diagnostic to the reviewer; the request remains
+WAITING_HUMAN with no semantic verdict and no request ERROR. Cached bytes are kept.
+
+Try Claim stores an attempt ID, reviewer, and expiry (two minutes by default), and
+is renewed during preparation. Begin, renew, confirmation, and release compare
+the current attempt transactionally. Expired attempts cannot renew or confirm;
+late releases cannot clear a newer attempt. Read projections treat expired
+reservations as available without changing stored state. A subsequent explicit
+begin action can retire them. Claim confirmation also checks the snapshot/config
+identities and the complete set of environment and tool readiness receipts.
+
+`ccdd.config.ts` may declare `envRequirements: { [id]: {description, script,
+timeoutMs?, inputs?} }`. `script` is a safe project-relative Node script. A zero
+exit code means ready; other exits, timeout, or excessive output fail preparation.
+The default timeout is 30 seconds (maximum 900 seconds). The script and additional
+declared input hashes are part of Human effective definitions. Helpers/data read
+by checks must be listed in `inputs`. Checks run only during explicit preparation,
+never during GET, config loading, Project queries, or ordinary preflight listing.
+They use the reviewer's allowlisted environment and external output/tmp paths,
+with bounded diagnostics. Provider credentials and Node preload hooks are excluded.
+Checks diagnose external dependencies; CCDD does not automatically install them.
+
+The optional authenticated review server serves one existing project store and
+copy-mode TS snapshots. It does not execute reviewer tools. Its GET routes use
+read-only stored definitions and snapshot reads; POST routes delegate assignment
+and result actions to the Broker. Remote clients run actual checks and tools and
+return authenticated preparation/launch reports. These reports are cooperative
+reviewer assertions, never fabricated semantic evidence or proof of a hostile
+client's execution. Only the confirmed claimant can submit a Human verdict.
 
 The worker persists WAITING_HUMAN, invokes registered alarms, and records confirmed delivery. A registered local inbox writes `stateDir/human-inbox.jsonl`. It is a local file alarm, not an email, push notification or delivery acknowledgement by a person. Alarm failure causes ERROR.
 

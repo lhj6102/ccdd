@@ -332,3 +332,6 @@ export async function reopenWorkspace(descriptor: WorkspaceDescriptor, { signal 
     return { descriptor: Object.freeze({ ...descriptor }), signal: observer.signal, assertUnchanged: observer.assertUnchanged, close: observer.close };
   } catch (error) { await observer.close(); throw error; }
 }
+
+// Transfer reuses the snapshot identity and publication boundary used by local copies.
+export { inspect as inspectWorkspace, acquirePublication as acquireWorkspacePublication };

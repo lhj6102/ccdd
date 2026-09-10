@@ -64,6 +64,10 @@ _Avoid_: automatic verdict, Human Claim
 A check of whether the specified reviewer is ready to use an Artifact's registered tools. Confirming actual tool execution and judging Artifact quality are different outcomes.
 _Avoid_: Verdict, review pass
 
+**Environment Requirement**:
+A project-defined condition that the reviewer's local execution environment must satisfy before taking responsibility for a Human review. Confirming it establishes readiness at that time, not an Artifact verdict.
+_Avoid_: Artifact dependency, automatic installation, validation evidence
+
 **Review Result**:
 A reviewer's GREEN or RED judgment of the observed Artifact, together with supporting evidence. Execution failure is not a verdict.
 _Avoid_: successful execution, assumed pass
