@@ -118,7 +118,8 @@ export function readStateContext(stateDir: string) {
   const canonical = fs.realpathSync(stateDir);
   const filename = path.join(canonical, 'broker.sqlite');
   if (!fs.statSync(filename).isFile()) throw new Error('State directory does not contain a broker store.');
-  const database = new DatabaseSync(filename, { readOnly: true });
+  // A worker closing the last WAL connection can briefly lock even read-only queries.
+  const database = new DatabaseSync(filename, { readOnly: true, timeout: 5000 });
   try {
     const row = database.prepare('SELECT value FROM metadata WHERE key = ?').get('registered-repo');
     const identity = row ? parseStored<unknown>(row.value) : null;

@@ -19,7 +19,8 @@ export function readEvidence(database: DatabaseSync): ValidationEvidence[] {
 export function withProjectStore<T>(stateDir: string, read: (database: DatabaseSync) => T, empty: T): T {
   const filename = join(stateDir, 'broker.sqlite');
   if (!existsSync(filename)) return empty;
-  const database = new DatabaseSync(filename, { readOnly: true });
+  // A worker closing the last WAL connection can briefly lock even read-only queries.
+  const database = new DatabaseSync(filename, { readOnly: true, timeout: 5000 });
   try { database.exec('BEGIN'); const result = read(database); database.exec('COMMIT'); return result; }
   finally { database.close(); }
 }
@@ -40,5 +41,5 @@ export function storedRun(database: DatabaseSync, id: string): ProjectRunView | 
 export function projectRun(stateDir: string, id: string): ProjectRunView | null { return withProjectStore(stateDir, db => storedRun(db, id), null); }
 export function projectRuns(stateDir: string): ProjectRunView[] { return withProjectStore(stateDir, db => db.prepare('SELECT id FROM runs ORDER BY created_at DESC, rowid DESC').all().map(row => storedRun(db, String(row.id))!), []); }
 export function projectRequests(stateDir: string, runId?: string): ReviewRequest[] {
-  return withProjectStore(stateDir, db => (runId ? db.prepare('SELECT data FROM requests WHERE run_id = ? ORDER BY ordinal').all(runId) : db.prepare('SELECT data FROM requests ORDER BY created_at DESC, rowid DESC').all()).map(row => JSON.parse(String(row.data)) as ReviewRequest), []);
+  return withProjectStore(stateDir, db => (runId ? db.prepare('SELECT data FROM requests WHERE run_id = ? ORDER BY ordinal').all(runId) : db.prepare("SELECT data FROM requests ORDER BY json_extract(data, '$.createdAt') DESC, rowid DESC").all()).map(row => JSON.parse(String(row.data)) as ReviewRequest), []);
 }
