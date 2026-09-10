@@ -11,7 +11,7 @@ jobs:
   test:
     runs-on: ubuntu-latest
     env:
-      npm_config_cache: ${{ runner.temp }}/npm-cache
+      npm_config_cache: /tmp/ccdd-npm-cache
     steps:
       - uses: actions/checkout@v6
         with:
