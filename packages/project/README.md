@@ -2,7 +2,7 @@
 
 CCDD's project validation tool. `@ccdd/core` provides definitions only; this package provides validation history, the CLI, Broker, Executors, and optional monitor. Default tools are available separately in `@ccdd/default-tools`.
 
-Node.js 24 or later is required. For versions published to npm, install with `npm install --ignore-scripts @ccdd/core @ccdd/project` and run `npx ccdd-project`. Also install `@ccdd/default-tools` if you use its tools.
+CCDD 3.1.0 supports Node.js 22 LTS (22.19.0 or later) and Node.js 24 or later. For versions published to npm, install with `npm install --ignore-scripts @ccdd/core @ccdd/project` and run `npx ccdd-project`. Also install `@ccdd/default-tools` if you use its tools.
 
 ```sh
 ccdd-project status
@@ -23,3 +23,7 @@ State defaults to `~/.local/state/ccdd/<repo-path-hash>` and can be configured w
 Handle Human reviews with `request claim`, `request tool`, and `request submit`. `doctor`, `tools check`, and `monitor` are also supported. See `ccdd-project help` for detailed options.
 
 The existing `ccdd` command is included as a compatibility CLI in this execution package. Legacy `ccdd run --critic` retains its prerequisite bypass; use `ccdd-project verify` for the new project validation flow. Historical verdicts without recorded validation input hashes are not assumed to be reusable.
+
+## License
+
+Licensed under the [MIT License](LICENSE).

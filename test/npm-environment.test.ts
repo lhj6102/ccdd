@@ -27,14 +27,22 @@ test('npm environment inspection uses read-only commands and redacts profile det
   assert.deepEqual(data.calls, ['--version', 'whoami', 'profile get', 'org ls ccdd']);
 });
 
-test('missing scope, absent membership and an unsupported runtime cannot pass npm preflight', async () => {
+test('missing scope and absent membership cannot pass npm preflight', async () => {
   for (const scope of [Object.assign(new Error('sensitive response'), { code: 'E404' }), {}]) {
     const data = reader(scope), report = await checkNpmEnvironment({ read: data.read, nodeVersion: 'v24.18.0' });
     assert.equal(report.status, 'NOT_READY');
     assert.equal(report.checks.find((check: { id: string }) => check.id === 'scope').ok, false);
     assert.doesNotMatch(JSON.stringify(report), /sensitive/);
   }
-  assert.equal((await checkNpmEnvironment({ read: reader().read, nodeVersion: 'v22.22.0' })).status, 'NOT_READY');
+});
+
+test('npm preflight accepts supported Node versions and rejects older or prerelease runtimes', async () => {
+  for (const nodeVersion of ['v22.19.0', 'v22.22.0', 'v24.0.0', 'v24.18.0', 'v26.0.0']) {
+    assert.equal((await checkNpmEnvironment({ read: reader().read, nodeVersion })).status, 'READY', nodeVersion);
+  }
+  for (const nodeVersion of ['v20.19.0', 'v22.0.0', 'v22.18.0', 'v23.11.0', 'v22.19.0-rc.1', 'invalid']) {
+    assert.equal((await checkNpmEnvironment({ read: reader().read, nodeVersion })).status, 'NOT_READY', nodeVersion);
+  }
 });
 
 test('failed npm authentication stops account and organization inspection', async () => {

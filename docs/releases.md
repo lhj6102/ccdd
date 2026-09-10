@@ -2,14 +2,14 @@
 
 CCDD packages are distributed through npm. GitHub Releases announce each version with an installation command, npm package links, and release notes. They do not host installation tarballs. GitHub still supplies automatic Source code archives; those contain source, not installable packages.
 
-See [getting started](getting-started.md) for setup and [v3.0.0 release notes](releases/v3.0.0.md) for the current changes.
+See [getting started](getting-started.md) for setup and [v3.1.0 release notes](releases/v3.1.0.md) for the current changes.
 
 ## Installing and upgrading
 
-Use Node.js 24 or later and install matching versions of the three packages:
+CCDD 3.1.0 supports Node.js 22 LTS (22.19.0 or later) and Node.js 24 or later. Install matching versions of the three packages:
 
 ```sh
-npm install --ignore-scripts @ccdd/core@3.0.0 @ccdd/project@3.0.0 @ccdd/default-tools@3.0.0
+npm install --ignore-scripts @ccdd/core@3.1.0 @ccdd/project@3.1.0 @ccdd/default-tools@3.1.0
 npx ccdd-project config check
 npx ccdd-project tools check
 ```
@@ -22,12 +22,14 @@ For older projects, follow the [package and import migration](releases/v2.0.1.md
 
 ## Publishing a version
 
-Releases build and verify an exact committed snapshot locally, without GitHub Actions. You need Git, Node.js 24 or later, npm, dependency download access or a populated cache, an npm account with publication rights in the `@ccdd` organization, and a GitHub CLI (`gh`) login with write access to the origin repository.
+Releases build and verify an exact committed snapshot locally; GitHub Actions runs CI without publishing. You need Git, Node.js 22 LTS (22.19.0 or later) or Node.js 24 or later, npm, dependency download access or a populated cache, an npm account with publication rights in the `@ccdd` organization, and a GitHub CLI (`gh`) login with write access to the origin repository.
+
+CCDD 3.1.0 adds Node 22 LTS support and the MIT license. Older packages retain their original requirements. Verify each release on the minimum and current supported LTS runtimes.
 
 Keep all three package versions and their lockfile entries aligned. Commit `docs/releases/v<version>.md` with the release notes and push the requested commit to origin. Published npm versions cannot be replaced; use a new coordinated version for changed package contents.
 
 ```sh
-nvm use # With nvm, select Node 24 from .nvmrc.
+nvm use # With nvm, select Node 22 LTS from .nvmrc.
 npm run release:npm:check
 gh auth status
 
@@ -48,7 +50,7 @@ Actual publication checks npm authentication and the GitHub source commit and ta
 
 Before writing to npm, every existing target package version must match the verified tarball's SHA-512 integrity. Matching versions are skipped; a mismatch stops publication. Packages publish in core → Project → default tools order with public access and the `latest` npm tag. Fresh public metadata confirms each published version; short registry propagation delays are retried.
 
-**After all three exact package versions are confirmed, the same command creates or updates the matching GitHub Release.** Its tag points to the verified source commit and is never moved. The announcement includes the versioned npm install command, package links, and source-linked release notes. GitHub selects Latest on the server using its automatic version/date policy, so an older retry never explicitly overrides a newer announcement. Retrying an unchanged announcement performs no writes. Future versions keep their own announcement entries; historical tarball releases were removed once during the npm migration, preserving their Git tags and commit history.
+**After all three exact package versions are confirmed, the same command creates or updates the matching GitHub Release.** Its tag points to the verified source commit and is never moved. The announcement includes the versioned npm install command, package links, and source-linked release notes. Its Node requirement comes from the verified Project tarball, so recovery of an older release retains that version's requirement. GitHub selects Latest on the server using its automatic version/date policy, so an older retry never explicitly overrides a newer announcement. Retrying an unchanged announcement performs no writes. Future versions keep their own announcement entries; historical tarball releases were removed once during the npm migration, preserving their Git tags and commit history.
 
 This automation runs through `npm run release:npm` (equivalent to `npm run release -- --npm`). A manual `npm publish` outside this workflow does not update GitHub. GitHub notification behavior is documented in its [release API](https://docs.github.com/en/rest/releases/releases#create-a-release).
 

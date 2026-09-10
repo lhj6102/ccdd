@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
-import { compareVersions, tagCommit, validateAssets } from './release.mjs';
+import { compareVersions, packedManifest, tagCommit, validateAssets } from './release.mjs';
 import { planNpmRelease, publishNpmRelease } from './npm-release.mjs';
+import { nodeRequirement, supportedNodeRange } from '../src/node-version.ts';
 
 export async function planNpmAnnouncement({ metadata, sourceCommit, api }) {
   assert.match(sourceCommit, /^[a-f0-9]{40}(?![\s\S])/, 'Source commit must be an exact commit SHA');
@@ -20,16 +21,18 @@ export async function planNpmAnnouncement({ metadata, sourceCommit, api }) {
   return { tagged, release };
 }
 
-export function npmAnnouncementBody({ metadata, sourceCommit, repository }) {
+export function npmAnnouncementBody({ metadata, sourceCommit, repository, nodeRange }) {
   assert.match(repository, /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+(?![\s\S])/);
   assert.ok(repository.split('/').every(part => part !== '.' && part !== '..'));
   const source = `https://github.com/${repository}/blob/${sourceCommit}`;
+  const requirement = nodeRange === supportedNodeRange ? nodeRequirement
+    : nodeRange === '>=24' ? 'Node.js 24 or later' : nodeRange ? `Node.js ${nodeRange}` : undefined;
   return [
     `CCDD ${metadata.tag} is available from npm. Install the matching package versions:`, '',
     '```sh',
     `npm install --ignore-scripts @ccdd/core@${metadata.version} @ccdd/project@${metadata.version} @ccdd/default-tools@${metadata.version}`,
     '```', '',
-    'Node.js 24 or later is required. Install only core and Project if you use custom tools exclusively.', '',
+    `${requirement ? `${requirement} is required. ` : ''}Install only core and Project if you use custom tools exclusively.`, '',
     ...['@ccdd/core', '@ccdd/project', '@ccdd/default-tools'].map(name => `- [${name}@${metadata.version}](https://www.npmjs.com/package/${name}/v/${metadata.version})`), '',
     `[Release notes](${source}/docs/releases/${metadata.tag}.md) · [Getting started](${source}/docs/getting-started.md)`, '',
     `Source commit: [${sourceCommit}](https://github.com/${repository}/commit/${sourceCommit}).`, '',
@@ -41,7 +44,9 @@ export async function publishNpmAnnouncement({ assetsDir, metadata, sourceCommit
   const files = await validateAssets(assetsDir, metadata, sourceCommit);
   const packages = await planNpmRelease({ files, metadata, client });
   assert.ok(packages.every(pkg => pkg.alreadyPublished), 'All three matching npm packages must be published before announcing the release');
-  const body = npmAnnouncementBody({ metadata, sourceCommit, repository });
+  // Recovery may announce an older release; use its verified package requirement.
+  const nodeRange = packedManifest(files.get(metadata.projectFile ?? metadata.coreFile)).engines?.node;
+  const body = npmAnnouncementBody({ metadata, sourceCommit, repository, nodeRange });
   const state = await planNpmAnnouncement({ metadata, sourceCommit, api });
   if (!state.tagged) {
     try { await api.request('POST', 'git/refs', { ref: `refs/tags/${metadata.tag}`, sha: sourceCommit }); }

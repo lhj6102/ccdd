@@ -10,6 +10,7 @@ import { diagnosticError, errorMessage, errorCode } from './errors.js';
 import type { AgentProfile, RuntimeProfile, AlarmMethod, ReviewEnvelope, ReviewRequest, ReviewResult, ExecutionContext, ExecutorReadiness, ProbeResult } from '../contracts.js';
 import type { SpawnImplementation } from './process.js';
 import { runProcess } from './process.js';
+import { nodeRequirement, supportsNodeVersion } from '../node-version.js';
 
 const RESULT_SCHEMA = {
   type: 'object', additionalProperties: false, required: ['verdict', 'summary', 'evidence'],
@@ -99,7 +100,7 @@ async function probeRuntime(request: ReviewEnvelope & { profile: RuntimeProfile 
   });
   let version;
   try { version = JSON.parse(run.stdout).version; } catch {}
-  if (run.exitCode !== 0 || typeof version !== 'string' || Number(version.split('.')[0]) < 24) throw diagnosticError('RUNTIME_STARTUP_FAILED', 'Could not verify startup of the required Node 24 or later runtime.', 'Run CCDD with Node 24 or later.');
+  if (run.exitCode !== 0 || !supportsNodeVersion(version)) throw diagnosticError('RUNTIME_STARTUP_FAILED', `Could not verify startup of the required ${nodeRequirement} runtime.`, `Run CCDD with ${nodeRequirement}.`);
   return { ok: true, message: 'Verified Node startup and read access to test paths. Project tests were not executed.', details: { operation: 'runtime-startup', nodeVersion: version, testPaths: request.profile.args.slice(1), testsExecuted: false } };
 }
 

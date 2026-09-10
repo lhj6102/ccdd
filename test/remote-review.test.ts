@@ -113,11 +113,14 @@ test('environment failure releases Try Claim without failing the request and ret
 
 test('Try Claim is exclusive, expires without GET mutation, and stale attempts cannot confirm, renew or release a newer reservation', async t => {
   const data = await fixture(t);
+  // Advance reservation time explicitly; filesystem and network scheduling must
+  // not expire the lease before the exclusivity assertions on a busy runner.
+  t.mock.timers.enable({ apis: ['Date'], now: Date.now() });
   const first = data.broker.tryClaimHuman(data.request.id, 'alice', { leaseMs: 25 });
   assert.equal(data.broker.getRequest(data.request.id)!.claimedBy, null);
   assert.throws(() => data.broker.tryClaimHuman(data.request.id, 'bob'), /another claim attempt/);
   await assert.rejects(data.broker.executeHumanTool(data.request.id, { reviewerId: 'alice', toolName: 'view_asset' }), /reviewer who claimed/);
-  await delay(40);
+  t.mock.timers.setTime(Date.parse(first.expiresAt) + 1);
   const before = await readFile(join(data.stateDir, 'broker.sqlite'));
   const list = await listRemoteReviews(data.bob) as { preparation: unknown }[];
   assert.equal(list[0].preparation, null);
