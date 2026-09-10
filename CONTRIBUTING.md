@@ -8,12 +8,12 @@ Use Git and Node.js 22 LTS (22.19.0 or later) or Node.js 24 or later. `.nvmrc` s
 
 ```sh
 npm ci
-npm run typecheck
 npm test
+npm run typecheck
 npm run test:packages
 ```
 
-`npm test` checks repository language, builds the project, and runs Node's built-in test runner. Package checks install the real tarballs and exercise both default-tool and custom-tool configurations. They may need the npm registry or a populated local cache.
+`npm test` checks repository language, builds the project, and runs Node's built-in test runner. Run it before the standalone type check on a fresh checkout: tests import the default-tools package's generated declarations. Package checks install the real tarballs and exercise both default-tool and custom-tool configurations. They may need the npm registry or a populated local cache.
 
 CI runs these checks on Node 22.19.0, the latest Node 22, and Node 24. The exact minimum catches APIs that are missing from early supported releases. Node 22.19.0 is required by the Pi libraries; CCDD also uses native SQLite, TypeScript loading, and synchronous module hooks. Node 20 and Node 23 are unsupported. Node 22 support starts with CCDD 3.1.0; older packages retain their original Node requirement.
 
