@@ -22,19 +22,31 @@ For older projects, follow the [package and import migration](releases/v2.0.1.md
 
 ## Publishing a version
 
-CI runs one Node 22 LTS job on pull requests and main. To publish, merge the
-version change and release notes, then push its version tag:
+CI runs once on each push to main. Its single Node 22 LTS job builds and tests
+the commit, verifies the packed production installations, and uploads
+`release-<commit SHA>` containing the three tarballs and verification files.
+PR creation and version tags do not trigger another test run.
+
+To publish, merge the version change and release notes, wait for that commit's
+CI to succeed, then push its version tag:
 
 ```sh
 git tag v3.1.0 COMMIT_SHA
 git push origin v3.1.0
 ```
 
-`release.yml` runs one Node 22 LTS job. It installs npm 11.19.1 and invokes the
-existing release command, which builds and verifies the tagged commit before
-publishing all three packages and creating the GitHub Release. The tag must
-match the package version. npm authenticates through GitHub Actions OIDC and
-the package's registered Trusted Publisher.
+`release.yml` runs one Node 22 LTS job. It installs npm 11.19.1 for Trusted
+Publishing, downloads the successful main CI artifact for the exact tagged
+commit, and publishes those bytes through `scripts/publish-ci.mjs`. It does not
+install project dependencies, build, or run tests. Commit/version/checksum and
+registry-integrity checks prevent publishing a different artifact; these are
+publication checks, not another test suite.
+
+The tag must match the package version. npm authenticates through GitHub Actions
+OIDC and the package's registered Trusted Publisher. CI artifacts are retained
+for 14 days. An early tag or missing artifact stops CD; wait for CI or rerun CI
+for that commit, then rerun Release. Retrying Release reuses the same artifact
+and skips identical packages already published to npm.
 
 ### Trusted Publisher setup
 
@@ -59,7 +71,7 @@ See [npm trusted publishing](https://docs.npmjs.com/trusted-publishers/).
 
 ## Local verification and publication
 
-The same release command also runs locally and verifies an exact committed snapshot. You need Git, Node.js 22 LTS (22.19.0 or later), npm, dependency download access or a populated cache, an npm account with publication rights in the `@ccdd` organization, and a GitHub CLI (`gh`) login with write access to the origin repository.
+The independent local release command remains available when publishing without GitHub Actions. It verifies an exact committed snapshot. You need Git, Node.js 22 LTS (22.19.0 or later), npm, dependency download access or a populated cache, an npm account with publication rights in the `@ccdd` organization, and a GitHub CLI (`gh`) login with write access to the origin repository.
 
 CCDD 3.1.0 adds Node 22 LTS support and the MIT license. Older packages retain their original requirements. Run release verification locally with Node 22 LTS, selected by `.nvmrc`.
 
@@ -83,7 +95,7 @@ Use a new empty output directory outside the repository for each build. `--outpu
 
 `release:npm:check` uses read-only operations to check Node/npm versions, the logged-in account, email verification, 2FA settings, and the `ccdd` organization role. It does not print tokens or email addresses. An individual npm login does not automatically grant organization publication rights.
 
-Publication checks the GitHub source commit and tag before building. GitHub Actions uses OIDC; local publication checks the logged-in npm account and organization role. Build and test children receive isolated configuration without publisher or Provider credentials. The command clones the requested commit, installs locked dependencies, builds, runs the full test suite, packs all three packages, and verifies production installations and actual tool and Runtime behavior in separate projects. Uncommitted caller changes are excluded. No external LLM or desktop application is called by release verification.
+Local publication checks the GitHub source commit and tag, then the logged-in npm account and organization role before building. Build and test children receive isolated configuration without publisher or Provider credentials. The command clones the requested commit, installs locked dependencies, builds, runs the full test suite, packs all three packages, and verifies production installations and actual tool and Runtime behavior in separate projects. Uncommitted caller changes are excluded. No external LLM or desktop application is called by release verification.
 
 Before writing to npm, every existing target package version must match the verified tarball's SHA-512 integrity. Matching versions are skipped; a mismatch stops publication. Packages publish in core → Project → default tools order with public access and the `latest` npm tag. Fresh public metadata confirms each published version; short registry propagation delays are retried.
 
@@ -95,7 +107,7 @@ This automation runs through `npm run release:npm` (equivalent to `npm run relea
 
 ## Recovering a partial publication
 
-The three npm publications and the GitHub announcement are not one transaction. If publication stops partway through npm, rerun the same commit with a new empty output directory. Identical versions already in npm are skipped. Never increment versions just to retry unchanged bytes.
+The three npm publications and the GitHub announcement are not one transaction. For GitHub Actions, rerun Release to reuse the verified CI artifact. For local publication, rerun the same commit with a new empty output directory. Identical versions already in npm are skipped. Never increment versions just to retry unchanged bytes.
 
 If npm succeeded but the GitHub announcement failed, use the retained verified files and the original source commit:
 

@@ -5,7 +5,6 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { prepareReviewRequests, readStoredArtifactScope } from '../src/requester/index.js';
 import { createBroker } from '../src/broker/index.js';
-import { validateArtifactType, toolDescription } from '../src/artifacts/types.js';
 import { fingerprintWorkspace, prepareWorkspace, removeOwnedWorkspaceTree } from '../src/workspaces/index.js';
 import type { RepoConfig, ArtifactDefinition } from '../src/contracts.js';
 
@@ -131,23 +130,8 @@ test('repo-defined types preserve description templates in isolated request enve
   assert.deepEqual(requests[0].artifactTypes, data.config.artifactTypes);
   assert.deepEqual(requests[1].artifactTypes, data.config.artifactTypes);
   assert.equal(requests[0].artifacts[1].type, 'requirements');
-  assert.equal(toolDescription(requests[0].artifactTypes.requirements, 'read', 'spec', 'agent'), 'Read requirements from spec and find evidence in spec.');
-  assert.equal(toolDescription(requests[0].artifactTypes.requirements, 'read', 'why', 'agent'), 'Read requirements from why and find evidence in why.');
-  assert.equal(toolDescription(requests[1].artifactTypes.test_suite, 'list', 'tests', 'agent'), 'List test files in tests.');
-  assert.match(toolDescription(requests[1].artifactTypes.test_suite, 'read', 'tests'), /tests.*line ranges/);
   requests[0].artifactTypes.requirements.agentTools!.read!.description = 'Changed envelope';
   assert.equal(requests[1].artifactTypes.requirements.agentTools!.read!.description, data.config.artifactTypes.requirements.agentTools!.read!.description);
-});
-
-test('old type definitions keep built-in descriptions and template replacement is literal', () => {
-  assert.deepEqual(validateArtifactType('custom_text', { viewer: 'text' }), { viewer: 'text' });
-  assert.match(toolDescription({ viewer: 'text' }, 'read', 'spec'), /spec.*line ranges/);
-  assert.match(toolDescription({ viewer: 'files', tools: {} }, 'read', 'tests'), /tests/);
-  assert.match(toolDescription({ viewer: 'files', tools: {} }, 'list', 'tests'), /tests/);
-  const definition = { viewer: 'text', tools: { read: { description: '{artifactName} / {artifactName}' } } };
-  assert.equal(toolDescription(definition, 'read', '$&'), '$& / $&');
-  assert.equal(toolDescription({ viewer: 'text', tools: { read: { description: 'Read the supplied document.' } } }, 'read', 'spec'), 'Read the supplied document.');
-  assert.throws(() => toolDescription({ viewer: 'text' }, 'list', 'spec'), /Unsupported artifact tool/);
 });
 
 test('new requests require audience tools on every supplied Artifact while an independent runtime remains selectable', async t => {

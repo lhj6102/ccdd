@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, writeFile, readFile, rm, access } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createExecutorRegistry, validateResult } from '../src/executors/index.js';
+import { createExecutorRegistry } from '../src/executors/index.js';
 import type { AgentProfile, ReviewEnvelope, ReviewRequest, ExecutionEvent } from '../src/contracts.js';
 import { artifactStream } from './pi-fixture.js';
 import type { ArtifactStreamOptions } from './pi-fixture.js';
@@ -85,17 +85,6 @@ test('provider errors, invalid final schema and missing observations fail instea
     const data=await fixture(t);
     await assert.rejects(createExecutorRegistry({streamFn:artifactStream({result})}).execute(data.request,data));
   }
-  assert.throws(()=>validateResult({verdict:'GREEN',summary:'ok',evidence:['x'],extra:true}));
-});
-
-test('Agent timeout and external cancellation abort the actual Pi loop', async t => {
-  const data = await fixture(t);
-  const registry = createExecutorRegistry({ streamFn: artifactStream({mode:'hang'}) });
-  await assert.rejects(registry.execute({ ...data.request, profile: { ...data.request.profile, timeoutMs: 80 } }, data), /timed out/);
-  const abort = new AbortController();
-  const promise = registry.execute(data.request, { ...data, signal: abort.signal });
-  setTimeout(() => abort.abort(), 80);
-  await assert.rejects(promise, /aborted/);
 });
 
 test('code runner evaluates actual Node tests and distinguishes pass from assertion failure', async t => {

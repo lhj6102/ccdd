@@ -1,7 +1,6 @@
 name: CI
 
 on:
-  pull_request:
   push:
     branches: [main]
 
@@ -11,6 +10,8 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
+    env:
+      npm_config_cache: ${{ runner.temp }}/npm-cache
     steps:
       - uses: actions/checkout@v6
         with:
@@ -18,5 +19,19 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version: '22'
-      - run: npm ci --ignore-scripts
-      - run: npm test
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+      - run: npm test | tee "$RUNNER_TEMP/tests.tap"
+        shell: bash
+      - name: Verify release packages
+        run: |
+          version=$(node -p 'require("./package.json").version')
+          node scripts/verify-release.mjs --version "$version" --tag "v$version" \
+            --source-commit "$GITHUB_SHA" --test-report "$RUNNER_TEMP/tests.tap" \
+            --output-dir "$RUNNER_TEMP/release"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ github.sha }}
+          path: ${{ runner.temp }}/release
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14

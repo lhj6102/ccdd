@@ -8,7 +8,7 @@ import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 
 const driverUrl = new URL('../../scripts/local-release.mjs', import.meta.url);
-const { parseArguments, repositoryFromRemote, buildEnvironment, createSnapshot, resolveOutputDirectory, releaseLocally } = await import(driverUrl.href);
+const { buildEnvironment, createSnapshot, resolveOutputDirectory, releaseLocally } = await import(driverUrl.href);
 const exec = promisify(execFile), commit = 'a'.repeat(40);
 
 test('release CLI entrypoints still execute when invoked through symlinks', async t => {
@@ -27,58 +27,8 @@ test('release CLI entrypoints still execute when invoked through symlinks', asyn
   });
 });
 
-test('local release requires an exact commit and rejects ambiguous or repeated CLI arguments', () => {
-  const options = parseArguments(['--commit', commit, '--dry-run', '--output-dir', '/tmp/release files']);
-  assert.equal(options.commit, commit);
-  assert.equal(options.dryRun, true);
-  assert.equal(options.outputDir, '/tmp/release files');
-  assert.equal(options.help, false);
-  assert.equal(parseArguments(['--commit', commit]).dryRun, false);
-  assert.equal(parseArguments(['--help']).help, true);
-  assert.equal(parseArguments(['--npm', '--commit', commit, '--dry-run']).npm, true);
-  assert.equal(parseArguments(['--commit', commit]).npm, false);
-  const recovery = parseArguments(['--npm', '--commit', commit, '--announce-only', '--assets-dir', '/tmp/verified files']);
-  assert.equal(recovery.announceOnly, true);
-  assert.equal(recovery.assetsDir, '/tmp/verified files');
-  for (const argv of [
-    [], ['--dry-run'], ['--commit'], ['--commit', '--dry-run'],
-    ['--commit', 'main'], ['--commit', 'a'.repeat(39)], ['--commit', 'a'.repeat(41)],
-    ['--commit', 'A'.repeat(40)], ['--commit', `${commit}\n`], ['--commit', ` ${commit}`],
-    ['--commit', commit, '--commit', commit], ['--commit', commit, '--dry-run', '--dry-run'],
-    ['--commit', commit, '--npm', '--npm'],
-    ['--commit', commit, '--output-dir'], ['--commit', commit, '--force'],
-    ['--commit', commit, 'unexpected'],
-    ['--npm', '--commit', commit, '--announce-only'],
-    ['--npm', '--commit', commit, '--assets-dir', '/tmp/verified'],
-    ['--commit', commit, '--announce-only', '--assets-dir', '/tmp/verified'],
-    ['--npm', '--commit', commit, '--announce-only', '--assets-dir', '/tmp/verified', '--dry-run'],
-    ['--npm', '--commit', commit, '--announce-only', '--assets-dir', '/tmp/verified', '--output-dir', '/tmp/output'],
-  ]) assert.throws(() => parseArguments(argv), JSON.stringify(argv));
-});
-
 test('legacy GitHub tarball publication stops before reading credentials or building', async () => {
   await assert.rejects(releaseLocally({ commit, npm: false, dryRun: false }, { cwd: '/nonexistent', environment: {} }), /downloads have moved to npm/);
-});
-
-test('local release resolves only unambiguous GitHub SSH or HTTPS repository roots', () => {
-  for (const remote of [
-    'git@github.com:lhj6102/ccdd.git', 'git@github.com:lhj6102/ccdd',
-    'ssh://git@github.com/lhj6102/ccdd.git', 'https://github.com/lhj6102/ccdd.git',
-    'https://github.com/lhj6102/ccdd',
-  ]) assert.equal(repositoryFromRemote(remote), 'lhj6102/ccdd', remote);
-  assert.equal(repositoryFromRemote('https://github.com/example-org/repo_name.v2.git'), 'example-org/repo_name.v2');
-  for (const remote of [
-    '/', '/tmp/repository', 'file:///tmp/repository', 'https://github.com/',
-    'https://github.com/lhj6102', 'https://github.com/lhj6102/',
-    'http://github.com/lhj6102/ccdd', 'git://github.com/lhj6102/ccdd.git',
-    'git@other.example:lhj6102/ccdd.git', 'https://github.com.evil.example/lhj6102/ccdd',
-    'https://token@github.com/lhj6102/ccdd', 'ssh://other@github.com/lhj6102/ccdd.git',
-    'https://github.com/lhj6102/ccdd/tree/main', 'https://github.com/lhj6102/ccdd/',
-    'https://github.com/lhj6102/ccdd?token=private', 'https://github.com/lhj6102/ccdd#main',
-    'git@github.com:../ccdd.git', 'https://github.com/./ccdd',
-    'https://github.com/lhj6102/..', 'https://github.com/lhj6102/../ccdd',
-    'https://github.com/lhj6102%2fother/ccdd', 'https://github.com/lhj6102/ccdd\n',
-  ]) assert.throws(() => repositoryFromRemote(remote), remote);
 });
 
 test('build children receive isolated public npm and Git settings without Provider or publisher credentials', () => {

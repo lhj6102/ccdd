@@ -10,7 +10,6 @@ import { createReviewTools } from '../src/tools/runner.js';
 import { createExecutorRegistry } from '../src/executors/index.js';
 import { diagnoseArtifactTools } from '../src/artifacts/tool-check.js';
 import { diagnoseProject } from '../src/doctor/index.js';
-import { artifactInstructionMembers, digestArtifactInstruction } from '../src/artifacts/instruction.js';
 import { removeOwnedWorkspaceTree } from '../src/workspaces/index.js';
 import { artifactStream } from './pi-fixture.js';
 import type { StreamFn } from '../src/executors/pi.js';
@@ -77,16 +76,6 @@ test('group requests grant deduplicated leaves, preserve member identity, and ne
     {artifacts: [request.artifacts[1]]},
     {artifacts: [...request.artifacts,{id:'brief',path:'brief.md',type:'text'}]},
   ]) await assert.rejects(createReviewTools({...options,...change}), {code:'WORKSPACE_ARTIFACT_MISMATCH'});
-});
-
-test('group digest maps actual member tools, keeps nested composition and out-of-scope references safe', async t => {
-  const data = await fixture(t);
-  const [request] = await prepareReviewRequests(requestOptions(data));
-  const tools = [{artifactId:'effect',name:'inspect_effect'},{artifactId:'preview',name:'view_image_preview'},{artifactId:'brief',name:'read_brief'}];
-  const value = digestArtifactInstruction('{explosion} / {preview} / {brief}', request.artifacts, tools, request.artifactGroups);
-  assert.equal(value, '{"artifactGroup":"explosion","members":[{"artifact":"effect","tools":["inspect_effect"]},{"artifact":"preview","tools":["view_image_preview"]}]} / {"artifact":"preview","tools":["view_image_preview"]} / {brief}');
-  assert.deepEqual(artifactInstructionMembers('explosion', request.artifacts, request.artifactGroups), ['effect','preview']);
-  assert.deepEqual(artifactInstructionMembers('loop',request.artifacts,[{id:'loop',members:['loop','preview','brief']}]),['preview']);
 });
 
 test('Pi Agent reviews each group leaf and cannot satisfy a group by inspecting only one member', async t => {

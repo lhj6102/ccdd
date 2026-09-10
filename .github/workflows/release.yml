@@ -5,6 +5,7 @@ on:
     tags: ['v*']
 
 permissions:
+  actions: read
   contents: write
   id-token: write
 
@@ -20,6 +21,6 @@ jobs:
           node-version: '22'
           package-manager-cache: false
       - run: npm install --global npm@11.19.1
-      - run: npm run release:npm -- --commit "$(git rev-parse HEAD)"
+      - run: node scripts/publish-ci.mjs "$RUNNER_TEMP/release"
         env:
           GH_TOKEN: ${{ github.token }}
