@@ -25,7 +25,7 @@ const jsonMode = computed(() => form.value.json || preferJson.value);
 let toolController: AbortController | undefined, alive = true;
 
 function toolLabel(value: MonitorHumanTool): string {
-  const action = value.operation === 'read' ? '읽기' : value.operation === 'list' ? '목록' : value.name.startsWith('open_') ? '열기' : value.name.slice(0, -(value.artifactId.length + 1));
+  const action = value.operation === 'read' ? 'Read' : value.operation === 'list' ? 'List' : value.name.startsWith('open_') ? 'Open' : value.name.slice(0, -(value.artifactId.length + 1));
   return `${value.artifactId} · ${action}`;
 }
 function selectTool(value: MonitorHumanTool): void {
@@ -80,7 +80,7 @@ function toggleJson(): void {
   } else {
     try {
       const input = parseToolJson(tool.value.inputSchema, jsonInput.value);
-      if (Object.keys(input).some(name => !definitions.value.some(field => field.name === name))) throw new Error('추가한 항목은 JSON 입력에서 편집해 주세요.');
+      if (Object.keys(input).some(name => !definitions.value.some(field => field.name === name))) throw new Error('Edit additional properties in the JSON input.');
       fields.value = initialToolFields(definitions.value.map(field => ({ ...field, default: input[field.name] })));
     } catch (problem) { error.value = errorMessage(problem); return; }
   }
@@ -116,10 +116,10 @@ function navigate(operation: 'read' | 'list', path: string): void {
 async function complete(): Promise<void> {
   if (!props.session || !canAct.value || busy.value) return;
   const entries = evidence.value.split('\n').map(line => line.trim()).filter(Boolean);
-  if (!summary.value.trim() || !entries.length) { error.value = '검토 요약과 근거를 입력해 주세요.'; return; }
-  if (entries.length > 100 || entries.some(item => item.length > 4_000)) { error.value = '근거는 100개까지, 각 근거는 4,000자 이내로 적어 주세요.'; return; }
+  if (!summary.value.trim() || !entries.length) { error.value = 'Enter a review summary and evidence.'; return; }
+  if (entries.length > 100 || entries.some(item => item.length > 4_000)) { error.value = 'Provide up to 100 evidence entries, each at most 4,000 characters.'; return; }
   const result = { verdict: verdict.value, summary: summary.value.trim(), evidence: entries };
-  if (new TextEncoder().encode(JSON.stringify(result)).byteLength > 32_768) { error.value = '요약과 근거가 너무 깁니다. 내용을 조금 줄여 주세요.'; return; }
+  if (new TextEncoder().encode(JSON.stringify(result)).byteLength > 32_768) { error.value = 'The summary and evidence are too long. Please shorten them.'; return; }
   busy.value = 'complete'; error.value = '';
   try {
     const value = await api<MonitorDetail>(`${route.value}/complete`, { body: result, csrfToken: props.session.csrfToken });
@@ -131,47 +131,47 @@ onUnmounted(() => { alive = false; toolController?.abort(); });
 </script>
 
 <template>
-  <section class="human-review" aria-label="Human 검토">
+  <section class="human-review" aria-label="Human review">
     <p v-if="sessionError" class="inline-error" role="status">{{ sessionError }}</p>
-    <div v-if="detail.human?.canClaim" class="claim-callout"><div><strong>이 리뷰를 맡아 주세요.</strong><p>담당한 뒤 제공된 도구로 내용을 확인하고 결과를 제출합니다.</p></div><button class="primary-button" :disabled="!session || !!busy" @click="claim">{{ busy === 'claim' ? '담당하는 중…' : '맡아서 검토' }}</button></div>
-    <p v-else-if="!detail.human?.claimedByMe" class="other-reviewer">{{ detail.request.claimedBy ? '다른 검토자가 담당하고 있습니다.' : '리뷰가 준비되기를 기다리고 있습니다.' }}</p>
+    <div v-if="detail.human?.canClaim" class="claim-callout"><div><strong>Claim this review.</strong><p>Claim the review, inspect the content with the provided tools, and submit your result.</p></div><button class="primary-button" :disabled="!session || !!busy" @click="claim">{{ busy === 'claim' ? 'Claiming…' : 'Claim review' }}</button></div>
+    <p v-else-if="!detail.human?.claimedByMe" class="other-reviewer">{{ detail.request.claimedBy ? 'Another reviewer has claimed this review.' : 'Waiting for the review to be ready.' }}</p>
     <section v-if="!detail.human?.claimedByMe && focusedArtifact" ref="toolsRegion" class="artifact-tool-preview" tabindex="-1" aria-labelledby="artifact-preview-title">
-      <h3 id="artifact-preview-title" class="section-title">{{ focusedArtifact }} · 제공된 도구</h3>
-      <p class="muted">{{ detail.human?.canClaim ? '검토를 맡은 후 아래 도구를 실행할 수 있습니다.' : '담당한 검토자만 도구를 실행할 수 있습니다.' }}</p>
+      <h3 id="artifact-preview-title" class="section-title">{{ focusedArtifact }} · Available tools</h3>
+      <p class="muted">{{ detail.human?.canClaim ? 'Claim the review to use these tools.' : 'Only the assigned reviewer can run these tools.' }}</p>
       <ul><li v-for="item in visibleTools" :key="item.name"><strong>{{ toolLabel(item) }}</strong><p>{{ item.description }}</p></li></ul>
     </section>
     <template v-if="detail.human?.claimedByMe">
-      <div class="human-heading"><span class="assigned-mark">✓ 내가 담당</span><span class="muted">검토 후 결과를 제출해 주세요.</span></div>
-      <p v-if="!detail.human?.canComplete" class="inline-error" role="status">{{ detail.request.waitingReason ?? '리뷰가 준비되면 도구와 결과 제출을 사용할 수 있습니다.' }}</p>
+      <div class="human-heading"><span class="assigned-mark">✓ Assigned to me</span><span class="muted">Submit your result after reviewing.</span></div>
+      <p v-if="!detail.human?.canComplete" class="inline-error" role="status">{{ detail.request.waitingReason ?? 'Tools and result submission will be available when the review is ready.' }}</p>
       <section ref="toolsRegion" class="review-tools" tabindex="-1" aria-labelledby="human-tools-title">
-        <div class="artifact-tool-heading"><h3 id="human-tools-title" class="section-title">{{ focusedArtifact ? `${focusedArtifact} · 제공된 도구` : '제공된 도구' }}</h3><button v-if="focusedArtifact" type="button" class="text-button" @click="focusedArtifact = ''">전체 도구</button></div>
+        <div class="artifact-tool-heading"><h3 id="human-tools-title" class="section-title">{{ focusedArtifact ? `${focusedArtifact} · Available tools` : 'Available tools' }}</h3><button v-if="focusedArtifact" type="button" class="text-button" @click="focusedArtifact = ''">All tools</button></div>
         <p v-if="detail.toolIssue" class="inline-error" role="status">{{ detail.toolIssue }}</p>
-        <p v-else-if="!detail.tools?.length" class="muted">등록된 도구가 없습니다.</p>
+        <p v-else-if="!detail.tools?.length" class="muted">No tools are registered.</p>
         <div class="tool-choices"><button v-for="item in visibleTools" :key="item.name" class="artifact-choice" :aria-pressed="item.name === toolName" :disabled="!canAct || !!busy" @click="clickTool(item)">{{ toolLabel(item) }}</button></div>
         <form v-if="tool" ref="toolForm" class="tool-form" @submit.prevent="executeTool()">
           <p class="artifact-description">{{ tool.description }}</p>
-          <label v-if="jsonMode" class="form-label"><span>도구 입력 · JSON</span><textarea v-model="jsonInput" class="tool-json-input" rows="7" required spellcheck="false" :disabled="!!busy" /></label>
+          <label v-if="jsonMode" class="form-label"><span>Tool input · JSON</span><textarea v-model="jsonInput" class="tool-json-input" rows="7" required spellcheck="false" :disabled="!!busy" /></label>
           <div v-else-if="definitions.length" class="tool-fields">
             <label v-for="field in definitions" :key="field.name" :class="{ wide: field.kind === 'string' }">
-              <span>{{ field.label }}<small v-if="!field.required">선택</small></span>
-              <select v-if="field.kind === 'enum'" v-model="fields[field.name]" :required="field.required" :disabled="!!busy"><option value="">선택하세요</option><option v-for="(option, index) in field.options" :key="index" :value="String(index)">{{ typeof option === 'string' ? option : JSON.stringify(option) }}</option></select>
-              <select v-else-if="field.kind === 'boolean'" v-model="fields[field.name]" :required="field.required" :disabled="!!busy"><option value="">선택하세요</option><option value="true">예</option><option value="false">아니요</option></select>
-              <input v-else :value="fields[field.name]" :type="field.kind === 'string' ? 'text' : 'number'" :min="field.minimum" :max="field.maximum" :step="field.kind === 'integer' ? 1 : field.kind === 'number' ? 'any' : undefined" :minlength="field.minLength" :maxlength="field.maxLength" :required="field.required && (field.kind !== 'string' || !!field.minLength)" :placeholder="field.name === 'path' ? 'Artifact 안의 경로' : undefined" :disabled="!!busy" @input="setField(field.name, $event)" />
+              <span>{{ field.label }}<small v-if="!field.required"> Optional</small></span>
+              <select v-if="field.kind === 'enum'" v-model="fields[field.name]" :required="field.required" :disabled="!!busy"><option value="">Select a value</option><option v-for="(option, index) in field.options" :key="index" :value="String(index)">{{ typeof option === 'string' ? option : JSON.stringify(option) }}</option></select>
+              <select v-else-if="field.kind === 'boolean'" v-model="fields[field.name]" :required="field.required" :disabled="!!busy"><option value="">Select a value</option><option value="true">Yes</option><option value="false">No</option></select>
+              <input v-else :value="fields[field.name]" :type="field.kind === 'string' ? 'text' : 'number'" :min="field.minimum" :max="field.maximum" :step="field.kind === 'integer' ? 1 : field.kind === 'number' ? 'any' : undefined" :minlength="field.minLength" :maxlength="field.maxLength" :required="field.required && (field.kind !== 'string' || !!field.minLength)" :placeholder="field.name === 'path' ? 'Path within Artifact' : undefined" :disabled="!!busy" @input="setField(field.name, $event)" />
               <span v-if="field.description" class="tool-field-description">{{ field.description }}</span>
             </label>
           </div>
-          <details v-if="jsonMode" class="tool-schema"><summary>입력 형식 보기</summary><pre>{{ JSON.stringify(tool.inputSchema, null, 2) }}</pre></details>
-          <button v-if="!form.json && (definitions.length || tool.inputSchema.additionalProperties !== false)" class="text-button tool-input-mode" type="button" :disabled="!!busy" @click="toggleJson">{{ preferJson ? '입력 필드로 전환' : 'JSON으로 입력' }}</button>
-          <button class="secondary-button" type="submit" :disabled="!canAct || !!busy">{{ busy === 'tool' ? '실행 중…' : tool.operation === 'read' ? '읽기' : tool.operation === 'list' ? '목록 보기' : '도구 실행' }}</button>
+          <details v-if="jsonMode" class="tool-schema"><summary>View input schema</summary><pre>{{ JSON.stringify(tool.inputSchema, null, 2) }}</pre></details>
+          <button v-if="!form.json && (definitions.length || tool.inputSchema.additionalProperties !== false)" class="text-button tool-input-mode" type="button" :disabled="!!busy" @click="toggleJson">{{ preferJson ? 'Switch to form fields' : 'Enter JSON' }}</button>
+          <button class="secondary-button" type="submit" :disabled="!canAct || !!busy">{{ busy === 'tool' ? 'Running…' : tool.operation === 'read' ? 'Read' : tool.operation === 'list' ? 'List files' : 'Run tool' }}</button>
         </form>
         <ToolOutput v-if="toolResult !== null" :result="toolResult" :can-read="!!detail.tools?.some(item => item.artifactId === tool?.artifactId && item.operation === 'read')" :can-list="!!detail.tools?.some(item => item.artifactId === tool?.artifactId && item.operation === 'list')" :busy="!!busy" @page="nextPage" @navigate="navigate" />
       </section>
       <form class="verdict-form" @submit.prevent="complete">
-        <h3 class="section-title">검토 결과</h3>
-        <fieldset class="verdict-options" :disabled="!canAct || !!busy"><legend class="sr-only">판정</legend><label :class="{ chosen: verdict === 'GREEN' }"><input v-model="verdict" type="radio" value="GREEN" /><span><strong>GREEN</strong> 기준 충족</span></label><label :class="{ chosen: verdict === 'RED' }"><input v-model="verdict" type="radio" value="RED" /><span><strong>RED</strong> 기준 미충족</span></label></fieldset>
-        <label class="form-label"><span>검토 요약</span><textarea v-model="summary" rows="3" required maxlength="12000" placeholder="판정한 이유를 간단히 적어 주세요." :disabled="!canAct || !!busy"></textarea></label>
-        <label class="form-label"><span>근거 <small>한 줄에 하나씩</small></span><textarea v-model="evidence" rows="3" required maxlength="24000" placeholder="확인한 내용이나 관련 위치를 적어 주세요." :disabled="!canAct || !!busy"></textarea></label>
-        <div class="submit-row"><p>제출한 판정은 이 요청의 결과로 저장됩니다.</p><button class="primary-button" type="submit" :disabled="!canAct || !!busy">{{ busy === 'complete' ? '제출 중…' : '결과 제출' }}</button></div>
+        <h3 class="section-title">Review result</h3>
+        <fieldset class="verdict-options" :disabled="!canAct || !!busy"><legend class="sr-only">Verdict</legend><label :class="{ chosen: verdict === 'GREEN' }"><input v-model="verdict" type="radio" value="GREEN" /><span><strong>GREEN</strong> Criteria met</span></label><label :class="{ chosen: verdict === 'RED' }"><input v-model="verdict" type="radio" value="RED" /><span><strong>RED</strong> Criteria not met</span></label></fieldset>
+        <label class="form-label"><span>Review summary</span><textarea v-model="summary" rows="3" required maxlength="12000" placeholder="Briefly explain your verdict." :disabled="!canAct || !!busy"></textarea></label>
+        <label class="form-label"><span>Evidence <small>One entry per line</small></span><textarea v-model="evidence" rows="3" required maxlength="24000" placeholder="Describe what you inspected or cite relevant locations." :disabled="!canAct || !!busy"></textarea></label>
+        <div class="submit-row"><p>Your verdict will be saved as the result of this request.</p><button class="primary-button" type="submit" :disabled="!canAct || !!busy">{{ busy === 'complete' ? 'Submitting…' : 'Submit result' }}</button></div>
       </form>
     </template>
     <p v-if="error" class="inline-error action-error" role="alert">{{ error }}</p>

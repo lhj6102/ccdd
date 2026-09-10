@@ -1,152 +1,152 @@
 # Project Validation CLI UX
 
-CCDD config는 Artifact, Critic, 관계와 입력 동일성 기준을 정의한다. `@ccdd/project`의 `ccdd-project` 명령은 현재 검증 조회, 실제 검증 의뢰와 이력을 담당한다. 기존 `ccdd` 실행 파일은 같은 Project 패키지의 호환 인터페이스로 유지한다.
+CCDD configuration defines Artifacts, Critics, relationships, and input identity rules. The `ccdd-project` command in `@ccdd/project` handles current validation queries, actual validation requests, and history. The existing `ccdd` executable remains a compatibility interface in the same Project package.
 
-## 합의한 동작
+## Agreed behavior
 
-- 현재 검증 충족 여부는 DAG를 따라 재귀적으로 조회한다. 개별 Artifact의 staleState를 저장하거나 하위 Artifact에 무효화를 전파하지 않는다.
-- 실제 검증 이력과 마지막 검증 성공의 입력 식별 정보는 보관한다. Critic의 입력 동일성에는 해당 평가 조건, target과 직접 deps의 Artifact 동일성이 포함된다.
-- 조회 단위의 memoization은 허용한다. 한 조회의 입력은 일관된 관측을 사용하며, 새 판정이 기록된 뒤 다시 판단할 때는 새 조회 컨텍스트를 사용한다.
-- 개별 검증은 실행 가능한 선택 Critic부터 진행하고, 막힌 Critic을 미완료로 보고한다. 선행 Artifact의 검증을 자동으로 의뢰하지 않는다.
-- recursive 검증은 필요한 선행 검증까지 포함한다. 선행 Artifact의 검증이 충족되면 다시 조회하여 후속 Critic의 과거 판정을 재사용할지 실제 검증을 의뢰할지 판단한다.
-- 조회는 Provider 호출, Human 알림, 검토용 도구 실행, 리뷰 티켓 발급을 시작하지 않는다. 실제 검토와 Human 조작은 명시적인 실행 명령으로 요청한다.
+- Current validation requirements are checked recursively through the DAG. No per-Artifact staleState is stored, and no invalidation is propagated to downstream Artifacts.
+- Actual validation history and the input identities of the last successful validation are retained. A Critic's input identity includes its evaluation conditions and the identities of its target and direct dependency Artifacts.
+- Memoization is allowed within a query. Each query uses a consistent input observation; a new query context is used when reassessing after a new verdict is recorded.
+- Individual validation starts ready selected Critics and reports blocked Critics as incomplete. It does not automatically request validation of predecessor Artifacts.
+- Recursive validation includes necessary predecessor validations. Once a predecessor Artifact satisfies its validation requirements, a fresh query decides whether to reuse a downstream Critic's past verdict or request an actual review.
+- Queries start no Provider calls, Human notifications, review tool execution, or review tickets. Actual reviews and Human actions require explicit execution commands.
 
-## 핵심 명령
+## Core commands
 
-| 명령 | 사용자 질문과 결과 |
+| Command | User question and result |
 | --- | --- |
-| `ccdd-project status` | 현재 프로젝트의 Artifact별 검증 충족 여부를 조회한다. |
-| `ccdd-project status B` | B의 현재 판정, Critic별 재사용 근거와 미충족 이유를 조회한다. |
-| `ccdd-project status --critic C` | 특정 Critic의 현재 입력에 적용 가능한 판정과 선행 조건을 조회한다. |
-| `ccdd-project plan B` | B 개별 검증의 즉시 실행 가능, 재사용 가능, 선행 검증 필요 항목을 보여준다. 티켓은 발급하지 않는다. |
-| `ccdd-project plan B --recursive` | 필요한 선행 검증까지 포함한 계획을 보여준다. 후속 검증은 선행 결과에 따라 재사용하거나 실행할 조건부 항목으로 표시한다. |
-| `ccdd-project verify B` | B의 필요한 Critic 중 실행 가능한 것들을 의뢰하고 막힌 항목을 보고한다. |
-| `ccdd-project verify B --recursive` | 필요한 선행 검증을 포함해 B의 검증을 의뢰한다. |
-| `ccdd-project verify --critic C` | C만 의뢰한다. C의 deps 검증 조건은 적용하며 다른 Critic이나 선행 검증을 자동으로 추가하지 않는다. |
-| `ccdd-project verify --critic C --recursive` | C와 C의 충족에 필요한 선행 Artifact 검증을 의뢰한다. C의 target을 평가하는 다른 Critic은 자동으로 포함하지 않는다. |
-| `ccdd-project verify --all` | 프로젝트 전체를 대상으로 필요한 검증을 의뢰한다. |
+| `ccdd-project status` | Checks current validation requirements for each Artifact in the project. |
+| `ccdd-project status B` | Shows B's current verdict, reuse evidence for each Critic, and reasons for unmet requirements. |
+| `ccdd-project status --critic C` | Shows the verdict applicable to a specific Critic's current input and its prerequisites. |
+| `ccdd-project plan B` | Shows immediately executable reviews, reusable verdicts, and required predecessor validations for an individual validation of B. Creates no tickets. |
+| `ccdd-project plan B --recursive` | Shows a plan including necessary predecessor validations. Downstream reviews are conditional: reuse or execution depends on predecessor results. |
+| `ccdd-project verify B` | Requests ready Critics needed by B and reports blocked items. |
+| `ccdd-project verify B --recursive` | Requests validation of B, including necessary predecessor validations. |
+| `ccdd-project verify --critic C` | Requests only C. Enforces validation of C's deps without automatically adding other Critics or predecessor validations. |
+| `ccdd-project verify --critic C --recursive` | Requests C and the predecessor Artifact validations needed to satisfy it. Does not automatically include other Critics targeting C's target. |
+| `ccdd-project verify --all` | Requests the validation needed across the whole project. |
 
-`plan`도 `--critic C`와 `--all` 선택을 지원한다. Artifact 위치 인자, `--critic`, `--all`은 서로 배타적이다. `plan`과 `verify`는 대상을 명시해야 한다. `status`는 대상 생략 시 프로젝트 전체를 조회한다.
+`plan` also supports `--critic C` and `--all`. An Artifact positional argument, `--critic`, and `--all` are mutually exclusive. `plan` and `verify` require an explicit target. With no target, `status` queries the whole project.
 
-Artifact 검증은 해당 Artifact의 모든 필수 Critic을 범위로 삼는다. Critic 검증은 선택한 Critic만 대상으로 삼으므로 그 성공을 Artifact 전체의 PASS로 표시하지 않는다. Basis는 명시적으로 수용한 검증의 출발점으로 표시하고 실제 PASS 판정을 만들지 않는다. Critic이 없는 일반 Artifact도 자동 PASS가 되지 않는다.
+Artifact validation covers every required Critic targeting that Artifact. Critic validation covers only the selected Critic, so its success is not displayed as PASS for the entire Artifact. A basis is shown as an explicitly accepted starting point without creating an actual PASS verdict. An ordinary Artifact with no Critic does not automatically PASS either.
 
-## 실행 옵션
+## Execution options
 
-| 옵션 | 의미 |
+| Option | Meaning |
 | --- | --- |
-| `--recursive` | 필요한 선행 Artifact 검증까지 범위를 확장한다. 하위 Artifact 검증은 추가하지 않는다. |
-| `--force` | 선택한 대상 Critic들의 기존 판정을 재사용하지 않고 다시 검토한다. 선행 조건은 유지하며 recursive로 포함된 선행 검증은 필요할 때만 수행한다. |
-| `--wait` | 접수한 검증의 결과를 기다린다. 대기 시간 초과는 검증 취소를 뜻하지 않는다. |
-| `--timeout-ms N` | 클라이언트의 대기 시간을 지정한다. |
-| `--copy`, `--lock` | 검토 입력을 고정하는 방법. 새 `verify`의 기본값은 copy이며 lock은 명시적으로 선택한다. 기존 `ccdd run`의 필수 옵션 계약은 별개다. |
-| `--json` | 자동화 호출에 사용할 구조화된 결과를 반환한다. |
-| `--repo PATH`, `--state-dir PATH` | 프로젝트와 외부 검증 이력 저장 위치를 지정한다. |
+| `--recursive` | Extends the scope to necessary predecessor Artifact validations. Does not add downstream Artifact validations. |
+| `--force` | Reviews the selected target Critics again without reusing their past verdicts. Preserves prerequisites; predecessors included recursively run only when needed. |
+| `--wait` | Waits for the accepted validation's result. A wait timeout does not cancel validation. |
+| `--timeout-ms N` | Sets the client's wait timeout. |
+| `--copy`, `--lock` | Chooses how review input is fixed. New `verify` requests default to copy; lock requires an explicit choice. The mandatory-option contract of legacy `ccdd run` is separate. |
+| `--json` | Returns structured output for automation. |
+| `--repo PATH`, `--state-dir PATH` | Specifies the project and external validation history location. |
 
-`plan --force`는 같은 옵션으로 실행했을 때의 계획을 보여준다. 유효한 과거 PASS를 전부 재사용해 새 검증이 필요 없으면, `verify`는 원래 판정의 참조와 함께 재사용 결과를 반환하고 새 리뷰 티켓을 만들지 않는다.
+`plan --force` shows the plan for execution with the same option. When all applicable past PASS verdicts can be reused and no new validation is needed, `verify` returns reuse results with references to the original verdicts and creates no new review tickets.
 
-`--recursive`를 지정하지 않은 요청은 누락된 선행 검증을 미래에 자동 수행하겠다는 예약이 아니다. 실행할 수 있는 선택 Critic이 완료되면 미완료 항목을 명시한다. 사용자는 선행 검증을 완료한 뒤 다시 요청하거나 recursive 검증을 요청할 수 있다.
+A request without `--recursive` is not a reservation to execute missing predecessor validations automatically later. Once ready selected Critics finish, the remaining incomplete items are reported. The user can validate predecessors and submit another request, or request recursive validation.
 
-## A → B 예시
+## A → B example
 
-A를 평가하는 `a-check`, A에 의존해 B를 평가하는 `b-against-a`, deps가 없는 `b-alone`이 있다. A는 stale이고 두 B Critic에 현재 재사용할 수 있는 PASS가 없는 경우를 가정한다.
+Suppose `a-check` evaluates A, `b-against-a` evaluates B with A as a dependency, and `b-alone` evaluates B with no deps. A is stale, and neither B Critic has a currently reusable PASS.
 
 ```text
 $ ccdd-project plan B
-B: 일부 실행 가능
-  b-alone       실행 가능
-  b-against-a   선행 검증 필요: A / a-check
-실행 가능 1 · 선행 검증 필요 1 · 재사용 0
+B: partially ready
+  b-alone       ready
+  b-against-a   prerequisite validation required: A / a-check
+Ready 1 · Prerequisite validation required 1 · Reusable 0
 
 $ ccdd-project verify B
-b-alone의 리뷰 요청을 접수했습니다.
-b-against-a는 의뢰하지 않았습니다: A / a-check 검증 필요.
-B 전체 검증은 아직 미완료입니다.
+Accepted a review request for b-alone.
+Did not request b-against-a: validation of A / a-check is required.
+Validation of B as a whole remains incomplete.
 
 $ ccdd-project verify B --recursive
-필요한 a-check와 b-alone의 리뷰 요청을 접수합니다.
-b-against-a는 선행 검증 대기 항목으로 표시합니다.
-A 검증이 충족되면 다시 조회하여 판정 재사용 또는 리뷰 요청을 결정합니다.
+Accept review requests for the required a-check and b-alone.
+Show b-against-a as waiting for prerequisite validation.
+Once A satisfies validation, query again to decide whether to reuse a verdict or request a review.
 ```
 
-위 출력은 동작을 설명하기 위한 예시다. 실제 실행 결과를 기록한 것이 아니다. 두 `verify` 예시는 같은 초기 조건에서의 대안이며, 순서대로 실행해 이미 통과한 `b-alone`을 다시 실행한다는 뜻이 아니다.
+This output illustrates behavior; it is not a record of an actual execution. The two `verify` examples are alternatives from the same initial conditions. They do not mean that executing them in sequence reruns an already passing `b-alone`.
 
-A의 완료만으로 선행 조건을 충족하지 않는다. 현재 입력에 대한 필수 검증이 통과해야 하며 RED 또는 실행 오류이면 해당 의존 검증은 진행할 수 없다. 독립된 Critic의 실행과 이미 기록된 실제 판정은 유지한다.
+Completion of A alone does not satisfy the prerequisite. Its required validations must pass for the current input; RED or an execution error prevents the dependent review from proceeding. Independent Critics continue, and actual verdicts already recorded are retained.
 
-## 실행 이력과 Human 조작
+## Execution history and Human actions
 
-Review Request를 사용자가 말하는 리뷰 티켓의 단위로 유지한다. 실행 중인 요청의 담당·진행 상태는 실제 실행 기록이며 Artifact의 파생 staleState와 구분한다.
+A Review Request remains the unit users refer to as a review ticket. Assignment and progress of an active request are actual execution records, distinct from an Artifact's derived staleState.
 
-| 명령 계열 | 역할 |
+| Command family | Role |
 | --- | --- |
-| `ccdd-project history [B]` | 실제 판정 이력과 입력 식별 정보, 현재 재사용 중인 판정의 원본을 확인한다. `--critic C` 선택도 지원한다. |
-| `ccdd-project run list` | 접수된 실행 묶음을 조회한다. |
-| `ccdd-project run show RUN_ID [--wait]` | 특정 실행 묶음의 입력, 요청 범위, 진행과 미완료 항목을 확인한다. 현재 소스의 판정과 구분한다. |
-| `ccdd-project run resume RUN_ID [--wait]` | 원래 입력과 범위의 재개 가능한 미완료 실행을 이어간다. |
-| `ccdd-project run cancel RUN_ID` | 해당 실행의 미완료 작업을 취소한다. |
-| `ccdd-project request list` | 개별 리뷰 티켓을 조회한다. `--run RUN_ID` 필터를 지원한다. |
-| `ccdd-project request show REQUEST_ID` | 리뷰 지시, 고정된 입력, 실제 결과와 근거를 확인한다. |
-| `ccdd-project request claim REQUEST_ID --reviewer ID` | Human 리뷰를 맡는다. |
-| `ccdd-project request tool REQUEST_ID --reviewer ID --tool NAME --args JSON` | 담당 중인 Human 요청에 등록된 도구를 실행한다. |
-| `ccdd-project request submit REQUEST_ID --reviewer ID --result-file PATH` | 실제 Human 판정과 근거를 제출한다. |
+| `ccdd-project history [B]` | Shows actual verdict history, input identities, and original verdicts currently being reused. Also supports `--critic C`. |
+| `ccdd-project run list` | Lists accepted execution groups. |
+| `ccdd-project run show RUN_ID [--wait]` | Shows a specific execution group's input, requested scope, progress, and incomplete items, separate from the verdict on current source. |
+| `ccdd-project run resume RUN_ID [--wait]` | Continues resumable unfinished execution with its original input and scope. |
+| `ccdd-project run cancel RUN_ID` | Cancels unfinished work in the execution. |
+| `ccdd-project request list` | Lists individual review tickets. Supports `--run RUN_ID`. |
+| `ccdd-project request show REQUEST_ID` | Shows review instructions, fixed input, actual result, and evidence. |
+| `ccdd-project request claim REQUEST_ID --reviewer ID` | Claims a Human review. |
+| `ccdd-project request tool REQUEST_ID --reviewer ID --tool NAME --args JSON` | Executes a registered tool for a claimed Human request. |
+| `ccdd-project request submit REQUEST_ID --reviewer ID --result-file PATH` | Submits an actual Human verdict and evidence. |
 
-Human 도구 실행은 기존 요청의 고정된 입력과 등록 도구를 사용한다. 판정 제출은 기존 Broker의 담당 확인과 입력 무결성 조건을 유지한다.
+Human tool execution uses the existing request's fixed input and registered tools. Verdict submission preserves the Broker's existing claim and input integrity checks.
 
-## 보조 명령
+## Supporting commands
 
-- `graph [B]`: Artifact·Critic 정의와 관계를 확인한다.
-- `config check`: 설정의 선언, 참조와 DAG 구조를 검사한다.
-- `doctor`: 실제 실행 환경과 Provider 연결을 진단한다. 일반 상태 조회와 구분한다.
-- `tools check`: 등록 도구를 확인하고 명시적인 `--execute`로 실제 동작을 진단한다.
-- `monitor`: 현재 검증 조회, 이력과 명시적인 Human 조작을 제공하는 선택적 UI.
+- `graph [B]`: Inspects Artifact and Critic definitions and relationships.
+- `config check`: Checks configuration declarations, references, and DAG structure.
+- `doctor`: Diagnoses the actual execution environment and Provider connection, separately from ordinary status queries.
+- `tools check`: Checks registered tools and diagnoses actual behavior with explicit `--execute`.
+- `monitor`: An optional UI for current validation queries, history, and explicit Human actions.
 
-HTTP 모니터의 GET은 저장된 정의·관측·리뷰 정보의 읽기 경계를 유지한다. 현재 입력 관측을 준비하는 작업과 일반 GET을 구분하고, GET에서 config 평가, 검토용 도구 실행, 리뷰 상태 변경을 수행하지 않는다.
+HTTP monitor GETs remain a read boundary for stored definitions, observations, and review information. Preparing a current-input observation is separate from an ordinary GET. GETs do not evaluate config, execute review tools, or change review state.
 
-## 출력과 종료 의미
+## Output and exit semantics
 
-- `status`는 현재 검증 충족 여부를 보여준다. PASS, 미검토, 재검증 필요와 실제 RED의 근거를 구분한다. 실행 오류와 진행 중인 티켓은 `run show`로 확인한다.
-- `plan`은 재사용 가능, 실행 가능, 선행 검증 필요를 Critic 단위로 보여준다. 이 계획은 조회 시점의 입력과 기록에 대한 설명이며, 나중의 실행은 다시 입력을 확보하고 판단한다.
-- `verify`는 재사용한 판정, 접수한 리뷰, 미완료 항목을 따로 반환한다. 비동기 접수 성공을 Artifact의 PASS라고 표시하지 않는다.
-- 특정 실행에서 일부 Critic만 성공했어도 요청 대상의 모든 조건이 충족되지 않으면 미완료로 보고한다.
-- 현재 Artifact 조회와 Run 조회는 다른 질문이다. Run이 검토한 뒤 원본이 바뀌어도 그 Run의 실제 결과를 현재 원본의 PASS로 표시하지 않는다.
+- `status` shows whether current validation requirements are satisfied. It distinguishes PASS, unreviewed input, required revalidation, and evidence of actual RED. Use `run show` for execution errors and active tickets.
+- `plan` shows reusable, ready, and prerequisite-blocked items per Critic. The plan describes the input and records at query time; a later execution captures and evaluates input again.
+- `verify` separately returns reused verdicts, accepted reviews, and incomplete items. Successful asynchronous acceptance is not displayed as an Artifact PASS.
+- If only some Critics succeed in an execution and the requested scope's full requirements remain unmet, it is reported as incomplete.
+- Current Artifact queries and Run queries answer different questions. If the original changes after a Run reviews it, the Run's actual result is not shown as PASS for the current original.
 
-자동화를 위한 종료 코드는 `status`의 0=검증 충족, 1=미충족, 2=조회 오류다. `plan`은 유효한 계획을 만들면 차단 항목이 있어도 0, 계획을 만들 수 없으면 2를 반환한다. `verify --wait`와 `run show --wait`는 0=요청 범위 충족, 1=RED, 2=ERROR, 3=대기 시간 초과, 4=미완료로 구분한다. `--wait` 없는 새 실행의 0은 접수 성공이다. 실행 중인 범위가 있다면 최종 판정은 결과 조회에서 확인한다.
+Automation exit codes for `status` are 0=validation satisfied, 1=unsatisfied, and 2=query error. `plan` returns 0 for a valid plan even when it contains blocked items, or 2 when no plan can be produced. `verify --wait` and `run show --wait` use 0=requested scope satisfied, 1=RED, 2=ERROR, 3=wait timeout, and 4=incomplete. For a new execution without `--wait`, 0 means successful acceptance. If any scope is still running, retrieve the result to see the final verdict.
 
-## 기존 CLI와의 차이
+## Differences from the legacy CLI
 
-- 현재 `ccdd status RUN_ID`는 실행 이력을 조회한다. 새 명령은 `status B`와 `run show RUN_ID`로 현재 판정과 고정된 실행 기록을 구분한다.
-- 현재 `ccdd run --critic C`는 선행 검증 조건을 우회하는 선택 Critic 실행이다. 새 `verify --critic C`는 선행 조건을 적용한다. 기존 명령의 의미를 조용히 바꾸는 호환 처리로 취급하지 않는다.
-- 현재 전체 Graph Run은 같은 Run의 GREEN 결과를 요구한다. 새 명령의 재사용은 실제 이전 판정의 입력 동일성을 확인하고 원본 판정을 참조하는 별도 프로젝트 검증 책임이다.
-- 기존 `ccdd` 실행 파일은 Project 패키지에 포함된다. 정의 전용 core 패키지에는 실행 파일과 실행 의존성이 없다.
+- Legacy `ccdd status RUN_ID` queries execution history. The new commands distinguish current verdicts with `status B` from fixed execution records with `run show RUN_ID`.
+- Legacy `ccdd run --critic C` runs a selected Critic while bypassing prerequisite validation. The new `verify --critic C` enforces prerequisites. This is not a compatibility change that silently alters the old command's meaning.
+- Legacy full Graph Runs require GREEN results in the same Run. Reuse in the new commands is a separate Project Validation responsibility that confirms input identity against actual past verdicts and references those original verdicts.
+- The existing `ccdd` executable is included in the Project package. The definition-only core package has no executable or execution dependencies.
 
-## 입력 동일성과 상태 저장
+## Input identity and state storage
 
-Artifact의 기본 전략은 `{kind:'file-hash'}`이며 자신의 `path`를 재귀적으로 hash한다. `{kind:'file-hash',paths:['spec.md','references']}`는 이 기본 경로 집합을 대체한다. 파일 내용, 상대경로, 파일 유형, 실행 권한, 빈 디렉터리가 포함되며 선언한 추가 경로의 생성·삭제도 변경으로 판단한다. glob과 symlink는 허용하지 않는다. Artifact 의미에 영향을 주는 모든 입력을 선언해야 한다. 그룹은 구성원 내용의 동일성을 포함하지만 구성원 검증을 자동 선행 조건으로 삼지 않는다.
+An Artifact's default strategy is `{kind:'file-hash'}`, which recursively hashes its own `path`. `{kind:'file-hash',paths:['spec.md','references']}` replaces that default path set. The hash includes file content, relative paths, file types, executable permissions, and empty directories; creation or deletion of declared extra paths also counts as a change. Globs and symlinks are not allowed. Declare every input that affects an Artifact's meaning. Groups include member content identities but do not automatically require member validation as a prerequisite.
 
-`{kind:'always'}`는 새 검증 요청마다 해당 Artifact를 사용하는 Critic을 다시 검토한다. 같은 요청 안에서 완료된 검토는 선행 조건을 충족할 수 있어 재귀 실행이 무한 반복되지 않는다. 모델·서비스 등 외부 조건이 바뀔 수 있는 검토도 필요한 경우 이 전략이나 `--force`를 사용한다.
+`{kind:'always'}` reviews Critics using that Artifact again for every new validation request. Reviews completed within the same request can satisfy prerequisites, preventing infinite recursive execution. Reviews affected by changing external conditions, such as models or services, can use this strategy or `--force` when needed.
 
-같은 target·직접 deps hash라도 Critic의 profile·지시·도구 정의가 바뀌면 재검증한다. TS 설정의 함수는 import한 값을 참조할 수 있으므로 설정을 로드할 때 기록한 모듈 hash 전체를 보수적으로 포함한다. 공유 TS 설정 코드를 수정하면 일부 관련 없는 Critic도 재검증될 수 있다. 같은 입력의 판정이 여러 개이면 가장 최근 실제 판정을 적용하며, 나중의 RED를 과거 PASS가 덮지 않는다.
+A change to a Critic's profile, instructions, or tool definitions requires revalidation even if target and direct dependency hashes are unchanged. Functions in TS configuration can reference imported values, so all module hashes recorded during configuration loading are conservatively included. Editing shared TS configuration can therefore require revalidation of some otherwise unrelated Critics. When multiple verdicts exist for the same input, the latest actual verdict applies; an older PASS cannot hide a later RED.
 
-저장은 별도 Project 패키지가 repo 밖의 기본 `~/.local/state/ccdd/<정규화된 repo 경로 hash>/broker.sqlite`에 한다. `--state-dir` 또는 `CCDD_STATE_HOME`으로 위치를 바꿀 수 있다.
+The separate Project package stores data outside the repo, by default at `~/.local/state/ccdd/<normalized-repo-path-hash>/broker.sqlite`. Override the location with `--state-dir` or `CCDD_STATE_HOME`.
 
-| 저장 정보 | 내용 |
+| Stored information | Contents |
 | --- | --- |
-| 실제 판정 | Critic ID, GREEN/RED, 근거, 완료 시각과 실제 요청 ID |
-| 판정의 검증 입력 | 당시 target hash, 직접 deps hash, 유효 Critic 정의 hash |
-| 실행·티켓 이력 | 고정 입력, 선택 범위, 담당·실행 상태, 완료한 실행이 사용한 판정 참조 |
-| 입력·출력 파일 | `workspaces/<hash>` 입력 복사본, `runs/<runId>/<requestId>` 검토 출력 |
+| Actual verdict | Critic ID, GREEN/RED, evidence, completion time, and actual request ID |
+| Verdict's validation input | Target hash, direct dependency hashes, and effective Critic definition hash at the time |
+| Execution and ticket history | Fixed input, selected scope, assignment and execution state, and verdict references consumed by completed executions |
+| Input and output files | Input copies at `workspaces/<hash>` and review output at `runs/<runId>/<requestId>` |
 
-현재 Artifact의 staleState와 조회 결과는 저장하지 않는다. 최신 판정의 입력과 현재 입력을 비교하는 memoization은 한 조회 안에서만 존재한다. 이력이 없는 프로젝트의 `status`·`plan`은 DB도 생성하지 않는다. 기존 이력 중 검증 입력 hash가 없는 리뷰는 계속 열람할 수 있지만 재사용 근거로 추측하지 않는다.
+Current Artifact staleState and query results are not stored. Memoization that compares the latest verdict's input with current input exists only within one query. On a project with no history, `status` and `plan` do not even create a database. Historical reviews without validation input hashes remain readable but are not assumed to establish reuse.
 
-완료한 Run의 판정 참조는 고정한다. 이후 다른 리뷰가 통과해도 당시의 미완료 Run이 소급하여 성공으로 바뀌지 않는다. terminal INCOMPLETE를 `run resume`해 누락된 선행 검증을 추가하지 않으며, 새 `verify` 또는 `verify --recursive`를 요청한다.
+Completed Runs retain fixed verdict references. A later successful review does not retroactively make an earlier incomplete Run successful. `run resume` on a terminal INCOMPLETE Run does not add omitted predecessor validations; submit a new `verify` or `verify --recursive` request.
 
-모니터의 현재 입력 화면은 사용자가 **현재 입력 확인**을 누를 때만 설정과 파일을 관측하는 인증된 POST를 보낸다. 결과는 관측 시각과 함께 브라우저에 표시한다. 자동 GET은 실행 기록을 관측하며, 현재 입력을 다시 확인하거나 판정을 생성하지 않는다.
+The monitor's Current Input view sends an authenticated POST to observe configuration and files only when the user clicks **Inspect current input**. It displays the result in the browser with an observation time. Automatic GETs observe execution records without rechecking current input or creating verdicts.
 
-## 구현 검증 기록
+## Implementation verification record
 
-2026-09-07, Windows / Node 24.18.0에서 TypeScript·Vue 타입 검사와 production 빌드, 프로젝트 검증·DAG·그룹·모니터·배포 계약 관련 테스트 50개를 통과했다. 실제 Node 테스트 실행과 Human 제출 경로로 재귀 진행, 개별 미완료, 최신 RED, always, 입력 hash 변경과 이전 판정 재사용을 확인했다.
+On 2026-09-07, Windows / Node 24.18.0 passed TypeScript and Vue type checks, the production build, and 50 tests covering Project Validation, DAGs, groups, the monitor, and distribution contracts. Actual Node test execution and Human submission paths verified recursive progress, individual incompleteness, latest RED, always, input hash changes, and reuse of earlier verdicts.
 
-`npm run test:packages`는 세 tarball의 파일 경계를 검사하고, 기본 도구를 쓰는 구성과 사용자 도구만 쓰는 구성에 실제 production 설치를 수행한다. Runtime 설치는 검토할 입력 밖에 두고, 실제 설치한 SDK·선택한 텍스트 도구 파일은 검토 입력에 포함한다. 두 구성 모두 실제 도구 실행, 분리된 worker의 검증, 새 티켓 없는 PASS 재사용을 통과했다. Provider 판정을 대신 생성하거나 데스크톱 프로그램을 띄우는 검증은 아니다.
+`npm run test:packages` checks file boundaries of the three tarballs and performs actual production installs for configurations using default tools and configurations using only custom tools. The runtime installation stays outside reviewed input; the installed SDK and selected text tool files are included in reviewed input. Both configurations passed actual tool execution, validation by a separate worker, and PASS reuse without new tickets. These checks neither generate substitute Provider verdicts nor launch desktop programs.
 
-v2.0.0 배포 준비에서는 별도 Linux / Node 24.18.0의 격리된 clone으로 빌드·전체 테스트 302개와 세 tarball의 두 가지 production 설치·실행 검증을 모두 통과했다. 실패·취소·건너뛴 테스트는 0개다. 배포 커밋의 최종 검증 결과는 Release의 `verification.json`에 기록한다.
+During v2.0.0 release preparation, an isolated Linux / Node 24.18.0 clone passed the build, all 302 tests, and both production installation and execution checks for the three tarballs. There were zero failed, cancelled, or skipped tests. The release commit's final verification results are recorded in the Release's `verification.json`.
 
-Windows 전체 테스트에는 Unix 경로·symlink 권한·프로세스 종료 가정으로 인한 실패가 남아 있다. 별도로, production 설치 폴더 전체와 모든 의존성을 검토 입력으로 삼은 copy 검증은 5분 안에 완료되지 않았다. 모든 입력을 검사하는 workspace 계약은 유지하며, 대규모 snapshot의 성능 개선은 이번 변경에 포함하지 않는다.
+The full Windows test suite still has failures caused by assumptions about Unix paths, symlink permissions, and process termination. Separately, copy-mode validation that included the entire production installation folder and all dependencies as reviewed input did not finish within five minutes. The workspace contract of checking all input remains unchanged; performance improvements for large snapshots are outside this change.

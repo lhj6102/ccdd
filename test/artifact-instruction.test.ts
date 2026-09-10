@@ -5,9 +5,9 @@ import { parseArtifactInstruction, digestArtifactInstruction } from '../src/arti
 const artifacts = [{ id: 'spec' }, { id: 'why' }, { id: 'ui-v2_test' }];
 
 test('instruction references keep text order, whitespace, repeated IDs and exact Artifact identity', () => {
-  assert.deepEqual(parseArtifactInstruction('{spec}이 {why}를 충족하는가?\n{spec}\t{ui-v2_test}', artifacts), [
-    { type: 'artifact', artifactId: 'spec' }, { type: 'text', text: '이 ' },
-    { type: 'artifact', artifactId: 'why' }, { type: 'text', text: '를 충족하는가?\n' },
+  assert.deepEqual(parseArtifactInstruction('{spec} must satisfy {why}.\n{spec}\t{ui-v2_test}', artifacts), [
+    { type: 'artifact', artifactId: 'spec' }, { type: 'text', text: ' must satisfy ' },
+    { type: 'artifact', artifactId: 'why' }, { type: 'text', text: '.\n' },
     { type: 'artifact', artifactId: 'spec' }, { type: 'text', text: '\t' },
     { type: 'artifact', artifactId: 'ui-v2_test' },
   ]);

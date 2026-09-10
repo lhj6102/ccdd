@@ -1,2 +1,2 @@
-# 검증 기준
-미완료 작업은 최대 2개를 반환한다.
+# Validation basis
+Return at most 2 incomplete tasks.

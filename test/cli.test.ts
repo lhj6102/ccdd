@@ -194,12 +194,12 @@ test('resume of a live worker preserves single ownership and execution',async t=
 
 test('CLI Artifact partial reads use line arguments and reject listing pagination on reads',async t=>{
   const f=await fixture(t,{human:true});
-  await writeFile(join(f.repo,'why.md'),'첫 줄\r\n둘째 줄\r\n셋째 줄\n');
+  await writeFile(join(f.repo,'why.md'),'\uccab \uc904\r\n\ub458\uc9f8 \uc904\r\n\uc14b\uc9f8 \uc904\n');
   const first=await invoke(['run','--copy','--human-inbox',...f.args]);assert.equal(first.code,0,first.output);
   const waiting=await until(()=>f.status(first.data.id),run=>run.status==='WAITING_HUMAN'&&!run.owner);
   const id=waiting.requests[0].id;
   const partial=await separate<ArtifactReadResult>(['artifact',id,'why','--start-line','2','--line-count','1',...f.args]);
-  assert.equal(partial.code,0,JSON.stringify(partial));assert.equal(partial.data.content,'둘째 줄\r\n');
+  assert.equal(partial.code,0,JSON.stringify(partial));assert.equal(partial.data.content,'\ub458\uc9f8 \uc904\r\n');
   assert.equal(partial.data.startLine,2);assert.equal(partial.data.endLine,2);assert.equal(partial.data.nextStartLine,3);
   for(const flags of [['--start-line','0'],['--line-count','501'],['--offset','1'],['--file','why.md']]){
     const invalid=await separate<ArtifactReadResult>(['artifact',id,'why',...flags,...f.args]);assert.equal(invalid.code,2,JSON.stringify(invalid));

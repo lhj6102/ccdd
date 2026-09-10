@@ -12,19 +12,19 @@ import { artifactStream } from './pi-fixture.js';
 
 const schema = { type: 'object', required: ['verdict', 'summary', 'evidence'], additionalProperties: false, properties: { verdict: { type: 'string', enum: ['GREEN', 'RED'] }, summary: { type: 'string' }, evidence: { type: 'array', items: { type: 'string' } } } };
 const profile: AgentProfile = { kind: 'agent', provider: 'openai-codex', model: 'gpt-6-astra', reasoning: 'medium', timeoutMs: 5_000 };
-const verdict = { verdict: 'GREEN', summary: '확인 완료', evidence: ['spec.md 2번 줄을 확인했습니다.'] };
+const verdict = { verdict: 'GREEN', summary: 'Inspection complete', evidence: ['Inspected line 2 of spec.md.'] };
 
 async function fixture(t: TestContext): Promise<InvokePiOptions & { dir: string }> {
   const dir = await mkdtemp(join(tmpdir(), 'ccdd-pi-'));
   t.after(() => rm(dir, { recursive: true, force: true }));
   const worktreePath = join(dir, 'snapshot');
   await mkdir(worktreePath);
-  await writeFile(join(worktreePath, 'spec.md'), '첫째 줄\r\n둘째 줄\r\n셋째 줄\n');
+  await writeFile(join(worktreePath, 'spec.md'), '\uccab\uc9f8 \uc904\r\n\ub458\uc9f8 \uc904\r\n\uc14b\uc9f8 \uc904\n');
   const request: ReviewEnvelope = {
-    repoId: 'test', criticId: 'spec-why', title: 'Spec 검토', snapshotHash: 'a'.repeat(64), target: 'spec', deps: [],
+    repoId: 'test', criticId: 'spec-why', title: 'Review Spec', snapshotHash: 'a'.repeat(64), target: 'spec', deps: [],
     artifacts: [{ id: 'spec', type: 'markdown', path: 'spec.md' }],
-    artifactTypes: { markdown: { viewer: 'text', tools: { read: { description: '{artifactName}의 내용을 줄 단위로 읽는다.' } } } },
-    payload: { instruction: 'Spec을 확인하세요.' }, profile: { ...profile },
+    artifactTypes: { markdown: { viewer: 'text', tools: { read: { description: 'Read content from {artifactName} by line.' } } } },
+    payload: { instruction: 'Inspect Spec.' }, profile: { ...profile },
   };
   return { dir, request, worktreePath, runDir: join(dir, 'run'), schema, makePrompt: ({ viewer, tools }) => `Review payload: ${JSON.stringify(request.payload)}\nArtifacts: ${JSON.stringify(viewer.listArtifacts())}\nTools: ${JSON.stringify(tools)}` };
 }
@@ -52,7 +52,7 @@ test('Pi Agent loop receives exact provider/model/reasoning and scoped tools acr
       assert.equal(model.id, settings.model);
       assert.equal(options?.reasoning, settings.reasoning);
       assert.deepEqual(context.tools?.map(tool => tool.name), ['read_spec']);
-      assert.equal(context.tools?.[0]?.description, 'spec의 내용을 줄 단위로 읽는다.');
+      assert.equal(context.tools?.[0]?.description, 'Read content from spec by line.');
       assert.equal((context.tools?.[0]?.parameters as { additionalProperties?: unknown }).additionalProperties, false);
     } }) });
     assert.equal(invocations, 2);
@@ -62,7 +62,7 @@ test('Pi Agent loop receives exact provider/model/reasoning and scoped tools acr
     assert.equal(actual.toolCalls[0]?.observation?.lineCount, 1);
     assert.equal(actual.toolCalls[0]?.observation?.startLine, 2);
     assert.equal(events.filter(event => event.type === 'artifact.tool.called').length, 1);
-    assert.doesNotMatch(JSON.stringify({ actual, events }), /PRIVATE_REASONING|둘째 줄/);
+    assert.doesNotMatch(JSON.stringify({ actual, events }), /PRIVATE_REASONING|\ub458\uc9f8 \uc904/);
   }
 });
 
@@ -125,6 +125,23 @@ test('Pi provider failure, timeout and cancellation are errors rather than verdi
   await assert.rejects(invokePi({ ...data, signal: AbortSignal.abort(), streamFn: artifactStream() }), /aborted/);
 });
 
+test('English authentication errors keep their specific classification after Provider transport', async t => {
+  for (const [message, code] of [
+    ['The authentication token has expired or will expire soon.', 'AUTHENTICATION_EXPIRED'],
+    ['OpenAI Codex authentication files are configured in two places.', 'AUTHENTICATION_CONFLICT'],
+    ['Cannot read the specified authentication file.', 'AUTHENTICATION_FAILED'],
+  ]) {
+    const data = await fixture(t);
+    const faux = fauxProvider({ provider: profile.provider, api: validatePiProfile(profile).api });
+    faux.setResponses([fauxAssistantMessage('', { stopReason: 'error', errorMessage: `${message} SECRET_TOKEN_NOT_FOR_OUTPUT` })]);
+    await assert.rejects(invokePi({ ...data, streamFn: (model, context, options) => faux.provider.streamSimple(model, context, options) }), error => {
+      assert.equal((error as { code: string }).code, code);
+      assert.doesNotMatch(String(error), /SECRET_TOKEN/);
+      return true;
+    });
+  }
+});
+
 test('explicit Pi credentials are read-only, support provider keys/OAuth, and reject expiry and workspace paths', async t => {
   const data = await fixture(t);
   const authFile = join(data.dir, 'auth.json');
@@ -136,14 +153,14 @@ test('explicit Pi credentials are read-only, support provider keys/OAuth, and re
   assert.deepEqual(await store.list(), [{ providerId: 'openai', type: 'api_key' }, { providerId: 'anthropic', type: 'oauth' }]);
   assert.equal(await store.read('google'), undefined);
   let refreshed = false;
-  await assert.rejects(store.modify('anthropic', async current => { refreshed = true; return current; }), /읽기 전용/);
+  await assert.rejects(store.modify('anthropic', async current => { refreshed = true; return current; }), /read-only/);
   assert.equal(refreshed, false);
   assert.equal(await readFile(authFile, 'utf8'), original);
   await writeFile(authFile, JSON.stringify({ anthropic: { type: 'oauth', access: 'SECRET_ACCESS', refresh: 'SECRET_REFRESH', expires: Date.now() } }));
-  await assert.rejects(store.read('anthropic'), error => { assert.match(String(error), /만료/); assert.doesNotMatch(String(error), /SECRET_/); return true; });
+  await assert.rejects(store.read('anthropic'), error => { assert.match(String(error), /expired/); assert.doesNotMatch(String(error), /SECRET_/); return true; });
   const inside = join(data.worktreePath, 'auth.json');
   await writeFile(inside, original);
-  await assert.rejects((await createPiCredentialStore({ authFile: inside }, data.worktreePath)).read('openai'), /인증 파일/);
+  await assert.rejects((await createPiCredentialStore({ authFile: inside }, data.worktreePath)).read('openai'), /authentication file/i);
 });
 
 test('Codex bridge is explicit and access-only, never invokes refresh or writes the shared auth file', async t => {
@@ -157,21 +174,21 @@ test('Codex bridge is explicit and access-only, never invokes refresh or writes 
   const actual = await store.read('openai-codex');
   assert.equal(actual?.type, 'oauth');
   if (actual?.type === 'oauth') { assert.equal(actual.access, token); assert.equal(actual.refresh, ''); }
-  await assert.rejects(store.modify('openai-codex', async () => { throw new Error('must not run'); }), /읽기 전용/);
+  await assert.rejects(store.modify('openai-codex', async () => { throw new Error('must not run'); }), /read-only/);
   assert.equal(await readFile(codexAuthFile, 'utf8'), original);
   const authFile = join(data.dir, 'pi-auth.json');
   await writeFile(authFile, JSON.stringify({ 'openai-codex': { type: 'oauth', access: 'other', refresh: 'other', expires: Date.now() + 3_600_000 } }));
-  await assert.rejects((await createPiCredentialStore({ codexAuthFile, authFile }, data.worktreePath)).read('openai-codex'), /두 곳/);
+  await assert.rejects((await createPiCredentialStore({ codexAuthFile, authFile }, data.worktreePath)).read('openai-codex'), /two places/);
 });
 
 test('credential boundary checks the source before copy, including missing paths and canonical symlinks', async t => {
   const data = await fixture(t);
   const inside = join(data.worktreePath, 'auth.json');
-  await assert.rejects(assertPiAuthFilesOutsideWorkspace({ authFile: inside }, data.worktreePath), /workspace 안/);
+  await assert.rejects(assertPiAuthFilesOutsideWorkspace({ authFile: inside }, data.worktreePath), /inside the review workspace/);
   await writeFile(inside, '{}');
   const link = join(data.dir, 'linked-auth.json');
   await symlink(inside, link);
-  await assert.rejects(assertPiAuthFilesOutsideWorkspace({ codexAuthFile: link }, data.worktreePath), /workspace 안/);
+  await assert.rejects(assertPiAuthFilesOutsideWorkspace({ codexAuthFile: link }, data.worktreePath), /inside the review workspace/);
   await assertPiAuthFilesOutsideWorkspace({ authFile: join(data.dir, 'snapshot-sibling', 'missing', 'auth.json') }, data.worktreePath);
 });
 

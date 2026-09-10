@@ -13,18 +13,18 @@ export class PiAuthError extends Error {
   }
 }
 
-const unavailable = () => new PiAuthError('AUTHENTICATION_UNAVAILABLE', '명시한 인증 파일을 읽을 수 없습니다.', '인증 파일 경로와 읽기 권한을 확인하세요. 인증 파일은 리뷰 workspace 밖에 두세요.');
-const invalid = () => new PiAuthError('AUTHENTICATION_INVALID', '명시한 인증 파일의 형식이 올바르지 않습니다.', 'Pi provider별 api_key 또는 oauth 형식의 인증 파일을 지정하세요.');
-const expired = () => new PiAuthError('AUTHENTICATION_EXPIRED', '인증 토큰이 만료되었거나 곧 만료됩니다.', '해당 로그인 도구로 인증을 갱신한 뒤 다시 실행하세요. CCDD는 인증 파일과 공유 Codex 토큰을 갱신하지 않습니다.');
-const readonly = () => new PiAuthError('AUTHENTICATION_READ_ONLY', 'CCDD 인증 파일 연결은 읽기 전용입니다.', '해당 로그인 도구로 인증을 갱신한 뒤 다시 실행하세요.');
-const inWorkspace = () => new PiAuthError('AUTHENTICATION_IN_WORKSPACE', '인증 파일을 리뷰 workspace 안에 둘 수 없습니다.', '인증 파일을 원본 repo와 복사된 workspace 밖에 두고 경로를 다시 지정하세요.');
+const unavailable = () => new PiAuthError('AUTHENTICATION_UNAVAILABLE', 'Cannot read the specified authentication file.', 'Check the authentication file path and read permissions. Keep the file outside the review workspace.');
+const invalid = () => new PiAuthError('AUTHENTICATION_INVALID', 'The specified authentication file has an invalid format.', 'Specify a Pi authentication file with provider-specific api_key or oauth credentials.');
+const expired = () => new PiAuthError('AUTHENTICATION_EXPIRED', 'The authentication token has expired or will expire soon.', 'Renew authentication with the login tool that issued it, then retry. CCDD does not refresh authentication files or shared Codex tokens.');
+const readonly = () => new PiAuthError('AUTHENTICATION_READ_ONLY', 'CCDD authentication file adapters are read-only.', 'Renew authentication with the login tool that issued it, then retry.');
+const inWorkspace = () => new PiAuthError('AUTHENTICATION_IN_WORKSPACE', 'Authentication files cannot be inside the review workspace.', 'Move authentication files outside the source repository and copied workspace, then update their paths.');
 
 function object(value: unknown): value is Record<string, unknown> { return !!value && typeof value === 'object' && !Array.isArray(value); }
 
 export function validatePiOptions(options: PiOptions = {}): void {
   for (const value of [options.authFile, options.codexAuthFile]) {
     if (value !== undefined && (typeof value !== 'string' || !value.trim() || value.length > 4_096 || value.includes('\0') || !isAbsolute(value))) {
-      throw new PiAuthError('AUTHENTICATION_PATH_INVALID', '인증 파일은 절대경로로 지정해야 합니다.', '--pi-auth-file 또는 --codex-auth-file에 workspace 밖 인증 파일의 절대경로를 지정하세요.');
+      throw new PiAuthError('AUTHENTICATION_PATH_INVALID', 'Authentication file paths must be absolute.', 'Set --pi-auth-file or --codex-auth-file to the absolute path of an authentication file outside the workspace.');
     }
   }
 }
@@ -111,7 +111,7 @@ export async function createPiCredentialStore(options: PiOptions, workspacePath:
       const values = options.authFile ? await load(options.authFile, operation.signal) : {};
       const found = Object.hasOwn(values, providerId) ? values[providerId] : undefined;
       if (providerId === 'openai-codex' && options.codexAuthFile) {
-        if (found !== undefined) throw new PiAuthError('AUTHENTICATION_CONFLICT', 'OpenAI Codex 인증 파일이 두 곳에 지정되어 있습니다.', 'openai-codex에는 Pi 인증 또는 읽기 전용 Codex 인증 중 하나만 지정하세요.');
+        if (found !== undefined) throw new PiAuthError('AUTHENTICATION_CONFLICT', 'OpenAI Codex authentication files are configured in two places.', 'For openai-codex, configure either Pi authentication or the read-only Codex adapter.');
         return codex(operation.signal);
       }
       return found === undefined ? undefined : credential(found);

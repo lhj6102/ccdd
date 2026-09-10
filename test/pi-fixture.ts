@@ -53,7 +53,7 @@ export function artifactStream({ mode = 'valid', result, onRequest }: ArtifactSt
         const data = text?.type === 'text' ? JSON.parse(text.text) as { content: string } : { content: '' };
         return fauxAssistantMessage(JSON.stringify({ ready: true, nonce: mode === 'wrong-nonce' ? 'wrong' : data.content.trim() }));
       }
-      return fauxAssistantMessage(mode === 'malformed' ? 'not json' : JSON.stringify(result ?? { verdict: 'GREEN', summary: '선언된 Artifact를 확인했습니다.', evidence: ['요청 Artifact의 실제 내용을 도구로 읽었습니다.'] }));
+      return fauxAssistantMessage(mode === 'malformed' ? 'not json' : JSON.stringify(result ?? { verdict: 'GREEN', summary: 'Inspected the declared Artifacts.', evidence: ['Read the actual contents of the requested Artifacts with tools.'] }));
     }]);
     return faux.provider.streamSimple(model, context, options);
   };

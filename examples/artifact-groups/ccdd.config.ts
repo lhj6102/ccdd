@@ -19,19 +19,19 @@ export default defineConfig({
   },
   critics: [
     {
-      id: 'preview-review', title: '이미지 자체의 시인성', target: 'preview', deps: [],
+      id: 'preview-review', title: 'Image visibility', target: 'preview', deps: [],
       profile: { kind: 'agent', provider: 'openai-codex', model: 'gpt-6-astra', reasoning: 'medium' },
-      payload: { instruction: '{preview}에 어두운 배경과 구분되는 밝은 중심과 주황색 고리가 보이는지 확인하세요. 이 검토는 이미지 자체에 관한 것이며 효과 명세와의 일치는 평가하지 않습니다.' },
+      payload: { instruction: 'Check whether {preview} has a bright center and an orange ring distinguishable from the dark background. Review the image itself; matching the effect specification is outside this review.' },
     },
     {
-      id: 'explosion-review', title: '효과 설명과 프리뷰의 일치', target: 'explosion', deps: ['preview'],
+      id: 'explosion-review', title: 'Match the effect description and preview', target: 'explosion', deps: ['preview'],
       profile: { kind: 'agent', provider: 'openai-codex', model: 'gpt-6-astra', reasoning: 'medium' },
-      payload: { instruction: '{explosion}의 모든 구성원을 관측하여 {effect}에 명시된 정적 외형과 {preview}가 일치하는지 평가하세요. 애니메이션 타이밍이나 실제 VFX 런타임 동작은 이 정적 예제의 평가 대상이 아닙니다.' },
+      payload: { instruction: 'Observe every member of {explosion} and evaluate whether {preview} matches the static appearance specified in {effect}. Animation timing and actual VFX runtime behavior are outside the scope of this static example.' },
     },
     {
-      id: 'explosion-human', title: '데스크톱에서 그룹 검토', target: 'explosion', deps: ['preview'],
+      id: 'explosion-human', title: 'Review the group on the desktop', target: 'explosion', deps: ['preview'],
       profile: { kind: 'human' },
-      payload: { instruction: '{explosion}의 문서와 이미지를 각각 데스크톱 프로그램으로 열어 비교한 뒤 판정을 제출하세요.' },
+      payload: { instruction: 'Open the document and image in {explosion} with their desktop programs, compare them, and submit your verdict.' },
     },
   ],
 });

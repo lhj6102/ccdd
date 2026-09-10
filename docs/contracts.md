@@ -63,7 +63,7 @@ export default defineConfig(() => ({
     },
   },
   critics: [{
-    id: 'runtime', title: '테스트 런타임 통과', target: 'implementation', deps: ['tests'],
+    id: 'runtime', title: 'Pass the runtime tests', target: 'implementation', deps: ['tests'],
     profile: { kind: 'runtime', command: 'node', args: ['--test', 'tests/example.test.mjs'] },
     payload: { instruction: 'Run the actual test suite against the implementation.' },
   }],
@@ -141,8 +141,8 @@ Executors receive the prepared input path, a distinct `runDir`, cancellation sig
 An exact `{ID}` in that instruction refers to a leaf or group already supplied to the request. IDs use the existing identifier grammar: one ASCII letter or digit followed by up to 63 ASCII letters, digits, underscores or hyphens. When constructing the Agent prompt, CCDD renders the reference as inline JSON containing the Artifact ID and names from its actual Agent tool registry, joined by each tool's `artifactId`. It does not invent names or require default tools. For example, with `read_spec`, `grep_spec` and `read_why` actually registered:
 
 ```text
-Source: {spec}이 {why}의 요구사항을 충족하는지 검토하세요.
-Agent: {"artifact":"spec","tools":["read_spec","grep_spec"]}이 {"artifact":"why","tools":["read_why"]}의 요구사항을 충족하는지 검토하세요.
+Source: Review whether {spec} satisfies the requirements in {why}.
+Agent: Review whether {"artifact":"spec","tools":["read_spec","grep_spec"]} satisfies the requirements in {"artifact":"why","tools":["read_why"]}.
 ```
 
 A group reference expands to its deduplicated supplied leaf members and their actual tools:

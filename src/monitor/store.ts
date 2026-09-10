@@ -153,7 +153,7 @@ async function readSnapshot(source: Source, requestId?: string, runId?: string):
     db.exec('COMMIT');
   } catch (error) {
     try { db?.exec('ROLLBACK'); } catch {}
-    snapshot.project.issue = codeOf(error) === 'ENOENT' ? '상태 저장소를 찾을 수 없습니다.' : '이 프로젝트의 상태 기록을 읽을 수 없습니다.';
+    snapshot.project.issue = codeOf(error) === 'ENOENT' ? 'The state store could not be found.' : 'Unable to read the stored state for this project.';
     snapshot.requests = []; snapshot.runs = []; snapshot.graph = null; snapshot.owners.clear(); snapshot.activity.clear(); snapshot.events = []; snapshot.target = null;
   } finally { db?.close(); }
   return snapshot;
@@ -185,7 +185,7 @@ function sourcesReader(options: MonitorSources): () => Promise<Source[]> {
       }
     } catch (error) {
       if (codeOf(error) !== 'ENOENT') {
-        const source = await sourceAt(stateHome, '프로젝트 상태 목록을 읽을 수 없습니다.');
+        const source = await sourceAt(stateHome, 'Unable to read the project state listing.');
         sources.set(source.id, source);
       }
     }
@@ -248,20 +248,20 @@ function failedPredecessor(request: Header, byId: Map<string, Header>): Header |
 
 function waitingReason(request: Header, state: MonitorRequest['workerState'], byId: Map<string, Header>): string | null {
   if (finished.has(request.status)) return null;
-  if (state === 'missing') return '작업을 실행하던 프로세스가 확인되지 않습니다. 저장된 상태를 표시합니다.';
+  if (state === 'missing') return 'The worker process could not be found. Showing the stored state.';
   if (request.status === 'BLOCKED') {
     const failed = failedPredecessor(request, byId);
-    if (failed) return `선행 리뷰 “${failed.title}”가 ${failed.status === 'RED' ? '기준을 충족하지 못해' : '오류로 종료되어'} 진행할 수 없습니다.`;
-    if (request.deps?.length) return `Artifact “${request.deps.map(dep => text(dep, 64)).join(', ')}”의 리뷰 통과를 기다리고 있습니다.`;
+    if (failed) return `Cannot proceed because dependency review “${failed.title}” ${failed.status === 'RED' ? 'did not meet the criteria' : 'ended with an error'}.`;
+    if (request.deps?.length) return `Waiting for reviews of Artifact(s) “${request.deps.map(dep => text(dep, 64)).join(', ')}” to pass.`;
     const previous = request.predecessorId ? byId.get(request.predecessorId) : undefined;
-    return previous ? `선행 리뷰 “${previous.title}”의 통과를 기다리고 있습니다.` : '선행 리뷰의 통과를 기다리고 있습니다.';
+    return previous ? `Waiting for dependency review “${previous.title}” to pass.` : 'Waiting for dependency reviews to pass.';
   }
   if (request.status === 'WAITING_HUMAN') {
-    if (!request.notifiedAt) return request.claimedBy ? `${text(request.claimedBy, 200)}님이 맡았으며, 알림 전달을 확인 중입니다.` : '리뷰 알림이 전달되기를 기다리고 있습니다.';
-    return request.claimedBy ? `${text(request.claimedBy, 200)}님이 검토 결과를 제출하기를 기다리고 있습니다.` : '이 리뷰를 맡을 사람을 기다리고 있습니다.';
+    if (!request.notifiedAt) return request.claimedBy ? `Claimed by ${text(request.claimedBy, 200)}; checking notification delivery.` : 'Waiting for the review notification to be delivered.';
+    return request.claimedBy ? `Waiting for ${text(request.claimedBy, 200)} to submit a review result.` : 'Waiting for a reviewer to claim this review.';
   }
-  if (state === 'unknown') return '작업 프로세스의 실행 여부를 확인할 수 없습니다.';
-  return request.status === 'QUEUED' ? '리뷰 실행을 기다리고 있습니다.' : null;
+  if (state === 'unknown') return 'Unable to determine whether the worker process is running.';
+  return request.status === 'QUEUED' ? 'Waiting for the review to run.' : null;
 }
 
 async function projectRequests(snapshot: Snapshot, checks: ProcessChecks, onlyId?: string): Promise<MonitorRequest[]> {
@@ -291,22 +291,22 @@ function timeline(request: Header, events: Event[]): MonitorDetail['timeline'] {
   const labels = new Map<string, { at: string; order: number }>();
   const add = (label: string, at: string | null | undefined, order: number) => { if (at && !labels.has(label)) labels.set(label, { at, order }); };
   const eventLabels: Record<string, string> = {
-    'run.submitted': '접수', 'request.queued': '실행 대기', 'request.started': '실행 시작',
-    'human.waiting': '사람 대기', 'human.notified': '알림 전달', 'human.claimed': '담당',
-    'request.completed': '완료', 'request.error': '완료',
+    'run.submitted': 'Submitted', 'request.queued': 'Queued', 'request.started': 'Started',
+    'human.waiting': 'Awaiting Human', 'human.notified': 'Notification delivered', 'human.claimed': 'Claimed',
+    'request.completed': 'Completed', 'request.error': 'Completed',
   };
   for (const event of events) {
     if (event.requestId === null && event.type !== 'run.submitted') continue;
     const label = eventLabels[event.type];
     if (label) add(label, event.at, event.id);
   }
-  add('접수', request.createdAt, -2);
+  add('Submitted', request.createdAt, -2);
   // The first request is queued atomically with submission; later requests need their own queued event.
-  if (request.target === null && !request.predecessorId) add('실행 대기', labels.get('접수')?.at, (labels.get('접수')?.order ?? -2) + 0.5);
-  add('실행 시작', request.startedAt, Number.MAX_SAFE_INTEGER - 4);
-  add('담당', request.claimedAt, Number.MAX_SAFE_INTEGER - 3);
-  add('알림 전달', request.notifiedAt, Number.MAX_SAFE_INTEGER - 2);
-  add('완료', request.completedAt, Number.MAX_SAFE_INTEGER - 1);
+  if (request.target === null && !request.predecessorId) add('Queued', labels.get('Submitted')?.at, (labels.get('Submitted')?.order ?? -2) + 0.5);
+  add('Started', request.startedAt, Number.MAX_SAFE_INTEGER - 4);
+  add('Claimed', request.claimedAt, Number.MAX_SAFE_INTEGER - 3);
+  add('Notification delivered', request.notifiedAt, Number.MAX_SAFE_INTEGER - 2);
+  add('Completed', request.completedAt, Number.MAX_SAFE_INTEGER - 1);
   return [...labels.entries()].sort((a, b) => Date.parse(a[1].at) - Date.parse(b[1].at) || a[1].order - b[1].order).map(([label, value]) => ({ label, at: value.at }));
 }
 
@@ -353,11 +353,11 @@ function artifactGroupReferences(value: unknown, artifacts: ArtifactReference[])
 
 function pagination(query: { limit?: number; offset?: number }): { limit: number; offset: number } {
   const limit = query.limit ?? 50, offset = query.offset ?? 0;
-  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 200 || !Number.isSafeInteger(offset) || offset < 0) throw new Error('목록 조회 범위가 올바르지 않습니다.');
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 200 || !Number.isSafeInteger(offset) || offset < 0) throw new Error('Invalid listing range.');
   return { limit, offset };
 }
 function graphFrom(snapshot: Snapshot, run: MonitorRun): Pick<MonitorGraph, 'available' | 'unavailableReason' | 'graph'> {
-  if (snapshot.graph === null) return { available: false, unavailableReason: '이 과거 실행에는 Artifact 그래프 정의가 저장되어 있지 않습니다.', graph: null };
+  if (snapshot.graph === null) return { available: false, unavailableReason: 'This historical Run has no stored Artifact graph definition.', graph: null };
   try {
     validateGraphDefinition(snapshot.graph);
     if (!run.snapshotHash || !/^[a-f0-9]{64}$/.test(run.snapshotHash)) throw storageError();
@@ -369,7 +369,7 @@ function graphFrom(snapshot: Snapshot, run: MonitorRun): Pick<MonitorGraph, 'ava
     }
     const graphRequests = requests.map(request => ({ id: request.id, criticId: request.criticId, status: request.status, claimedBy: request.claimedBy, blockedReason: request.blockedReason }));
     return { available: true, unavailableReason: null, graph: snapshot.validation ? projectValidationGraph(snapshot.graph, snapshot.validation, graphRequests, run.id) : projectGraph(snapshot.graph, graphRequests) };
-  } catch { return { available: false, unavailableReason: '저장된 그래프와 이 실행의 입력·리뷰 기록이 일치하지 않습니다.', graph: null }; }
+  } catch { return { available: false, unavailableReason: 'The stored graph does not match the input and review records for this Run.', graph: null }; }
 }
 
 /** Optional observer: opening or querying it never runs reconciliation or changes review state. */
@@ -405,12 +405,12 @@ export function createMonitorStore(options: MonitorSources = {}) {
     },
     async overview(query: MonitorQuery = {}): Promise<MonitorOverview> {
       const limit = query.limit ?? 50, offset = query.offset ?? 0, filter = query.filter ?? 'all';
-      if (!Number.isSafeInteger(limit) || limit < 1 || limit > 200 || !Number.isSafeInteger(offset) || offset < 0 || !['all', 'active', 'attention'].includes(filter) || (query.lane !== undefined && !['requested', 'running', 'success', 'failure'].includes(query.lane))) throw new Error('목록 조회 조건이 올바르지 않습니다.');
+      if (!Number.isSafeInteger(limit) || limit < 1 || limit > 200 || !Number.isSafeInteger(offset) || offset < 0 || !['all', 'active', 'attention'].includes(filter) || (query.lane !== undefined && !['requested', 'running', 'success', 'failure'].includes(query.lane))) throw new Error('Invalid listing query.');
       const snapshots = await Promise.all((await discover()).map(source => readSnapshot(source)));
       const projects = snapshots.map(snapshot => snapshot.project).sort((a, b) => a.name.localeCompare(b.name, 'ko') || a.id.localeCompare(b.id));
       const checks: ProcessChecks = new Map();
       const scoped = snapshots.filter(snapshot => query.project === undefined || snapshot.project.id === query.project);
-      if (query.run !== undefined && query.project === undefined) throw new Error('실행을 선택하려면 프로젝트를 먼저 선택하세요.');
+      if (query.run !== undefined && query.project === undefined) throw new Error('Select a project before selecting a Run.');
       const rows = (await Promise.all(scoped.map(async snapshot => {
         return (await projectRequests(snapshot, checks)).filter(request => query.run === undefined || request.runId === query.run).map(request => ({ request, ...categories(request) }));
       }))).flat();

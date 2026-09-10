@@ -1,1 +1,1 @@
-import test from 'node:test';import assert from 'node:assert/strict';import {readFileSync} from 'node:fs';test('개발 검증: 독립 분기',()=>assert.match(readFileSync(new URL('./review.md',import.meta.url),'utf8'),/독립/));
+import test from 'node:test';import assert from 'node:assert/strict';import {readFileSync} from 'node:fs';test('development validation: independent branch',()=>assert.match(readFileSync(new URL('./review.md',import.meta.url),'utf8'),/independent/i));

@@ -120,8 +120,8 @@ test('Critic array order has no effect on declared roles and every target/dep re
 test('repo-defined types preserve description templates in isolated request envelopes', async t => {
   const data = await fixture(t);
   data.config.artifactTypes = {
-    requirements: { viewer: 'text', agentTools: { read: { description: '{artifactName}의 요구사항을 읽고 {artifactName}에서 근거를 찾는다.' } } },
-    test_suite: { viewer: 'files', agentTools: { read: {}, list: { description: '{artifactName}의 테스트 파일 목록을 조회한다.' } } },
+    requirements: { viewer: 'text', agentTools: { read: { description: 'Read requirements from {artifactName} and find evidence in {artifactName}.' } } },
+    test_suite: { viewer: 'files', agentTools: { read: {}, list: { description: 'List test files in {artifactName}.' } } },
   };
   data.config.artifacts.why.type = 'requirements';
   data.config.artifacts.spec.type = 'requirements';
@@ -131,9 +131,9 @@ test('repo-defined types preserve description templates in isolated request enve
   assert.deepEqual(requests[0].artifactTypes, data.config.artifactTypes);
   assert.deepEqual(requests[1].artifactTypes, data.config.artifactTypes);
   assert.equal(requests[0].artifacts[1].type, 'requirements');
-  assert.equal(toolDescription(requests[0].artifactTypes.requirements, 'read', 'spec', 'agent'), 'spec의 요구사항을 읽고 spec에서 근거를 찾는다.');
-  assert.equal(toolDescription(requests[0].artifactTypes.requirements, 'read', 'why', 'agent'), 'why의 요구사항을 읽고 why에서 근거를 찾는다.');
-  assert.equal(toolDescription(requests[1].artifactTypes.test_suite, 'list', 'tests', 'agent'), 'tests의 테스트 파일 목록을 조회한다.');
+  assert.equal(toolDescription(requests[0].artifactTypes.requirements, 'read', 'spec', 'agent'), 'Read requirements from spec and find evidence in spec.');
+  assert.equal(toolDescription(requests[0].artifactTypes.requirements, 'read', 'why', 'agent'), 'Read requirements from why and find evidence in why.');
+  assert.equal(toolDescription(requests[1].artifactTypes.test_suite, 'list', 'tests', 'agent'), 'List test files in tests.');
   assert.match(toolDescription(requests[1].artifactTypes.test_suite, 'read', 'tests'), /tests.*line ranges/);
   requests[0].artifactTypes.requirements.agentTools!.read!.description = 'Changed envelope';
   assert.equal(requests[1].artifactTypes.requirements.agentTools!.read!.description, data.config.artifactTypes.requirements.agentTools!.read!.description);

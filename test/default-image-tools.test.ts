@@ -73,7 +73,7 @@ test('view_image rejects Pi text fallback and unsupported image formats without 
 test('directory image paths stay within their Artifact and the CLI rejects symlinks and directories', async t => {
   const data = await fixture(t, true);
   await mkdir(join(data.artifactPath, 'nested'));
-  const path = "nested/미리보기 8\u202fPM.png";
+  const path = "nested/\ubbf8\ub9ac\ubcf4\uae30 8\u202fPM.png";
   await writeFile(join(data.artifactPath, path), png);
   await writeFile(join(data.root, 'outside.png'), png);
   await symlink('../outside.png', join(data.artifactPath, 'outside-link.png'));
@@ -85,7 +85,7 @@ test('directory image paths stay within their Artifact and the CLI rejects symli
   await assert.rejects(tool.execute(data.context, { path: '../outside.png' }), /safe internal relative path/);
   await assert.rejects(tool.execute(data.context, { path: '/outside.png' }), /safe internal relative path/);
   await assert.rejects(tool.execute(data.context, { path: 'outside-link.png' }), /symlink/);
-  await assert.rejects(tool.execute(data.context, { path: "linked-directory/미리보기 8\u202fPM.png" }), /symlink/);
+  await assert.rejects(tool.execute(data.context, { path: "linked-directory/\ubbf8\ub9ac\ubcf4\uae30 8\u202fPM.png" }), /symlink/);
   assert.deepEqual(await readFile(join(data.root, 'outside.png')), png);
 });
 

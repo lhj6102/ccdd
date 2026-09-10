@@ -1,3 +1,3 @@
 # Why
 
-한 번에 집중할 미완료 작업을 최대 2개 제안한다.
+Suggest at most 2 incomplete tasks to focus on at a time.

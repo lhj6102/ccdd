@@ -25,7 +25,7 @@ async function fixture(t: TestContext) {
   await writeFile(join(worktreePath, 'tests', 'rank.test.mjs'), 'export const expected = 2;\n');
   await writeFile(join(worktreePath, 'private.md'), 'Not declared for this review');
   const artifacts = [{ id: 'why', type: 'markdown', path: 'why.md' }, { id: 'tests', type: 'code', path: 'tests' }];
-  const artifactTypes = { markdown: { viewer: 'text', tools: { read: { description: '{artifactName}의 문서를 줄 단위로 읽는다.' } } }, code: { viewer: 'files', tools: { list: { description: '{artifactName}의 파일 목록을 조회한다.' }, read: { description: '{artifactName}의 소스 텍스트를 읽는다.' } } } };
+  const artifactTypes = { markdown: { viewer: 'text', tools: { read: { description: 'Read the document in {artifactName} by line.' } } }, code: { viewer: 'files', tools: { list: { description: 'List files in {artifactName}.' }, read: { description: 'Read source text from {artifactName}.' } } } };
   return { dir, worktreePath, artifacts, artifactTypes };
 }
 
@@ -34,8 +34,8 @@ test('request artifact types produce concrete read and directory viewer tools', 
   const viewer = await createArtifactViewer(fixtureData);
   const registry = createArtifactTools(viewer);
   assert.deepEqual(registry.tools.map(x => x.name), ['read_why', 'list_tests', 'read_tests']);
-  assert.equal(registry.tools[0].description, 'why의 문서를 줄 단위로 읽는다.');
-  assert.equal(registry.tools[2].description, 'tests의 소스 텍스트를 읽는다.');
+  assert.equal(registry.tools[0].description, 'Read the document in why by line.');
+  assert.equal(registry.tools[2].description, 'Read source text from tests.');
   assert.equal(registry.tools[0].inputSchema.properties.path, undefined);
   assert.deepEqual(registry.tools[2].inputSchema.required, ['path']);
   assert.equal(registry.tools[0].inputSchema.properties.offset, undefined);
@@ -111,7 +111,7 @@ test('actual stdio MCP process negotiates and serves scoped viewer calls with bo
   assert.equal((await call('initialize', { protocolVersion: '2024-11-05' })).result.serverInfo.name, 'ccdd-artifact-runner');
   const toolList = (await call('tools/list')).result.tools;
   assert.equal(toolList.length, 3);
-  assert.match(toolList.find(tool => tool.name === 'read_tests')!.description, /^tests의 소스 텍스트를 읽는다\./);
+  assert.match(toolList.find(tool => tool.name === 'read_tests')!.description, /^Read source text from tests\./);
   assert.deepEqual(toolList.find(tool => tool.name === 'read_tests')!.inputSchema.required, ['path']);
   assert.match((await call('tools/call', { name: 'read_why', arguments: {} })).result.content[0].text, /Pick two/);
   assert.equal((await call('tools/call', { name: 'read_tests', arguments: { path: '../private.md' } })).result.isError, true);
@@ -133,29 +133,29 @@ test('actual stdio MCP process negotiates and serves scoped viewer calls with bo
 
 test('line reads preserve UTF-8, CRLF, empty lines and final newline semantics', async t => {
   const data = await fixture(t);
-  const content = '한글🙂 첫째\r\n\r\n끝줄🌱';
+  const content = '\ud55c\uae00🙂 \uccab\uc9f8\r\n\r\n\ub05d\uc904🌱';
   await writeFile(join(data.worktreePath, 'why.md'), content);
   const viewer = await createArtifactViewer(data);
   const first = await viewer.read({ artifactId: 'why', startLine: 1, lineCount: 2 });
-  assert.equal(first.content, '한글🙂 첫째\r\n\r\n');
+  assert.equal(first.content, '\ud55c\uae00🙂 \uccab\uc9f8\r\n\r\n');
   assert.equal(first.startLine, 1);
   assert.equal(first.endLine, 2);
   assert.equal(first.lineCount, 2);
   assert.equal(first.nextStartLine, 3);
   assert.equal(first.totalLines, undefined);
   const last = await viewer.read({ artifactId: 'why', startLine: first.nextStartLine, lineCount: 2 });
-  assert.equal(last.content, '끝줄🌱');
+  assert.equal(last.content, '\ub05d\uc904🌱');
   assert.equal(last.totalLines, 3);
   assert.equal(last.endLine, 3);
   assert.equal(last.lineCount, 1);
   assert.equal(last.nextStartLine, null);
   assert.equal(last.truncated, false);
   assert.equal(first.content + last.content, content);
-  await writeFile(join(data.worktreePath, 'why.md'), '끝\n');
+  await writeFile(join(data.worktreePath, 'why.md'), '\ub05d\n');
   const terminated = await viewer.read({ artifactId: 'why' });
   assert.equal(terminated.totalLines, 1);
   assert.equal(terminated.lineCount, 1);
-  assert.equal(terminated.content, '끝\n');
+  assert.equal(terminated.content, '\ub05d\n');
 });
 
 test('empty files and reads past EOF return unambiguous line metadata', async t => {
@@ -176,7 +176,7 @@ test('empty files and reads past EOF return unambiguous line metadata', async t 
 
 test('line reads default to 80 lines and support the declared 500-line maximum', async t => {
   const data = await fixture(t);
-  await writeFile(join(data.worktreePath, 'why.md'), Array.from({ length: 510 }, (_, index) => `줄 ${index + 1}\n`).join(''));
+  await writeFile(join(data.worktreePath, 'why.md'), Array.from({ length: 510 }, (_, index) => `\uc904 ${index + 1}\n`).join(''));
   const registry = createArtifactTools(await createArtifactViewer(data));
   const defaults = await registry.call('read_why', {});
   assert.equal(defaults.lineCount, 80);
@@ -191,7 +191,7 @@ test('line reads default to 80 lines and support the declared 500-line maximum',
 
 test('bounded line responses continue at complete lines without splitting UTF-8 characters', async t => {
   const data = await fixture(t);
-  const line = `${'한'.repeat(10_000)}🙂\r\n`;
+  const line = `${'\ud55c'.repeat(10_000)}🙂\r\n`;
   await writeFile(join(data.worktreePath, 'why.md'), line.repeat(3));
   const viewer = await createArtifactViewer(data);
   const first = await viewer.read({ artifactId: 'why', lineCount: 80 });
@@ -202,18 +202,18 @@ test('bounded line responses continue at complete lines without splitting UTF-8 
   const next = await viewer.read({ artifactId: 'why', startLine: first.nextStartLine });
   assert.equal(next.content, line);
   assert.equal(next.totalLines, 3);
-  // The Korean character below crosses the reader's internal chunk boundary.
-  await writeFile(join(data.worktreePath, 'why.md'), `${'x'.repeat(65_533)}\n한글🙂\r\n`);
-  assert.equal((await viewer.read({ artifactId: 'why', startLine: 2 })).content, '한글🙂\r\n');
+  // The three-byte Unicode character below crosses the reader's internal chunk boundary.
+  await writeFile(join(data.worktreePath, 'why.md'), `${'x'.repeat(65_533)}\n\ud55c\uae00🙂\r\n`);
+  assert.equal((await viewer.read({ artifactId: 'why', startLine: 2 })).content, '\ud55c\uae00🙂\r\n');
 });
 
 test('oversized lines fail explicitly and earlier unrequested lines are streamed without retention', async t => {
   const data = await fixture(t);
-  await writeFile(join(data.worktreePath, 'why.md'), `${'x'.repeat(1_000_000)}\n작은 줄\n`);
+  await writeFile(join(data.worktreePath, 'why.md'), `${'x'.repeat(1_000_000)}\n\uc791\uc740 \uc904\n`);
   const viewer = await createArtifactViewer(data);
   await assert.rejects(viewer.read({ artifactId: 'why' }), /line 1 exceeds the 65536-byte read limit/);
   const second = await viewer.read({ artifactId: 'why', startLine: 2 });
-  assert.equal(second.content, '작은 줄\n');
+  assert.equal(second.content, '\uc791\uc740 \uc904\n');
   assert.equal(second.totalLines, 2);
   await writeFile(join(data.worktreePath, 'why.md'), `${'a'.repeat(65_535)}\nnext`);
   const exact = await viewer.read({ artifactId: 'why' });
@@ -279,8 +279,8 @@ test('requested invalid UTF-8 is rejected while a valid UTF-8 BOM is preserved',
   await writeFile(join(data.worktreePath, 'why.md'), Buffer.from([0x76, 0x61, 0x6c, 0x69, 0x64, 0x0a, 0xc3, 0x28, 0x0a]));
   assert.equal((await viewer.read({ artifactId: 'why', lineCount: 1 })).content, 'valid\n');
   await assert.rejects(viewer.read({ artifactId: 'why', startLine: 2 }), /invalid UTF-8/);
-  await writeFile(join(data.worktreePath, 'why.md'), '\uFEFF한글\n');
-  assert.equal((await viewer.read({ artifactId: 'why' })).content, '\uFEFF한글\n');
+  await writeFile(join(data.worktreePath, 'why.md'), '\uFEFF\ud55c\uae00\n');
+  assert.equal((await viewer.read({ artifactId: 'why' })).content, '\uFEFF\ud55c\uae00\n');
 });
 
 test('direct directory viewers reject FIFO reads without waiting for a writer', { skip: process.platform === 'win32' }, async t => {

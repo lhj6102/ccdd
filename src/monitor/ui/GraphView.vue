@@ -68,11 +68,11 @@ function criticLabel(critic: Critic): string {
   return criticPresentation(critic, critic.requestId ? requests.value.get(critic.requestId) : undefined).label;
 }
 function artifactLabel(artifact: Artifact): string {
-  if (artifact.validationStatus === 'STALE') return '재검증 필요';
-  if (artifact.status === 'BLOCKED' && graph.value?.critics.some(critic => critic.target === artifact.id && criticBlocked(critic))) return '진행 불가';
-  return { BASIS: '기준 Artifact', UNREVIEWED: '미평가', BLOCKED: '선행 리뷰 대기', QUEUED: '실행 대기', RUNNING: '실행 중', WAITING_HUMAN: 'Human 대기', GREEN: '통과', RED: '기준 미충족', ERROR: '실행 오류' }[artifact.status];
+  if (artifact.validationStatus === 'STALE') return 'Needs revalidation';
+  if (artifact.status === 'BLOCKED' && graph.value?.critics.some(critic => critic.target === artifact.id && criticBlocked(critic))) return 'Blocked by failure';
+  return { BASIS: 'Basis Artifact', UNREVIEWED: 'Unreviewed', BLOCKED: 'Awaiting dependencies', QUEUED: 'Queued', RUNNING: 'Running', WAITING_HUMAN: 'Awaiting Human', GREEN: 'Passed', RED: 'Criteria not met', ERROR: 'Execution error' }[artifact.status];
 }
-function artifactAccessibleLabel(artifact: Artifact): string { return `${artifact.id}${artifact.kind === 'group' ? `, 그룹, 구성원 ${artifact.members.length}개` : ''}, ${artifactLabel(artifact)}, ${artifact.total ? `Critic ${artifact.passed}/${artifact.total} 통과` : '평가 Critic 없음'}`; }
+function artifactAccessibleLabel(artifact: Artifact): string { return `${artifact.id}${artifact.kind === 'group' ? `, group, members: ${artifact.members.length}` : ''}, ${artifactLabel(artifact)}, ${artifact.total ? `Critics passed: ${artifact.passed}/${artifact.total}` : 'No Critics'}`; }
 function criticBlocked(critic: Critic): boolean {
   return Boolean(critic.requestId && requests.value.get(critic.requestId)?.blockedByFailure);
 }
@@ -93,7 +93,7 @@ async function refresh(force = false): Promise<void> {
     if (value.project.id !== projectId || value.run.id !== runId) throw new Error('Graph scope mismatch');
     data.value = value; error.value = ''; chooseInitialArtifact();
   } catch {
-    if (requestVersion === version) error.value = data.value ? '그래프를 갱신하지 못했습니다. 마지막으로 확인한 기록입니다.' : '그래프를 불러오지 못했습니다. 잠시 후 다시 시도해 주세요.';
+    if (requestVersion === version) error.value = data.value ? 'Unable to refresh the graph. Showing the last observed record.' : 'Unable to load the graph. Please try again shortly.';
   } finally { if (requestVersion === version) loading.value = false; }
 }
 function openCritic(critic: Critic): void {
@@ -158,7 +158,7 @@ watch([topologyKey, layoutAttempt], async ([key]) => {
     if (!disposed && requestVersion === layoutVersion) {
       console.warn('CCDD graph layout failed:', cause);
       drawing.value = null; flow.value = null; fitPending = false;
-      layoutError.value = '그래프를 배치하지 못했습니다. 다시 시도해 주세요.';
+      layoutError.value = 'Unable to lay out the graph. Please try again.';
     }
   } finally { if (!disposed && requestVersion === layoutVersion) layingOut.value = false; }
 });
@@ -177,42 +177,42 @@ defineExpose({ refresh });
 </script>
 
 <template>
-  <section class="graph-view" aria-label="Artifact 평가 그래프" :aria-busy="(loading && !data) || (layingOut && !drawing)">
+  <section class="graph-view" aria-label="Artifact review graph" :aria-busy="(loading && !data) || (layingOut && !drawing)">
     <p v-if="error" class="inline-error" role="status">{{ error }}</p>
-    <div v-if="!projectId || !runId" class="graph-placeholder"><strong>실행을 선택해 주세요.</strong><p>하나의 실행에 포함된 Artifact 관계와 Critic 판정을 함께 봅니다.</p></div>
-    <p v-else-if="loading && !data" class="graph-placeholder">Artifact 관계를 불러오는 중…</p>
-    <div v-else-if="data && !data.available" class="graph-placeholder"><strong>이 실행에는 GraphView를 제공할 수 없습니다.</strong><p>{{ data.unavailableReason || 'Artifact의 평가 대상과 참조 관계가 저장되지 않은 이전 기록입니다.' }}</p><p>Kanban에서 개별 요청과 Artifact를 확인할 수 있습니다.</p></div>
-    <div v-else-if="layoutError" class="graph-placeholder"><p class="inline-error" role="status">{{ layoutError }}</p><button type="button" class="text-button" @click="layoutAttempt++">다시 배치</button></div>
-    <p v-else-if="layingOut && !drawing" class="graph-placeholder">Artifact 관계를 배치하는 중…</p>
+    <div v-if="!projectId || !runId" class="graph-placeholder"><strong>Select a Run.</strong><p>View Artifact relationships and Critic verdicts for a Run.</p></div>
+    <p v-else-if="loading && !data" class="graph-placeholder">Loading Artifact relationships…</p>
+    <div v-else-if="data && !data.available" class="graph-placeholder"><strong>The graph is unavailable for this Run.</strong><p>{{ data.unavailableReason || 'This historical Run has no stored Artifact targets or dependency relationships.' }}</p><p>Use Kanban to inspect individual requests and Artifacts.</p></div>
+    <div v-else-if="layoutError" class="graph-placeholder"><p class="inline-error" role="status">{{ layoutError }}</p><button type="button" class="text-button" @click="layoutAttempt++">Retry layout</button></div>
+    <p v-else-if="layingOut && !drawing" class="graph-placeholder">Laying out Artifact relationships…</p>
     <template v-else-if="graph && drawing">
       <header class="graph-context">
-        <span>Artifact {{ graph.artifacts.length - groupCount }}개 <template v-if="groupCount"><span class="graph-separator">·</span> 그룹 {{ groupCount }}개 </template><span class="graph-separator">·</span> Critic {{ graph.critics.length }}개</span>
-        <span class="muted"><span v-if="partial" class="graph-partial">선택 Critic 실행</span>snapshot <span :title="data?.run.snapshotHash ?? undefined">{{ data?.run.snapshotHash?.slice(0, 10) ?? '확인 불가' }}</span></span>
+        <span>Artifacts: {{ graph.artifacts.length - groupCount }} <template v-if="groupCount"><span class="graph-separator">·</span> Groups: {{ groupCount }} </template><span class="graph-separator">·</span> Critics: {{ graph.critics.length }}</span>
+        <span class="muted"><span v-if="partial" class="graph-partial">Selected Critic Run</span>snapshot <span :title="data?.run.snapshotHash ?? undefined">{{ data?.run.snapshotHash?.slice(0, 10) ?? 'Unavailable' }}</span></span>
       </header>
-      <div class="graph-viewport" role="region" aria-label="Artifact 관계도. 드래그하여 이동하고 확대·축소 버튼으로 크기를 조절할 수 있습니다.">
+      <div class="graph-viewport" role="region" aria-label="Artifact graph. Drag to pan and use the zoom buttons to change the scale.">
         <VueFlow :id="flowId" :key="flowId" class="graph-flow" :nodes="nodes" :edges="edges" :nodes-draggable="false" :nodes-connectable="false" :elements-selectable="false" :nodes-focusable="false" :edges-focusable="false" :delete-key-code="null" :selection-key-code="false" :multi-selection-key-code="null" :disable-keyboard-a11y="true" :pan-on-drag="true" :pan-on-scroll="true" :zoom-on-scroll="false" :zoom-on-double-click="false" :zoom-on-pinch="true" :min-zoom="0.2" :max-zoom="1.8" @pane-ready="onPaneReady" @node-click="selectArtifactNode">
           <Background variant="dots" :gap="20" :size="1" color="#dce2d5" />
           <template #node-artifact="nodeProps"><ArtifactFlowNode :data="nodeProps.data" @select="selectedArtifactId = $event" @open-critic="openCritic" /></template>
           <template #edge-artifact="edgeProps"><GraphFlowEdge :id="edgeProps.id" :data="edgeProps.data" :marker-end="edgeProps.markerEnd" /></template>
         </VueFlow>
-        <div class="graph-controls" aria-label="그래프 보기 조절">
-          <button type="button" title="확대" aria-label="그래프 확대" @click="zoom(1)"><Plus aria-hidden="true" :size="16" :stroke-width="1.5" /></button>
-          <button type="button" title="축소" aria-label="그래프 축소" @click="zoom(-1)"><Minus aria-hidden="true" :size="16" :stroke-width="1.5" /></button>
+        <div class="graph-controls" aria-label="Graph view controls">
+          <button type="button" title="Zoom in" aria-label="Zoom in on graph" @click="zoom(1)"><Plus aria-hidden="true" :size="16" :stroke-width="1.5" /></button>
+          <button type="button" title="Zoom out" aria-label="Zoom out of graph" @click="zoom(-1)"><Minus aria-hidden="true" :size="16" :stroke-width="1.5" /></button>
           <span aria-hidden="true" />
-          <button type="button" title="전체 보기" aria-label="그래프 전체 보기" @click="fitGraph()"><Maximize aria-hidden="true" :size="15" :stroke-width="1.5" /></button>
+          <button type="button" title="Fit view" aria-label="Fit entire graph" @click="fitGraph()"><Maximize aria-hidden="true" :size="15" :stroke-width="1.5" /></button>
         </div>
       </div>
-      <div class="graph-legend"><span>참조 Artifact <span aria-hidden="true">→</span><span class="sr-only">에서</span> 평가 대상</span><span class="graph-state-legend"><span class="requested">요청</span><span class="running">리뷰 중</span><span class="success">성공</span><span class="failure">실패</span></span></div>
-      <section v-if="selectedArtifact" class="graph-detail" :aria-label="`${selectedArtifact.id} 평가 Critic`">
-        <header class="graph-detail-heading"><div><h2>{{ selectedArtifact.id }} <span>평가 Critic</span></h2><p v-if="selectedArtifact.kind === 'group'">Artifact 그룹 <span class="graph-separator">·</span> 구성원 {{ selectedArtifact.members.length }}개</p><p v-else>{{ selectedArtifact.path }} <span class="graph-separator">·</span> {{ selectedArtifact.type }}</p></div><span class="graph-detail-count">{{ selectedArtifact.total ? `${selectedArtifact.passed} / ${selectedArtifact.total} 통과` : '평가 Critic 없음' }}</span></header>
-        <div v-if="selectedMembers.length" class="graph-members" aria-label="그룹 구성원"><span>구성원</span><button v-for="member in selectedMembers" :key="member.id" type="button" class="graph-member" @click="selectedArtifactId = member.id"><strong>{{ member.id }}</strong><span v-if="member.kind === 'group'">그룹</span><span class="card-status" :class="member.status.toLowerCase()">{{ artifactLabel(member) }}</span></button><p>그룹과 각 구성원의 판정은 개별적으로 집계됩니다.</p></div>
-        <div v-if="containingGroups.length" class="graph-members graph-memberships" aria-label="소속 그룹"><span>소속 그룹</span><button v-for="group in containingGroups" :key="group.id" type="button" class="graph-member" @click="selectedArtifactId = group.id">{{ group.id }}</button></div>
-        <p v-if="!selectedCritics.length" class="graph-basis-note">이 Artifact를 평가하는 Critic이 등록되어 있지 않습니다.</p>
+      <div class="graph-legend"><span>Dependency Artifact <span aria-hidden="true">→</span><span class="sr-only">to</span> Review target</span><span class="graph-state-legend"><span class="requested">Requested</span><span class="running">In review</span><span class="success">Succeeded</span><span class="failure">Failed</span></span></div>
+      <section v-if="selectedArtifact" class="graph-detail" :aria-label="`${selectedArtifact.id} Critics`">
+        <header class="graph-detail-heading"><div><h2>{{ selectedArtifact.id }} <span>Critics</span></h2><p v-if="selectedArtifact.kind === 'group'">Artifact group <span class="graph-separator">·</span> Members: {{ selectedArtifact.members.length }}</p><p v-else>{{ selectedArtifact.path }} <span class="graph-separator">·</span> {{ selectedArtifact.type }}</p></div><span class="graph-detail-count">{{ selectedArtifact.total ? `${selectedArtifact.passed} / ${selectedArtifact.total} passed` : 'No Critics' }}</span></header>
+        <div v-if="selectedMembers.length" class="graph-members" aria-label="Group members"><span>Members</span><button v-for="member in selectedMembers" :key="member.id" type="button" class="graph-member" @click="selectedArtifactId = member.id"><strong>{{ member.id }}</strong><span v-if="member.kind === 'group'">Group</span><span class="card-status" :class="member.status.toLowerCase()">{{ artifactLabel(member) }}</span></button><p>Verdicts for the group and its members are tracked independently.</p></div>
+        <div v-if="containingGroups.length" class="graph-members graph-memberships" aria-label="Member of"><span>Member of</span><button v-for="group in containingGroups" :key="group.id" type="button" class="graph-member" @click="selectedArtifactId = group.id">{{ group.id }}</button></div>
+        <p v-if="!selectedCritics.length" class="graph-basis-note">No Critics are registered to review this Artifact.</p>
         <ul v-else class="graph-critic-list">
           <li v-for="critic in selectedCritics" :key="critic.id">
             <button type="button" class="graph-critic" :class="{ 'not-included': !critic.requestId, selected: critic.requestId && critic.requestId === selectedRequestId }" :disabled="!critic.requestId" @click="openCritic(critic)">
-              <span class="graph-critic-main"><strong>{{ critic.title }}</strong><span>{{ kindLabels[critic.kind] }} <span class="graph-separator">·</span> 평가 {{ critic.target }} <span class="graph-separator">·</span> 참조 {{ critic.deps.length ? critic.deps.join(', ') : '없음' }}</span></span>
-              <span class="graph-critic-status"><span class="card-status" :class="[critic.status?.toLowerCase() ?? 'unreviewed', { blocked: criticBlocked(critic) }]">{{ criticLabel(critic) }}</span><span v-if="critic.requestId" class="graph-open-label">요청 상세 <span aria-hidden="true">↗</span></span></span>
+              <span class="graph-critic-main"><strong>{{ critic.title }}</strong><span>{{ kindLabels[critic.kind] }} <span class="graph-separator">·</span> Target {{ critic.target }} <span class="graph-separator">·</span> Dependencies {{ critic.deps.length ? critic.deps.join(', ') : 'None' }}</span></span>
+              <span class="graph-critic-status"><span class="card-status" :class="[critic.status?.toLowerCase() ?? 'unreviewed', { blocked: criticBlocked(critic) }]">{{ criticLabel(critic) }}</span><span v-if="critic.requestId" class="graph-open-label">Request details <span aria-hidden="true">↗</span></span></span>
             </button>
           </li>
         </ul>

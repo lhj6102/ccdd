@@ -1,2 +1,2 @@
-# 독립 검토 기록
-이 폴더는 UI의 독립 분기를 검증합니다.
+# Independent review record
+This folder validates an independent branch in the UI.

@@ -8,10 +8,10 @@ const GraphView = defineAsyncComponent(() => import('./GraphView.vue'));
 const ValidationView = defineAsyncComponent(() => import('./ValidationView.vue'));
 
 const lanes: { id: MonitorLane; label: string; empty: string }[] = [
-  { id: 'requested', label: '요청', empty: '대기 중인 요청이 없습니다.' },
-  { id: 'running', label: '진행 중', empty: '진행 중인 리뷰가 없습니다.' },
-  { id: 'success', label: '성공', empty: '통과한 리뷰가 여기에 모입니다.' },
-  { id: 'failure', label: '실패', empty: '기준 미충족과 실행 오류를 확인합니다.' },
+  { id: 'requested', label: 'Requested', empty: 'No requests are waiting.' },
+  { id: 'running', label: 'In progress', empty: 'No reviews are in progress.' },
+  { id: 'success', label: 'Succeeded', empty: 'Passed reviews appear here.' },
+  { id: 'failure', label: 'Failed', empty: 'Review unmet criteria and execution errors here.' },
 ];
 const projects = ref<MonitorProject[]>([]), project = ref(''), connected = ref(false), observedAt = ref('');
 type View = 'kanban' | 'graph' | 'validation';
@@ -27,7 +27,7 @@ const selected = ref<{ projectId: string; id: string } | null>(null), detail = r
 const session = ref<MonitorSession | null>(null), sessionError = ref('');
 const issues = computed(() => projects.value.filter(item => item.issue && (!project.value || item.id === project.value)));
 const total = computed(() => Object.values(counts).reduce((sum, value) => sum + value, 0));
-const projectName = (id: string): string => projects.value.find(item => item.id === id)?.name ?? '프로젝트';
+const projectName = (id: string): string => projects.value.find(item => item.id === id)?.name ?? 'Project';
 let boardController: AbortController | undefined, detailController: AbortController | undefined, runsController: AbortController | undefined;
 let boardVersion = 0, detailVersion = 0, runsVersion = 0, runPages = 1, sessionLoading = false, detailLoading = false;
 let pollTimer: ReturnType<typeof setInterval>, clockTimer: ReturnType<typeof setInterval>;
@@ -37,7 +37,7 @@ async function loadSession(): Promise<void> {
   if (sessionLoading || session.value) return;
   sessionLoading = true;
   try { session.value = await api<MonitorSession>('/api/session'); sessionError.value = ''; }
-  catch { sessionError.value = '검토 세션에 연결하지 못했습니다. 잠시 후 다시 연결합니다.'; }
+  catch { sessionError.value = 'Unable to connect to the review session. Retrying shortly.'; }
   finally { sessionLoading = false; }
 }
 async function refreshBoard(force = false): Promise<void> {
@@ -64,7 +64,7 @@ async function refreshBoard(force = false): Promise<void> {
     ensureGraphScope();
   } catch {
     if (version !== boardVersion) return;
-    connected.value = false; boardError.value = '연결을 확인하고 있습니다. 마지막으로 확인한 기록을 표시합니다.';
+    connected.value = false; boardError.value = 'Checking the connection. Showing the last observed records.';
   } finally { if (version === boardVersion) refreshing.value = false; }
 }
 async function refreshRuns(force = false): Promise<void> {
@@ -85,7 +85,7 @@ async function refreshRuns(force = false): Promise<void> {
       resetBoard(); void refreshBoard(true);
     }
   } catch {
-    if (version === runsVersion) runsError.value = '실행 목록을 갱신하지 못했습니다. 선택한 실행은 유지됩니다.';
+    if (version === runsVersion) runsError.value = 'Unable to refresh Runs. The selected Run is still shown.';
   } finally { if (version === runsVersion) runsLoading.value = false; }
 }
 async function refreshDetail(force = false): Promise<void> {
@@ -98,7 +98,7 @@ async function refreshDetail(force = false): Promise<void> {
     if (version !== detailVersion) return;
     detail.value = value; detailError.value = '';
   } catch {
-    if (version === detailVersion) detailError.value = detail.value ? '요청을 갱신하지 못했습니다. 마지막으로 확인한 기록입니다.' : '요청을 불러오지 못했습니다. 다시 시도해 주세요.';
+    if (version === detailVersion) detailError.value = detail.value ? 'Unable to refresh the request. Showing the last observed record.' : 'Unable to load the request. Please try again.';
   } finally { if (version === detailVersion) detailLoading = false; }
 }
 function acceptDetail(value: MonitorDetail): void {
@@ -171,39 +171,39 @@ onUnmounted(() => {
 
 <template>
   <header class="app-header">
-    <a class="brand" href="/" aria-label="CCDD 리뷰 보드 홈"><span class="brand-mark" aria-hidden="true">c</span><strong>CCDD</strong><span class="brand-divider"></span><span>Monitor</span></a>
-    <span class="connection" :class="{ connected }" role="status" :title="observedAt ? `마지막 확인 ${dateLabel(observedAt)}` : undefined"><i></i>{{ connected ? '실시간' : initialLoading ? '연결 중' : '다시 연결 중' }}</span>
+    <a class="brand" href="/" aria-label="CCDD review board home"><span class="brand-mark" aria-hidden="true">c</span><strong>CCDD</strong><span class="brand-divider"></span><span>Monitor</span></a>
+    <span class="connection" :class="{ connected }" role="status" :title="observedAt ? `Last checked ${dateLabel(observedAt)}` : undefined"><i></i>{{ connected ? 'Live' : initialLoading ? 'Connecting' : 'Reconnecting' }}</span>
   </header>
   <main class="board-main">
     <div class="page-heading">
-      <div><p class="eyebrow">REVIEW REQUESTS</p><h1>리뷰 보드</h1><p class="page-caption">{{ project ? projectName(project) : '모든 프로젝트' }}<span v-if="!initialLoading"> · {{ total }}개 요청</span></p></div>
+      <div><p class="eyebrow">REVIEW REQUESTS</p><h1>Review board</h1><p class="page-caption">{{ project ? projectName(project) : 'All projects' }}<span v-if="!initialLoading"> · {{ total }} {{ total === 1 ? 'request' : 'requests' }}</span></p></div>
       <div class="board-controls">
-        <label class="project-picker"><span>프로젝트</span><select v-model="project" @change="changeProject"><option value="">모든 프로젝트</option><option v-for="item in projects" :key="item.id" :value="item.id">{{ item.name }}{{ projects.filter(other => other.name === item.name).length > 1 ? ` · ${item.path}` : '' }}</option></select></label>
-        <label v-if="project && view !== 'validation'" class="project-picker run-picker"><span>실행</span><select v-model="run" @change="changeRun"><option value="" :disabled="view === 'graph'">{{ runsLoading && !runs.length ? '불러오는 중…' : !runs.length ? '저장된 실행 없음' : '모든 실행' }}</option><option v-if="run && !runs.some(item => item.id === run)" :value="run">선택한 실행 · {{ run.slice(0, 8) }}</option><option v-for="item in runs" :key="item.id" :value="item.id">{{ dateLabel(item.createdAt) }} · {{ item.id.slice(0, 8) }}{{ item.scope?.kind === 'critic' ? ' · 선택 Critic' : '' }}</option></select></label>
-        <button class="icon-button refresh-button" aria-label="새로고침" :disabled="refreshing" @click="refresh"><svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="M16.3 8A6.5 6.5 0 1 0 16 13M16.5 3.5V8H12" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" /></svg></button>
+        <label class="project-picker"><span>Project</span><select v-model="project" @change="changeProject"><option value="">All projects</option><option v-for="item in projects" :key="item.id" :value="item.id">{{ item.name }}{{ projects.filter(other => other.name === item.name).length > 1 ? ` · ${item.path}` : '' }}</option></select></label>
+        <label v-if="project && view !== 'validation'" class="project-picker run-picker"><span>Run</span><select v-model="run" @change="changeRun"><option value="" :disabled="view === 'graph'">{{ runsLoading && !runs.length ? 'Loading…' : !runs.length ? 'No saved Runs' : 'All Runs' }}</option><option v-if="run && !runs.some(item => item.id === run)" :value="run">Selected Run · {{ run.slice(0, 8) }}</option><option v-for="item in runs" :key="item.id" :value="item.id">{{ dateLabel(item.createdAt) }} · {{ item.id.slice(0, 8) }}{{ item.scope?.kind === 'critic' ? ' · Selected Critic' : '' }}</option></select></label>
+        <button class="icon-button refresh-button" aria-label="Refresh" :disabled="refreshing" @click="refresh"><svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="M16.3 8A6.5 6.5 0 1 0 16 13M16.5 3.5V8H12" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" /></svg></button>
       </div>
     </div>
-    <div class="view-toolbar"><div class="view-switch" role="group" aria-label="모니터 보기 방식"><button type="button" :aria-pressed="view === 'validation'" @click="changeView('validation')">현재 입력</button><button type="button" :aria-pressed="view === 'kanban'" @click="changeView('kanban')"><svg viewBox="0 0 18 18" aria-hidden="true" fill="none"><rect x="2.5" y="3" width="5" height="12" rx="1" /><rect x="10.5" y="3" width="5" height="8" rx="1" /></svg>Kanban</button><button type="button" :aria-pressed="view === 'graph'" @click="changeView('graph')"><svg viewBox="0 0 18 18" aria-hidden="true" fill="none"><rect x="1.5" y="6" width="5" height="6" rx="1" /><rect x="11.5" y="1.5" width="5" height="5" rx="1" /><rect x="11.5" y="11.5" width="5" height="5" rx="1" /><path d="M6.5 9h2.5V4h2.5M9 9v5h2.5" /></svg>Graph</button></div><button v-if="project && runsMore" type="button" class="text-button" :disabled="runsLoading" @click="loadMoreRuns">이전 실행 더 보기</button></div>
+    <div class="view-toolbar"><div class="view-switch" role="group" aria-label="Monitor view"><button type="button" :aria-pressed="view === 'validation'" @click="changeView('validation')">Current input</button><button type="button" :aria-pressed="view === 'kanban'" @click="changeView('kanban')"><svg viewBox="0 0 18 18" aria-hidden="true" fill="none"><rect x="2.5" y="3" width="5" height="12" rx="1" /><rect x="10.5" y="3" width="5" height="8" rx="1" /></svg>Kanban</button><button type="button" :aria-pressed="view === 'graph'" @click="changeView('graph')"><svg viewBox="0 0 18 18" aria-hidden="true" fill="none"><rect x="1.5" y="6" width="5" height="6" rx="1" /><rect x="11.5" y="1.5" width="5" height="5" rx="1" /><rect x="11.5" y="11.5" width="5" height="5" rx="1" /><path d="M6.5 9h2.5V4h2.5M9 9v5h2.5" /></svg>Graph</button></div><button v-if="project && runsMore" type="button" class="text-button" :disabled="runsLoading" @click="loadMoreRuns">Load earlier Runs</button></div>
     <p v-if="boardError" class="inline-error" role="status">{{ boardError }}</p>
     <p v-if="runsError" class="inline-error" role="status">{{ runsError }}</p>
     <p v-for="issue in issues" :key="issue.id" class="inline-error" role="status">{{ issue.name }}: {{ issue.issue }}</p>
-    <div v-if="!initialLoading && projects.length === 0" class="welcome-note"><strong>아직 접수된 프로젝트가 없습니다.</strong><p>새 리뷰가 접수되면 이곳에서 진행 상황을 볼 수 있습니다.</p></div>
-    <div v-show="view === 'kanban'" class="board" aria-label="리뷰 요청 보드" :aria-busy="refreshing && initialLoading">
+    <div v-if="!initialLoading && projects.length === 0" class="welcome-note"><strong>No projects have been submitted yet.</strong><p>Progress will appear here when a review is submitted.</p></div>
+    <div v-show="view === 'kanban'" class="board" aria-label="Review request board" :aria-busy="refreshing && initialLoading">
       <section v-for="lane in lanes" :key="lane.id" class="board-lane" :class="lane.id" :aria-labelledby="`lane-${lane.id}`">
         <header class="lane-heading"><h2 :id="`lane-${lane.id}`"><i aria-hidden="true"></i>{{ lane.label }}</h2><span class="lane-count">{{ counts[lane.id] }}</span></header>
-        <p v-if="initialLoading" class="lane-empty">불러오는 중…</p>
+        <p v-if="initialLoading" class="lane-empty">Loading…</p>
         <p v-else-if="!rows[lane.id].length" class="lane-empty">{{ lane.empty }}</p>
         <ul v-else class="card-list">
           <li v-for="request in rows[lane.id]" :key="`${request.projectId}/${request.id}`">
             <button class="request-card" :class="{ selected: selected?.id === request.id && selected.projectId === request.projectId }" :aria-label="`${request.title}, ${statusLabel(request)}`" @click="openDetail(request)">
               <span class="card-project">{{ projectName(request.projectId) }}</span><strong class="card-title">{{ request.title }}</strong>
               <span class="card-status" :class="[request.status.toLowerCase(), { blocked: request.blockedByFailure }]">{{ statusLabel(request) }}</span>
-              <span v-if="request.workerState === 'missing' || request.workerState === 'unknown'" class="worker-note">{{ request.workerState === 'missing' ? '작업 프로세스 확인 필요' : '실행 여부 확인 중' }}</span>
-              <span class="card-footer"><span>{{ kindLabels[request.kind] }}</span><span :title="`접수 ${dateLabel(request.createdAt)}`">{{ request.blockedByFailure ? '—' : elapsed(request.createdAt, request.completedAt, now) }}</span></span>
+              <span v-if="request.workerState === 'missing' || request.workerState === 'unknown'" class="worker-note">{{ request.workerState === 'missing' ? 'Worker needs attention' : 'Checking worker status' }}</span>
+              <span class="card-footer"><span>{{ kindLabels[request.kind] }}</span><span :title="`Submitted ${dateLabel(request.createdAt)}`">{{ request.blockedByFailure ? '—' : elapsed(request.createdAt, request.completedAt, now) }}</span></span>
             </button>
           </li>
         </ul>
-        <button v-if="more[lane.id]" class="text-button lane-more" :disabled="refreshing" @click="loadMore(lane.id)">이전 요청 더 보기 <span>{{ rows[lane.id].length }} / {{ counts[lane.id] }}</span></button>
+        <button v-if="more[lane.id]" class="text-button lane-more" :disabled="refreshing" @click="loadMore(lane.id)">Load earlier requests <span>{{ rows[lane.id].length }} / {{ counts[lane.id] }}</span></button>
       </section>
     </div>
     <ValidationView v-if="view === 'validation'" :project-id="project" :session="session" @open-request="openDetail" @session-expired="renewSession" />

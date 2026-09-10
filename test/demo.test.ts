@@ -53,13 +53,13 @@ test('four editable workspaces preserve the graph and real runtime regression wi
       await assert.rejects(access(join(scenario.repoPath,'ccdd.config.json')));
       assert.deepEqual(config.critics.map(c=>[c.target,c.deps]),[['spec',['why']],['tests',['spec']],['implementation',['tests']]]);assert.equal(config.artifacts.why.basis,true);
       assert.deepEqual(config.critics.slice(0,2).map(c=>c.profile),Array(2).fill({kind:'agent',provider:'openai-codex',model:'gpt-6-astra',reasoning:'medium'}));
-      assert.equal(config.configManifest!.types.markdown.agentTools.read.description,'{artifactName}의 문서 내용을 줄 단위로 읽는다.');
-      assert.equal(config.configManifest!.types.code.agentTools.list.description,'{artifactName}의 파일 목록을 조회한다.');
-      assert.equal(config.configManifest!.types.code.agentTools.read.description,'{artifactName}의 소스 텍스트를 줄 단위로 읽는다.');
+      assert.equal(config.configManifest!.types.markdown.agentTools.read.description,'Read document content from {artifactName} by line.');
+      assert.equal(config.configManifest!.types.code.agentTools.list.description,'List files in {artifactName}.');
+      assert.equal(config.configManifest!.types.code.agentTools.read.description,'Read source text from {artifactName} by line.');
       assert.deepEqual(Object.keys(config.configManifest!.types.markdown.humanTools),['open']);
       assert.deepEqual(config.configManifest!.types.markdown.humanTools.open.resultKinds,['launch']);
       await assert.rejects(access(join(scenario.repoPath,'.git')));
-      if(scenario.id==='why-change'){assert.match(await read('why.md'),/최대 2개/);assert.match(await read('spec.md'),/최대 3개/);}
+      if(scenario.id==='why-change'){assert.match(await read('why.md'),/at most 2/);assert.match(await read('spec.md'),/at most 3/);}
       const {NODE_TEST_CONTEXT,...childEnv}=process.env;
       const run=spawnSync(process.execPath,['--test','tests/rank.test.mjs'],{cwd:scenario.repoPath,encoding:'utf8',env:childEnv});
       assert.equal(run.status,scenario.id==='runtime-failure'?1:0,run.stdout+run.stderr);
@@ -72,7 +72,7 @@ test('preparing a demo preserves edited current files and rejects an older manif
   try{
     const manifest=await prepareDemo(options);
     const configPath=join(manifest.scenarios[0].repoPath,'ccdd.config.ts');
-    const edited=(await readFile(configPath,'utf8')).replaceAll('gpt-6-astra','gpt-5.6-sol').replace('문서 내용을 줄 단위로 읽는다','사용자 지정 설명');
+    const edited=(await readFile(configPath,'utf8')).replaceAll('gpt-6-astra','gpt-5.6-sol').replace('Read document content','Custom description');
     await writeFile(configPath,edited);
     assert.deepEqual(await prepareDemo({root}),manifest);
     assert.equal(await readFile(configPath,'utf8'),edited);

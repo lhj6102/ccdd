@@ -72,7 +72,7 @@ test('missing default state home is empty and explicit missing stores do not cre
   const store = createMonitorStore({ stateDirs: [missing] });
   const overview = await store.overview();
   assert.equal(overview.projects.length, 1);
-  assert.match(present(overview.projects[0].issue), /찾을 수 없습니다/);
+  assert.match(present(overview.projects[0].issue), /could not be found/);
   assert.equal(await store.detail(overview.projects[0].id, 'missing'), null);
   assert.equal(await store.request(overview.projects[0].id, 'missing'), null);
   await assert.rejects(fs.stat(missing), { code: 'ENOENT' });
@@ -119,7 +119,7 @@ test('project-scoped counts precede filtering and cross-project pages retain a s
   assert.equal(attention.total, 1);
   assert.equal(attention.projects.length, 2);
   assert.equal(attention.requests[0].id, 'red');
-  for (const query of [{ limit: 0 }, { limit: 201 }, { offset: -1 }, { offset: 1.5 }]) await assert.rejects(store.overview(query), /조회 조건/);
+  for (const query of [{ limit: 0 }, { limit: 201 }, { offset: -1 }, { offset: 1.5 }]) await assert.rejects(store.overview(query), /listing query/);
   assert.deepEqual((await store.overview({ project: 'not-a-project' })).counts, { all: 0, active: 0, attention: 0 });
 });
 
@@ -137,7 +137,7 @@ test('a dead owner is a read-only overlay and never reconciles the persisted req
   const overview = await store.overview();
   assert.equal(overview.requests[0].status, 'RUNNING');
   assert.equal(overview.requests[0].workerState, 'missing');
-  assert.match(present(overview.requests[0].waitingReason), /프로세스가 확인되지 않습니다/);
+  assert.match(present(overview.requests[0].waitingReason), /worker process could not be found/);
   assert.deepEqual(overview.counts, { all: 1, active: 1, attention: 1 });
   assert.equal(present(await store.detail(source.id, request.id)).request.status, 'RUNNING');
   assert.equal(present(await store.request(source.id, request.id)).request.status, 'RUNNING');
@@ -149,35 +149,35 @@ test('Human copy waits are valid without a worker, and claimed/unclaimed waiting
   const f = await fixture(t);
   const waiting = { status: 'WAITING_HUMAN', profile: { kind: 'human' }, startedAt: at(1), notifiedAt: at(2) } as const;
   const unclaimed = f.request('unclaimed', waiting);
-  const claimed = f.request('claimed', { ...waiting, claimedBy: '검토자', claimedAt: at(3) });
+  const claimed = f.request('claimed', { ...waiting, claimedBy: 'Reviewer', claimedAt: at(3) });
   const locked = f.request('locked', { ...waiting, workspace: { ...unclaimed.workspace, mode: 'lock' } });
   await f.state('human', [unclaimed, claimed, locked]);
   const result = await createMonitorStore({ stateHome: f.stateHome }).overview();
   const byId = new Map(result.requests.map(request => [request.id, request]));
   assert.equal(present(byId.get('unclaimed')).workerState, 'idle');
-  assert.match(present(present(byId.get('unclaimed')).waitingReason), /맡을 사람/);
+  assert.match(present(present(byId.get('unclaimed')).waitingReason), /reviewer to claim/);
   assert.equal(present(byId.get('claimed')).workerState, 'idle');
-  assert.match(present(present(byId.get('claimed')).waitingReason), /검토자님이 검토 결과를 제출/);
+  assert.match(present(present(byId.get('claimed')).waitingReason), /Reviewer to submit a review result/);
   assert.equal(present(byId.get('locked')).workerState, 'missing');
 });
 
 test('pending dependencies and failed ancestors produce different bottlenecks and filter counts', async t => {
   const f = await fixture(t);
-  const a = f.request('failure', { runId: 'failed-chain', status: 'RED', title: '요구사항 검토', completedAt: at(2) });
+  const a = f.request('failure', { runId: 'failed-chain', status: 'RED', title: 'Requirements review', completedAt: at(2) });
   const b = f.request('blocked', { runId: a.runId, status: 'BLOCKED', predecessorId: a.id });
   const c = f.request('blocked-transitive', { runId: a.runId, status: 'BLOCKED', predecessorId: b.id });
-  const q = f.request('pending', { title: '사양 검토' });
+  const q = f.request('pending', { title: 'Specification review' });
   const dependent = f.request('dependency', { runId: q.runId, status: 'BLOCKED', predecessorId: q.id });
   await f.state('chains', [a, b, c, q, dependent], { owners: [{ runId: a.runId, pid: 2_147_483_646, identity: 'stale' }] });
   const store = createMonitorStore({ stateHome: f.stateHome });
   const overview = await store.overview();
   assert.deepEqual(overview.counts, { all: 5, active: 2, attention: 3 });
   const byId = new Map(overview.requests.map(request => [request.id, request]));
-  assert.match(present(present(byId.get(c.id)).waitingReason), /요구사항 검토.*기준을 충족하지 못해/);
+  assert.match(present(present(byId.get(c.id)).waitingReason), /Requirements review.*did not meet the criteria/);
   assert.equal(present(byId.get(c.id)).workerState, 'idle');
   assert.equal(present(byId.get(c.id)).blockedByFailure, true);
   assert.equal(present(byId.get(dependent.id)).blockedByFailure, false);
-  assert.match(present(present(byId.get(dependent.id)).waitingReason), /사양 검토.*통과를 기다리고/);
+  assert.match(present(present(byId.get(dependent.id)).waitingReason), /Specification review.*to pass/);
   assert.deepEqual(new Set((await store.overview({ filter: 'active' })).requests.map(request => request.id)), new Set([q.id, dependent.id]));
 });
 
@@ -191,8 +191,8 @@ test('detail retains early lifecycle events beyond 500 records and orders a clai
   ] });
   const detail = present(await createMonitorStore({ stateHome: f.stateHome }).detail(source.id, request.id));
   assert.deepEqual(detail.timeline, [
-    { label: '접수', at: at(2) }, { label: '실행 대기', at: at(2) }, { label: '실행 시작', at: at(3) },
-    { label: '사람 대기', at: at(4) }, { label: '담당', at: at(5) }, { label: '알림 전달', at: at(8) }, { label: '완료', at: at(900) },
+    { label: 'Submitted', at: at(2) }, { label: 'Queued', at: at(2) }, { label: 'Started', at: at(3) },
+    { label: 'Awaiting Human', at: at(4) }, { label: 'Claimed', at: at(5) }, { label: 'Notification delivered', at: at(8) }, { label: 'Completed', at: at(900) },
   ]);
   assert.equal(detail.request.activityAt, at(900));
 });
@@ -207,7 +207,7 @@ test('a dependent review waits for its own queued event instead of inventing an 
     { runId: first.runId, requestId: second.id, type: 'request.queued', at: at(11) },
   ] });
   const detail = present(await createMonitorStore({ stateHome: f.stateHome }).detail(source.id, second.id));
-  assert.deepEqual(detail.timeline, [{ label: '접수', at: at(1) }, { label: '실행 대기', at: at(11) }, { label: '실행 시작', at: at(12) }, { label: '완료', at: at(20) }]);
+  assert.deepEqual(detail.timeline, [{ label: 'Submitted', at: at(1) }, { label: 'Queued', at: at(11) }, { label: 'Started', at: at(12) }, { label: 'Completed', at: at(20) }]);
 });
 
 test('broken database and malformed stored JSON are isolated without leaking raw errors', async t => {
@@ -305,9 +305,9 @@ test('group observation projects saved composition without new dependency edges 
     effect: { type: 'vfx', path: 'effect.vfx' }, preview: { type: 'image', path: 'preview.png' }, published: { type: 'text', path: 'published.md' },
     bundle: { kind: 'group', members: ['effect', 'preview'] },
   }, critics: [
-    { id: 'holistic', title: '전체 검토', target: 'bundle', deps: [], kind: 'human' },
-    { id: 'preview-check', title: 'Preview 검토', target: 'preview', deps: [], kind: 'runtime' },
-    { id: 'publish-check', title: '게시 검토', target: 'published', deps: ['bundle'], kind: 'runtime' },
+    { id: 'holistic', title: 'Overall review', target: 'bundle', deps: [], kind: 'human' },
+    { id: 'preview-check', title: 'Preview review', target: 'preview', deps: [], kind: 'runtime' },
+    { id: 'publish-check', title: 'Publication review', target: 'published', deps: ['bundle'], kind: 'runtime' },
   ] };
   const artifacts = [{ id: 'effect', type: 'vfx', path: 'effect.vfx' }, { id: 'preview', type: 'image', path: 'preview.png' }];
   const requests = graph.critics.map(critic => f.request(critic.id, {
@@ -353,10 +353,10 @@ const graphDefinition = (): GraphDefinition => ({
   version: 1,
   artifacts: { why: { type: 'text', path: 'why.md', basis: true }, spec: { type: 'text', path: 'spec.md' }, tests: { type: 'code', path: 'tests' }, implementation: { type: 'code', path: 'src' }, unused: { type: 'text', path: 'notes.md' } },
   critics: [
-    { id: 'spec-agent', title: 'Spec 목적 확인', kind: 'agent', target: 'spec', deps: ['why'] },
-    { id: 'spec-human', title: 'Spec 사람 확인', kind: 'human', target: 'spec', deps: ['why'] },
-    { id: 'tests', title: 'Tests 확인', kind: 'runtime', target: 'tests', deps: ['spec'] },
-    { id: 'implementation', title: '구현 확인', kind: 'runtime', target: 'implementation', deps: ['spec', 'tests'] },
+    { id: 'spec-agent', title: 'Check Spec intent', kind: 'agent', target: 'spec', deps: ['why'] },
+    { id: 'spec-human', title: 'Human Spec review', kind: 'human', target: 'spec', deps: ['why'] },
+    { id: 'tests', title: 'Check Tests', kind: 'runtime', target: 'tests', deps: ['spec'] },
+    { id: 'implementation', title: 'Check implementation', kind: 'runtime', target: 'implementation', deps: ['spec', 'tests'] },
   ],
 });
 
@@ -416,11 +416,11 @@ test('historical or inconsistent graph metadata remains explicit unavailable wit
   const state = await f.state('history', [historical, invalidSnapshot, invalidTarget], { runData: { mismatch: { snapshotHash: hash, graph }, scope: { snapshotHash: hash, graph } } });
   const store = createMonitorStore({ stateDirs: [state.stateDir] });
   const old = present(await store.graph(state.id, 'legacy'));
-  assert.equal(old.available, false); assert.equal(old.graph, null); assert.match(old.unavailableReason ?? '', /정의가 저장되어 있지/);
+  assert.equal(old.available, false); assert.equal(old.graph, null); assert.match(old.unavailableReason ?? '', /no stored Artifact graph definition/);
   assert.equal(old.requests.length, 1);
   for (const run of ['mismatch', 'scope']) {
     const result = present(await store.graph(state.id, run));
-    assert.equal(result.available, false); assert.equal(result.graph, null); assert.match(result.unavailableReason ?? '', /일치하지/);
+    assert.equal(result.available, false); assert.equal(result.graph, null); assert.match(result.unavailableReason ?? '', /does not match/);
   }
   assert.equal(await store.graph(state.id, 'unknown'), null);
   assert.equal(await store.graph('unknown', 'legacy'), null);

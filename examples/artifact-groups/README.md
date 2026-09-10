@@ -1,16 +1,16 @@
-# 이미지 기본 도구와 Artifact 그룹
+# Default image tool and Artifact groups
 
-`effect` 문서와 `preview` 이미지는 독립 Artifact입니다. `explosion`은 두 ID를 참조하는 그룹이며 경로와 타입이 없습니다. 문서·이미지의 개별 도구를 명시적으로 등록합니다. 이 예제는 실제 VFX 파일이 아닌 정적 샘플입니다.
+The `effect` document and `preview` image are independent Artifacts. `explosion` is a group referencing both IDs, with no path or type. Tools for the document and image are explicitly registered. This example is a static sample, not an actual VFX asset.
 
-- `preview-review`: 이미지 하나를 평가합니다. `view_image_preview`만 제공됩니다.
-- `explosion-review`: 그룹을 평가합니다. `read_effect`와 `view_image_preview`가 제공됩니다. `preview`가 그룹 멤버이면서 `deps`여도 도구는 중복되지 않습니다.
-- `explosion-human`: 그룹의 문서·이미지를 각각 데스크톱 앱에서 연 뒤 판정을 제출합니다.
+- `preview-review`: Evaluates one image. Only `view_image_preview` is supplied.
+- `explosion-review`: Evaluates the group. `read_effect` and `view_image_preview` are supplied. Tools are not duplicated when `preview` is both a member and a dependency.
+- `explosion-human`: Opens the group's document and image in desktop applications, then accepts a submitted verdict.
 
-전체 Run에서 두 그룹 Critic은 명시적인 `deps: ['preview']` 때문에 이미지 평가가 통과해야 시작합니다. 그룹에 속해 있다는 것만으로 선행 평가가 필요해지지는 않습니다. 그룹의 두 Critic이 모두 GREEN이면 `explosion`이 GREEN이며 `effect`는 미평가로 남습니다.
+In a full Run, both group Critics must wait for the image review to pass because of explicit `deps: ['preview']`. Membership alone does not require prior evaluation. Once both group Critics are GREEN, `explosion` is GREEN while `effect` remains unreviewed.
 
-## 실행
+## Running the example
 
-Node 24 이상에서 v2.0.1의 세 패키지를 설치합니다. 다음 다운로드 명령은 GitHub Release 게시 후 사용할 수 있으며, 게시 전에는 아래 로컬 소스 빌드 절차를 사용합니다. 아래 명령은 CCDD 소스 저장소에서 시작하며, 예제를 저장소 밖의 새 프로젝트로 복사합니다. 다운로드에는 이 비공개 저장소에 접근할 수 있는 GitHub CLI 로그인이 필요합니다.
+Install the three v2.0.1 packages on Node 24 or later. The following download command works after GitHub Release publication; before that, use the local source build below. Start in the CCDD source repository and copy the example into a new project outside it. The download command uses a GitHub CLI login with access to the repository.
 
 ```sh
 CCDD_EXAMPLE_ROOT=$(mktemp -d /tmp/ccdd-groups.XXXXXX)
@@ -27,33 +27,33 @@ npm install --ignore-scripts \
   ./vendor/ccdd/ccdd-project-2.0.1.tgz \
   ./vendor/ccdd/ccdd-default-tools-2.0.1.tgz
 
-# Provider 호출 없이 그룹 구성원의 도구 준비 상태를 확인합니다.
+# Check group member tool readiness without calling a Provider.
 npx ccdd tools check --artifact explosion --for agent
-# 실제 이미지 읽기는 개별 Artifact를 지정합니다.
+# Select an individual Artifact for actual image reading.
 npx ccdd tools check --artifact preview --for agent --tool view_image --execute
 
-# 한 Critic만 검토: 이 경우 선행 판정 대기는 생략됩니다.
+# Review one Critic; this legacy command skips waiting for prerequisite verdicts.
 npx ccdd run --copy --critic explosion-review --codex-auth-file "$HOME/.codex/auth.json" --wait
 ```
 
-실제 Agent 리뷰에는 이미지 입력을 지원하는 모델의 인증·접근 권한이 필요합니다. 다른 인증 방식은 본체 README를 참고하세요. 도구 검사는 모델을 호출하지 않습니다. 위 명령의 `--execute` 결과에는 실제 이미지의 base64 블록이 포함됩니다.
+Actual Agent review requires authentication and access to a model supporting image input. See the main README for other authentication methods. Tool checks do not call a model. The `--execute` output above includes actual image blocks in base64.
 
-이미 본체를 설치했다면 첫 `cp`의 원본을 `node_modules/@ccdd/core/examples/artifact-groups`로 바꿉니다. Linux에서는 `shasum` 대신 `sha256sum -c SHA256SUMS`를 사용할 수 있습니다.
+If core is already installed, change the first `cp` source to `node_modules/@ccdd/core/examples/artifact-groups`. On Linux, `sha256sum -c SHA256SUMS` can replace `shasum`.
 
-전체 Run과 Human 검토는 로컬 알림을 등록하여 시작합니다.
+Start a full Run with Human review by registering a local notification:
 
 ```sh
 npx ccdd run --copy --human-inbox --codex-auth-file "$HOME/.codex/auth.json"
 npx ccdd monitor
 ```
 
-모니터에서 프로젝트·Run을 선택하고 Graph의 그룹 노드를 누르면 구성원을 확인할 수 있습니다. Human 요청을 맡은 다음 `{explosion}` 버튼을 눌러 각 멤버의 `open` 도구를 실행하고 판정과 근거를 제출합니다. 기본 데스크톱 열기는 macOS용이며 다른 운영체제에서는 명시적인 실행 프로그램을 등록합니다.
+Select a project and Run in the monitor, then click the group node in Graph to inspect its members. Claim the Human request, click `{explosion}`, execute each member's `open` tool, and submit a verdict with evidence. Default desktop opening targets macOS; explicitly register an executable on other operating systems.
 
-`view_image`는 Pi `read`의 이미지 결과를 재사용합니다. PNG/JPEG/WebP를 파일 내용으로 판별하며 최대 4MiB입니다. GIF/BMP/animated PNG, 텍스트 결과는 실패하며 자동 변환이나 축소는 하지 않습니다. 디렉터리 Artifact에 등록한 경우에는 `{"path":"frames/preview.png"}`처럼 내부 경로를 전달합니다.
+`view_image` reuses Pi `read` image results. It detects PNG/JPEG/WebP from file content, with a 4MiB limit. GIF, BMP, animated PNG, and text results fail; no automatic conversion or resizing occurs. When registered on a directory Artifact, pass an internal path such as `{"path":"frames/preview.png"}`.
 
-## 로컬 소스 빌드 사용
+## Using a local source build
 
-수정한 소스를 시험할 때는 CCDD 저장소에서 세 tarball을 준비합니다.
+To test modified source, prepare three tarballs in the CCDD repository:
 
 ```sh
 npm ci
@@ -64,4 +64,4 @@ npm pack --ignore-scripts --workspace @ccdd/project --pack-destination "$CCDD_LO
 npm pack --ignore-scripts --workspace @ccdd/default-tools --pack-destination "$CCDD_LOCAL_PACKAGES"
 ```
 
-같은 셸에서 위 실행 절차의 새 예제 프로젝트를 만들고, Release 다운로드·설치 대신 `npm install --ignore-scripts "$CCDD_LOCAL_PACKAGES"/*.tgz`를 실행합니다. 이후 도구 검사·리뷰 명령은 같습니다. 커밋에 고정된 소스의 전체 테스트와 별도 설치 검증도 하려면 [로컬 Release 명령](../../docs/releases.md#커밋을-지정하여-로컬에서-배포)의 `--dry-run`을 사용합니다.
+In the same shell, create the new example project from the steps above, then replace Release download and installation with `npm install --ignore-scripts "$CCDD_LOCAL_PACKAGES"/*.tgz`. Subsequent tool checks and review commands are the same. To also run the full test suite and separate installation checks on source fixed to a commit, use `--dry-run` with the [local Release command](../../docs/releases.md#releasing-a-specific-commit-locally).

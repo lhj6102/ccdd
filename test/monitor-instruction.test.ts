@@ -67,12 +67,12 @@ async function component(name: string): Promise<Component> {
   return (await import(`data:text/javascript;base64,${Buffer.from(code).toString('base64')}`)).default;
 }
 const tool = (artifactId: string, operation = 'open', inputSchema: Record<string, unknown> = { type: 'object', additionalProperties: false }): MonitorHumanTool => ({
-  name: `${operation}_${artifactId}`, artifactId, operation, description: `${artifactId}을 데스크톱에서 확인합니다.`, inputSchema,
+  name: `${operation}_${artifactId}`, artifactId, operation, description: `Inspect ${artifactId} in a desktop application.`, inputSchema,
 });
 function detail(claimed: boolean, tools: MonitorHumanTool[] = [tool('spec'), tool('why')]): MonitorDetail {
   return {
     request: { id: 'request', projectId: 'project', status: 'WAITING_HUMAN', kind: 'human', claimedBy: claimed ? 'me' : null, waitingReason: null } as MonitorDetail['request'],
-    profile: { kind: 'human' }, instruction: '{spec}과 {why}을 검토하세요.',
+    profile: { kind: 'human' }, instruction: 'Review {spec} and {why}.',
     artifacts: [{ id: 'spec', type: 'text', path: 'spec.md' }, { id: 'why', type: 'text', path: 'why.md' }],
     tools, artifactPreview: 'tools', human: { canClaim: !claimed, claimedByMe: claimed, canComplete: claimed },
     result: null, error: null, timeline: [],
@@ -87,7 +87,7 @@ test('Human instruction renders only scoped registered refs as buttons and keeps
   const { app } = mount(await component('ArtifactInstruction'), props, host); t.after(() => app.unmount());
   const buttons = all(host).filter(child => child.type === 'button');
   assert.equal(buttons.length, 1); assert.equal(buttons[0].props.type, 'button');
-  assert.equal(buttons[0].props['aria-label'], 'spec의 Human 도구 보기');
+  assert.equal(buttons[0].props['aria-label'], 'Show Human tools for spec');
   buttons[0].props.onClick(); assert.deepEqual(selected, ['spec']);
   assert.match(text(host), /\nwhy \{outside\} \{\{spec\}\} \\\{spec\} <script>bad\(\)<\/script>/);
   assert.equal(all(host).some(child => child.type === 'script'), false);
@@ -106,14 +106,14 @@ test('Human reference browsing exposes matching tools without claiming or execut
   });
   const { app, view } = mount(await component('HumanReview'), props, host); t.after(() => app.unmount());
   view.showArtifactTools('why'); await nextTick();
-  assert.equal(requests.length, 0); assert.match(text(host), /why · 제공된 도구/); assert.match(text(host), /검토를 맡은 후/);
+  assert.equal(requests.length, 0); assert.match(text(host), /why · Available tools/); assert.match(text(host), /Claim the review/);
   assert.equal(all(host).filter(child => child.type === 'button').length, 1, 'Only the existing claim action is available before claim');
-  await matching(host, 'button', '맡아서 검토').props.onClick(); await nextTick();
+  await matching(host, 'button', 'Claim review').props.onClick(); await nextTick();
   assert.deepEqual(requests, ['/api/requests/project/request/claim']);
   view.showArtifactTools('why'); await nextTick();
   assert.equal(requests.length, 1, 'Selecting a reference must not launch its tool');
-  assert.deepEqual(all(host).filter(child => child.type === 'button' && String(child.props.class).includes('artifact-choice')).map(text), ['why · 열기']);
-  matching(host, 'button', 'why · 열기').props.onClick();
+  assert.deepEqual(all(host).filter(child => child.type === 'button' && String(child.props.class).includes('artifact-choice')).map(text), ['why · Open']);
+  matching(host, 'button', 'why · Open').props.onClick();
   await new Promise(resolve => setImmediate(resolve)); await nextTick();
   assert.deepEqual(requests, ['/api/requests/project/request/claim', '/api/requests/project/request/tools/open_why']);
 });
@@ -126,14 +126,14 @@ test('refocusing the same Human Artifact preserves selected custom tool argument
   const textareas = all(host).filter(child => child.type === 'textarea');
   assert.equal(textareas.length, 3);
   textareas[0].props['onUpdate:modelValue']('{"camera":{"frame":17}}');
-  textareas[1].props['onUpdate:modelValue']('검토 중인 요약');
-  textareas[2].props['onUpdate:modelValue']('확인한 근거'); await nextTick();
+  textareas[1].props['onUpdate:modelValue']('Draft review summary');
+  textareas[2].props['onUpdate:modelValue']('Observed evidence'); await nextTick();
   view.showArtifactTools('spec'); await nextTick(); view.showArtifactTools('spec'); await nextTick();
-  assert.deepEqual(all(host).filter(child => child.type === 'textarea').map(child => child.value), ['{"camera":{"frame":17}}', '검토 중인 요약', '확인한 근거']);
+  assert.deepEqual(all(host).filter(child => child.type === 'textarea').map(child => child.value), ['{"camera":{"frame":17}}', 'Draft review summary', 'Observed evidence']);
   assert.equal(calls, 0);
   assert.equal(matching(host, 'button', 'spec · preview').props['aria-pressed'], true);
   view.showArtifactTools('outside'); await nextTick();
-  assert.match(text(host), /spec · 제공된 도구/); assert.equal(calls, 0);
+  assert.match(text(host), /spec · Available tools/); assert.equal(calls, 0);
 });
 
 test('Human group references expose deduplicated scoped member tools and preserve claim gating', async t => {
@@ -141,7 +141,7 @@ test('Human group references expose deduplicated scoped member tools and preserv
   const artifactGroups = [{ id: 'documents', members: ['spec', 'why'] }, { id: 'bundle', members: ['documents', 'spec'] }];
   const instructionHost = node('root'), selected: string[] = [];
   const instruction = mount(await component('ArtifactInstruction'), {
-    instruction: '검토: {bundle} 및 {outside}', artifacts: [{ id: 'spec' }, { id: 'why' }], artifactGroups,
+    instruction: 'Review: {bundle} and {outside}', artifacts: [{ id: 'spec' }, { id: 'why' }], artifactGroups,
     tools: [tool('spec'), tool('why'), tool('outside')], active: true, onArtifact: (id: string) => selected.push(id),
   }, instructionHost);
   t.after(() => instruction.app.unmount());
@@ -160,14 +160,14 @@ test('Human group references expose deduplicated scoped member tools and preserv
   });
   const { app, view } = mount(await component('HumanReview'), props, host); t.after(() => app.unmount());
   view.showArtifactTools('bundle'); await nextTick();
-  assert.equal(requests.length, 0); assert.match(text(host), /bundle · 제공된 도구/);
-  assert.match(text(host), /검토를 맡은 후/); assert.doesNotMatch(text(host), /outside/);
-  await matching(host, 'button', '맡아서 검토').props.onClick(); await nextTick();
+  assert.equal(requests.length, 0); assert.match(text(host), /bundle · Available tools/);
+  assert.match(text(host), /Claim the review/); assert.doesNotMatch(text(host), /outside/);
+  await matching(host, 'button', 'Claim review').props.onClick(); await nextTick();
   view.showArtifactTools('bundle'); await nextTick();
   const buttons = all(host).filter(child => child.type === 'button' && String(child.props.class).includes('artifact-choice'));
-  assert.deepEqual(buttons.map(text), ['spec · 열기', 'why · 열기']);
+  assert.deepEqual(buttons.map(text), ['spec · Open', 'why · Open']);
   assert.equal(requests.length, 1, 'Choosing a group only focuses the provided tools');
-  matching(host, 'button', 'why · 열기').props.onClick();
+  matching(host, 'button', 'why · Open').props.onClick();
   await new Promise(resolve => setImmediate(resolve)); await nextTick();
   assert.deepEqual(requests, ['/api/requests/project/request/claim', '/api/requests/project/request/tools/open_why']);
 });
