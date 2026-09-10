@@ -90,7 +90,15 @@ test('later revisions download only missing file contents and keep old snapshots
   assert.equal(new Set(nodes.map(info => info.ino)).size, 3, 'Snapshots and blob caches must not share mutable hard links.');
 });
 
-test('POSIX transfer preserves literal colon and backslash names and symlink targets', { skip: process.platform === 'win32' }, async t => {
+test('transfer enforces native filename rules and preserves supported names and symlink targets', async t => {
+  if (process.platform === 'win32') {
+    for (const name of ['C:\\escape', 'C:/escape', '\\\\server\\share', 'file:stream', '..\\escape']) {
+      const entry: WorkspaceTransferEntry = { path: name, type: 'file', executable: 0, size: 0, content: createHash('sha256').digest('hex') };
+      assert.throws(() => validateWorkspaceManifest(manifestFor([entry])), { code: 'WORKSPACE_TRANSFER_INVALID' });
+      assert.throws(() => validateWorkspaceManifest(manifestFor([{ path: 'link', type: 'symlink', target: name }])), { code: 'WORKSPACE_TRANSFER_INVALID' });
+    }
+    return;
+  }
   const data = await fixture(t);
   await mkdir(join(data.repoPath, 'build:2026'));
   await writeFile(join(data.repoPath, 'build:2026', 'mesh\\preview.txt'), 'Preview content');
@@ -103,14 +111,6 @@ test('POSIX transfer preserves literal colon and backslash names and symlink tar
   assert.equal(await readFile(join(result.descriptor.path, 'preview:link'), 'utf8'), 'Preview content');
   assert.equal(await readlink(join(result.descriptor.path, 'preview:link')), 'build:2026/mesh\\preview.txt');
   assert.equal(await readFile(join(result.descriptor.path, 'C:\\asset.txt'), 'utf8'), 'A literal POSIX filename');
-});
-
-test('Windows transfer rejects drive, UNC, alternate-stream and backslash traversal paths', { skip: process.platform !== 'win32' }, () => {
-  for (const name of ['C:\\escape', 'C:/escape', '\\\\server\\share', 'file:stream', '..\\escape']) {
-    const entry: WorkspaceTransferEntry = { path: name, type: 'file', executable: 0, size: 0, content: createHash('sha256').digest('hex') };
-    assert.throws(() => validateWorkspaceManifest(manifestFor([entry])), { code: 'WORKSPACE_TRANSFER_INVALID' });
-    assert.throws(() => validateWorkspaceManifest(manifestFor([{ path: 'link', type: 'symlink', target: name }])), { code: 'WORKSPACE_TRANSFER_INVALID' });
-  }
 });
 
 test('duplicate contents within a snapshot and executable-only edits reuse the same verified blob', async t => {

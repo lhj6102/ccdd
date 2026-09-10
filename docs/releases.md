@@ -1,6 +1,6 @@
 # Release installation and distribution
 
-CCDD supports GitHub Release tarballs and publication to the public npm registry. Both release commands build and verify a specified commit locally without GitHub Actions. npm installation is available for versions whose initial publication has completed. See [getting started](getting-started.md) for the current installation flow, the [v2.0.2 release notes](releases/v2.0.2.md) for this release, and the [v2.0.1 release notes](releases/v2.0.1.md) for package renaming and migration.
+CCDD supports GitHub Release tarballs and publication to the public npm registry. Both release commands build and verify a specified commit locally without GitHub Actions. npm installation is available for versions whose initial publication has completed. See [getting started](getting-started.md) for the current installation flow, the [v3.0.0 release notes](releases/v3.0.0.md) for this release, and the [v2.0.1 release notes](releases/v2.0.1.md) for package renaming and migration.
 
 ## Distribution files
 
@@ -14,7 +14,7 @@ Since v2.0.0, the definition-only core and Project execution package are separat
 | `verification.json` | Source and package installation verification record for the release |
 | `SHA256SUMS` | SHA-256 checksums of the distribution files |
 
-GitHub's separate Source code archives contain source; the `.tgz` files above are built installation tarballs. Projects using the default tool library install core, Project, and default tools from the same Release. Project and default-tools 2.x target core `>=2.0.0 <3`.
+GitHub's separate Source code archives contain source; the `.tgz` files above are built installation tarballs. Projects using the default tool library install core, Project, and default tools from the same Release. Project and default-tools 3.x target core `>=3.0.0 <4`; historical 2.x releases target core `>=2.0.0 <3`.
 
 ## Upgrading
 
@@ -35,8 +35,8 @@ In the CCDD source repository, specify the **40-character commit SHA** to releas
 
 ```sh
 # Replace COMMIT_SHA with the 40-character commit SHA to release.
-npm run release -- --commit COMMIT_SHA --dry-run --output-dir /tmp/ccdd-v2.0.2-check
-npm run release -- --commit COMMIT_SHA --output-dir /tmp/ccdd-v2.0.2-release
+npm run release -- --commit COMMIT_SHA --dry-run --output-dir /tmp/ccdd-v3.0.0-check
+npm run release -- --commit COMMIT_SHA --output-dir /tmp/ccdd-v3.0.0-release
 ```
 
 These commands can be run independently. `--dry-run` performs all verification and creates distribution files without requiring GitHub authentication. Run the command without `--dry-run` to publish; it verifies the commit again. `--output-dir` is optional; when supplied, it must name an empty directory outside the repository. Use previously unused paths for the examples above as well.
@@ -45,7 +45,7 @@ The command creates a temporary clone and checks out the specified commit in det
 
 An already published version is skipped unchanged. A tag pointing to another commit is rejected and never moved. If a Draft for the same commit remains, rerun the command to retry publication. To change published distribution files, increment all three package versions together and release a new commit.
 
-Keep the core, Project, and default-tools `package.json` versions and lockfile versions aligned, and include `docs/releases/v<version>.md` in the commit. That document becomes the Release body. v2.0.2 uses [these release notes](releases/v2.0.2.md).
+Keep the core, Project, and default-tools `package.json` versions and lockfile versions aligned, and include `docs/releases/v<version>.md` in the commit. That document becomes the Release body. v3.0.0 uses [these release notes](releases/v3.0.0.md).
 
 Build and verification run on the computer executing the command, without GitHub Actions. The GitHub release command above does not publish to npm. Neither distribution path calls an external LLM, so neither consumes Actions execution time or Provider usage; both require local execution time and dependency downloads.
 
