@@ -1,6 +1,6 @@
 import test, { type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rename, rm, writeFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { gzipSync } from 'node:zlib';
 import { tmpdir } from 'node:os';
@@ -10,6 +10,7 @@ import { join } from 'node:path';
 const driverUrl = new URL('../../scripts/release.mjs', import.meta.url);
 const { validateVersions, compareVersions, planRelease, publishRelease, createGitHubClient, validateAssets, readReleaseMetadata } = await import(driverUrl.href);
 const { publishNpmRelease, createNpmClient } = await import(new URL('../../scripts/npm-release.mjs', import.meta.url).href);
+const { publishNpmAndAnnounce, publishNpmAnnouncement } = await import(new URL('../../scripts/npm-announcement.mjs', import.meta.url).href);
 const sha = 'a'.repeat(40), otherSha = 'b'.repeat(40), coreName = '@ccdd/core', toolsName = '@ccdd/default-tools';
 const hash = (bytes: Buffer | string) => createHash('sha256').update(bytes).digest('hex');
 const metadata = { version: '1.0.0', tag: 'v1.0.0', coreFile: 'ccdd-core-1.0.0.tgz', toolsFile: 'ccdd-default-tools-1.0.0.tgz' };
@@ -145,14 +146,156 @@ test('npm metadata errors and cancellation cannot masquerade as an unpublished v
     await assert.rejects(client.version(coreName, '1.0.0'), new RegExp(`HTTP ${status}`));
   }
   const missing = createNpmClient({}, async (url: string, options: { headers?: unknown }) => {
-    assert.equal(url, 'https://registry.npmjs.org/%40ccdd%2Fcore/1.0.0');
-    assert.equal(options.headers, undefined);
+    assert.match(url, /^https:\/\/registry.npmjs.org\/%40ccdd%2Fcore\?release_check=\d+$/);
+    assert.deepEqual(options.headers, { 'Cache-Control': 'no-cache' });
     return new Response('', { status: 404 });
   });
   assert.equal(await missing.version(coreName, '1.0.0'), null);
   const cancelled = createNpmClient({ signal: AbortSignal.abort(new Error('Cancelled')) }, async () => assert.fail('Cancelled lookup must not fetch'));
   await assert.rejects(cancelled.version(coreName, '1.0.0'), /Cancelled/);
   await assert.rejects(cancelled.publish('unused.tgz', Buffer.from('unused'), { dryRun: true }), /Cancelled/);
+});
+
+test('npm confirmation reads full metadata and waits for a newly published version', async () => {
+  let calls = 0;
+  const version = { name: coreName, version: '1.0.0', dist: { integrity: 'sha512-fixture' } };
+  const client = createNpmClient({}, async () => Response.json({ versions: ++calls === 1 ? {} : { '1.0.0': version } }));
+  assert.deepEqual(await client.confirm(coreName, '1.0.0'), version);
+  assert.equal(calls, 2);
+  const controller = new AbortController();
+  const cancelled = createNpmClient({ signal: controller.signal }, async () => {
+    controller.abort(new Error('Stop waiting for npm'));
+    return Response.json({ versions: {} });
+  });
+  await assert.rejects(cancelled.confirm(coreName, '1.0.0'), /abort/i);
+});
+
+function announcementApi() {
+  const events: string[] = [];
+  let tag: string | null = null;
+  let release: Record<string, unknown> | null = null;
+  let latest: Record<string, unknown> | null = null;
+  const api = {
+    events,
+    failPublish: false,
+    concurrentLatest: null as Record<string, unknown> | null,
+    downloads: [] as unknown[],
+    setTag(value: string) { tag = value; },
+    setLatest(value: Record<string, unknown>) { latest = value; },
+    getRelease() { return release; },
+    getLatest() { return latest; },
+    async optional(path: string): Promise<unknown> {
+      events.push(`GET ${path}`);
+      if (path === 'git/ref/tags/v1.0.0') return tag ? { object: { type: 'commit', sha: tag } } : null;
+      if (path === 'releases/tags/v1.0.0') return release;
+      if (path === 'releases/latest') return latest;
+      assert.fail(`Unexpected GET ${path}`);
+    },
+    async request(method: string, path: string, body?: Record<string, unknown>): Promise<unknown> {
+      events.push(`${method} ${path}`);
+      if (method === 'GET' && path === `commits/${sha}`) return { sha };
+      if (method === 'GET' && path === 'releases/1/assets?per_page=1') return api.downloads;
+      if (method === 'POST' && path === 'git/refs') { assert.equal(body?.sha, sha); tag = sha; return {}; }
+      if (method === 'POST' && path === 'releases' || method === 'PATCH' && path === 'releases/1') {
+        if (api.failPublish) throw new Error('GitHub unavailable');
+        release = { id: 1, html_url: 'https://github.com/lhj6102/ccdd/releases/tag/v1.0.0', ...body };
+        if (api.concurrentLatest) latest = api.concurrentLatest;
+        if (body?.make_latest === 'legacy' && (!latest || compareVersions(String(latest.tag_name).slice(1), String(body.tag_name).slice(1)) <= 0)) latest = release;
+        if (body?.make_latest === 'true') latest = release;
+        return release;
+      }
+      assert.fail(`Unexpected ${method} ${path}`);
+    },
+  };
+  return api;
+}
+
+test('successful npm publication automatically creates an npm announcement and retries without writes', async t => {
+  const data = await npmFixture(t), api = announcementApi();
+  const result = await publishNpmAndAnnounce({ ...data, api });
+  assert.equal(result.announcement.status, 'ANNOUNCED');
+  assert.equal(data.published.size, 3);
+  const release = api.getRelease()!;
+  assert.equal(release.target_commitish, sha);
+  assert.equal(release.make_latest, 'legacy');
+  assert.equal(release.draft, false);
+  assert.match(String(release.body), /npm install --ignore-scripts @ccdd\/core@1\.0\.0 @ccdd\/project@1\.0\.0 @ccdd\/default-tools@1\.0\.0/);
+  assert.match(String(release.body), new RegExp(`/blob/${sha}/docs/releases/v1.0.0.md`));
+  assert.equal(api.events.some(event => event.includes('uploads') || event.startsWith('DELETE')), false);
+  api.events.length = 0; data.events.length = 0;
+  assert.equal((await publishNpmAndAnnounce({ ...data, api })).announcement.status, 'ALREADY_ANNOUNCED');
+  assert.ok([...api.events, ...data.events].every(event => event.startsWith('GET')));
+});
+
+test('dry runs, partial npm publication and tag conflicts cannot create an announcement', async t => {
+  const data = await npmFixture(t), api = announcementApi();
+  await publishNpmAndAnnounce({ ...data, api, dryRun: true });
+  assert.equal(api.events.length, 0);
+  assert.equal(data.published.size, 0);
+  await assert.rejects(publishNpmAndAnnounce({ ...data, api, announceOnly: true }), /All three matching/);
+  assert.ok(api.events.every(event => event.startsWith('GET')));
+  api.setTag(otherSha); data.events.length = 0;
+  await assert.rejects(publishNpmAndAnnounce({ ...data, api }), /different commit/);
+  assert.deepEqual(data.events, []);
+  api.setTag(sha);
+  const publish = data.client.publish;
+  data.client.publish = async (...args) => {
+    if (args[0] === data.metadata.projectFile) throw new Error('Interrupted npm');
+    return publish(...args);
+  };
+  await assert.rejects(publishNpmAndAnnounce({ ...data, api }), /Interrupted npm/);
+  assert.equal(data.published.size, 1);
+  assert.ok(api.events.every(event => event.startsWith('GET')));
+});
+
+test('announcement-only recovery verifies retained bytes and never republishes npm packages', async t => {
+  const data = await npmFixture(t), api = announcementApi();
+  const directory = join(data.root, "assets $release `printf unused` 'quoted'");
+  await rename(data.assetsDir, directory);
+  data.assetsDir = directory;
+  api.failPublish = true;
+  await assert.rejects(publishNpmAndAnnounce({ ...data, api }), (error: unknown) => {
+    assert.ok(error instanceof Error);
+    assert.match(error.message, /GitHub unavailable.*\nRetry.*--announce-only --assets-dir/);
+    assert.ok(error.message.endsWith("assets $release `printf unused` '\\''quoted'\\'''"));
+    return true;
+  });
+  assert.equal(data.published.size, 3);
+  data.events.length = 0; api.failPublish = false;
+  await publishNpmAndAnnounce({ ...data, api, announceOnly: true });
+  assert.ok(data.events.every(event => event.startsWith('GET')));
+  data.published.set(toolsName, { name: toolsName, version: '1.0.0', dist: { integrity: 'sha512-conflict' } });
+  api.events.length = 0;
+  await assert.rejects(publishNpmAnnouncement({ ...data, api }), /different bytes/);
+  assert.equal(api.events.length, 0);
+  await writeFile(join(data.assetsDir, data.metadata.coreFile), 'tampered');
+  await assert.rejects(publishNpmAnnouncement({ ...data, api }), /SHA-256/);
+});
+
+test('announcement updates preserve newer Latest releases and refuse to delete existing downloads', async t => {
+  const data = await npmFixture(t), api = announcementApi();
+  await publishNpmAndAnnounce({ ...data, api });
+  api.getRelease()!.body = 'Stale installation instructions';
+  api.setLatest({ id: 2, tag_name: 'v2.0.0' });
+  await publishNpmAnnouncement({ ...data, api });
+  assert.equal(api.getRelease()!.make_latest, 'legacy');
+  assert.equal(api.getLatest()!.tag_name, 'v2.0.0');
+  api.downloads.push({ id: 100, name: 'historical.tgz' });
+  api.events.length = 0;
+  await assert.rejects(publishNpmAnnouncement({ ...data, api }), /download assets/);
+  assert.ok(api.events.every(event => event.startsWith('GET')));
+  api.downloads.length = 0; api.setTag(otherSha);
+  await assert.rejects(publishNpmAnnouncement({ ...data, api }), /different commit/);
+});
+
+test('an older announcement retry delegates Latest selection when a newer release publishes concurrently', async t => {
+  const data = await npmFixture(t), api = announcementApi();
+  await publishNpmAndAnnounce({ ...data, api });
+  api.getRelease()!.body = 'Needs an announcement refresh';
+  api.concurrentLatest = { id: 2, tag_name: 'v2.0.0' };
+  await publishNpmAnnouncement({ ...data, api });
+  assert.equal(api.getRelease()!.make_latest, 'legacy', 'GitHub must choose Latest on the server rather than receiving a stale forced update');
+  assert.equal(api.getLatest()!.tag_name, 'v2.0.0');
 });
 
 function fakeApi(options: { published?: boolean; draft?: boolean; target?: string; tagged?: string; annotated?: boolean; failUpload?: boolean; corruptDownload?: boolean } = {}) {

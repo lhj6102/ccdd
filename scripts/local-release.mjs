@@ -6,31 +6,37 @@ import { tmpdir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
-import { createGitHubClient, planRelease, publishRelease, readReleaseMetadata, validateAssets } from './release.mjs';
-import { createNpmClient, publishNpmRelease } from './npm-release.mjs';
+import { createGitHubClient, readReleaseMetadata, validateAssets } from './release.mjs';
+import { createNpmClient } from './npm-release.mjs';
+import { planNpmAnnouncement, publishNpmAndAnnounce } from './npm-announcement.mjs';
 import { checkNpmEnvironment } from './check-npm.mjs';
 
 const exec = promisify(execFile);
 const commitPattern = /^[a-f0-9]{40}(?![\s\S])/;
 const within = (parent, child) => { const path = relative(parent, child); return path === '' || (!path.startsWith(`..${sep}`) && path !== '..' && !isAbsolute(path)); };
-const usage = 'npm run release -- --commit <40-character SHA> [--npm] [--dry-run] [--output-dir <empty directory outside the repo>]';
+const usage = 'npm run release -- --commit <40-character SHA> [--npm] [--dry-run] [--output-dir <empty directory outside the repo>]\nAnnouncement recovery: npm run release:npm -- --commit <SHA> --announce-only --assets-dir <verified release directory>';
 
 export function parseArguments(argv) {
   const options = { dryRun: false, help: false, npm: false }, seen = new Set();
   for (let index = 0; index < argv.length; index++) {
     const key = argv[index];
-    assert.ok(['--commit', '--dry-run', '--output-dir', '--help', '--npm'].includes(key) && !seen.has(key), `Unknown or repeated argument: ${key}`);
+    assert.ok(['--commit', '--dry-run', '--output-dir', '--help', '--npm', '--announce-only', '--assets-dir'].includes(key) && !seen.has(key), `Unknown or repeated argument: ${key}`);
     seen.add(key);
     if (key === '--dry-run') options.dryRun = true;
     else if (key === '--npm') options.npm = true;
+    else if (key === '--announce-only') options.announceOnly = true;
     else if (key === '--help') options.help = true;
     else {
       const value = argv[++index];
       assert.ok(value && !value.startsWith('--'), `${key} requires a value`);
-      options[key === '--commit' ? 'commit' : 'outputDir'] = value;
+      options[{ '--commit': 'commit', '--output-dir': 'outputDir', '--assets-dir': 'assetsDir' }[key]] = value;
     }
   }
   if (!options.help) assert.ok(typeof options.commit === 'string' && commitPattern.test(options.commit), '--commit requires an exact 40-character commit SHA');
+  if (options.announceOnly || options.assetsDir) {
+    assert.ok(options.announceOnly && options.assetsDir && options.npm && !options.dryRun && !options.outputDir,
+      '--announce-only requires --npm and --assets-dir, without --dry-run or --output-dir');
+  }
   return options;
 }
 
@@ -109,6 +115,7 @@ async function runStep(program, args, { cwd, env, logFile, timeout = 600_000, si
 
 export async function releaseLocally(options, { cwd = process.cwd(), environment = process.env, progress = console.log } = {}) {
   assert.ok(Number(process.versions.node.split('.')[0]) >= 24, 'Local releases require Node.js 24 or later');
+  assert.ok(options.npm || options.dryRun, 'GitHub package downloads have moved to npm. Use npm run release:npm -- --commit SHA to publish packages and their announcement; use --dry-run for local tarballs only.');
   const sourceRoot = await realpath((await exec('git', ['rev-parse', '--show-toplevel'], { cwd, encoding: 'utf8' })).stdout.trim());
   const scratch = await mkdtemp(join(tmpdir(), 'ccdd-release-checkout-'));
   const buildEnv = buildEnvironment(scratch, environment), controller = new AbortController();
@@ -122,21 +129,25 @@ export async function releaseLocally(options, { cwd = process.cwd(), environment
     const root = await createSnapshot({ sourceRoot, commit: options.commit, scratch, environment: buildEnv, signal: controller.signal });
     const metadata = await readReleaseMetadata(root);
     let api, repository;
-    if (options.npm && !options.dryRun) {
+    if (options.npm && !options.dryRun && !options.announceOnly) {
       const preflight = await checkNpmEnvironment({ environment });
       assert.equal(preflight.status, 'READY', `npm environment is not ready: ${preflight.checks.filter(check => !check.ok).map(check => `${check.id}: ${check.detail}`).join('; ')}. Run npm run release:npm:check.`);
     }
-    if (!options.dryRun && !options.npm) {
+    if (!options.dryRun) {
       const remote = (await exec('git', ['remote', 'get-url', 'origin'], { cwd: sourceRoot, encoding: 'utf8', signal: controller.signal })).stdout.trim();
       repository = repositoryFromRemote(remote);
       let token;
       try { token = (await exec('gh', ['auth', 'token', '--hostname', 'github.com'], { cwd: sourceRoot, env: environment, encoding: 'utf8', timeout: 30_000, signal: controller.signal })).stdout.trim(); }
       catch { throw new Error('GitHub authentication is required. Run gh auth login, or use --dry-run.'); }
       api = createGitHubClient({ repository, token, signal: controller.signal });
-      const remoteCommit = await api.request('GET', `commits/${options.commit}`);
-      assert.equal(remoteCommit.sha, options.commit, 'Push the requested commit to origin before publishing');
-      const plan = await planRelease({ root, repository, sourceCommit: options.commit, api });
-      if (plan.already_published) return { status: 'ALREADY_PUBLISHED', version: metadata.version, sourceCommit: options.commit, url: plan.url };
+      await planNpmAnnouncement({ metadata, sourceCommit: options.commit, api });
+    }
+    if (options.announceOnly) {
+      const assetsDir = await realpath(options.assetsDir);
+      progress(`Confirming published npm packages and updating ${metadata.tag} from retained verification files`);
+      const result = await publishNpmAndAnnounce({ assetsDir, metadata, sourceCommit: options.commit, repository,
+        client: createNpmClient({ signal: controller.signal }), api, announceOnly: true });
+      return { ...result, version: metadata.version, sourceCommit: options.commit, assetsDir };
     }
     reportDirectory = await mkdtemp(join(tmpdir(), `ccdd-release-${metadata.version}-`));
     const outputPath = await resolveOutputDirectory(options.outputDir ?? join(reportDirectory, 'assets'), [sourceRoot, await realpath(scratch)]);
@@ -160,13 +171,10 @@ export async function releaseLocally(options, { cwd = process.cwd(), environment
     if (options.npm) {
       progress(`${options.dryRun ? 'Checking' : 'Publishing'} npm packages from verified commit ${options.commit}`);
       const client = createNpmClient({ environment: options.dryRun ? buildEnv : environment, signal: controller.signal });
-      const result = await publishNpmRelease({ assetsDir, metadata, sourceCommit: options.commit, client, dryRun: options.dryRun });
+      const result = await publishNpmAndAnnounce({ assetsDir, metadata, sourceCommit: options.commit, repository, client, api, dryRun: options.dryRun });
       return { ...result, version: metadata.version, sourceCommit: options.commit, assetsDir, logs: reportDirectory };
     }
-    if (options.dryRun) return { status: 'VERIFIED', version: metadata.version, sourceCommit: options.commit, assetsDir, logs: reportDirectory, published: false };
-    progress(`Publishing ${repository} ${metadata.tag} from verified commit ${options.commit}`);
-    const published = await publishRelease({ root, repository, sourceCommit: options.commit, assetsDir, api });
-    return { status: published.published ? 'PUBLISHED' : 'ALREADY_PUBLISHED', version: metadata.version, sourceCommit: options.commit, assetsDir, logs: reportDirectory, ...published };
+    return { status: 'VERIFIED', version: metadata.version, sourceCommit: options.commit, assetsDir, logs: reportDirectory, published: false };
   } catch (error) {
     if (reportDirectory) progress(`Release stopped. Local logs: ${reportDirectory}`);
     throw error;

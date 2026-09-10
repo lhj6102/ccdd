@@ -113,7 +113,7 @@ export function createGitHubClient({ repository, token, apiUrl = 'https://api.gi
   };
 }
 
-async function tagCommit(api, tag) {
+export async function tagCommit(api, tag) {
   const ref = await api.optional(`git/ref/tags/${encodeURIComponent(tag)}`);
   if (!ref) return null;
   let object = ref.object;

@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
 import { packedManifest, validateAssets } from './release.mjs';
 
 const registry = 'https://registry.npmjs.org/';
@@ -14,12 +15,23 @@ export function createNpmClient({ environment = process.env, signal } = {}, fetc
     async version(name, version) {
       signal?.throwIfAborted();
       // Public package metadata requires no credentials. Never forward npm auth to fetch.
-      const response = await fetchImpl(`${registry}${encodeURIComponent(name)}/${encodeURIComponent(version)}`, {
+      // The version endpoint can retain a cached 404 after publication. Read a fresh packument.
+      const response = await fetchImpl(`${registry}${encodeURIComponent(name)}?release_check=${Date.now()}`, {
+        headers: { 'Cache-Control': 'no-cache' },
         signal: AbortSignal.any([AbortSignal.timeout(30_000), ...(signal ? [signal] : [])]),
       });
       if (response.status === 404) return null;
       assert.ok(response.ok, `npm metadata lookup failed for ${name}: HTTP ${response.status}`);
-      return response.json();
+      const metadata = await response.json();
+      return metadata.versions?.[version] ?? null;
+    },
+    async confirm(name, version) {
+      for (let attempt = 0; attempt < 30; attempt++) {
+        const published = await this.version(name, version);
+        if (published) return published;
+        if (attempt < 29) await delay(1_000, undefined, { signal });
+      }
+      return null;
     },
     async publish(file, bytes, { dryRun }) {
       signal?.throwIfAborted();
@@ -75,7 +87,7 @@ export async function publishNpmRelease({ assetsDir, metadata, sourceCommit, cli
   for (const pkg of plan) {
     if (!pkg.alreadyPublished) {
       await client.publish(pkg.file, pkg.bytes, { dryRun });
-      if (!dryRun) matchesPublished(await client.version(pkg.name, metadata.version), pkg.name, metadata.version, pkg.bytes);
+      if (!dryRun) matchesPublished(await (client.confirm ?? client.version).call(client, pkg.name, metadata.version), pkg.name, metadata.version, pkg.bytes);
     }
     packages.push({ name: pkg.name, status: pkg.alreadyPublished ? 'ALREADY_PUBLISHED' : dryRun ? 'VERIFIED' : 'PUBLISHED' });
   }

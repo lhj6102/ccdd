@@ -8,7 +8,7 @@ import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 
 const driverUrl = new URL('../../scripts/local-release.mjs', import.meta.url);
-const { parseArguments, repositoryFromRemote, buildEnvironment, createSnapshot, resolveOutputDirectory } = await import(driverUrl.href);
+const { parseArguments, repositoryFromRemote, buildEnvironment, createSnapshot, resolveOutputDirectory, releaseLocally } = await import(driverUrl.href);
 const exec = promisify(execFile), commit = 'a'.repeat(40);
 
 test('release CLI entrypoints still execute when invoked through symlinks', async t => {
@@ -37,6 +37,9 @@ test('local release requires an exact commit and rejects ambiguous or repeated C
   assert.equal(parseArguments(['--help']).help, true);
   assert.equal(parseArguments(['--npm', '--commit', commit, '--dry-run']).npm, true);
   assert.equal(parseArguments(['--commit', commit]).npm, false);
+  const recovery = parseArguments(['--npm', '--commit', commit, '--announce-only', '--assets-dir', '/tmp/verified files']);
+  assert.equal(recovery.announceOnly, true);
+  assert.equal(recovery.assetsDir, '/tmp/verified files');
   for (const argv of [
     [], ['--dry-run'], ['--commit'], ['--commit', '--dry-run'],
     ['--commit', 'main'], ['--commit', 'a'.repeat(39)], ['--commit', 'a'.repeat(41)],
@@ -45,7 +48,16 @@ test('local release requires an exact commit and rejects ambiguous or repeated C
     ['--commit', commit, '--npm', '--npm'],
     ['--commit', commit, '--output-dir'], ['--commit', commit, '--force'],
     ['--commit', commit, 'unexpected'],
+    ['--npm', '--commit', commit, '--announce-only'],
+    ['--npm', '--commit', commit, '--assets-dir', '/tmp/verified'],
+    ['--commit', commit, '--announce-only', '--assets-dir', '/tmp/verified'],
+    ['--npm', '--commit', commit, '--announce-only', '--assets-dir', '/tmp/verified', '--dry-run'],
+    ['--npm', '--commit', commit, '--announce-only', '--assets-dir', '/tmp/verified', '--output-dir', '/tmp/output'],
   ]) assert.throws(() => parseArguments(argv), JSON.stringify(argv));
+});
+
+test('legacy GitHub tarball publication stops before reading credentials or building', async () => {
+  await assert.rejects(releaseLocally({ commit, npm: false, dryRun: false }, { cwd: '/nonexistent', environment: {} }), /downloads have moved to npm/);
 });
 
 test('local release resolves only unambiguous GitHub SSH or HTTPS repository roots', () => {
