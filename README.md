@@ -1,5 +1,8 @@
 # CCDD
 
+[![npm: @ccdd/project](https://img.shields.io/npm/v/@ccdd/project?logo=npm&label=%40ccdd%2Fproject)](https://www.npmjs.com/package/@ccdd/project)
+[![CDD concept](https://img.shields.io/badge/CDD-Concept-3976c7)](https://cdd.boardsketch.com)
+
 **Check that the pieces of your project fit together.**
 
 A project has requirements, designs, tests, and implementations. CCDD connects these pieces to the checks that review them. An AI agent can compare a design with its requirements, a person can inspect an image, and a test runner can check an implementation.
