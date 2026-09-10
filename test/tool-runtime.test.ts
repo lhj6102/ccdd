@@ -114,10 +114,13 @@ test('malformed registration and schema are rejected at admission', async t => {
     `inspect: { metadata: ${JSON.stringify(metadata)}, execute: 'not a function' }`,
     `inspect: { metadata: ${JSON.stringify({ ...metadata, inputSchema: { type: 'object', $ref: 'remote' } })}, execute() {} }`,
     `inspect: { metadata: ${JSON.stringify({ ...metadata, description: '{unknown}' })}, execute() {} }`,
+    ...[{ additionalProperties: 'false' }, { minimum: '10' }, { maxLength: -1 }, { multipleOf: 0 },
+      { enum: 'abc' }, { uniqueItems: 'true' }, { required: ['x', 'x'] }].map(fragment =>
+      `inspect: { metadata: ${JSON.stringify({ ...metadata, inputSchema: { type: 'object', ...fragment } })}, execute() {} }`),
   ];
   for (const tools of cases) {
     const data = await fixture(t, { tools });
-    await assert.rejects(readWorkspaceConfig(data.repoPath), /Invalid tool definition|Unsupported tool schema|description requires/);
+    await assert.rejects(readWorkspaceConfig(data.repoPath), /Invalid tool definition|Unsupported tool schema|description requires|Invalid schema/);
   }
 });
 

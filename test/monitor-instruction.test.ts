@@ -6,11 +6,13 @@ import { stripTypeScriptTypes } from 'node:module';
 import { compileScript, parse } from 'vue/compiler-sfc';
 import { createRenderer, h, nextTick, reactive, ref } from 'vue';
 import type { Component } from 'vue';
-import type { MonitorDetail, MonitorHumanTool } from '../src/monitor/types.js';
+import type { MonitorDetail, MonitorHumanTool, MonitorRequest } from '../src/monitor/types.js';
+import type { GraphCriticState } from '../src/broker/graph.js';
 // Include the SFC's runtime helpers in the normal test compilation.
 import '../src/monitor/ui/api.js';
 import '../src/monitor/ui/tool-input.js';
 import '../src/monitor/ui/tool-content.js';
+import '../src/monitor/ui/critic-presentation.js';
 
 type Node = {
   type: string; text: string; props: Record<string, any>; children: Node[]; parent: Node | null;
@@ -20,7 +22,8 @@ type Node = {
 };
 const documentState = { activeElement: null as Node | null };
 function browserGlobals(t: TestContext): void {
-  for (const [key, value] of Object.entries({ document: documentState, Document: class {}, ShadowRoot: class {}, HTMLInputElement: class {} })) {
+  for (const [key, value] of Object.entries({ document: documentState, Document: class {}, ShadowRoot: class {}, HTMLInputElement: class {},
+    window: { addEventListener() {}, removeEventListener() {} } })) {
     const previous = Object.getOwnPropertyDescriptor(globalThis, key);
     Object.defineProperty(globalThis, key, { value, configurable: true });
     t.after(() => { if (previous) Object.defineProperty(globalThis, key, previous); else Reflect.deleteProperty(globalThis, key); });
@@ -32,6 +35,7 @@ function node(type: string, text = ''): Node {
     focus() { documentState.activeElement = this; }, scrollIntoView() {}, addEventListener() {}, removeEventListener() {}, querySelector() { return null; }, getRootNode() { return documentState; } };
 }
 const renderer = createRenderer<Node, Node>({
+  querySelector: () => node('body'),
   createElement: type => node(type), createText: text => node('#text', text), createComment: text => node('#comment', text),
   insert(child, parent, anchor = null) {
     if (child.parent) child.parent.children.splice(child.parent.children.indexOf(child), 1);
@@ -61,6 +65,7 @@ async function component(name: string): Promise<Component> {
   const script = compileScript(parse(source, { filename: `${name}.vue` }).descriptor, { id: name, inlineTemplate: true });
   let code = stripTypeScriptTypes(script.content, { mode: 'transform' });
   code = code.replace(/from (['"])vue\1/g, `from ${JSON.stringify(import.meta.resolve('vue'))}`);
+  code = code.replace(/from (['"])@lucide\/vue\1/g, `from ${JSON.stringify(import.meta.resolve('@lucide/vue'))}`);
   code = code.replace(/import ToolOutput from ['"]\.\/ToolOutput\.vue['"];?/, 'const ToolOutput = { render: () => null };');
   code = code.replace(/from (['"])(\.{1,2}\/[^'"]+)\1/g, (_whole, _quote, path: string) => {
     const relative = path.endsWith('.js') ? path : `${path}.js`;
@@ -224,4 +229,41 @@ test('Human form and JSON submission preserve typed arguments and reject invalid
   input.props['onUpdate:modelValue'](JSON.stringify({ ...expected, mode: null }));
   await nextTick(); await submit();
   assert.deepEqual(sent[1], { ...expected, mode: null });
+});
+
+test('rendered Critic status distinguishes omitted, claimed, blocked, failed and reused reviews', async t => {
+  browserGlobals(t);
+  const host = node('root'); let opened = 0;
+  const base: GraphCriticState = { id: 'human-check', title: 'Review documents', target: 'spec', deps: ['why'],
+    kind: 'human', requestId: 'request', status: 'WAITING_HUMAN', claimedBy: null, blockedReason: null };
+  const props = reactive({ critic: { ...base }, request: undefined as MonitorRequest | undefined, onOpen: () => { opened++; } });
+  const { app } = mount(await component('CriticStatusIcon'), props, host);
+  try {
+    const cases: [Partial<GraphCriticState>, string, RegExp, boolean][] = [
+      [{}, 'requested', /Awaiting reviewer/, false],
+      [{ claimedBy: 'reviewer' }, 'running', /Reviewer working/, false],
+      [{ requestId: null, status: null }, 'omitted', /Not included/, true],
+      [{ status: 'BLOCKED' }, 'requested', /Awaiting dependencies/, false],
+      [{ status: 'RED' }, 'failure', /Criteria not met/, false],
+      [{ status: 'ERROR' }, 'failure', /Execution error/, false],
+      [{ status: null, requestId: null, validationStatus: 'STALE' }, 'requested', /Needs revalidation/, true],
+      [{ validationStatus: 'BLOCKED' }, 'requested', /Dependencies need validation/, false],
+      [{ status: 'GREEN', validationStatus: 'PASS', reusedFrom: { requestId: 'previous', runId: 'previous-run', completedAt: '2026-01-01T00:00:00.000Z' } }, 'success', /Previous verdict reused/, false],
+    ];
+    for (const [changes, state, label, disabled] of cases) {
+      props.critic = { ...base, ...changes }; await nextTick();
+      const button = all(host).find(child => child.type === 'button')!;
+      assert.equal(button.props['data-state'], state);
+      assert.match(button.props['aria-label'], label);
+      assert.equal(button.props['aria-disabled'], disabled);
+    }
+    all(host).find(child => child.type === 'button')!.props.onClick({ stopPropagation() {} });
+    assert.equal(opened, 1, 'Reused evidence remains inspectable');
+    props.critic = { ...base, status: 'BLOCKED' };
+    props.request = { id: 'request', criticId: base.id, blockedByFailure: true } as MonitorRequest;
+    await nextTick();
+    const blocked = all(host).find(child => child.type === 'button')!;
+    assert.equal(blocked.props['data-state'], 'requested');
+    assert.match(blocked.props['aria-label'], /Blocked.*Dependency failed/);
+  } finally { app.unmount(); }
 });
