@@ -1,10 +1,12 @@
 # CCDD CLI demo
 
-This guide assumes a project with core, Project, and default tools installed from a [Release](getting-started.md) on Node 24 or later. Run the Project CLI; each scenario installs only the core and default-tools packages imported by its configuration. Agent scenarios require Pi Provider authentication and use the profile openai-codex / gpt-6-astra / medium. The CLI is sufficient for the demo; the monitor is optional.
+This guide assumes core, Project, and default tools installed using the [installation guide](getting-started.md) on Node 24 or later. Run the Project CLI; each scenario installs only the core and default-tools packages imported by its configuration. Agent scenarios require Pi Provider authentication and use the profile openai-codex / gpt-6-astra / medium. The CLI is sufficient for the demo; the monitor is optional.
+
+The demo also needs two actual tarball files. Installing packages with `npm install` does not create them. First follow [Preparing tarballs from source](#preparing-tarballs-from-source) below, which writes matching core and default-tools tarballs to `/tmp/ccdd-local-packages`. The following commands use that exact output location. If you prepared packages elsewhere, substitute their absolute paths.
 
 ```sh
-export CCDD_DEMO_CORE_TARBALL="$PWD/vendor/ccdd/ccdd-core-2.0.1.tgz"
-export CCDD_DEMO_TOOLS_TARBALL="$PWD/vendor/ccdd/ccdd-default-tools-2.0.1.tgz"
+export CCDD_DEMO_CORE_TARBALL=/tmp/ccdd-local-packages/ccdd-core-2.0.1.tgz
+export CCDD_DEMO_TOOLS_TARBALL=/tmp/ccdd-local-packages/ccdd-default-tools-2.0.1.tgz
 export CCDD_DEMO_DIR="$HOME/.local/share/ccdd/demo-2.0.1"
 export CCDD_CODEX_AUTH_FILE="$HOME/.codex/auth.json" # Example: explicitly bridge an existing Codex access token.
 npx ccdd prepare-demo --demo-dir "$CCDD_DEMO_DIR"
