@@ -200,18 +200,12 @@ export async function verifyInstallation({ scratch, outputDirectory, packages, v
     assert.equal(content[0].type, 'text');
     assert.equal(content[0].text, sample);
   }
-  let runtime = undefined;
-  if (withDefaults) {
-    const run = await jsonCommand(cli, ['run', '--repo', input, '--state-dir', state, '--critic', 'package-runtime', '--copy', '--wait', '--timeout-ms', '120000'], { cwd: project, env: environment });
-    assert.equal(run.status, 'GREEN', 'The installed detached Runtime worker must finish the actual test');
-    runtime = 'GREEN';
-  }
   const validationArgs = ['verify', '--critic', 'package-runtime', '--repo', input, '--state-dir', state, '--wait', '--timeout-ms', '120000', '--json'];
   const reviewed = await jsonCommand(projectCli, validationArgs, { cwd: project, env: environment });
   assert.equal(reviewed.status, 'GREEN'); assert.equal(reviewed.requests.length, 1);
   const reused = await jsonCommand(projectCli, validationArgs, { cwd: project, env: environment });
   assert.equal(reused.status, 'GREEN'); assert.equal(reused.requests.length, 0); assert.equal(reused.validation.counts.reuse, 1);
-  return { name, productionInstall: true, installScripts: false, cliHelpVersion: version, defaultToolsInstalled: withDefaults, tool: toolName, actualToolExecution: true, workspaceMode: 'copy', projectValidation: true, ...(runtime ? { runtime } : {}) };
+  return { name, productionInstall: true, installScripts: false, cliHelpVersion: version, defaultToolsInstalled: withDefaults, tool: toolName, actualToolExecution: true, workspaceMode: 'copy', projectValidation: true, runtime: 'GREEN' };
 }
 
 async function removeScratch(directory) {

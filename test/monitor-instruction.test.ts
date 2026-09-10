@@ -10,16 +10,17 @@ import type { MonitorDetail, MonitorHumanTool } from '../src/monitor/types.js';
 // Include the SFC's runtime helpers in the normal test compilation.
 import '../src/monitor/ui/api.js';
 import '../src/monitor/ui/tool-input.js';
+import '../src/monitor/ui/tool-content.js';
 
 type Node = {
   type: string; text: string; props: Record<string, any>; children: Node[]; parent: Node | null;
-  value: unknown; checked: boolean; tagName: string;
+  value: unknown; checked: boolean; tagName: string; readonly options: Node[];
   focus(): void; scrollIntoView(): void; addEventListener(): void; removeEventListener(): void;
   querySelector(): null; getRootNode(): typeof documentState;
 };
 const documentState = { activeElement: null as Node | null };
 function browserGlobals(t: TestContext): void {
-  for (const [key, value] of Object.entries({ document: documentState, Document: class {}, ShadowRoot: class {} })) {
+  for (const [key, value] of Object.entries({ document: documentState, Document: class {}, ShadowRoot: class {}, HTMLInputElement: class {} })) {
     const previous = Object.getOwnPropertyDescriptor(globalThis, key);
     Object.defineProperty(globalThis, key, { value, configurable: true });
     t.after(() => { if (previous) Object.defineProperty(globalThis, key, previous); else Reflect.deleteProperty(globalThis, key); });
@@ -27,6 +28,7 @@ function browserGlobals(t: TestContext): void {
 }
 function node(type: string, text = ''): Node {
   return { type, text, props: {}, children: [], parent: null, value: '', checked: false, tagName: type.toUpperCase(),
+    get options() { return this.children; },
     focus() { documentState.activeElement = this; }, scrollIntoView() {}, addEventListener() {}, removeEventListener() {}, querySelector() { return null; }, getRootNode() { return documentState; } };
 }
 const renderer = createRenderer<Node, Node>({
@@ -68,6 +70,21 @@ async function component(name: string): Promise<Component> {
 }
 const tool = (artifactId: string, operation = 'open', inputSchema: Record<string, unknown> = { type: 'object', additionalProperties: false }): MonitorHumanTool => ({
   name: `${operation}_${artifactId}`, artifactId, operation, description: `Inspect ${artifactId} in a desktop application.`, inputSchema,
+});
+
+test('rendered tool output displays text literally and only renders supported inline images', async t => {
+  const host = node('root');
+  const props = reactive({ result: { content: [
+    { type: 'text', text: '<script>never execute</script>' },
+    { type: 'image', data: 'aW1hZ2U=', mimeType: 'image/png' },
+    { type: 'image', path: '/etc/private.png', mimeType: 'image/png' },
+    { type: 'image', data: '<svg onload="alert(1)">', mimeType: 'image/svg+xml' },
+  ] }, canRead: false, canList: false, busy: false });
+  const { app } = mount(await component('ToolOutput'), props, host); t.after(() => app.unmount());
+  assert.match(text(host), /<script>never execute<\/script>/);
+  assert.equal(all(host).some(child => child.type === 'script' || child.type === 'svg'), false);
+  assert.deepEqual(all(host).filter(child => child.type === 'img').map(child => child.props.src), ['data:image/png;base64,aW1hZ2U=']);
+  assert.equal(all(host).filter(child => child.type === 'p' && text(child).includes('cannot be displayed')).length, 2);
 });
 function detail(claimed: boolean, tools: MonitorHumanTool[] = [tool('spec'), tool('why')]): MonitorDetail {
   return {
@@ -170,4 +187,41 @@ test('Human group references expose deduplicated scoped member tools and preserv
   matching(host, 'button', 'why · Open').props.onClick();
   await new Promise(resolve => setImmediate(resolve)); await nextTick();
   assert.deepEqual(requests, ['/api/requests/project/request/claim', '/api/requests/project/request/tools/open_why']);
+});
+
+test('Human form and JSON submission preserve typed arguments and reject invalid input before HTTP', async t => {
+  browserGlobals(t);
+  const sent: unknown[] = [], host = node('root');
+  t.mock.method(globalThis, 'fetch', async (_url: unknown, options: RequestInit) => {
+    sent.push(JSON.parse(String(options.body)).arguments);
+    return Response.json({ result: { content: [] } });
+  });
+  const schema = { type: 'object', properties: {
+    frame: { type: 'integer', minimum: 0 }, time: { type: 'number', minimum: 0, maximum: 1 },
+    enabled: { type: 'boolean', default: false }, mode: { enum: [1, '1', null] }, label: { type: 'string' },
+    optional: { type: 'integer' },
+  }, required: ['frame', 'time', 'enabled', 'mode', 'label'], additionalProperties: false };
+  const { app } = mount(await component('HumanReview'), { detail: detail(true, [tool('spec', 'preview', schema)]),
+    session: { reviewerId: 'me', csrfToken: 'csrf' }, sessionError: '' }, host); t.after(() => app.unmount());
+  for (const [label, value] of Object.entries({ frame: '2', time: '0.125', label: '  clip  ' })) {
+    const field = all(matching(host, 'label', label)).find(child => child.type === 'input')!;
+    field.props.onInput({ target: Object.assign(new HTMLInputElement(), { value }) });
+  }
+  all(matching(host, 'label', 'mode')).find(child => child.type === 'select')!.props['onUpdate:modelValue']('1');
+  await nextTick();
+  const submit = async () => {
+    all(host).find(child => child.type === 'form')!.props.onSubmit({ preventDefault() {} });
+    await new Promise(resolve => setImmediate(resolve)); await nextTick();
+  };
+  await submit();
+  const expected = { frame: 2, time: 0.125, enabled: false, mode: '1', label: '  clip  ' };
+  assert.deepEqual(sent, [expected]);
+  matching(host, 'button', 'Enter JSON').props.onClick(); await nextTick();
+  const input = all(host).find(child => child.type === 'textarea')!;
+  input.props['onUpdate:modelValue'](JSON.stringify({ ...expected, enabled: 'false' }));
+  await nextTick(); await submit();
+  assert.equal(sent.length, 1);
+  input.props['onUpdate:modelValue'](JSON.stringify({ ...expected, mode: null }));
+  await nextTick(); await submit();
+  assert.deepEqual(sent[1], { ...expected, mode: null });
 });

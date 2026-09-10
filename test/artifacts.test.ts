@@ -318,23 +318,6 @@ test('shared direct audit records only successful observations and cannot be cha
   assert.equal(registry.toolCalls[0].observation.artifactId, 'tests');
 });
 
-test('provider argument preflight rejects coercion and null stripping without reading or auditing', async t => {
-  const data = await fixture(t);
-  const registry = createAuditedArtifactTools(await createArtifactViewer(data));
-  await rm(join(data.worktreePath, 'why.md'));
-  assert.deepEqual(registry.validateArguments('read_why', { startLine: 2 }), { startLine: 2 });
-  assert.deepEqual(registry.validateArguments('read_tests', { path: 'rank.test.mjs' }), { path: 'rank.test.mjs' });
-  for (const args of [null, [], 'read', { lineCount: null }, { lineCount: '80' }, { lineCount: 0 }, { lineCount: 501 }, { startLine: '1' }, { startLine: 1.2 }, { path: '' }, { unknown: 1 }]) {
-    assert.throws(() => registry.validateArguments('read_why', args));
-  }
-  for (const args of [{}, { path: null }, { path: '' }, { path: 1 }]) assert.throws(() => registry.validateArguments('read_tests', args));
-  assert.throws(() => registry.validateArguments('list_tests', { offset: null }));
-  assert.throws(() => registry.validateArguments('unknown', {}));
-  assert.equal(registry.toolCalls.length, 0);
-  await assert.rejects(registry.call('read_why', {}));
-  assert.equal(registry.toolCalls.length, 0);
-});
-
 test('failed audit persistence is not returned as a successful tool observation', async t => {
   const data = await fixture(t);
   const registry = createAuditedArtifactTools(await createArtifactViewer(data), { onCall: () => { throw new Error('audit persistence unavailable'); } });

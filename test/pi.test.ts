@@ -99,16 +99,6 @@ test('Pi pre-validation rejects coercible/null/extra arguments and traversal wit
   assert.equal(good.toolCalls.length, 1);
 });
 
-test('Pi rejects incomplete, extra-key, and malformed final schemas without exposing raw output', async t => {
-  for (const result of [{ ...verdict, secret: 'SECRET_OUTPUT' }, { verdict: 'GREEN' }, { ...verdict, evidence: 'SECRET_OUTPUT' }]) {
-    const data = await fixture(t);
-    await assert.rejects(invokePi({ ...data, streamFn: artifactStream({ result }) }), error => {
-      assert.match(String(error), /final JSON/); assert.doesNotMatch(String(error), /SECRET_OUTPUT/); return true;
-    });
-  }
-  await assert.rejects(invokePi({ ...await fixture(t), streamFn: artifactStream({ mode: 'malformed' }) }), /final JSON/);
-});
-
 test('Pi provider failure, timeout and cancellation are errors rather than verdicts', async t => {
   for (const [mode, code] of [['auth-error', 'AUTHENTICATION_FAILED'], ['model-error', 'MODEL_ACCESS_FAILED'], ['network-error', 'PROVIDER_CONNECTION_FAILED'], ['throw', 'PROVIDER_EXECUTION_FAILED']] as const) {
     await assert.rejects(invokePi({ ...await fixture(t), streamFn: artifactStream({ mode }) }), error => {

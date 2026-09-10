@@ -8,9 +8,10 @@ import { join } from 'node:path';
 
 // The release driver intentionally stays executable before npm ci / TypeScript build.
 const driverUrl = new URL('../../scripts/release.mjs', import.meta.url);
-const { validateVersions, compareVersions, planRelease, publishRelease, createGitHubClient, validateAssets, readReleaseMetadata } = await import(driverUrl.href);
+const { compareVersions, createGitHubClient, validateAssets } = await import(driverUrl.href);
 const { publishNpmRelease, createNpmClient } = await import(new URL('../../scripts/npm-release.mjs', import.meta.url).href);
 const { publishNpmAndAnnounce, publishNpmAnnouncement } = await import(new URL('../../scripts/npm-announcement.mjs', import.meta.url).href);
+const { publishFromCi } = await import(new URL('../../scripts/publish-ci.mjs', import.meta.url).href);
 const sha = 'a'.repeat(40), otherSha = 'b'.repeat(40), coreName = '@ccdd/core', toolsName = '@ccdd/default-tools';
 const hash = (bytes: Buffer | string) => createHash('sha256').update(bytes).digest('hex');
 const metadata = { version: '1.0.0', tag: 'v1.0.0', coreFile: 'ccdd-core-1.0.0.tgz', toolsFile: 'ccdd-default-tools-1.0.0.tgz' };
@@ -61,19 +62,14 @@ async function assets(root: string, reportOverrides: Record<string, unknown> = {
   return assetsDir;
 }
 
-interface Draft { id: number; draft: boolean; tag_name: string; target_commitish: string; html_url: string; upload_url: string }
-
-test('split-package releases require the Project tarball and its installed validation proof', async t => {
-  const f = await fixture(t), projectFile = 'ccdd-project-1.0.0.tgz';
-  const directory = await assets(f.root, { projectFile });
-  const files = await validateAssets(directory, { ...metadata, projectFile }, sha);
-  assert.equal(files.size, 5); assert.ok(files.has(projectFile));
-  await assert.rejects(validateAssets(directory, metadata, sha), /exactly/);
-});
-interface Asset { id: number; name: string; bytes: Buffer }
-
 async function npmFixture(t: TestContext, nodeRange = '>=24') {
   const data = await fixture(t), npmMetadata = { ...metadata, projectFile: 'ccdd-project-1.0.0.tgz' };
+  const manifests = versions();
+  const project = { name: '@ccdd/project', version: '1.0.0', peerDependencies: { [coreName]: '>=1.0.0 <2' } };
+  await mkdir(join(data.root, 'packages/project'));
+  await writeFile(join(data.root, 'packages/project/package.json'), JSON.stringify(project));
+  await writeFile(join(data.root, 'package-lock.json'), JSON.stringify({ ...manifests.lock,
+    packages: { ...manifests.lock.packages, 'packages/project': project } }));
   const assetsDir = await assets(data.root, { projectFile: npmMetadata.projectFile, publishConfig: { access: 'public', registry: 'https://registry.npmjs.org/' }, nodeRange });
   const files = await validateAssets(assetsDir, npmMetadata, sha);
   const events: string[] = [], published = new Map<string, unknown>();
@@ -124,6 +120,11 @@ test('npm release rejects conflicting remote bytes or bad local evidence before 
   await writeFile(join(data.assetsDir, metadata.coreFile), 'tampered');
   await assert.rejects(publishNpmRelease(data), /SHA-256/);
   assert.deepEqual(data.events, []);
+  for (const overrides of [{ sourceCommit: otherSha }, { tests: { total: 2, passed: 1, failed: 1 } }, { installations: [] }]) {
+    await assets(data.root, { projectFile: data.metadata.projectFile, ...overrides });
+    await assert.rejects(publishNpmRelease(data), /Verification|Release verification/);
+    assert.deepEqual(data.events, []);
+  }
 });
 
 test('npm release refuses archives without explicit public publishing configuration', async t => {
@@ -307,143 +308,6 @@ test('an older announcement retry delegates Latest selection when a newer releas
   assert.equal(api.getLatest()!.tag_name, 'v2.0.0');
 });
 
-function fakeApi(options: { published?: boolean; draft?: boolean; target?: string; tagged?: string; annotated?: boolean; failUpload?: boolean; corruptDownload?: boolean } = {}) {
-  let nextAsset = 1;
-  const api = {
-    events: [] as string[],
-    tag: options.tagged ?? null,
-    release: options.published || options.draft ? { id: 1, draft: !options.published, tag_name: 'v1.0.0', target_commitish: options.target ?? sha, html_url: 'https://github.com/lhj6102/ccdd/releases/tag/v1.0.0', upload_url: 'https://uploads.github.com/fixture{?name}' } as Draft : null,
-    assets: [] as Asset[],
-    failUpload: options.failUpload ?? false,
-    corruptDownload: options.corruptDownload ?? false,
-    async optional(path: string): Promise<unknown> {
-      api.events.push(`GET ${path}`);
-      if (path.startsWith('releases/tags/')) return api.release;
-      if (path.startsWith('git/ref/tags/')) return api.tag ? { object: { type: options.annotated ? 'tag' : 'commit', sha: api.tag } } : null;
-      throw new Error(`Unexpected GET ${path}`);
-    },
-    async request(method: string, path: string, body?: Record<string, unknown>): Promise<unknown> {
-      api.events.push(`${method} ${path}`);
-      if (method === 'GET' && path.startsWith('git/tags/')) return { object: { type: 'commit', sha: api.tag } };
-      if (method === 'POST' && path === 'git/refs') { assert.equal(body?.sha, sha); api.tag = String(body?.sha); return {}; }
-      if (method === 'POST' && path === 'releases') { api.release = { ...body, id: 1, html_url: 'release-url', upload_url: 'upload-url' } as Draft; return api.release; }
-      if (method === 'GET' && path === 'releases/1') return api.release;
-      if (method === 'GET' && path.startsWith('releases/1/assets')) return api.assets.map(({ bytes, ...item }) => item);
-      if (method === 'DELETE' && path.startsWith('releases/assets/')) { assert.equal(api.release?.draft, true); api.assets = api.assets.filter(item => item.id !== Number(path.split('/').at(-1))); return null; }
-      if (method === 'PATCH' && path === 'releases/1') { assert.equal(body?.make_latest, 'legacy'); assert.equal(api.release?.draft, true); api.release!.draft = false; return api.release; }
-      throw new Error(`Unexpected ${method} ${path}`);
-    },
-    async upload(_release: Draft, name: string, bytes: Buffer) {
-      api.events.push(`UPLOAD ${name}`);
-      assert.equal(api.release?.draft, true);
-      if (api.failUpload && api.assets.length === 1) { api.failUpload = false; throw new Error('Simulated interrupted upload'); }
-      const asset = { id: nextAsset++, name, bytes }; api.assets.push(asset); return asset;
-    },
-    async download(id: number) { api.events.push(`DOWNLOAD ${id}`); return api.corruptDownload ? Buffer.from('corrupted remote data') : api.assets.find(item => item.id === id)!.bytes; },
-  };
-  return api;
-}
-
-test('release versions require aligned packages, lock entries, stable semver and a compatible peer range', () => {
-  const current = versions(); assert.equal(validateVersions(current.core, current.tools, current.lock), '1.0.0');
-  for (const mutate of [
-    (v: ReturnType<typeof versions>) => { v.tools.version = '0.9.0'; },
-    (v: ReturnType<typeof versions>) => { v.lock.version = '0.9.0'; },
-    (v: ReturnType<typeof versions>) => { v.lock.packages['packages/default-tools'].version = '0.9.0'; },
-    (v: ReturnType<typeof versions>) => { v.tools.peerDependencies[coreName] = '>=0.9.0 <1'; },
-    (v: ReturnType<typeof versions>) => { v.core.name = 'different-package'; },
-  ]) { const data = versions(); mutate(data); assert.throws(() => validateVersions(data.core, data.tools, data.lock)); }
-  for (const version of ['1.0.0-rc.1', '1.0', '01.0.0', '1.0.0\n', 'v1.0.0']) { const data = versions(version); assert.throws(() => validateVersions(data.core, data.tools, data.lock)); }
-  assert.equal(compareVersions('1.10.0', '1.9.0'), 1);
-});
-
-test('historical release metadata keeps the original namespace and archive filenames', async t => {
-  const data = await fixture(t), oldCore = '@lhj6102/ccdd', oldTools = '@lhj6102/ccdd-default-tools';
-  const core = { name: oldCore, version: '1.0.0' }, tools = { name: oldTools, version: '1.0.0', peerDependencies: { [oldCore]: '>=1.0.0 <2' } };
-  const lock = { ...core, packages: { '': core, 'packages/default-tools': tools } };
-  await writeFile(join(data.root, 'package.json'), JSON.stringify(core));
-  await writeFile(join(data.root, 'packages/default-tools/package.json'), JSON.stringify(tools));
-  await writeFile(join(data.root, 'package-lock.json'), JSON.stringify(lock));
-  const result = await readReleaseMetadata(data.root);
-  assert.equal(result.coreFile, 'lhj6102-ccdd-1.0.0.tgz');
-  assert.equal(result.toolsFile, 'lhj6102-ccdd-default-tools-1.0.0.tgz');
-  assert.equal(result.packageNames.core, oldCore);
-  assert.equal(result.projectFile, undefined);
-  assert.throws(() => validateVersions(core, versions().tools, lock), /package names/);
-});
-
-test('local plans use explicit repository and commit inputs and only read remote release state', async t => {
-  const data = await fixture(t), api = fakeApi();
-  assert.deepEqual(await planRelease({ ...data, api }), { version: '1.0.0', tag: 'v1.0.0', should_build: true, should_publish: true, already_published: false });
-  assert.ok(api.events.every(event => event.startsWith('GET ')), 'Planning never creates tags, releases or assets.');
-  for (const sourceCommit of [undefined, 'main', 'abcdef0', `${sha}\n`, otherSha]) await assert.rejects(planRelease({ ...data, api, sourceCommit }), /exact commit|checkout/);
-  for (const invalidRepository of [undefined, '', '../repo', 'owner/..', 'owner/repo/extra', `${repository}\n`]) await assert.rejects(planRelease({ ...data, api, repository: invalidRepository }), /owner\/repository/);
-  await assert.rejects(planRelease({ ...data }), /authenticated GitHub client/);
-  await assert.rejects(planRelease({ ...data, api, head: otherSha }), /checkout/);
-  await rm(join(data.root, 'docs/releases/v1.0.0.md'));
-  await assert.rejects(planRelease({ ...data, api }), { code: 'ENOENT' });
-});
-
-test('published versions skip later commits without rebuilding or changing any assets', async t => {
-  const data = await fixture(t), api = fakeApi({ published: true, tagged: otherSha, target: otherSha });
-  const plan = await planRelease({ ...data, api }); assert.equal(plan.should_build, false); assert.equal(plan.should_publish, false);
-  const published = await publishRelease({ ...data, api }); assert.equal(published.already_published, true);
-  assert.ok(api.events.every(event => event.startsWith('GET ')));
-});
-
-test('existing lightweight or annotated tags and draft targets cannot be redirected', async t => {
-  const data = await fixture(t);
-  for (const options of [{ tagged: otherSha }, { tagged: otherSha, annotated: true }, { draft: true, target: otherSha }]) {
-    const api = fakeApi(options); await assert.rejects(planRelease({ ...data, api }), /different commit/);
-    await assert.rejects(publishRelease({ ...data, api }), /different commit/);
-    assert.ok(api.events.every(event => event.startsWith('GET ')));
-  }
-  assert.equal((await planRelease({ ...data, api: fakeApi({ tagged: sha, annotated: true }) })).should_publish, true);
-});
-
-test('publisher rejects failed tests, wrong commit, invalid checksums and mismatched packed identities before tag creation', async t => {
-  const data = await fixture(t);
-  for (const overrides of [{ sourceCommit: otherSha }, { version: '1.0.1' }, { tests: { total: 2, passed: 1, failed: 1 } }, { installations: [] }, { providerCalls: true }]) {
-    const assetsDir = await assets(data.root, overrides), api = fakeApi();
-    await assert.rejects(publishRelease({ ...data, assetsDir, api }), /Verification|Release verification/);
-    assert.ok(api.events.every(event => event.startsWith('GET ')));
-  }
-  const assetsDir = await assets(data.root), api = fakeApi();
-  await writeFile(join(assetsDir, metadata.coreFile), tarball('wrong-name'));
-  await assert.rejects(publishRelease({ ...data, assetsDir, api }), /SHA-256/);
-  await assets(data.root); await writeFile(join(assetsDir, 'unexpected.txt'), 'not a release asset');
-  await assert.rejects(validateAssets(assetsDir, metadata, sha), /exactly/);
-  await assert.rejects(publishRelease({ ...data, assetsDir, api, head: otherSha }), /checkout/);
-  await assert.rejects(publishRelease({ ...data, assetsDir, api, sourceCommit: 'main' }), /exact commit/);
-  await assert.rejects(publishRelease({ ...data, assetsDir, api, repository: '../repo' }), /owner\/repository/);
-  await assert.rejects(publishRelease({ ...data, assetsDir }), /authenticated GitHub client/);
-});
-
-test('interrupted uploads leave a draft and retry verifies every remote asset before publishing', async t => {
-  const data = await fixture(t), assetsDir = await assets(data.root), api = fakeApi({ failUpload: true });
-  await assert.rejects(publishRelease({ ...data, assetsDir, api }), /interrupted upload/);
-  assert.equal(api.release?.draft, true); assert.equal(api.tag, sha); assert.equal(api.assets.length, 1);
-  assert.equal(api.events.some(event => event.startsWith('PATCH')), false);
-  const result = await publishRelease({ ...data, assetsDir, api });
-  assert.equal(result.published, true); assert.equal(api.release?.draft, false); assert.equal(api.assets.length, 4);
-  assert.equal(api.events.filter(event => event === 'POST git/refs').length, 1);
-  assert.equal(api.events.filter(event => event.startsWith('UPLOAD')).length, 5, 'Retry reuses the completed identical upload.');
-  assert.ok(api.events.indexOf('PATCH releases/1') > api.events.findLastIndex(event => event.startsWith('DOWNLOAD')));
-  const before = api.events.length; await publishRelease({ ...data, assetsDir, api });
-  assert.ok(api.events.slice(before).every(event => event.startsWith('GET ')), 'Published release retry performs no mutations.');
-});
-
-test('a retry may replace changed draft validation evidence but never publishes corrupt remote downloads', async t => {
-  const data = await fixture(t), assetsDir = await assets(data.root), api = fakeApi({ failUpload: true });
-  await assert.rejects(publishRelease({ ...data, assetsDir, api }));
-  api.assets[0].bytes = Buffer.from('incomplete previous attempt');
-  await publishRelease({ ...data, assetsDir, api });
-  assert.ok(api.events.some(event => event.startsWith('DELETE releases/assets/')));
-  const corrupt = fakeApi({ corruptDownload: true });
-  await assert.rejects(publishRelease({ ...data, assetsDir, api: corrupt }), /Remote.*SHA-256/);
-  assert.equal(corrupt.release?.draft, true); assert.equal(corrupt.events.some(event => event.startsWith('PATCH')), false);
-});
-
 test('API errors only treat 404 as missing and never expose response secrets or send tokens to an unexpected upload host', async () => {
   const auth = { repository, token: 'test-token-not-for-logs' };
   for (const token of ['', 'token\n', undefined]) assert.throws(() => createGitHubClient({ ...auth, token }), /authenticated GitHub token/);
@@ -477,17 +341,44 @@ test('cancellation prevents new API mutations and aborts an in-flight request', 
   await waiting; controller.abort(reason); await rejected;
 });
 
-test('cancellation after tag creation leaves recoverable state and never starts release publication', async t => {
-  const data = await fixture(t), assetsDir = await assets(data.root), controller = new AbortController();
-  const calls: string[] = [], reason = new Error('Release cancelled after tag creation');
-  const api = createGitHubClient({ repository, token: 'test-token', signal: controller.signal }, async (url: URL, options: { method: string }) => {
-    const path = url.pathname.replace('/repos/lhj6102/ccdd/', '');
-    calls.push(`${options.method} ${path}`);
-    if (options.method === 'GET') return new Response('not found', { status: 404 });
-    assert.equal(`${options.method} ${path}`, 'POST git/refs');
-    controller.abort(reason);
-    return Response.json({ ref: 'refs/tags/v1.0.0', object: { type: 'commit', sha } });
-  });
-  await assert.rejects(publishRelease({ ...data, assetsDir, api }), error => error === reason);
-  assert.deepEqual(calls.filter(call => !call.startsWith('GET ')), ['POST git/refs']);
+test('CD publishes the exact successful main CI artifact and retries without rebuilding or republishing', async t => {
+  const data = await npmFixture(t), api = announcementApi(), request = api.request;
+  let downloads = 0;
+  api.request = async (method: string, path: string, body?: Record<string, unknown>) => {
+    if (path.startsWith('actions/workflows/ci.yml/runs?')) {
+      assert.equal(method, 'GET');
+      const query = new URLSearchParams(path.split('?')[1]);
+      assert.equal(query.get('head_sha'), sha);
+      assert.equal(query.get('branch'), 'main');
+      assert.equal(query.get('event'), 'push');
+      assert.equal(query.get('status'), 'success');
+      return { workflow_runs: [{ id: 42, head_sha: sha, head_branch: 'main', event: 'push', conclusion: 'success' }] };
+    }
+    return request(method, path, body);
+  };
+  const options = { ...data, api, ref: 'refs/tags/v1.0.0',
+    async download(id: number, name: string, directory: string) {
+      assert.equal(id, 42); assert.equal(name, `release-${sha}`); assert.equal(directory, data.assetsDir);
+      downloads++;
+    } };
+  assert.equal((await publishFromCi(options)).status, 'PUBLISHED');
+  assert.equal(data.published.size, 3);
+  data.events.length = 0;
+  assert.equal((await publishFromCi(options)).status, 'ALREADY_PUBLISHED');
+  assert.equal(downloads, 2);
+  assert.ok(data.events.every(event => event.startsWith('GET')));
+});
+
+test('CD cannot download or publish without successful CI for the tagged main commit', async t => {
+  const data = await npmFixture(t), api = announcementApi();
+  const success = { id: 42, head_sha: sha, head_branch: 'main', event: 'push', conclusion: 'success' };
+  const options = { ...data, api, ref: 'refs/tags/v1.0.0', download: async () => assert.fail('No artifact may be downloaded') };
+  for (const runs of [[], [{ ...success, head_sha: otherSha }], [{ ...success, conclusion: 'failure' }],
+    [{ ...success, event: 'pull_request' }], [{ ...success, head_branch: 'untrusted' }]]) {
+    api.request = async () => ({ workflow_runs: runs });
+    await assert.rejects(publishFromCi(options), /No successful main CI/);
+  }
+  await assert.rejects(publishFromCi({ ...options, ref: 'refs/tags/v9.0.0' }), /tag must match/);
+  assert.deepEqual(data.events, []);
+  assert.deepEqual(api.events, []);
 });

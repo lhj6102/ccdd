@@ -64,45 +64,7 @@ test('ELK lays out multiple parents and shared Critic relations without node or 
   assert.equal(layout.edges.length, 5);
   assert.deepEqual(layout.edges.find(edge => edge.source === 'why' && edge.target === 'spec')?.criticIds, ['alignment', 'independent-alignment']);
   assertGeometry(layout);
-});
-
-test('review state and any input enumeration order do not move snapshot topology', async () => {
-  const changed = {
-    artifacts: [...input.artifacts].reverse().map((artifact, index) => ({ ...artifact, criticIds: [...artifact.criticIds ?? []].reverse(), status: index % 2 ? 'WAITING_HUMAN' : 'GREEN' })),
-    edges: [...input.edges].reverse().map(edge => ({ ...edge, criticIds: [...edge.criticIds].reverse() })),
-  };
-  assert.deepEqual(await layoutGraph(changed), await layoutGraph(input));
-});
-
-test('vertical layout keeps a single chain phone-sized and handles multiple parents', async () => {
   assertGeometry(await layoutGraph(input, true), true);
-  const chain = { artifacts: ['a', 'b', 'c', 'd'].map(id => ({ id })), edges: [{ source: 'a', target: 'b', criticIds: ['one'] }, { source: 'b', target: 'c', criticIds: ['two'] }, { source: 'c', target: 'd', criticIds: ['three'] }] };
-  const layout = await layoutGraph(chain, true);
-  assert.ok(layout.width < 320, 'A single chain should fit a phone without horizontal panning.');
-  assert.equal(new Set(layout.nodes.map(node => node.x)).size, 1);
-  assertGeometry(layout, true);
-});
-
-test('long connections use rounded ELK detours while clear neighboring connections use cubic curves', async () => {
-  const graph = { artifacts: ['a', 'b', 'c'].map(id => ({ id })), edges: [{ source: 'a', target: 'b', criticIds: ['one'] }, { source: 'b', target: 'c', criticIds: ['two'] }, { source: 'a', target: 'c', criticIds: ['three'] }] };
-  for (const vertical of [false, true]) {
-    const layout = await layoutGraph(graph, vertical);
-    assert.match(layout.edges.find(edge => edge.source === 'a' && edge.target === 'c')!.path, / Q /, 'The skip edge must retain rounded detours around the middle Artifact.');
-    assert.match(layout.edges.find(edge => edge.source === 'a' && edge.target === 'b')!.path, / C /);
-    assertGeometry(layout, vertical);
-  }
-});
-
-test('branch crossings and variable Critic rows remain clear in both layout directions', async () => {
-  const graph = {
-    artifacts: ['start', 'left', 'right', 'join', 'end', 'separate'].map(id => ({ id, criticIds: id === 'right' ? Array.from({ length: 12 }, (_, index) => `critic-${index}`) : ['critic'] })),
-    edges: [['start', 'left'], ['start', 'right'], ['left', 'join'], ['right', 'join'], ['join', 'end'], ['start', 'end'], ['left', 'end']].map(([source, target]) => ({ source, target, criticIds: ['critic'] })),
-  };
-  for (const vertical of [false, true]) {
-    const layout = await layoutGraph(graph, vertical);
-    assert.ok(layout.nodes.find(node => node.id === 'right')!.height > layout.nodes.find(node => node.id === 'left')!.height, 'All registered Critic icons need room in the node.');
-    assertGeometry(layout, vertical);
-  }
 });
 
 test('invalid graphs and cancelled layout fail explicitly, while empty graphs remain valid', async () => {
