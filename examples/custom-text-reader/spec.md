@@ -1,4 +1,4 @@
 # Spec
 
-입력 작업 중 미완료 작업을 입력 순서대로 최대 2개 반환한다.
-원래 입력 배열이나 작업 객체를 변경하지 않는다.
+Return at most 2 incomplete tasks from the input in input order.
+Do not modify the original input array or task objects.

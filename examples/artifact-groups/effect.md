@@ -1,12 +1,12 @@
-# Explosion 정적 프리뷰
+# Static explosion preview
 
-이 예제는 실제 VFX 파일 대신 효과 설명과 정적 PNG를 한 그룹으로 묶습니다.
+This example groups an effect description and a static PNG in place of actual VFX files.
 
-검토할 외형:
+Appearance to review:
 
-- 짙은 남색 배경 위에 원형 효과가 화면 중앙에 놓입니다.
-- 중심은 밝은 크림색 원입니다.
-- 중심과 떨어진 주황색 원형 고리가 둘러쌉니다.
-- 글자나 UI 버튼은 없습니다.
+- A circular effect is centered on a dark navy background.
+- The center is a bright cream circle.
+- An orange circular ring surrounds the center, separated by a gap.
+- There is no text or UI button.
 
-애니메이션 속도, 수명, 게임 엔진에서의 실행은 이 정적 예제로 검증하지 않습니다.
+This static example does not verify animation speed, lifetime, or execution in a game engine.

@@ -1,6 +1,6 @@
 # Implementation contracts
 
-Definition-only core `@lhj6102/ccdd`, project tool `@lhj6102/ccdd-project`, and optional library `@lhj6102/ccdd-default-tools` use strict TypeScript compiled to Node 24 ESM. Core exports definitions and identity helpers with no runtime dependencies, CLI or database. Project Validation, Broker and Executors are separate bounded contexts packaged in Project; its SQLite stores evidence and execution history. A request-scoped worker runs one Run; no daemon, global broker-owner lock, or automatic queue scanner is required. The optional local monitor delegates explicit current-input inspection to Project Validation and Human actions to the Broker. It does not own execution.
+Definition-only core `@ccdd/core`, project tool `@ccdd/project`, and optional library `@ccdd/default-tools` use strict TypeScript compiled to Node 24 ESM. Core exports definitions and identity helpers with no runtime dependencies, CLI or database. Project Validation, Broker and Executors are separate bounded contexts packaged in Project; its SQLite stores evidence and execution history. A request-scoped worker runs one Run; no daemon, global broker-owner lock, or automatic queue scanner is required. The optional local monitor delegates explicit current-input inspection to Project Validation and Human actions to the Broker. It does not own execution.
 
 Artifact groups and the default image tool are included in v1.1.0. Existing leaf-only configurations and recorded requests retain their contracts.
 
@@ -48,8 +48,8 @@ The config declares `artifacts`, `artifactTypes`, and a `critics` array whose or
 Groups are independent review targets and dependencies. Their required Critics determine their verdict, without propagating it to members or inheriting member verdicts. Membership grants observation scope but adds no dependency edge or scheduling gate. A group Critic must explicitly declare member IDs in `deps` if their evaluations must pass first.
 
 ```ts
-import { defineConfig } from '@lhj6102/ccdd';
-import { agent, human } from '@lhj6102/ccdd-default-tools';
+import { defineConfig } from '@ccdd/core';
+import { agent, human } from '@ccdd/default-tools';
 
 export default defineConfig(() => ({
   artifacts: {
@@ -63,7 +63,7 @@ export default defineConfig(() => ({
     },
   },
   critics: [{
-    id: 'runtime', title: '테스트 런타임 통과', target: 'implementation', deps: ['tests'],
+    id: 'runtime', title: 'Pass the runtime tests', target: 'implementation', deps: ['tests'],
     profile: { kind: 'runtime', command: 'node', args: ['--test', 'tests/example.test.mjs'] },
     payload: { instruction: 'Run the actual test suite against the implementation.' },
   }],
@@ -112,7 +112,7 @@ Common auditing records only safe successful tool name, arguments, time, bound A
 
 ## Default tool library
 
-`@lhj6102/ccdd-default-tools` is a separate optional package with a compatible core peer dependency and type-only SDK imports. Importing it or calling a factory performs no I/O and registers nothing. Projects explicitly import and register the definitions they want. Both packages can be installed from local tarballs without private npm publication.
+`@ccdd/default-tools` is a separate optional package with a compatible core peer dependency and type-only SDK imports. Importing it or calling a factory performs no I/O and registers nothing. Projects explicitly import and register the definitions they want. Both packages can be installed from local tarballs without private npm publication.
 
 Agent defaults use packaged Node CLIs with fixed operation arguments; no general shell tool or global executable is installed. `agent.text.read()` supports a file Artifact. `agent.files.read()` and `agent.files.list()` support directory Artifacts. Read args are `startLine` (default 1) and `lineCount` (default 80, maximum 500); directory read also requires an internal file `path`. List args keep optional internal `path`, zero-based `offset`, and `limit` up to 200.
 
@@ -141,8 +141,8 @@ Executors receive the prepared input path, a distinct `runDir`, cancellation sig
 An exact `{ID}` in that instruction refers to a leaf or group already supplied to the request. IDs use the existing identifier grammar: one ASCII letter or digit followed by up to 63 ASCII letters, digits, underscores or hyphens. When constructing the Agent prompt, CCDD renders the reference as inline JSON containing the Artifact ID and names from its actual Agent tool registry, joined by each tool's `artifactId`. It does not invent names or require default tools. For example, with `read_spec`, `grep_spec` and `read_why` actually registered:
 
 ```text
-Source: {spec}이 {why}의 요구사항을 충족하는지 검토하세요.
-Agent: {"artifact":"spec","tools":["read_spec","grep_spec"]}이 {"artifact":"why","tools":["read_why"]}의 요구사항을 충족하는지 검토하세요.
+Source: Review whether {spec} satisfies the requirements in {why}.
+Agent: Review whether {"artifact":"spec","tools":["read_spec","grep_spec"]} satisfies the requirements in {"artifact":"why","tools":["read_why"]}.
 ```
 
 A group reference expands to its deduplicated supplied leaf members and their actual tools:

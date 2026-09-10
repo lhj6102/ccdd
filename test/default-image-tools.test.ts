@@ -4,7 +4,7 @@ import { access, cp, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile 
 import { tmpdir } from 'node:os';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { agent } from '@lhj6102/ccdd-default-tools';
+import { agent } from '@ccdd/default-tools';
 import { fauxAssistantMessage, fauxProvider, fauxToolCall } from '@earendil-works/pi-ai';
 import type { ToolContext } from '../src/sdk.js';
 import { createExecutorRegistry } from '../src/executors/index.js';
@@ -73,7 +73,7 @@ test('view_image rejects Pi text fallback and unsupported image formats without 
 test('directory image paths stay within their Artifact and the CLI rejects symlinks and directories', async t => {
   const data = await fixture(t, true);
   await mkdir(join(data.artifactPath, 'nested'));
-  const path = "nested/미리보기 8\u202fPM.png";
+  const path = "nested/\ubbf8\ub9ac\ubcf4\uae30 8\u202fPM.png";
   await writeFile(join(data.artifactPath, path), png);
   await writeFile(join(data.root, 'outside.png'), png);
   await symlink('../outside.png', join(data.artifactPath, 'outside-link.png'));
@@ -85,7 +85,7 @@ test('directory image paths stay within their Artifact and the CLI rejects symli
   await assert.rejects(tool.execute(data.context, { path: '../outside.png' }), /safe internal relative path/);
   await assert.rejects(tool.execute(data.context, { path: '/outside.png' }), /safe internal relative path/);
   await assert.rejects(tool.execute(data.context, { path: 'outside-link.png' }), /symlink/);
-  await assert.rejects(tool.execute(data.context, { path: "linked-directory/미리보기 8\u202fPM.png" }), /symlink/);
+  await assert.rejects(tool.execute(data.context, { path: "linked-directory/\ubbf8\ub9ac\ubcf4\uae30 8\u202fPM.png" }), /symlink/);
   assert.deepEqual(await readFile(join(data.root, 'outside.png')), png);
 });
 
@@ -114,9 +114,9 @@ test('default image tool preserves cancellation and process time limits', async 
 test('explicit default view_image registration reaches the scoped Runner and Pi Agent with an audited image observation', async t => {
   const data = await fixture(t);
   const repoPath = join(data.root, 'project');
-  const defaultsRoot = fileURLToPath(new URL('../', import.meta.resolve('@lhj6102/ccdd-default-tools')));
+  const defaultsRoot = fileURLToPath(new URL('../', import.meta.resolve('@ccdd/default-tools')));
   const sourceModules = resolve(defaultsRoot, '../../node_modules');
-  const targetDefaults = join(repoPath, 'node_modules/@lhj6102/ccdd-default-tools');
+  const targetDefaults = join(repoPath, 'node_modules/@ccdd/default-tools');
   await mkdir(targetDefaults, { recursive: true });
   await cp(join(defaultsRoot, 'package.json'), join(targetDefaults, 'package.json'));
   await cp(join(defaultsRoot, 'dist'), join(targetDefaults, 'dist'), { recursive: true });
@@ -128,7 +128,7 @@ test('explicit default view_image registration reaches the scoped Runner and Pi 
   }
   await writeFile(join(repoPath, 'preview.png'), png);
   await writeFile(join(repoPath, 'ccdd.config.ts'), `
-import { agent } from '@lhj6102/ccdd-default-tools';
+import { agent } from '@ccdd/default-tools';
 export default {
   artifacts: { preview: { type: 'image', path: 'preview.png' } },
   artifactTypes: { image: { agentTools: { view_image: agent.image.view() } } },

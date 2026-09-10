@@ -1,2 +1,2 @@
-# 개발 검증용 Spec
-미완료 작업은 입력 순서대로 최대 2개를 반환한다. 원본을 변경하지 않는다.
+# Spec for development validation
+Return at most 2 incomplete tasks in input order. Do not modify the original input.

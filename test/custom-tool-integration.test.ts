@@ -18,7 +18,7 @@ import type { AgentProfile } from '../src/contracts.js';
 
 const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aD1sAAAAASUVORK5CYII=';
 const agentProfile: AgentProfile = { kind: 'agent', provider: 'openai-codex', model: 'gpt-6-astra', reasoning: 'medium', timeoutMs: 10_000 };
-const verdict = { verdict: 'GREEN', summary: '프레임 확인', evidence: ['지정된 프레임을 관측했습니다.'] };
+const verdict = { verdict: 'GREEN', summary: 'Frame checked', evidence: ['Observed the specified frame.'] };
 
 async function fixture(t: TestContext, { observation = true, preflight = true, hang = false } = {}) {
   const dir = await mkdtemp(join(tmpdir(), 'ccdd-custom-adapters-'));
@@ -36,7 +36,7 @@ export default () => ({
   artifacts: { clip: { type: 'animation', path: 'clip.bin' } },
   artifactTypes: { animation: {
     agentTools: { frame: {
-      metadata: { description: '{artifactName}의 지정한 프레임을 관측합니다.', inputSchema: schema, resultKinds: ['image'], observation: ${JSON.stringify(observation ? 'content' : 'none')}, artifactKind: 'file' },
+      metadata: { description: 'Observe the specified frame in {artifactName}.', inputSchema: schema, resultKinds: ['image'], observation: ${JSON.stringify(observation ? 'content' : 'none')}, artifactKind: 'file' },
       ${preflight ? "preflight: async () => ({ ok: true, message: 'Renderer registration checked without rendering.' })," : ''}
       async execute(context, args) {
         ${hang ? `await writeFile(${JSON.stringify(hostPid)}, String(process.pid)); await new Promise(() => {});` : ''}
@@ -46,7 +46,7 @@ export default () => ({
       }
     } },
     humanTools: { open: {
-      metadata: { description: '{artifactName}를 데스크톱에서 엽니다.', inputSchema: { type: 'object', properties: {}, additionalProperties: false }, resultKinds: ['launch'], observation: 'none', artifactKind: 'file' },
+      metadata: { description: 'Open {artifactName} on the desktop.', inputSchema: { type: 'object', properties: {}, additionalProperties: false }, resultKinds: ['launch'], observation: 'none', artifactKind: 'file' },
       preflight: async () => ({ ok: true, message: 'Desktop registration checked without launching.' }),
       async execute(context) { await writeFile(${JSON.stringify(launched)}, context.artifactPath); return { content: [{ type: 'launch', launched: true }] }; }
     } }
@@ -71,7 +71,7 @@ function frameStream({ args = { frame: 2, transparent: false, channels: ['color'
     if (!started) {
       const [tool] = context.tools ?? [];
       assert.equal(tool?.name, 'frame_clip');
-      assert.match(tool.description, /clip의 지정한 프레임/);
+      assert.match(tool.description, /Observe the specified frame in clip/);
       started = true;
       faux.appendResponses([fauxAssistantMessage([fauxToolCall('frame_clip', args)], { stopReason: 'toolUse' }), fauxAssistantMessage(JSON.stringify(verdict))]);
     }

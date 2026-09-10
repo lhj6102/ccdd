@@ -12,7 +12,7 @@
     "sourceMap": true,
     "noEmitOnError": true,
     "types": ["node"],
-    "paths": { "@lhj6102/ccdd": ["./src/sdk.ts"] }
+    "paths": { "@ccdd/core": ["./src/sdk.ts"] }
   },
   "include": ["src/**/*.ts", "scripts/**/*.ts", "test/**/*.ts"],
   "exclude": ["node_modules", "dist", "output", "src/monitor/ui"]

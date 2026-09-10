@@ -20,24 +20,24 @@ async function fixture(t: TestContext, mode: WorkspaceMode = 'copy', options: { 
   t.after(async () => { for (const close of cleanup.reverse()) await close(); await removeOwnedWorkspaceTree(dir); });
   const repoPath = join(dir, 'project'), stateDir = join(dir, 'state'), stateHome = join(dir, 'empty-state-home');
   await mkdir(join(repoPath, 'tests'), { recursive: true });
-  await writeFile(join(repoPath, 'why.md'), '# 목적\n두 항목 선택\n');
+  await writeFile(join(repoPath, 'why.md'), '# Purpose\nChoose two items\n');
   await writeFile(join(repoPath, 'tests/example.test.mjs'), `${options.chain ? "await new Promise(resolve => setTimeout(resolve, 350));" : ''}export const count = 2;\n`);
   await writeFile(join(repoPath, 'private.md'), 'UNDECLARED_PRIVATE_CONTENT');
   const config: RepoConfig = {
     artifacts: { why: { type: 'markdown', path: 'why.md' }, tests: { type: 'code', path: 'tests', basis: true } },
-    artifactTypes: { markdown: { viewer: 'text', agentTools: { read: {} }, humanTools: { read: { description: '{artifactName}의 줄을 읽습니다.' } } }, code: { viewer: 'files', agentTools: { read: {}, list: {} }, humanTools: { list: { description: '{artifactName}의 파일 목록입니다.' }, read: { description: '{artifactName}의 내부 파일을 읽습니다.' } } } },
-    critics: [{ id: 'human-check', title: '<script>unsafe title</script>', target: 'why', deps: ['tests'], profile: { kind: 'human' }, payload: { instruction: options.instruction ?? '두 항목 기준을 확인하세요.', authFile: 'DO_NOT_EXPOSE_AUTH_METADATA' } }],
+    artifactTypes: { markdown: { viewer: 'text', agentTools: { read: {} }, humanTools: { read: { description: 'Read lines from {artifactName}.' } } }, code: { viewer: 'files', agentTools: { read: {}, list: {} }, humanTools: { list: { description: 'List files in {artifactName}.' }, read: { description: 'Read a file within {artifactName}.' } } } },
+    critics: [{ id: 'human-check', title: '<script>unsafe title</script>', target: 'why', deps: ['tests'], profile: { kind: 'human' }, payload: { instruction: options.instruction ?? 'Check the two-item requirement.', authFile: 'DO_NOT_EXPOSE_AUTH_METADATA' } }],
   };
-  if (options.command) config.artifactTypes.markdown.humanTools = { ...config.artifactTypes.markdown.humanTools, [options.longTool ? 'o'.repeat(64) : 'open']: { description: '고정된 프로그램으로 입력을 확인합니다.', command: process.execPath, args: ['-e', `require('node:fs').writeFileSync(${JSON.stringify(join(dir, 'command-output.txt'))}, require('node:fs').readFileSync(process.argv[1], 'utf8'))`, '{artifactPath}'] } };
+  if (options.command) config.artifactTypes.markdown.humanTools = { ...config.artifactTypes.markdown.humanTools, [options.longTool ? 'o'.repeat(64) : 'open']: { description: 'Inspect the input using the configured program.', command: process.execPath, args: ['-e', `require('node:fs').writeFileSync(${JSON.stringify(join(dir, 'command-output.txt'))}, require('node:fs').readFileSync(process.argv[1], 'utf8'))`, '{artifactPath}'] } };
   if (options.longTool) {
     config.artifacts['a'.repeat(64)] = config.artifacts.why; delete config.artifacts.why;
     config.critics[0].target = 'a'.repeat(64);
   }
-  if (options.chain) { config.artifacts.implementation = { type: 'code', path: 'tests/example.test.mjs' }; config.critics.push({ id: 'runtime', title: '후속 Runtime', target: 'implementation', deps: ['why', 'tests'], profile: { kind: 'runtime', command: 'node', args: ['--test', 'tests/example.test.mjs'] }, payload: { instruction: '실제 테스트 실행' } }); }
+  if (options.chain) { config.artifacts.implementation = { type: 'code', path: 'tests/example.test.mjs' }; config.critics.push({ id: 'runtime', title: 'Downstream Runtime', target: 'implementation', deps: ['why', 'tests'], profile: { kind: 'runtime', command: 'node', args: ['--test', 'tests/example.test.mjs'] }, payload: { instruction: 'Run the actual tests' } }); }
   if (options.custom) {
     config.artifacts.unrelated = { type: 'markdown', path: 'private.md', basis: true };
     const marker = join(dir, 'config-code-executions.txt');
-    const metadata = { description: '{artifactName}의 프레임을 확인합니다.', inputSchema: { type: 'object', properties: { frame: { type: 'number', minimum: 0 }, overlay: { type: 'boolean' }, channels: { type: 'array', items: { type: 'string' } } }, required: ['frame', 'overlay', 'channels'], additionalProperties: false }, resultKinds: ['text', 'json', 'image'], observation: 'none' };
+    const metadata = { description: 'Inspect frames from {artifactName}.', inputSchema: { type: 'object', properties: { frame: { type: 'number', minimum: 0 }, overlay: { type: 'boolean' }, channels: { type: 'array', items: { type: 'string' } } }, required: ['frame', 'overlay', 'channels'], additionalProperties: false }, resultKinds: ['text', 'json', 'image'], observation: 'none' };
     await writeFile(join(repoPath, 'ccdd.config.ts'), `
 import { appendFileSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -99,14 +99,14 @@ test('monitor serves existing database state and scoped artifacts without execut
   assert.equal(overview.requests.length, 1);
   assert.equal(overview.requests[0].status, 'QUEUED');
   const detail = await (await fetch(data.route)).json() as MonitorDetail;
-  assert.equal(detail.instruction, '두 항목 기준을 확인하세요.');
+  assert.equal(detail.instruction, 'Check the two-item requirement.');
   assert.equal(detail.result, null);
   assert.doesNotMatch(JSON.stringify({ overview, detail }), /DO_NOT_EXPOSE_AUTH|piOptions|authFile|snapshotHash|workspace/);
   const read = await (await fetch(`${data.route}/artifacts/why?startLine=2&lineCount=1`)).json() as MonitorArtifactPage;
   assert.equal(read.artifact.description, 'Read text from why using 1-based line ranges.');
-  assert.equal(detail.tools?.find(tool => tool.name === 'read_why')?.description, 'why의 줄을 읽습니다.');
+  assert.equal(detail.tools?.find(tool => tool.name === 'read_why')?.description, 'Read lines from why.');
   assert.ok('content' in read.result);
-  assert.equal(read.result.content, '두 항목 선택\n');
+  assert.equal(read.result.content, 'Choose two items\n');
   const listing = await (await fetch(`${data.route}/artifacts/tests`)).json() as MonitorArtifactPage;
   assert.equal(listing.artifact.description, 'List files within tests.');
   assert.ok('entries' in listing.result);
@@ -120,7 +120,7 @@ test('monitor serves existing database state and scoped artifacts without execut
 });
 
 test('instruction references preserve the stored payload and HTTP detail string without executing config or tools', async t => {
-  const instruction = String.raw`{why}를 {tests}와 비교하세요. {unrelated} {missing} {{why}} \{why} {"example":"{why}"}`;
+  const instruction = String.raw`Compare {why} with {tests}. {unrelated} {missing} {{why}} \{why} {"example":"{why}"}`;
   const data = await fixture(t, 'copy', { custom: true, instruction });
   const marker = join(data.dir, 'config-code-executions.txt');
   const beforeCode = await readFile(marker, 'utf8');
@@ -197,7 +197,7 @@ test('copied artifact remains readable after source removal, while modified lock
   await writeFile(join(locked.repoPath, 'why.md'), 'Changed after capture');
   const response = await fetch(`${locked.route}/artifacts/why`);
   assert.equal(response.status, 409);
-  assert.match((await response.json() as { error: string }).error, /입력이 변경/);
+  assert.match((await response.json() as { error: string }).error, /input has changed/);
 });
 
 test('missing copied input is reported without leaking internal paths', async t => {
@@ -206,7 +206,7 @@ test('missing copied input is reported without leaking internal paths', async t 
   const response = await fetch(`${data.route}/artifacts/why`);
   assert.equal(response.status, 409);
   const body = await response.text();
-  assert.match(body, /찾을 수 없습니다/);
+  assert.match(body, /could not be found/);
   assert.equal(body.includes(data.stateDir), false);
 });
 
@@ -311,15 +311,15 @@ test('Human actions require the browser claimant, valid CSRF and strict bounded 
   assert.equal(claimed.human?.canComplete, true);
   assert.equal((await post(`${data.route}/claim`, second)).status, 403);
   assert.equal((await post(`${data.route}/tools/read_why`, second, { arguments: {} })).status, 403);
-  assert.equal((await post(`${data.route}/complete`, second, { verdict: 'GREEN', summary: '타인 결과', evidence: ['입력을 확인했습니다.'] })).status, 403);
-  assert.equal((await post(`${data.route}/complete`, first, { verdict: 'GREEN', summary: '확인', evidence: ['입력을 확인했습니다.'], reviewerId: second.reviewerId })).status, 400);
-  assert.equal((await post(`${data.route}/complete`, first, { verdict: 'GREEN', summary: '검토', evidence: [] })).status, 400);
-  assert.equal((await post(`${data.route}/complete`, first, { verdict: 'GREEN', summary: '검토', evidence: ['   '] })).status, 400);
+  assert.equal((await post(`${data.route}/complete`, second, { verdict: 'GREEN', summary: 'Result from another reviewer', evidence: ['Inspected the input.'] })).status, 403);
+  assert.equal((await post(`${data.route}/complete`, first, { verdict: 'GREEN', summary: 'Checked', evidence: ['Inspected the input.'], reviewerId: second.reviewerId })).status, 400);
+  assert.equal((await post(`${data.route}/complete`, first, { verdict: 'GREEN', summary: 'Review', evidence: [] })).status, 400);
+  assert.equal((await post(`${data.route}/complete`, first, { verdict: 'GREEN', summary: 'Review', evidence: ['   '] })).status, 400);
   assert.equal((await post(`${data.route}/tools/open_why`, first, { arguments: { command: '/unregistered' } })).status, 400);
   await assert.rejects(access(join(data.dir, 'command-output.txt')));
   const read = await post(`${data.route}/tools/read_why`, first, { arguments: { startLine: 1, lineCount: 1 } });
   assert.equal(read.status, 200, await read.clone().text());
-  assert.match(JSON.stringify(await read.json()), /목적/);
+  assert.match(JSON.stringify(await read.json()), /Purpose/);
   const launch = await post(`${data.route}/tools/open_why`, first, { arguments: {} });
   assert.equal(launch.status, 200, await launch.clone().text());
   assert.equal((await launch.json() as { result: { launched: boolean } }).result.launched, true);
@@ -327,14 +327,14 @@ test('Human actions require the browser claimant, valid CSRF and strict bounded 
   while (Date.now() < deadline) {
     try { await access(join(data.dir, 'command-output.txt')); break; } catch { await delay(20); }
   }
-  assert.equal(await readFile(join(data.dir, 'command-output.txt'), 'utf8'), '# 목적\n두 항목 선택\n');
+  assert.equal(await readFile(join(data.dir, 'command-output.txt'), 'utf8'), '# Purpose\nChoose two items\n');
   const afterTool = await (await fetch(data.route)).json() as MonitorDetail;
   assert.equal(afterTool.request.status, 'WAITING_HUMAN');
   assert.equal(afterTool.result, null);
-  const completed = await post(`${data.route}/complete`, first, { verdict: 'RED', summary: '기준을 충족하지 않습니다.', evidence: ['두 항목 기준을 확인했습니다.'] });
+  const completed = await post(`${data.route}/complete`, first, { verdict: 'RED', summary: 'The criteria are not met.', evidence: ['Checked the two-item requirement.'] });
   assert.equal(completed.status, 200, await completed.clone().text());
   assert.equal((await completed.json() as MonitorDetail).request.status, 'RED');
-  assert.equal((await post(`${data.route}/complete`, first, { verdict: 'GREEN', summary: '중복', evidence: ['입력을 확인했습니다.'] })).status, 409);
+  assert.equal((await post(`${data.route}/complete`, first, { verdict: 'GREEN', summary: 'Duplicate', evidence: ['Inspected the input.'] })).status, 409);
   assert.equal((await post(`${data.route}/tools/read_why`, first, { arguments: {} })).status, 409);
 });
 
@@ -350,8 +350,8 @@ test('browser reviewer identity survives monitor restart and requires the renewe
   assert.equal(renewed.reviewerId, initial.reviewerId);
   assert.notEqual(renewed.csrfToken, initial.csrfToken);
   const route = `${next.url}/api/requests/${data.request.projectId}/${data.request.id}`;
-  assert.equal((await post(`${route}/complete`, initial, { verdict: 'GREEN', summary: '확인했습니다.', evidence: ['입력을 확인했습니다.'] })).status, 403);
-  const result = await post(`${route}/complete`, { cookie: initial.cookie, ...renewed }, { verdict: 'GREEN', summary: '확인했습니다.', evidence: ['입력을 확인했습니다.'] });
+  assert.equal((await post(`${route}/complete`, initial, { verdict: 'GREEN', summary: 'Checked.', evidence: ['Inspected the input.'] })).status, 403);
+  const result = await post(`${route}/complete`, { cookie: initial.cookie, ...renewed }, { verdict: 'GREEN', summary: 'Checked.', evidence: ['Inspected the input.'] });
   assert.equal(result.status, 200, await result.clone().text());
 });
 
@@ -359,7 +359,7 @@ test('Human completion starts a detached successor that finishes after the monit
   const data = await fixture(t, 'copy', { waiting: true, chain: true });
   const session = await browserSession(data.monitor.url);
   assert.equal((await post(`${data.route}/claim`, session)).status, 200);
-  const result = await post(`${data.route}/complete`, session, { verdict: 'GREEN', summary: '검토 완료', evidence: ['목적 확인'] });
+  const result = await post(`${data.route}/complete`, session, { verdict: 'GREEN', summary: 'Review complete', evidence: ['Purpose checked'] });
   assert.equal(result.status, 200, await result.clone().text());
   await data.monitor.close();
   const broker = createBroker({ repoPath: data.repoPath, stateDir: data.stateDir });
@@ -377,7 +377,7 @@ test('Human completion rejects changed input and leaves an operational ERROR', a
   const session = await browserSession(data.monitor.url);
   assert.equal((await post(`${data.route}/claim`, session)).status, 200);
   await removeOwnedWorkspaceTree(data.run.workspace.path);
-  const response = await post(`${data.route}/complete`, session, { verdict: 'GREEN', summary: '통과', evidence: ['입력을 확인했습니다.'] });
+  const response = await post(`${data.route}/complete`, session, { verdict: 'GREEN', summary: 'Passed', evidence: ['Inspected the input.'] });
   assert.equal(response.status, 409);
   const detail = await (await fetch(data.route)).json() as MonitorDetail;
   assert.equal(detail.request.status, 'ERROR');
@@ -410,7 +410,7 @@ test('a maximum-length registered Human tool name remains callable without relax
   const executed = await post(`${data.route}/tools/${toolName}`, session, { arguments: {} });
   assert.equal(executed.status, 200, await executed.clone().text());
   assert.equal((await executed.json() as { result: { launched: boolean } }).result.launched, true);
-  assert.equal(await readFile(join(data.dir, 'command-output.txt'), 'utf8'), '# 목적\n두 항목 선택\n');
+  assert.equal(await readFile(join(data.dir, 'command-output.txt'), 'utf8'), '# Purpose\nChoose two items\n');
   assert.equal((await post(`${data.route}/tools/${toolName}x`, session, { arguments: {} })).status, 400);
   assert.equal((await fetch(`${data.monitor.url}/api/requests/${'p'.repeat(129)}/${data.request.id}`)).status, 400);
 });
@@ -458,12 +458,12 @@ test('TS Human detail and graph GET use stored tool manifests without importing 
     const tool = detail.tools?.find(item => item.name === 'preview_why');
     assert.ok(tool);
     assert.equal(tool.operation, 'preview');
-    assert.equal(tool.description, 'why의 프레임을 확인합니다.');
+    assert.equal(tool.description, 'Inspect frames from why.');
     assert.deepEqual(tool.inputSchema.required, ['frame', 'overlay', 'channels']);
     assert.equal((await fetch(`${data.monitor.url}/api/graphs/${data.request.projectId}/${data.run.id}`)).status, 200);
     const artifact = await fetch(`${data.route}/artifacts/why`);
     assert.equal(artifact.status, 409);
-    assert.match(await artifact.text(), /등록된 도구/);
+    assert.match(await artifact.text(), /registered tools/);
   }
   assert.equal(await readFile(marker, 'utf8'), executions);
   assert.deepEqual(await readFile(join(data.stateDir, 'broker.sqlite')), database);
@@ -497,7 +497,7 @@ test('custom Human POST validates schema, returns generic content, retries tool 
   const response = await post(`${route}/tools/preview_why`, sameReviewer, { arguments: input });
   assert.equal(response.status, 200, await response.clone().text());
   const result = await response.json() as { result: { content: Array<Record<string, unknown>> } };
-  assert.deepEqual(result.result.content[0], { type: 'text', text: '# 목적\n두 항목 선택\n' });
+  assert.deepEqual(result.result.content[0], { type: 'text', text: '# Purpose\nChoose two items\n' });
   assert.deepEqual(result.result.content[1], { type: 'json', data: input });
   assert.equal(result.result.content[2].type, 'image');
   assert.equal(result.result.content[2].mimeType, 'image/png');
@@ -507,7 +507,7 @@ test('custom Human POST validates schema, returns generic content, retries tool 
   const afterTool = await (await fetch(route)).json() as MonitorDetail;
   assert.equal(afterTool.request.status, 'WAITING_HUMAN');
   assert.equal(afterTool.result, null, 'A successful program/tool invocation does not submit a verdict');
-  const completed = await post(`${route}/complete`, sameReviewer, { verdict: 'GREEN', summary: '프레임을 확인했습니다.', evidence: ['제공된 프레임과 입력을 확인했습니다.'] });
+  const completed = await post(`${route}/complete`, sameReviewer, { verdict: 'GREEN', summary: 'Inspected the frame.', evidence: ['Inspected the provided frame and input.'] });
   assert.equal(completed.status, 200, await completed.clone().text());
   assert.equal((await completed.json() as MonitorDetail).request.status, 'GREEN');
 });
@@ -528,6 +528,6 @@ test('Human execution marks mismatched or corrupt captured TS tool manifests ERR
     const detail = await (await fetch(data.route)).json() as MonitorDetail;
     assert.equal(detail.request.status, 'ERROR');
     assert.doesNotMatch(await readFile(join(data.dir, 'config-code-executions.txt'), 'utf8'), /execute/);
-    assert.equal((await post(`${data.route}/complete`, session, { verdict: 'GREEN', summary: '통과', evidence: ['입력 확인'] })).status, 409);
+    assert.equal((await post(`${data.route}/complete`, session, { verdict: 'GREEN', summary: 'Passed', evidence: ['Input checked'] })).status, 409);
   }
 });

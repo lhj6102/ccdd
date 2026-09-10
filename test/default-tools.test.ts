@@ -4,10 +4,10 @@ import { access, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } fr
 import { tmpdir } from 'node:os';
 import { isAbsolute, join, relative, sep } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
-import { agent, human } from '@lhj6102/ccdd-default-tools';
+import { agent, human } from '@ccdd/default-tools';
 import type { JsonValue, ToolContext, ToolResult } from '../src/sdk.js';
 
-async function fixture(t: TestContext, contents = '첫째\r\nsecond\nthird', directory = false) {
+async function fixture(t: TestContext, contents = '\uccab\uc9f8\r\nsecond\nthird', directory = false) {
   const root = await realpath(await mkdtemp(join(tmpdir(), 'ccdd-default-tools-')));
   t.after(() => rm(root, { recursive: true, force: true }));
   const artifactPath = join(root, directory ? 'snapshot-files' : 'snapshot.txt');
@@ -58,10 +58,10 @@ test('default factories return independent metadata and preparation never launch
 });
 
 test('Agent file reads execute the packaged CLI and preserve UTF-8, CRLF, BOM and complete-line pagination', async t => {
-  const data = await fixture(t, '\ufeff첫째\r\nsecond\nthird');
+  const data = await fixture(t, '\ufeff\uccab\uc9f8\r\nsecond\nthird');
   const tool = agent.text.read();
   const first = await tool.execute(data.context, { lineCount: 1 });
-  assert.deepEqual(json(first), { artifactId: 'spec', path: '', content: '\ufeff첫째\r\n', startLine: 1, endLine: 1, lineCount: 1, truncated: true, nextStartLine: 2 });
+  assert.deepEqual(json(first), { artifactId: 'spec', path: '', content: '\ufeff\uccab\uc9f8\r\n', startLine: 1, endLine: 1, lineCount: 1, truncated: true, nextStartLine: 2 });
   assert.equal(first.observation?.kind, 'content');
   assert.deepEqual(json(await tool.execute(data.context, { startLine: 2, lineCount: 2 })), {
     artifactId: 'spec', path: '', content: 'second\nthird', startLine: 2, endLine: 3, lineCount: 2, totalLines: 3, truncated: false, nextStartLine: null,
@@ -80,7 +80,7 @@ test('the package-local Agent CLI does not inherit Node startup injection from t
   const previous = process.env.NODE_OPTIONS;
   process.env.NODE_OPTIONS = `--require=${preload}`;
   t.after(() => { if (previous === undefined) delete process.env.NODE_OPTIONS; else process.env.NODE_OPTIONS = previous; });
-  assert.equal(json(await agent.text.read().execute(data.context, { lineCount: 1 })).content, '첫째\r\n');
+  assert.equal(json(await agent.text.read().execute(data.context, { lineCount: 1 })).content, '\uccab\uc9f8\r\n');
   await assert.rejects(access(receipt), { code: 'ENOENT' });
 });
 

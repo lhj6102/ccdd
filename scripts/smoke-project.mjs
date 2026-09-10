@@ -18,7 +18,7 @@ Object.assign(environment, { npm_config_userconfig: npmrc, npm_config_globalconf
 if (process.env.CCDD_PACKAGE_SMOKE_OFFLINE === '1') environment.npm_config_offline = 'true';
 try {
   const packages = [];
-  for (const [directory, name] of [['', '@lhj6102/ccdd'], ['packages/default-tools', '@lhj6102/ccdd-default-tools'], ['packages/project', '@lhj6102/ccdd-project']]) {
+  for (const [directory, name] of [['', '@ccdd/core'], ['packages/default-tools', '@ccdd/default-tools'], ['packages/project', '@ccdd/project']]) {
     packages.push(await packPackage(join(root, directory), name, version, outputDirectory, environment));
   }
   assert.equal(packages.length, 3);

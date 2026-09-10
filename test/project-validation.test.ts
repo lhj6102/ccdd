@@ -41,6 +41,28 @@ test('pull queries do not create a database, tickets, or persistent stale states
   assert.equal(await fs.stat(f.stateDir).then(() => true, () => false), false);
 });
 
+test('request list orders stored creation times and preserves run filtering and ordinal order', async t => {
+  const f = await fixture(t), broker = f.open();
+  const timestamp = Date.UTC(2026, 0, 2);
+  t.mock.timers.enable({ apis: ['Date'], now: timestamp });
+  const newer = await broker.submitProject({ selection: { kind: 'all' } });
+  // A backward clock change distinguishes creation-time ordering from insertion ordering.
+  t.mock.timers.setTime(timestamp - 1000);
+  const older = await broker.submitProject({ selection: { kind: 'all' } });
+  t.mock.timers.reset();
+  assert.equal(newer.requests.length, 2); assert.equal(older.requests.length, 2);
+  assert.equal(newer.requests[0].createdAt, newer.requests[1].createdAt);
+  const call = async (args: string[]) => {
+    let output = '';
+    const code = await main(['request', 'list', ...args, '--repo', f.repoPath, '--state-dir', f.stateDir, '--json'], { stdout: { write: text => { output += text; } } });
+    assert.equal(code, 0, output);
+    return JSON.parse(output) as Array<{ id: string }>;
+  };
+  assert.deepEqual((await call([])).map(r => r.id), [...newer.requests].reverse().concat([...older.requests].reverse()).map(r => r.id));
+  assert.deepEqual((await call(['--run', older.id])).map(r => r.id), older.requests.map(r => r.id));
+  assert.deepEqual((await call(['--run', 'missing-run'])), []);
+});
+
 test('individual validation executes the independent Critic and reports the rest incomplete', async t => {
   const f = await fixture(t), broker = f.open();
   const run = await broker.submitProject({ selection: { kind: 'artifact', artifactId: 'b' } });

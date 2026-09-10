@@ -46,31 +46,31 @@ onUnmounted(() => { version++; controller?.abort(); });
 
 <template>
   <div class="artifact-browser">
-    <p v-if="!artifacts.length" class="muted">제공된 Artifact가 없습니다.</p>
+    <p v-if="!artifacts.length" class="muted">No Artifacts were provided.</p>
     <template v-else-if="preview === 'tools'">
       <ul class="artifact-references"><li v-for="item in artifacts" :key="item.id"><strong>{{ item.id }}</strong><span>{{ item.path }}</span><small>{{ item.type }}</small></li></ul>
-      <p class="artifact-message">Artifact는 리뷰어에게 제공된 도구로 확인합니다. 애니메이션·이미지 등도 해당 도구에서 열 수 있습니다.</p>
-      <button v-if="humanReview" class="secondary-button" @click="emit('review')">검토 도구로 이동</button>
+      <p class="artifact-message">Inspect Artifacts with the tools provided to the reviewer. These tools can also open animations and images.</p>
+      <button v-if="humanReview" class="secondary-button" @click="emit('review')">Go to review tools</button>
     </template>
     <template v-else>
-    <p v-if="artifacts.length" class="artifact-description">보관된 텍스트 미리보기입니다. Human 검토에 등록된 실행 도구와는 별개입니다.</p>
-    <div class="artifact-choices" aria-label="Artifact 선택"><button v-for="item in artifacts" :key="item.id" class="artifact-choice" :aria-pressed="choice?.id === item.id" @click="load({ id: item.id })">{{ item.path }}</button></div>
-    <p v-if="loading" class="artifact-message" role="status">Artifact를 읽는 중…</p>
-    <div v-else-if="error" class="artifact-message"><p class="inline-error" role="alert">{{ error }}</p><button class="text-button" @click="load()">다시 읽기</button></div>
+    <p v-if="artifacts.length" class="artifact-description">This is a preview of the stored text. Human review tools are available in the Review tab.</p>
+    <div class="artifact-choices" aria-label="Select Artifact"><button v-for="item in artifacts" :key="item.id" class="artifact-choice" :aria-pressed="choice?.id === item.id" @click="load({ id: item.id })">{{ item.path }}</button></div>
+    <p v-if="loading" class="artifact-message" role="status">Reading Artifact…</p>
+    <div v-else-if="error" class="artifact-message"><p class="inline-error" role="alert">{{ error }}</p><button class="text-button" @click="load()">Read again</button></div>
     <template v-else-if="page && choice">
       <p class="artifact-description">{{ page.artifact.description }}</p>
-      <div class="artifact-toolbar"><button v-if="choice.path" class="text-button" @click="parent">‹ 상위 폴더</button><span class="artifact-path">{{ choice.path ?? page.artifact.path }}</span>
-        <form v-if="read" class="line-jump" @submit.prevent="jump"><label>시작 줄 <input v-model.number="startLine" type="number" min="1" step="1" required aria-label="Artifact 시작 줄" /></label><button class="text-button" type="submit">이동</button></form>
+      <div class="artifact-toolbar"><button v-if="choice.path" class="text-button" @click="parent">‹ Parent folder</button><span class="artifact-path">{{ choice.path ?? page.artifact.path }}</span>
+        <form v-if="read" class="line-jump" @submit.prevent="jump"><label>Start line <input v-model.number="startLine" type="number" min="1" step="1" required aria-label="Artifact start line" /></label><button class="text-button" type="submit">Go</button></form>
       </div>
       <template v-if="listing">
         <div v-if="listing.entries.length" class="file-list"><button v-for="entry in listing.entries" :key="entry.path" class="file-entry" :disabled="!['file', 'directory'].includes(entry.kind)" @click="load({ id: choice.id, operation: entry.kind === 'directory' ? 'list' : 'read', path: entry.path })"><span aria-hidden="true">{{ entry.kind === 'directory' ? '▱' : '·' }}</span>{{ entry.name }}<span class="file-arrow" aria-hidden="true">›</span></button></div>
-        <p v-else class="artifact-message">빈 폴더입니다.</p>
-        <div class="artifact-pagination"><span>{{ (choice.offset ?? 0) + listing.entries.length }} / {{ listing.totalEntries }}개</span><button v-if="choice.offset" class="text-button" @click="load({ ...choice, offset: 0 })">처음으로</button><button v-if="listing.nextOffset !== null" class="text-button" @click="load({ ...choice, operation: 'list', offset: listing.nextOffset })">다음 파일</button></div>
+        <p v-else class="artifact-message">This folder is empty.</p>
+        <div class="artifact-pagination"><span>{{ (choice.offset ?? 0) + listing.entries.length }} / {{ listing.totalEntries }} entries</span><button v-if="choice.offset" class="text-button" @click="load({ ...choice, offset: 0 })">Back to start</button><button v-if="listing.nextOffset !== null" class="text-button" @click="load({ ...choice, operation: 'list', offset: listing.nextOffset })">Next files</button></div>
       </template>
       <template v-else-if="read">
-        <div v-if="lines.length" class="code-view" role="region" aria-label="Artifact 원문" tabindex="0"><div v-for="(line, index) in lines" :key="index" class="code-line"><span class="line-number" aria-hidden="true">{{ read.startLine + index }}</span><span class="line-content">{{ line }}</span></div></div>
-        <p v-else class="artifact-message">{{ read.totalLines === 0 ? '빈 파일입니다.' : '이 위치에 더 읽을 내용이 없습니다.' }}</p>
-        <div class="artifact-pagination"><span>{{ read.endLine === null ? '읽은 줄 없음' : `${read.startLine}–${read.endLine}줄` }}</span><button v-if="read.startLine > 1" class="text-button" @click="load({ ...choice, operation: 'read', startLine: 1 })">처음으로</button><button v-if="read.nextStartLine !== null" class="text-button" @click="load({ ...choice, operation: 'read', startLine: read.nextStartLine })">다음 줄</button></div>
+        <div v-if="lines.length" class="code-view" role="region" aria-label="Artifact source" tabindex="0"><div v-for="(line, index) in lines" :key="index" class="code-line"><span class="line-number" aria-hidden="true">{{ read.startLine + index }}</span><span class="line-content">{{ line }}</span></div></div>
+        <p v-else class="artifact-message">{{ read.totalLines === 0 ? 'This file is empty.' : 'No more content at this position.' }}</p>
+        <div class="artifact-pagination"><span>{{ read.endLine === null ? 'No lines read' : `Lines ${read.startLine}–${read.endLine}` }}</span><button v-if="read.startLine > 1" class="text-button" @click="load({ ...choice, operation: 'read', startLine: 1 })">Back to start</button><button v-if="read.nextStartLine !== null" class="text-button" @click="load({ ...choice, operation: 'read', startLine: read.nextStartLine })">Next lines</button></div>
       </template>
     </template>
     </template>

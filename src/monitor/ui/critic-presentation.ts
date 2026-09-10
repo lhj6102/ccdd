@@ -13,27 +13,27 @@ export interface CriticPresentation {
 /** Keep omitted reviews, waiting on failures, and execution errors distinct. */
 export function criticPresentation(critic: GraphCriticState, request?: MonitorRequest): CriticPresentation {
   const stored = request?.id === critic.requestId && request.criticId === critic.id ? request : undefined;
-  let tone: CriticPresentation['tone'] = 'requested', mark: CriticPresentation['mark'] = 'waiting', label = '요청 · 실행 대기';
+  let tone: CriticPresentation['tone'] = 'requested', mark: CriticPresentation['mark'] = 'waiting', label = 'Requested · Queued';
   const actionable = Boolean(critic.requestId && critic.status);
   if (critic.validationStatus === 'STALE' || critic.validationStatus === 'UNREVIEWED') {
-    label = critic.validationStatus === 'STALE' ? '재검증 필요' : '미검토';
+    label = critic.validationStatus === 'STALE' ? 'Needs revalidation' : 'Unreviewed';
     return { tone, mark, label, actionable: false, accessibleLabel: `${critic.title} · ${label} · ${critic.validationReason ?? ''}` };
   }
   if (critic.validationStatus === 'BLOCKED') {
-    label = '선행 검증 필요';
+    label = 'Dependencies need validation';
     return { tone, mark, label, actionable: Boolean(critic.requestId), accessibleLabel: `${critic.title} · ${label} · ${critic.validationReason ?? ''}` };
   }
-  if (!actionable) { tone = 'omitted'; mark = 'omitted'; label = '이번 실행에 포함되지 않음'; }
+  if (!actionable) { tone = 'omitted'; mark = 'omitted'; label = 'Not included in this Run'; }
   else if (critic.status === 'BLOCKED') {
-    if (stored?.blockedByFailure) { mark = 'blocked'; label = '진행 불가 · 선행 평가 실패'; }
-    else label = '요청 · 선행 평가 대기';
+    if (stored?.blockedByFailure) { mark = 'blocked'; label = 'Blocked · Dependency failed'; }
+    else label = 'Requested · Awaiting dependencies';
   } else if (critic.status === 'WAITING_HUMAN') {
     const claimedBy = stored ? stored.claimedBy : critic.claimedBy;
-    if (claimedBy) { tone = 'running'; mark = 'running'; label = '리뷰 중 · 담당자 검토 중'; }
-    else label = '요청 · 담당자 기다림';
-  } else if (critic.status === 'RUNNING') { tone = 'running'; mark = 'running'; label = '리뷰 중'; }
-  else if (critic.status === 'GREEN') { tone = 'success'; mark = 'success'; label = critic.reusedFrom ? '통과 · 이전 판정 재사용' : '성공 · 통과'; }
-  else if (critic.status === 'RED') { tone = 'failure'; mark = 'failure'; label = '평가 실패 · 기준 미충족'; }
-  else if (critic.status === 'ERROR') { tone = 'failure'; mark = 'error'; label = '실행 오류'; }
+    if (claimedBy) { tone = 'running'; mark = 'running'; label = 'In review · Reviewer working'; }
+    else label = 'Requested · Awaiting reviewer';
+  } else if (critic.status === 'RUNNING') { tone = 'running'; mark = 'running'; label = 'In review'; }
+  else if (critic.status === 'GREEN') { tone = 'success'; mark = 'success'; label = critic.reusedFrom ? 'Passed · Previous verdict reused' : 'Succeeded · Passed'; }
+  else if (critic.status === 'RED') { tone = 'failure'; mark = 'failure'; label = 'Failed · Criteria not met'; }
+  else if (critic.status === 'ERROR') { tone = 'failure'; mark = 'error'; label = 'Execution error'; }
   return { tone, mark, label, actionable, accessibleLabel: `${critic.title} · ${kindLabels[critic.kind]} · ${label}` };
 }

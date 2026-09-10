@@ -1,6 +1,8 @@
-# @lhj6102/ccdd-project
+# @ccdd/project
 
-CCDD 프로젝트 검증 도구. `@lhj6102/ccdd`는 정의만 제공하며 이 패키지가 검증 이력, CLI, Broker, 실행기와 선택적인 모니터를 제공합니다. 기본 도구는 별도 `@lhj6102/ccdd-default-tools` 패키지입니다.
+CCDD's project validation tool. `@ccdd/core` provides definitions only; this package provides validation history, the CLI, Broker, Executors, and optional monitor. Default tools are available separately in `@ccdd/default-tools`.
+
+Node.js 24 or later is required. For versions published to npm, install with `npm install --ignore-scripts @ccdd/core @ccdd/project` and run `npx ccdd-project`. Also install `@ccdd/default-tools` if you use its tools.
 
 ```sh
 ccdd-project status
@@ -10,14 +12,14 @@ ccdd-project history implementation
 ccdd-project run show RUN_ID
 ```
 
-`verify ARTIFACT`는 실행 가능한 Critic만 의뢰하고 선행 조건이 막힌 Critic은 미완료로 보고합니다. `--recursive`는 필요한 선행 검증을 포함합니다. `--critic ID`로 특정 Critic을 선택해도 선행 조건을 확인합니다. 동일 입력의 실제 PASS는 원본 판정을 참조하여 재사용하며 티켓을 만들지 않습니다. `--force`는 선택한 Critic을 다시 검토합니다.
+`verify ARTIFACT` requests only ready Critics and reports those with unmet prerequisites as incomplete. `--recursive` includes necessary predecessor validations. Selecting one Critic with `--critic ID` still checks prerequisites. Actual PASS evidence for identical input is reused by referencing the original verdict without creating a ticket. `--force` reviews selected Critics again.
 
-Artifact에 저장된 staleState는 없습니다. 판정 당시 target·직접 deps의 hash와 Critic 조건을 SQLite에 기록하고, 현재 판정은 DAG를 재귀적으로 조회해 계산합니다. `status`와 `plan`은 판정이나 티켓을 만들지 않습니다. 임시 memoization은 한 조회 안에서만 사용합니다.
+No staleState is stored on Artifacts. SQLite records the target and direct dependency hashes and Critic conditions at verdict time; current validation is computed by recursively querying the DAG. `status` and `plan` create neither verdicts nor tickets. Temporary memoization exists only within a query.
 
-상태 위치는 `~/.local/state/ccdd/<repo 경로 hash>`이며 `--state-dir` 또는 `CCDD_STATE_HOME`으로 지정합니다. SQLite, 입력 복사본과 검토 출력은 검토 대상 repo 밖에 있어야 합니다. 검증은 기본 copy, 명시적인 `--lock`으로 원본 입력 감시를 선택합니다.
+State defaults to `~/.local/state/ccdd/<repo-path-hash>` and can be configured with `--state-dir` or `CCDD_STATE_HOME`. SQLite, input copies, and review output must stay outside the reviewed repo. Validation defaults to copy; explicit `--lock` selects monitoring of the original input.
 
-`--json`은 구조화된 결과를 반환합니다. `verify --wait` 종료 코드는 0=범위 충족, 1=RED, 2=ERROR, 3=대기 시간 초과, 4=미완료입니다. 비동기 실행의 0은 접수 성공이며 대기 시간 초과는 실행을 취소하지 않습니다.
+`--json` returns structured results. `verify --wait` exit codes are 0=scope satisfied, 1=RED, 2=ERROR, 3=wait timeout, and 4=incomplete. For asynchronous execution, 0 means successful acceptance; a wait timeout does not cancel execution.
 
-Human 리뷰는 `request claim`, `request tool`, `request submit`으로 처리합니다. `doctor`, `tools check`, `monitor`도 지원합니다. 상세한 옵션은 `ccdd-project help`를 확인하세요.
+Handle Human reviews with `request claim`, `request tool`, and `request submit`. `doctor`, `tools check`, and `monitor` are also supported. See `ccdd-project help` for detailed options.
 
-기존 `ccdd` 명령은 이 실행 패키지에 호환 CLI로 포함합니다. 기존 `ccdd run --critic`의 선행 조건 우회 의미는 유지되며, 새로운 프로젝트 검증은 `ccdd-project verify`를 사용합니다. 과거 결과 중 검증 입력 hash가 기록되지 않은 판정은 추측하여 재사용하지 않습니다.
+The existing `ccdd` command is included as a compatibility CLI in this execution package. Legacy `ccdd run --critic` retains its prerequisite bypass; use `ccdd-project verify` for the new project validation flow. Historical verdicts without recorded validation input hashes are not assumed to be reusable.

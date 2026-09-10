@@ -7,19 +7,22 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'nod
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { createGitHubClient, planRelease, publishRelease, readReleaseMetadata, validateAssets } from './release.mjs';
+import { createNpmClient, publishNpmRelease } from './npm-release.mjs';
+import { checkNpmEnvironment } from './check-npm.mjs';
 
 const exec = promisify(execFile);
 const commitPattern = /^[a-f0-9]{40}(?![\s\S])/;
 const within = (parent, child) => { const path = relative(parent, child); return path === '' || (!path.startsWith(`..${sep}`) && path !== '..' && !isAbsolute(path)); };
-const usage = 'npm run release -- --commit <40-character SHA> [--dry-run] [--output-dir <empty directory outside the repo>]';
+const usage = 'npm run release -- --commit <40-character SHA> [--npm] [--dry-run] [--output-dir <empty directory outside the repo>]';
 
 export function parseArguments(argv) {
-  const options = { dryRun: false, help: false }, seen = new Set();
+  const options = { dryRun: false, help: false, npm: false }, seen = new Set();
   for (let index = 0; index < argv.length; index++) {
     const key = argv[index];
-    assert.ok(['--commit', '--dry-run', '--output-dir', '--help'].includes(key) && !seen.has(key), `Unknown or repeated argument: ${key}`);
+    assert.ok(['--commit', '--dry-run', '--output-dir', '--help', '--npm'].includes(key) && !seen.has(key), `Unknown or repeated argument: ${key}`);
     seen.add(key);
     if (key === '--dry-run') options.dryRun = true;
+    else if (key === '--npm') options.npm = true;
     else if (key === '--help') options.help = true;
     else {
       const value = argv[++index];
@@ -119,7 +122,11 @@ export async function releaseLocally(options, { cwd = process.cwd(), environment
     const root = await createSnapshot({ sourceRoot, commit: options.commit, scratch, environment: buildEnv, signal: controller.signal });
     const metadata = await readReleaseMetadata(root);
     let api, repository;
-    if (!options.dryRun) {
+    if (options.npm && !options.dryRun) {
+      const preflight = await checkNpmEnvironment({ environment });
+      assert.equal(preflight.status, 'READY', `npm environment is not ready: ${preflight.checks.filter(check => !check.ok).map(check => `${check.id}: ${check.detail}`).join('; ')}. Run npm run release:npm:check.`);
+    }
+    if (!options.dryRun && !options.npm) {
       const remote = (await exec('git', ['remote', 'get-url', 'origin'], { cwd: sourceRoot, encoding: 'utf8', signal: controller.signal })).stdout.trim();
       repository = repositoryFromRemote(remote);
       let token;
@@ -150,6 +157,12 @@ export async function releaseLocally(options, { cwd = process.cwd(), environment
     await step('Verifying packed production installs and actual tool/runtime execution', process.execPath, [join(root, 'scripts/verify-release.mjs'), '--version', metadata.version, '--tag', metadata.tag, '--source-commit', options.commit, '--output-dir', assetsDir, '--test-report', join(reportDirectory, 'tests.tap')], 'verification.log');
     await validateAssets(assetsDir, metadata, options.commit);
     controller.signal.throwIfAborted();
+    if (options.npm) {
+      progress(`${options.dryRun ? 'Checking' : 'Publishing'} npm packages from verified commit ${options.commit}`);
+      const client = createNpmClient({ environment: options.dryRun ? buildEnv : environment, signal: controller.signal });
+      const result = await publishNpmRelease({ assetsDir, metadata, sourceCommit: options.commit, client, dryRun: options.dryRun });
+      return { ...result, version: metadata.version, sourceCommit: options.commit, assetsDir, logs: reportDirectory };
+    }
     if (options.dryRun) return { status: 'VERIFIED', version: metadata.version, sourceCommit: options.commit, assetsDir, logs: reportDirectory, published: false };
     progress(`Publishing ${repository} ${metadata.tag} from verified commit ${options.commit}`);
     const published = await publishRelease({ root, repository, sourceCommit: options.commit, assetsDir, api });

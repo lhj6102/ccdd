@@ -17,7 +17,7 @@ async function fixture(t: TestContext) {
   await writeFile(join(worktreePath, 'why.md'), '# Why\nSelect two tasks.');
   await writeFile(join(worktreePath, 'spec.md'), '# Spec\nSelect two tasks.');
   const request: ReviewEnvelope & { profile: AgentProfile } = {
-    repoId: 'test', target: 'spec', deps: ['why'], criticId: 'spec-why', title: 'Spec이 Why에 부합하는가', snapshotHash: 'a'.repeat(64),
+    repoId: 'test', target: 'spec', deps: ['why'], criticId: 'spec-why', title: 'Does Spec match Why?', snapshotHash: 'a'.repeat(64),
     artifacts: [{ id: 'why', type: 'markdown', path: 'why.md' }, { id: 'spec', type: 'markdown', path: 'spec.md' }],
     artifactTypes: { markdown: { viewer: 'text', agentTools: { read: {} }, humanTools: { read: {} } }, code: { viewer: 'files', agentTools: { list: {}, read: {} }, humanTools: { list: {}, read: {} } } },
     payload: { instruction: 'Compare {why} and {spec}.' },
@@ -56,6 +56,7 @@ test('instruction references render only in the Agent prompt and preserve source
     const user = context.messages.find(message => message.role === 'user');
     const prompt = typeof user?.content === 'string' ? user.content
       : user?.content.filter(block => block.type === 'text').map(block => block.text).join('\n') ?? '';
+    assert.match(prompt, /Write the summary and evidence in concise English/);
     const payloadLine = prompt.split('\n').find(line => line.startsWith('Review payload: '));
     assert.ok(payloadLine);
     const payload = JSON.parse(payloadLine.slice('Review payload: '.length));
@@ -74,7 +75,7 @@ test('instruction references render only in the Agent prompt and preserve source
 
 test('provider errors, invalid final schema and missing observations fail instead of becoming RED', async t => {
   const modes: [ArtifactStreamOptions['mode'], RegExp][] = [
-    ['unknown-error', /Provider 실행/], ['malformed', /final JSON/], ['no-tools', /did not inspect/], ['beyond-eof', /did not inspect/],
+    ['unknown-error', /Provider execution/], ['malformed', /final JSON/], ['no-tools', /did not inspect/], ['beyond-eof', /did not inspect/],
   ];
   for (const [mode, expected] of modes) {
     const data = await fixture(t);
@@ -153,11 +154,11 @@ test('executors reject output inside input before creating files', async t => {
 
 test('Agent receives exact type descriptions and scope before operation guidance',async t=>{
   const data=await fixture(t);
-  data.request.artifactTypes.markdown.agentTools={read:{description:'{artifactName}의 명세 텍스트를 줄 단위로 읽는다.'}};
+  data.request.artifactTypes.markdown.agentTools={read:{description:'Read specification text from {artifactName} by line.'}};
   let inspected=false;
   const registry=createExecutorRegistry({streamFn:artifactStream({mode:'partial',onRequest:({context})=>{
     const tools=context.tools!;
-    assert.equal(tools[1].description,'spec의 명세 텍스트를 줄 단위로 읽는다.');
+    assert.equal(tools[1].description,'Read specification text from spec by line.');
     for(const tool of tools){
       const properties=(tool.parameters as unknown as {properties:Record<string,unknown>}).properties;
       assert.ok(properties.startLine);assert.ok(properties.lineCount);
@@ -166,7 +167,7 @@ test('Agent receives exact type descriptions and scope before operation guidance
     const user=context.messages.find(x=>x.role==='user');
     const prompt=typeof user?.content==='string'?user.content:JSON.stringify(user?.content);
     assert.ok(prompt.indexOf('Artifacts:')<prompt.indexOf('Each tool is named'));
-    assert.match(prompt,/spec의 명세 텍스트를 줄 단위로 읽는다/);inspected=true;
+    assert.match(prompt,/Read specification text from spec by line/);inspected=true;
   }})});
   const result=await registry.execute(data.request,data);
   assert.equal(result.verdict,'GREEN');assert.ok(inspected);

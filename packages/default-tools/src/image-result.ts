@@ -1,4 +1,4 @@
-import type { ToolContent } from '@lhj6102/ccdd';
+import type { ToolContent } from '@ccdd/core';
 
 export const MAX_IMAGE_BYTES = 4 * 1024 * 1024;
 export const MAX_IMAGE_OUTPUT_BYTES = Math.ceil(MAX_IMAGE_BYTES / 3) * 4 + 4096;

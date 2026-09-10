@@ -104,19 +104,19 @@ export async function diagnoseProject({ repoPath, repoId = 'demo', mode = 'copy'
   const add = async (check: DiagnosticCheck): Promise<void> => { report.checks.push(check); await onEvent({ type: 'doctor.check', check }); };
   let scratch: string | undefined, workspace: WorkspaceHandle | undefined;
   try {
-    if (signal?.aborted) throw Object.assign(new Error('진단이 취소되었습니다.'), { code: 'ABORTED' });
+    if (signal?.aborted) throw Object.assign(new Error('The diagnostic was cancelled.'), { code: 'ABORTED' });
     try { await executors.validateWorkspace?.(repoPath); }
     catch (error) {
-      await add({ id: 'workspace-preflight', status: 'FAIL', kind: 'workspace', message: errorCode(error) ? bounded(errorMessage(error)) : '진단 입력의 사전 조건을 확인하지 못했습니다.', remedy: remedyFor(error) ?? '인증 파일과 실행 상태의 경로가 리뷰 workspace 밖에 있는지 확인하세요.', details: { code: errorCode(error) ?? 'WORKSPACE_PREFLIGHT_FAILED' } });
+      await add({ id: 'workspace-preflight', status: 'FAIL', kind: 'workspace', message: errorCode(error) ? bounded(errorMessage(error)) : 'Could not verify diagnostic input preconditions.', remedy: remedyFor(error) ?? 'Check that authentication files and execution state paths are outside the review workspace.', details: { code: errorCode(error) ?? 'WORKSPACE_PREFLIGHT_FAILED' } });
       return report;
     }
     scratch = await realpath(await mkdtemp(join(tmpdir(), 'ccdd-doctor-')));
     try {
       workspace = await prepareWorkspace({ repoPath, stateDir: stateDir ?? join(scratch, 'state'), mode, signal });
       report.snapshotHash = workspace.descriptor.hash;
-      await add({ id: 'workspace-input', status: 'PASS', kind: 'workspace', message: mode === 'copy' ? '현재 repo 전체의 불변 복사본을 진단 입력으로 준비했습니다.' : '현재 workspace 전체의 변경 감시를 시작했습니다.', details: { mode, snapshotHash: report.snapshotHash } });
+      await add({ id: 'workspace-input', status: 'PASS', kind: 'workspace', message: mode === 'copy' ? 'Prepared an immutable copy of the entire current repository as diagnostic input.' : 'Started monitoring the entire current workspace for changes.', details: { mode, snapshotHash: report.snapshotHash } });
     } catch (error) {
-      await add({ id: 'workspace-input', status: 'FAIL', kind: 'workspace', message: bounded(errorMessage(error)), remedy: '현재 repo의 읽기 권한과 repo 밖의 CCDD 저장 경로를 확인하세요. 복사 도중에는 입력을 변경하지 마세요.', details: { code: signal?.aborted ? 'ABORTED' : errorCode(error) ?? 'WORKSPACE_UNAVAILABLE' } });
+      await add({ id: 'workspace-input', status: 'FAIL', kind: 'workspace', message: bounded(errorMessage(error)), remedy: 'Check repository read permissions and the external CCDD state path. Keep inputs unchanged while copying.', details: { code: signal?.aborted ? 'ABORTED' : errorCode(error) ?? 'WORKSPACE_UNAVAILABLE' } });
       return report;
     }
     const worktreePath = workspace.descriptor.path;
@@ -124,9 +124,9 @@ export async function diagnoseProject({ repoPath, repoId = 'demo', mode = 'copy'
     try {
       requests = await prepareReviewRequests({ repoPath: worktreePath, repoId, snapshotHash: workspace.descriptor.hash, criticId });
       await workspace.assertUnchanged();
-      await add({ id: 'workspace-config', status: 'PASS', kind: 'workspace', criticIds: requests.map(x => x.criticId), message: '현재 workspace의 설정과 Artifact 정의를 확인했습니다.' });
+      await add({ id: 'workspace-config', status: 'PASS', kind: 'workspace', criticIds: requests.map(x => x.criticId), message: 'Verified the current workspace configuration and Artifact definitions.' });
     } catch (error) {
-      await add({ id: 'workspace-config', status: 'FAIL', kind: 'workspace', message: bounded(errorMessage(error)), remedy: '현재 ccdd.config.ts 또는 legacy ccdd.config.json, Artifact 경로와 Critic 식별자를 확인하세요.', details: { code: errorCode(error) ?? 'WORKSPACE_CONFIG_INVALID' } });
+      await add({ id: 'workspace-config', status: 'FAIL', kind: 'workspace', message: bounded(errorMessage(error)), remedy: 'Check the current ccdd.config.ts or legacy ccdd.config.json, Artifact paths, and Critic IDs.', details: { code: errorCode(error) ?? 'WORKSPACE_CONFIG_INVALID' } });
       return report;
     }
     const readyViewers = new Set<string>();
@@ -135,9 +135,9 @@ export async function diagnoseProject({ repoPath, repoId = 'demo', mode = 'copy'
       try {
         const details = await inspectViewers(request, worktreePath, workspace.signal, resolve(scratch, `tools-${request.criticId}`));
         readyViewers.add(request.criticId);
-        await add({ id: `artifacts:${request.criticId}`, status: 'PASS', kind: 'artifacts', criticIds: [request.criticId], message: request.configManifest ? '등록된 Artifact 도구의 명세와 실행 준비를 확인했습니다. 실제 도구 실행은 tools check --execute로 별도 확인할 수 있습니다.' : request.profile.kind === 'human' ? 'Human Artifact 도구의 등록과 실행 준비를 확인했습니다. 프로그램은 실행하지 않았습니다.' : '스냅샷의 Artifact Viewer 목록·읽기 진입점을 확인했습니다.', details });
+        await add({ id: `artifacts:${request.criticId}`, status: 'PASS', kind: 'artifacts', criticIds: [request.criticId], message: request.configManifest ? 'Verified registered Artifact tool manifests and execution readiness. Use tools check --execute to verify actual tool execution separately.' : request.profile.kind === 'human' ? 'Verified Human Artifact tool registration and execution readiness. No programs were launched.' : 'Verified the snapshot Artifact Viewer list and read entry points.', details });
       } catch (error) {
-        await add({ id: `artifacts:${request.criticId}`, status: 'FAIL', kind: 'artifacts', criticIds: [request.criticId], message: bounded(errorMessage(error)), remedy: 'Artifact 경로·유형·내용과 읽기 권한을 확인하세요.', details: { code: 'ARTIFACT_VIEWER_UNAVAILABLE' } });
+        await add({ id: `artifacts:${request.criticId}`, status: 'FAIL', kind: 'artifacts', criticIds: [request.criticId], message: bounded(errorMessage(error)), remedy: 'Check Artifact paths, types, contents, and read permissions.', details: { code: 'ARTIFACT_VIEWER_UNAVAILABLE' } });
       }
     }
     const groups = new Map<string, ReviewEnvelope[]>();
@@ -155,36 +155,36 @@ export async function diagnoseProject({ repoPath, repoId = 'demo', mode = 'copy'
       const request = group.find(x => readyViewers.has(x.criticId)) ?? group[0];
       const base = { id: `executor:${index}`, kind: request.profile.kind, ...(request.profile.kind === 'agent' ? { provider: request.profile.provider, model: request.profile.model, reasoning: request.profile.reasoning } : {}), criticIds: group.map(x => x.criticId) };
       if (workspace.signal.aborted) {
-        await add({ ...base, status: 'FAIL', message: '진단이 취소되었습니다.', remedy: '필요하면 doctor를 다시 실행하세요.', details: { code: 'ABORTED' } });
+        await add({ ...base, status: 'FAIL', message: 'The diagnostic was cancelled.', remedy: 'Run doctor again if needed.', details: { code: 'ABORTED' } });
         continue;
       }
       if (!readyViewers.has(request.criticId)) {
-        await add({ ...base, status: 'SKIP', message: 'Artifact Viewer 준비 실패로 실행기 실사용 진단을 수행하지 않았습니다.' });
+        await add({ ...base, status: 'SKIP', message: 'Skipped the live executor diagnostic because Artifact Viewer preparation failed.' });
         continue;
       }
       try {
-        if (typeof executors?.probe !== 'function') throw Object.assign(new Error('실행기에 실사용 진단 기능이 없습니다.'), { code: 'PROBE_UNSUPPORTED', remedy: 'probe를 제공하는 실행기를 등록하세요.' });
+        if (typeof executors?.probe !== 'function') throw Object.assign(new Error('The executor does not support live diagnostics.'), { code: 'PROBE_UNSUPPORTED', remedy: 'Register an executor that provides probe.' });
         const result = await executors.probe(request, { worktreePath, workspacePath: worktreePath, runDir: resolve(scratch, `probe-${index}`), signal: workspace.signal, onEvent });
-        if (result?.ok !== true) throw Object.assign(new Error(result?.message ?? '실행기 준비 상태를 확인하지 못했습니다.'), { code: 'PROBE_FAILED', remedy: result?.remedy });
+        if (result?.ok !== true) throw Object.assign(new Error(result?.message ?? 'Could not verify executor readiness.'), { code: 'PROBE_FAILED', remedy: result?.remedy });
         await add({ ...base, status: 'PASS', message: result.message, details: result.details });
       } catch (error) {
         // Unknown adapter failures get a safe generic diagnostic, not raw output.
-        await add({ ...base, status: 'FAIL', message: errorCode(error) ? bounded(errorMessage(error)) : '실행기의 실사용 진단을 완료하지 못했습니다.', remedy: remedyFor(error) ?? 'Provider 설정·연결과 실행 환경을 확인한 뒤 다시 진단하세요.', details: { code: errorCode(error) ?? 'PROBE_FAILED' } });
+        await add({ ...base, status: 'FAIL', message: errorCode(error) ? bounded(errorMessage(error)) : 'Could not complete the live executor diagnostic.', remedy: remedyFor(error) ?? 'Check Provider settings, connectivity, and the execution environment, then rerun the diagnostic.', details: { code: errorCode(error) ?? 'PROBE_FAILED' } });
       }
     }
     await workspace.assertUnchanged();
   } catch (error) {
     const code = errorCode(error) ?? (signal?.aborted ? 'ABORTED' : 'DIAGNOSTIC_FAILED');
     const changed = ['WORKSPACE_CHANGED', 'WORKSPACE_CACHE_TAMPERED'].includes(code);
-    await add({ id: changed ? 'workspace-unchanged' : 'diagnostic', status: 'FAIL', kind: 'workspace', message: changed ? '진단 도중 리뷰 입력이 변경되었습니다.' : code === 'ABORTED' ? '진단이 취소되었습니다.' : '진단을 완료하지 못했습니다.', remedy: changed ? '진단 입력을 변경하지 않은 상태에서 doctor를 다시 실행하세요.' : '로컬 실행 환경과 권한을 확인한 뒤 다시 진단하세요.', details: { code } });
+    await add({ id: changed ? 'workspace-unchanged' : 'diagnostic', status: 'FAIL', kind: 'workspace', message: changed ? 'Review inputs changed during the diagnostic.' : code === 'ABORTED' ? 'The diagnostic was cancelled.' : 'Could not complete the diagnostic.', remedy: changed ? 'Rerun doctor while keeping diagnostic inputs unchanged.' : 'Check the local execution environment and permissions, then rerun the diagnostic.', details: { code } });
   } finally {
     if (workspace) {
       try { await workspace.close(); }
-      catch (error) { await add({ id: 'workspace-cleanup', status: 'FAIL', message: '진단용 workspace 감시를 정리하지 못했습니다.', remedy: 'CCDD 저장 경로의 권한을 확인하세요.', details: { code: errorCode(error) ?? 'CLEANUP_FAILED' } }); }
+      catch (error) { await add({ id: 'workspace-cleanup', status: 'FAIL', message: 'Could not clean up diagnostic workspace monitoring.', remedy: 'Check permissions on the CCDD state path.', details: { code: errorCode(error) ?? 'CLEANUP_FAILED' } }); }
     }
     if (scratch) {
       try { await removeOwnedWorkspaceTree(scratch); }
-      catch { await add({ id: 'temporary-cleanup', status: 'FAIL', message: '진단 임시 파일을 정리하지 못했습니다.', remedy: '임시 디렉터리의 쓰기 권한을 확인하세요.', details: { code: 'CLEANUP_FAILED' } }); }
+      catch { await add({ id: 'temporary-cleanup', status: 'FAIL', message: 'Could not clean up temporary diagnostic files.', remedy: 'Check write permissions on the temporary directory.', details: { code: 'CLEANUP_FAILED' } }); }
     }
     report.ok = report.checks.length > 0 && report.checks.every(check => check.status === 'PASS');
     report.status = report.ok ? 'READY' : 'NOT_READY';

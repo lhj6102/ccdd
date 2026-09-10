@@ -17,17 +17,17 @@ export async function authorizeWorkspace(record: MonitorStoredRequest): Promise<
       !isAbsolute(repoPath) || resolve(repoPath) !== repoPath || !isAbsolute(stateDir) || resolve(stateDir) !== stateDir ||
       descriptor.sourcePath !== repoPath || descriptor.stateDir !== stateDir || await realpath(stateDir) !== stateDir ||
       descriptor.path !== (descriptor.mode === 'copy' ? join(stateDir, 'workspaces', descriptor.hash) : repoPath)) {
-    throw new MonitorActionError(409, '리뷰 입력과 저장된 프로젝트 정보가 일치하지 않습니다.');
+    throw new MonitorActionError(409, 'The review input does not match the stored project information.');
   }
-  if (descriptor.mode === 'lock' && await realpath(repoPath) !== repoPath) throw new MonitorActionError(409, '원본 workspace의 경로가 변경되었습니다.');
+  if (descriptor.mode === 'lock' && await realpath(repoPath) !== repoPath) throw new MonitorActionError(409, 'The original workspace path has changed.');
 }
 
 function available(record: MonitorStoredRequest, reviewerId: string, requireClaim: boolean): void {
   const request = record.request;
-  if (request.profile.kind !== 'human' || request.status !== 'WAITING_HUMAN') throw new MonitorActionError(409, '현재 사람이 검토할 수 있는 요청이 아닙니다.');
-  if (request.claimedBy && request.claimedBy !== reviewerId) throw new MonitorActionError(403, '다른 리뷰어가 맡은 요청입니다.');
-  if (requireClaim && request.claimedBy !== reviewerId) throw new MonitorActionError(403, '먼저 이 브라우저에서 리뷰를 맡아주세요.');
-  if (requireClaim && !request.notifiedAt) throw new MonitorActionError(409, '리뷰 알림 전달을 확인 중입니다. 잠시 후 다시 시도하세요.');
+  if (request.profile.kind !== 'human' || request.status !== 'WAITING_HUMAN') throw new MonitorActionError(409, 'This request is not currently available for Human review.');
+  if (request.claimedBy && request.claimedBy !== reviewerId) throw new MonitorActionError(403, 'Another reviewer has claimed this request.');
+  if (requireClaim && request.claimedBy !== reviewerId) throw new MonitorActionError(403, 'Claim the review in this browser first.');
+  if (requireClaim && !request.notifiedAt) throw new MonitorActionError(409, 'Checking review notification delivery. Please try again shortly.');
 }
 
 /** Mutations are explicitly requested; normal monitor reads never open a Broker. */

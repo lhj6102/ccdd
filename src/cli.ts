@@ -177,8 +177,8 @@ Only credential paths are saved for worker/resume; credentials are never copied 
       const report=await diagnoseProject({...context,mode,criticId:get('--critic'),executors,signal:AbortSignal.timeout(timeoutMs)});
       if(options['--json'])print(report);
       else{
-        print(`CCDD doctor · ${report.status}\nSnapshot: ${report.snapshotHash ?? '(unavailable)'}\nScope: ${report.scope?.kind==='critic'?report.scope.criticId:'전체 프로젝트 요구사항'}`);
-        for(const check of report.checks||[]){print(`[${check.status}] ${check.message}`);if(check.remedy)print(`  조치: ${check.remedy}`);}
+        print(`CCDD doctor · ${report.status}\nSnapshot: ${report.snapshotHash ?? '(unavailable)'}\nScope: ${report.scope?.kind==='critic'?report.scope.criticId:'all project requirements'}`);
+        for(const check of report.checks||[]){print(`[${check.status}] ${check.message}`);if(check.remedy)print(`  Remedy: ${check.remedy}`);}
       }
       return report.ok?0:1;
     }

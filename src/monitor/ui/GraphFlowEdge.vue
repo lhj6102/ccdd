@@ -7,7 +7,7 @@ defineProps<{ id: string; data: ArtifactEdgeData; markerEnd?: string }>();
 
 <template>
   <g class="graph-flow-edge" :class="{ connected: data.connected }">
-    <title>{{ data.route.source }} → {{ data.route.target }} · Critic {{ data.route.criticIds.length }}개</title>
+    <title>{{ data.route.source }} → {{ data.route.target }} · Critics: {{ data.route.criticIds.length }}</title>
     <BaseEdge :id="id" :path="data.route.path" :marker-end="markerEnd" :interaction-width="0" />
     <g v-if="data.connected && data.route.criticIds.length > 1" class="graph-edge-count" aria-hidden="true">
       <rect :x="data.route.labelX - 11" :y="data.route.labelY - 9" width="22" height="18" rx="7" />

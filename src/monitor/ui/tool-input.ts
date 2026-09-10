@@ -15,7 +15,7 @@ export interface ToolField {
   default?: unknown;
 }
 const record = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === 'object' && !Array.isArray(value);
-const labels: Record<string, string> = { path: '내부 경로', startLine: '시작 줄', lineCount: '읽을 줄 수', offset: '시작 항목', limit: '항목 수' };
+const labels: Record<string, string> = { path: 'Internal path', startLine: 'Start line', lineCount: 'Line count', offset: 'Start offset', limit: 'Item count' };
 const complexKeywords = ['$ref', 'allOf', 'anyOf', 'oneOf', 'not', 'if', 'then', 'else', 'dependentRequired', 'dependentSchemas', 'patternProperties', 'unevaluatedProperties'];
 const simple = (schema: Record<string, unknown>) => !complexKeywords.some(key => key in schema);
 const primitive = (value: unknown) => value === null || ['string', 'number', 'boolean'].includes(typeof value);
@@ -67,12 +67,12 @@ export function initialToolJson(schema: Record<string, unknown>): string {
 }
 
 export function validateToolInput(schema: Record<string, unknown>, value: unknown): Record<string, unknown> {
-  if (!record(value)) throw new Error('도구 입력은 JSON 객체여야 합니다.');
-  if (new TextEncoder().encode(JSON.stringify({ arguments: value })).byteLength > 32_768) throw new Error('도구 입력은 32KiB 이하여야 합니다.');
+  if (!record(value)) throw new Error('Tool input must be a JSON object.');
+  if (new TextEncoder().encode(JSON.stringify({ arguments: value })).byteLength > 32_768) throw new Error('Tool input must be at most 32KiB.');
   // The interpreter works with the monitor CSP (no generated code/eval).
   if (!Check(schema as TSchema, value)) {
     const first = Errors(schema as TSchema, value)[0];
-    throw new Error(`도구 입력 형식을 확인하세요.${first ? ` ${first.message}` : ''}`);
+    throw new Error(`Check the tool input format.${first ? ` ${first.message}` : ''}`);
   }
   return value;
 }
@@ -84,16 +84,16 @@ export function parseToolFields(schema: Record<string, unknown>, definitions: To
     if (!value && !field.required) continue;
     let parsed: unknown;
     if (field.kind === 'enum') {
-      if (!/^\d+$/.test(value) || !field.options || Number(value) >= field.options.length) throw new Error(`${field.label}을 선택해 주세요.`);
+      if (!/^\d+$/.test(value) || !field.options || Number(value) >= field.options.length) throw new Error(`Select a value for ${field.label}.`);
       parsed = field.options[Number(value)];
     } else if (field.kind === 'boolean') {
-      if (value !== 'true' && value !== 'false') throw new Error(`${field.label}을 선택해 주세요.`);
+      if (value !== 'true' && value !== 'false') throw new Error(`Select a value for ${field.label}.`);
       parsed = value === 'true';
     } else if (field.kind === 'number' || field.kind === 'integer') {
       const input = value.trim();
-      if (!/^-?(?:0|[1-9]\d*)(?:\.\d+)?(?:e[+-]?\d+)?$/i.test(input)) throw new Error(`${field.label}에 숫자를 입력해 주세요.`);
+      if (!/^-?(?:0|[1-9]\d*)(?:\.\d+)?(?:e[+-]?\d+)?$/i.test(input)) throw new Error(`Enter a number for ${field.label}.`);
       parsed = Number(input);
-      if (!Number.isFinite(parsed) || (field.kind === 'integer' && !Number.isSafeInteger(parsed))) throw new Error(`${field.label}의 숫자 형식을 확인해 주세요.`);
+      if (!Number.isFinite(parsed) || (field.kind === 'integer' && !Number.isSafeInteger(parsed))) throw new Error(`Check the number format for ${field.label}.`);
     } else parsed = value;
     Object.defineProperty(args, field.name, { value: parsed, enumerable: true });
   }
@@ -102,6 +102,6 @@ export function parseToolFields(schema: Record<string, unknown>, definitions: To
 
 export function parseToolJson(schema: Record<string, unknown>, source: string): Record<string, unknown> {
   let input: unknown;
-  try { input = JSON.parse(source); } catch { throw new Error('올바른 JSON을 입력해 주세요.'); }
+  try { input = JSON.parse(source); } catch { throw new Error('Enter valid JSON.'); }
   return validateToolInput(schema, input);
 }

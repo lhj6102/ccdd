@@ -1,11 +1,11 @@
 import { readFile } from 'node:fs/promises';
-import { defineConfig, defineTool } from '@lhj6102/ccdd';
+import { defineConfig, defineTool } from '@ccdd/core';
 
 // This factory defines a tool. It does not read the Artifact or execute an app.
 function customTextReader() {
   return defineTool({
     metadata: {
-      description: '{artifactName}의 지정한 줄 범위를 읽습니다.',
+      description: 'Read the specified line range from {artifactName}.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -57,8 +57,8 @@ export default defineConfig(() => ({
     spec: { type: 'document', path: 'spec.md' },
   },
   critics: [{
-    id: 'spec-why', title: 'Spec이 Why에 부합하는가', target: 'spec', deps: ['why'],
+    id: 'spec-why', title: 'Does Spec match Why?', target: 'spec', deps: ['why'],
     profile: { kind: 'agent', provider: 'openai-codex', model: 'gpt-6-astra', reasoning: 'medium' },
-    payload: { instruction: '두 문서를 읽고 Spec이 Why의 최대 개수 조건을 충족하는지 평가하세요.' },
+    payload: { instruction: 'Read both documents and evaluate whether Spec satisfies the maximum task count in Why.' },
   }],
 }));

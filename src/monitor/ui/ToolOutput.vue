@@ -20,25 +20,25 @@ const lines = computed(() => { const values = read.value?.content.split('\n') ??
 <template>
   <div class="tool-output" aria-live="polite">
     <template v-if="content">
-      <p v-if="!content.length" class="tool-notice">도구 실행을 마쳤습니다. 반환된 내용이 없습니다.</p>
+      <p v-if="!content.length" class="tool-notice">The tool finished without returning content.</p>
       <template v-for="(item, index) in content" :key="index">
-        <pre v-if="item.type === 'text' || item.type === 'json'" class="tool-content-text" tabindex="0" :aria-label="item.type === 'json' ? '도구 반환 데이터' : '도구 반환 텍스트'">{{ item.text }}</pre>
-        <figure v-else-if="item.type === 'image'" class="tool-content-image"><img :src="item.src" alt="Artifact 도구가 반환한 이미지" /></figure>
-        <p v-else-if="item.type === 'launch'" class="tool-notice">등록된 프로그램을 실행했습니다. 내용을 확인한 뒤 검토 결과를 제출해 주세요.</p>
-        <p v-else class="inline-error">이 결과 형식을 화면에 표시할 수 없습니다.</p>
+        <pre v-if="item.type === 'text' || item.type === 'json'" class="tool-content-text" tabindex="0" :aria-label="item.type === 'json' ? 'Tool output data' : 'Tool output text'">{{ item.text }}</pre>
+        <figure v-else-if="item.type === 'image'" class="tool-content-image"><img :src="item.src" alt="Image returned by the Artifact tool" /></figure>
+        <p v-else-if="item.type === 'launch'" class="tool-notice">The registered program was launched. Inspect the content, then submit your review result.</p>
+        <p v-else class="inline-error">This result format cannot be displayed.</p>
       </template>
     </template>
     <template v-else-if="read">
-      <div v-if="lines.length" class="code-view" role="region" aria-label="도구로 읽은 Artifact" tabindex="0"><div v-for="(line, index) in lines" :key="index" class="code-line"><span class="line-number" aria-hidden="true">{{ read.startLine + index }}</span><span class="line-content">{{ line }}</span></div></div>
-      <p v-else class="artifact-message">읽은 내용이 없습니다.</p>
-      <div class="artifact-pagination"><span>{{ read.endLine === null ? '읽은 줄 없음' : `${read.startLine}–${read.endLine}줄` }}</span><button v-if="read.nextStartLine !== null" class="text-button" :disabled="busy" @click="emit('page', { startLine: read.nextStartLine })">다음 줄 읽기</button></div>
+      <div v-if="lines.length" class="code-view" role="region" aria-label="Artifact read by the tool" tabindex="0"><div v-for="(line, index) in lines" :key="index" class="code-line"><span class="line-number" aria-hidden="true">{{ read.startLine + index }}</span><span class="line-content">{{ line }}</span></div></div>
+      <p v-else class="artifact-message">No content was read.</p>
+      <div class="artifact-pagination"><span>{{ read.endLine === null ? 'No lines read' : `Lines ${read.startLine}–${read.endLine}` }}</span><button v-if="read.nextStartLine !== null" class="text-button" :disabled="busy" @click="emit('page', { startLine: read.nextStartLine })">Read next lines</button></div>
     </template>
     <template v-else-if="entries">
       <div v-if="entries.length" class="file-list"><button v-for="entry in entries" :key="entry.path" class="file-entry" :disabled="busy || (entry.kind === 'directory' ? !canList : entry.kind !== 'file' || !canRead)" @click="emit('navigate', entry.kind === 'directory' ? 'list' : 'read', entry.path)"><span aria-hidden="true">{{ entry.kind === 'directory' ? '▱' : '·' }}</span>{{ entry.name }}<span class="file-arrow" aria-hidden="true">›</span></button></div>
-      <p v-else class="artifact-message">빈 폴더입니다.</p>
-      <div class="artifact-pagination"><span>{{ entries.length }}개 항목</span><button v-if="nextOffset !== null" class="text-button" :disabled="busy" @click="emit('page', { offset: nextOffset })">다음 파일 보기</button></div>
+      <p v-else class="artifact-message">This folder is empty.</p>
+      <div class="artifact-pagination"><span>Entries: {{ entries.length }}</span><button v-if="nextOffset !== null" class="text-button" :disabled="busy" @click="emit('page', { offset: nextOffset })">View next files</button></div>
     </template>
-    <p v-else-if="result?.kind === 'launch' && result.launched === true" class="tool-notice">등록된 프로그램을 실행했습니다. 내용을 확인한 뒤 검토 결과를 제출해 주세요.</p>
-    <p v-else class="tool-notice">도구 실행을 마쳤습니다.</p>
+    <p v-else-if="result?.kind === 'launch' && result.launched === true" class="tool-notice">The registered program was launched. Inspect the content, then submit your review result.</p>
+    <p v-else class="tool-notice">The tool finished.</p>
   </div>
 </template>

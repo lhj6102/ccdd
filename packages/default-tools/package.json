@@ -1,7 +1,8 @@
 {
-  "name": "@lhj6102/ccdd-default-tools",
-  "version": "2.0.0",
-  "private": true,
+  "name": "@ccdd/default-tools",
+  "version": "2.0.2",
+  "publishConfig": { "access": "public", "registry": "https://registry.npmjs.org/" },
+  "repository": { "type": "git", "url": "git+https://github.com/lhj6102/ccdd.git", "directory": "packages/default-tools" },
   "description": "Explicitly registered Agent CLI and Human desktop Artifact tools for CCDD",
   "type": "module",
   "engines": { "node": ">=24" },
@@ -12,7 +13,7 @@
     "build": "node ../../node_modules/typescript/bin/tsc -p tsconfig.json",
     "prepack": "npm run build"
   },
-  "peerDependencies": { "@lhj6102/ccdd": ">=2.0.0 <3" },
+  "peerDependencies": { "@ccdd/core": ">=2.0.0 <3" },
   "dependencies": { "@earendil-works/pi-agent-core": "0.85.1" },
-  "devDependencies": { "@lhj6102/ccdd": "file:../.." }
+  "devDependencies": { "@ccdd/core": "file:../.." }
 }
