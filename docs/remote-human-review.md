@@ -6,8 +6,7 @@ The publisher hosts the input and the review's assignment/result actions; no
 per-Artifact web viewer or remote desktop is required.
 
 This workflow uses copy-mode Human requests from `ccdd.config.ts`. Both computers
-need the same `@ccdd/project` version and Node.js 22 LTS (22.19.0 or later) or
-Node.js 24 or later. Node 22 support starts with CCDD 3.1.0. The existing local
+need the same `@ccdd/project` version and Node.js 22 LTS (22.19.0 or later). Node 22 support starts with CCDD 3.1.0. The existing local
 monitor remains a loopback interface. Remote lock-mode transfer and legacy JSON
 tool manifests are not supported by the remote CLI.
 

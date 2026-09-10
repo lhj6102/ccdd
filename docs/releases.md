@@ -6,7 +6,7 @@ See [getting started](getting-started.md) for setup and [v3.1.0 release notes](r
 
 ## Installing and upgrading
 
-CCDD 3.1.0 supports Node.js 22 LTS (22.19.0 or later) and Node.js 24 or later. Install matching versions of the three packages:
+CCDD 3.1.0 supports Node.js 22 LTS (22.19.0 or later). Install matching versions of the three packages:
 
 ```sh
 npm install --ignore-scripts @ccdd/core@3.1.0 @ccdd/project@3.1.0 @ccdd/default-tools@3.1.0
@@ -22,9 +22,46 @@ For older projects, follow the [package and import migration](releases/v2.0.1.md
 
 ## Publishing a version
 
-Releases build and verify an exact committed snapshot locally; GitHub Actions runs CI without publishing. You need Git, Node.js 22 LTS (22.19.0 or later) or Node.js 24 or later, npm, dependency download access or a populated cache, an npm account with publication rights in the `@ccdd` organization, and a GitHub CLI (`gh`) login with write access to the origin repository.
+CI runs one Node 22 LTS job on pull requests and main. To publish, merge the
+version change and release notes, then push its version tag:
 
-CCDD 3.1.0 adds Node 22 LTS support and the MIT license. Older packages retain their original requirements. Verify each release on the minimum and current supported LTS runtimes.
+```sh
+git tag v3.1.0 COMMIT_SHA
+git push origin v3.1.0
+```
+
+`release.yml` runs one Node 22 LTS job. It installs npm 11.19.1 and invokes the
+existing release command, which builds and verifies the tagged commit before
+publishing all three packages and creating the GitHub Release. The tag must
+match the package version. npm authenticates through GitHub Actions OIDC and
+the package's registered Trusted Publisher.
+
+### Trusted Publisher setup
+
+Register the following GitHub Actions publisher on each of `@ccdd/core`,
+`@ccdd/project`, and `@ccdd/default-tools`:
+
+- Repository: `lhj6102/ccdd`
+- Workflow filename: `release.yml`
+- Permission: direct publication with `npm publish`
+
+With npm 11.15.0 or later and package owner access:
+
+```sh
+npm trust github @ccdd/core --repository=lhj6102/ccdd --file=release.yml --allow-publish --yes
+npm trust github @ccdd/project --repository=lhj6102/ccdd --file=release.yml --allow-publish --yes
+npm trust github @ccdd/default-tools --repository=lhj6102/ccdd --file=release.yml --allow-publish --yes
+```
+
+npm requires account two-factor authentication for registration. The release
+workflow uses OIDC; it does not require an npm token stored in GitHub secrets.
+See [npm trusted publishing](https://docs.npmjs.com/trusted-publishers/).
+
+## Local verification and publication
+
+The same release command also runs locally and verifies an exact committed snapshot. You need Git, Node.js 22 LTS (22.19.0 or later), npm, dependency download access or a populated cache, an npm account with publication rights in the `@ccdd` organization, and a GitHub CLI (`gh`) login with write access to the origin repository.
+
+CCDD 3.1.0 adds Node 22 LTS support and the MIT license. Older packages retain their original requirements. Run release verification locally with Node 22 LTS, selected by `.nvmrc`.
 
 Keep all three package versions and their lockfile entries aligned. Commit `docs/releases/v<version>.md` with the release notes and push the requested commit to origin. Published npm versions cannot be replaced; use a new coordinated version for changed package contents.
 
@@ -46,7 +83,7 @@ Use a new empty output directory outside the repository for each build. `--outpu
 
 `release:npm:check` uses read-only operations to check Node/npm versions, the logged-in account, email verification, 2FA settings, and the `ccdd` organization role. It does not print tokens or email addresses. An individual npm login does not automatically grant organization publication rights.
 
-Actual publication checks npm authentication and the GitHub source commit and tag before building. Build and test children receive isolated configuration without publisher or Provider credentials. The command clones the requested commit, installs locked dependencies, builds, runs the full test suite, packs all three packages, and verifies production installations and actual tool and Runtime behavior in separate projects. Uncommitted caller changes are excluded. No external LLM or desktop application is called by release verification.
+Publication checks the GitHub source commit and tag before building. GitHub Actions uses OIDC; local publication checks the logged-in npm account and organization role. Build and test children receive isolated configuration without publisher or Provider credentials. The command clones the requested commit, installs locked dependencies, builds, runs the full test suite, packs all three packages, and verifies production installations and actual tool and Runtime behavior in separate projects. Uncommitted caller changes are excluded. No external LLM or desktop application is called by release verification.
 
 Before writing to npm, every existing target package version must match the verified tarball's SHA-512 integrity. Matching versions are skipped; a mismatch stops publication. Packages publish in core → Project → default tools order with public access and the `latest` npm tag. Fresh public metadata confirms each published version; short registry propagation delays are retried.
 

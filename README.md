@@ -68,7 +68,7 @@ Artifact types act as plugin slots through explicit registration. Importing a to
 
 ## Try your first review
 
-CCDD supports **Node.js 22 LTS (22.19.0 or later) and Node.js 24 or later**. Use the latest patch of a supported LTS release.
+CCDD supports **Node.js 22 LTS (22.19.0 or later)**. Use the latest patch of a supported LTS release.
 
 For published packages, install:
 

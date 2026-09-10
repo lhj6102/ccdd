@@ -6,7 +6,7 @@
   "repository": { "type": "git", "url": "git+https://github.com/lhj6102/ccdd.git", "directory": "packages/default-tools" },
   "description": "Explicitly registered Agent CLI and Human desktop Artifact tools for CCDD",
   "type": "module",
-  "engines": { "node": "^22.19.0 || >=24.0.0" },
+  "engines": { "node": "^22.19.0" },
   "exports": { ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" } },
   "types": "./dist/index.d.ts",
   "files": ["dist/", "LICENSE", "README.md"],

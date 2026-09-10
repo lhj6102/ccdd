@@ -87,6 +87,8 @@ test('build children receive isolated public npm and Git settings without Provid
     PATH: '/usr/bin:/bin', TMPDIR: '/tmp', TMP: '/tmp', TEMP: '/tmp', SYSTEMROOT: 'C:\\Windows',
     LANG: 'en_US.UTF-8', LC_ALL: 'C', HOME: '/private-user-home',
     GH_TOKEN: 'private-sentinel-gh', GITHUB_TOKEN: 'private-sentinel-github',
+    ACTIONS_ID_TOKEN_REQUEST_URL: 'https://private-sentinel-oidc.example/',
+    ACTIONS_ID_TOKEN_REQUEST_TOKEN: 'private-sentinel-oidc-token',
     OPENAI_API_KEY: 'private-sentinel-openai', ANTHROPIC_API_KEY: 'private-sentinel-anthropic',
     CCDD_PI_AUTH_FILE: '/private-sentinel-pi-auth', CCDD_CODEX_AUTH_FILE: '/private-sentinel-codex-auth',
     NODE_AUTH_TOKEN: 'private-sentinel-npm', AWS_SECRET_ACCESS_KEY: 'private-sentinel-aws',

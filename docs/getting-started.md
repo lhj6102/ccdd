@@ -4,7 +4,7 @@ This walkthrough reviews a tiny implementation by running one real Node test. It
 
 ## 1. Install CCDD
 
-Use Node.js 22 LTS (22.19.0 or later) or Node.js 24 or later, preferably the latest LTS patch. Check with `node --version`. Node 22 support starts with CCDD 3.1.0. For an unpublished source version, use [Install from local packages](#install-from-local-packages).
+Use Node.js 22 LTS (22.19.0 or later), preferably the latest LTS patch. Check with `node --version`. Node 22 support starts with CCDD 3.1.0. For an unpublished source version, use [Install from local packages](#install-from-local-packages).
 
 Create a new folder outside the CCDD source checkout, or use a small existing project:
 
@@ -131,7 +131,7 @@ The default desktop opener uses macOS's application association. On other platfo
 
 ## Install from local packages
 
-If a package version is not yet published, build tarballs from the CCDD source checkout with Node 22 LTS (22.19.0 or later) or Node 24 or later:
+If a package version is not yet published, build tarballs from the CCDD source checkout with Node 22 LTS (22.19.0 or later):
 
 ```sh
 npm ci
