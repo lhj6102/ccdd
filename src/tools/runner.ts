@@ -10,6 +10,7 @@ import { isArtifactGroup, resolveArtifactScope } from '../artifacts/groups.js';
 import type { ConfigManifest, JsonSchema, ToolMetadata, ToolResult } from './contracts.js';
 import { metadata, object, jsonCopy, validateArguments } from './schema.js';
 import { openToolHost } from './host.js';
+import { matchesToolManifest } from './manifest.js';
 import { scopedPath, within } from './paths.js';
 
 export interface ReviewToolDefinition {
@@ -122,7 +123,7 @@ export async function createReviewTools(options:ReviewToolsOptions):Promise<Revi
   const root=await realpath(worktreePath);
   const host=await openToolHost(root,signal);
   try{
-    if(!isDeepStrictEqual(host.config.configManifest,configManifest)||!isDeepStrictEqual(host.config.artifactTypes,artifactTypes))throw Object.assign(new Error('Recorded tool manifest does not match this snapshot configuration.'),{code:'WORKSPACE_ARTIFACT_MISMATCH'});
+    if(!matchesToolManifest(host.config,configManifest)||!isDeepStrictEqual(host.config.artifactTypes,artifactTypes))throw Object.assign(new Error('Recorded tool manifest does not match this snapshot configuration.'),{code:'WORKSPACE_ARTIFACT_MISMATCH'});
     if(options.criticId!==undefined){
       const critic=host.config.critics.find(value=>value.id===options.criticId);
       const expected=critic?resolveArtifactScope(host.config.artifacts,[critic.target,...critic.deps]):undefined;

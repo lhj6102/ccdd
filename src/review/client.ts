@@ -117,10 +117,12 @@ export async function claimRemoteReview(id: string, options: RemoteReviewOptions
   const { attempt, request } = await api.json<{ attempt: HumanTryClaim; request: PortableReview }>(`${route}/try-claim`, {});
   const controller = new AbortController();
   const signal = options.signal ? AbortSignal.any([options.signal, controller.signal]) : controller.signal;
+  const renewalController = new AbortController();
   let renewal: Promise<unknown> | undefined;
   const heartbeat = setInterval(() => {
     if (renewal) return;
-    renewal = api.json(`${route}/renew`, { attemptId: attempt.id }, signal).catch(error => { controller.abort(error); }).finally(() => { renewal = undefined; });
+    renewal = api.json(`${route}/renew`, { attemptId: attempt.id }, AbortSignal.any([signal, renewalController.signal, AbortSignal.timeout(15_000)]))
+      .catch(error => { if (!renewalController.signal.aborted) controller.abort(error); }).finally(() => { renewal = undefined; });
   }, 20_000);
   try {
     if (request.id !== id || request.packageVersion !== packageVersion || attempt.reviewerId !== api.reviewerId) throw new Error('Invalid Try Claim response.');
@@ -151,7 +153,7 @@ export async function claimRemoteReview(id: string, options: RemoteReviewOptions
     // by lease expiry, and cannot release another reviewer's newer reservation.
     await api.json(`${route}/release`, { attemptId: attempt.id }, AbortSignal.timeout(5_000)).catch(() => {});
     throw error;
-  } finally { clearInterval(heartbeat); await renewal; }
+  } finally { clearInterval(heartbeat); renewalController.abort(); await renewal; }
 }
 
 export async function executeRemoteHumanTool(id: string, toolName: string, args: Record<string, unknown>, options: RemoteReviewOptions): Promise<unknown> {

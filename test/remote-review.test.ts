@@ -284,3 +284,33 @@ test('remote preparation reconnects identical Unicode module paths across review
     for (const [key, value] of Object.entries(saved)) if (value === undefined) delete process.env[key]; else process.env[key] = value;
   }
 });
+
+test('claim completion and preparation errors promptly abort an unanswered lease renewal', async t => {
+  const data = await fixture(t);
+  const fetchRequest = globalThis.fetch, schedule = globalThis.setInterval;
+  let renewals = 0, cancelledRenewals = 0;
+  t.mock.method(globalThis, 'setInterval', (callback: (...args: unknown[]) => void, milliseconds?: number, ...args: unknown[]) => schedule(callback, milliseconds === 20_000 ? 10 : milliseconds, ...args));
+  // The real server still handles every review action and file. Only the renewal
+  // response is lost, simulating an independent stalled connection.
+  t.mock.method(globalThis, 'fetch', (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+    if (String(input).endsWith('/renew')) {
+      renewals++;
+      return new Promise<Response>((_, reject) => {
+        const abort = () => { cancelledRenewals++; reject(init?.signal?.reason); };
+        if (init?.signal?.aborted) abort(); else init?.signal?.addEventListener('abort', abort, { once: true });
+      });
+    }
+    return fetchRequest(input, init);
+  });
+  const controller = new AbortController();
+  try {
+    const result = await Promise.race([claimRemoteReview(data.request.id, { ...data.alice, signal: controller.signal }), delay(5000).then(() => { throw new Error('Claim waited for a lost renewal response.'); })]);
+    assert.equal(result.requestId, data.request.id);
+    assert.ok(renewals > 0 && cancelledRenewals > 0);
+    await writeFile(join(data.repoPath, 'checks', 'environment.mjs'), 'console.error("Missing runtime."); process.exit(3);');
+    const request = await data.submit(), previousCancelled = cancelledRenewals;
+    await assert.rejects(Promise.race([claimRemoteReview(request.id, { ...data.alice, signal: controller.signal }), delay(5000).then(() => { throw new Error('Preparation error waited for a lost renewal response.'); })]), /Missing runtime/);
+    assert.ok(cancelledRenewals > previousCancelled);
+    assert.equal(data.broker.getRequest(request.id)!.tryClaim, undefined);
+  } finally { controller.abort(); }
+});

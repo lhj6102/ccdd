@@ -89,6 +89,12 @@ A transitional `ccdd.config.json` path retains the existing text/files Viewer an
 
 ## Registered Artifact tools
 
+New TS manifests order imported module paths independently of the machine's
+locale. Historical version-1 manifests can retain their saved module order only
+after the runner verifies identical module path/hash pairs and recomputes the
+recorded configuration hash from the actual snapshot definitions. This preserves
+pending requests without accepting changed code, tools, or configuration.
+
 A TS type declares only `agentTools` and `humanTools`. Empty or omitted maps provide no capabilities to that audience. Targets and dependencies expand recursively into leaf Artifacts in stable order, deduplicating shared members. Every supplied leaf must have usable tools for the selected Agent/Human audience; Runtime has its own contract. Groups have no tools of their own. Names retain each leaf ID as `<toolName>_<artifactName>`, with collisions rejected. Tool keys can describe arbitrary operations such as `frame`, `inspectClip`, or `preview`; there is no built-in read/list restriction or required Viewer name.
 
 A tool factory returns `{metadata, execute(context,args), preflight?}`. Calling the factory defines an effect; invoking `execute` performs it. The core accepts user-written functions without the default-tools library.

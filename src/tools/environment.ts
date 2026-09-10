@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process';
 import { mkdir, realpath } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { isDeepStrictEqual } from 'node:util';
+import { matchesToolManifest } from './manifest.js';
 import type { ConfigManifest, EnvironmentRequirement } from './contracts.js';
 import { openToolHost } from './host.js';
 import { environmentRequirements } from './schema.js';
@@ -85,7 +85,7 @@ export async function checkEnvironmentRequirements(options: EnvironmentCheckOpti
   // Reconnect declarations from this exact snapshot before executing any stored script path.
   const host = await openToolHost(root, options.signal).catch(error => { options.signal?.throwIfAborted(); throw error; });
   try {
-    if (!isDeepStrictEqual(host.config.configManifest, options.configManifest)) throw Object.assign(new Error('Recorded environment requirements do not match this snapshot configuration.'), { code: 'WORKSPACE_ARTIFACT_MISMATCH' });
+    if (!matchesToolManifest(host.config, options.configManifest)) throw Object.assign(new Error('Recorded environment requirements do not match this snapshot configuration.'), { code: 'WORKSPACE_ARTIFACT_MISMATCH' });
   } finally { await host.close(); }
   const base = await outputDirectory(root, options.outputDir), checks: EnvironmentCheck[] = [];
   for (const [id, requirement] of Object.entries(requirements)) {
