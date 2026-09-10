@@ -1,6 +1,6 @@
 {
   "name": "@ccdd/project",
-  "version": "2.0.1",
+  "version": "2.0.2",
   "publishConfig": { "access": "public", "registry": "https://registry.npmjs.org/" },
   "repository": { "type": "git", "url": "git+https://github.com/lhj6102/ccdd.git", "directory": "packages/project" },
   "description": "Pull-based project validation, review history and request-scoped CCDD execution",

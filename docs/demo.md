@@ -5,15 +5,15 @@ This guide assumes core, Project, and default tools installed using the [install
 The demo also needs two actual tarball files. Installing packages with `npm install` does not create them. First follow [Preparing tarballs from source](#preparing-tarballs-from-source) below, which writes matching core and default-tools tarballs to `/tmp/ccdd-local-packages`. The following commands use that exact output location. If you prepared packages elsewhere, substitute their absolute paths.
 
 ```sh
-export CCDD_DEMO_CORE_TARBALL=/tmp/ccdd-local-packages/ccdd-core-2.0.1.tgz
-export CCDD_DEMO_TOOLS_TARBALL=/tmp/ccdd-local-packages/ccdd-default-tools-2.0.1.tgz
-export CCDD_DEMO_DIR="$HOME/.local/share/ccdd/demo-2.0.1"
+export CCDD_DEMO_CORE_TARBALL=/tmp/ccdd-local-packages/ccdd-core-2.0.2.tgz
+export CCDD_DEMO_TOOLS_TARBALL=/tmp/ccdd-local-packages/ccdd-default-tools-2.0.2.tgz
+export CCDD_DEMO_DIR="$HOME/.local/share/ccdd/demo-2.0.2"
 export CCDD_CODEX_AUTH_FILE="$HOME/.codex/auth.json" # Example: explicitly bridge an existing Codex access token.
 npx ccdd prepare-demo --demo-dir "$CCDD_DEMO_DIR"
 npx ccdd doctor --demo --demo-dir "$CCDD_DEMO_DIR" --scenario fixed --json
 ```
 
-This example uses a fresh `demo-2.0.1` folder. Omitting `--demo-dir` uses the existing default `~/.local/share/ccdd/demo-v9`. `v9` is the demo format version, separate from the CCDD package version. Earlier demo folders and user configuration are preserved. The four scenarios are separate folders without Git, and their current files can be edited directly. New demos import the separate default tool library in `ccdd.config.ts` and explicitly register Agent CLI reading/listing and Human desktop opening. The default Critics are two Agents and one Runtime; registering Human tools alone does not create Human requests.
+This example uses a fresh `demo-2.0.2` folder. Omitting `--demo-dir` uses the existing default `~/.local/share/ccdd/demo-v9`. `v9` is the demo format version, separate from the CCDD package version. Earlier demo folders and user configuration are preserved. The four scenarios are separate folders without Git, and their current files can be edited directly. New demos import the separate default tool library in `ccdd.config.ts` and explicitly register Agent CLI reading/listing and Human desktop opening. The default Critics are two Agents and one Runtime; registering Human tools alone does not create Human requests.
 
 Preparation installs dependencies once from the specified local tarballs, then physically copies them into each scenario. It does not assume public npm publication; installing public transitive dependencies may require network access or a local cache. All four projects retain their package locks, tarballs, and node_modules, so later snapshots can resolve tools without a parent project. Reusing an existing demo does not reinstall dependencies; choose an empty `--demo-dir` to test a new Release.
 
@@ -53,8 +53,8 @@ npm run build
 mkdir -p /tmp/ccdd-local-packages
 npm pack --ignore-scripts --pack-destination /tmp/ccdd-local-packages
 npm pack --workspace @ccdd/default-tools --ignore-scripts --pack-destination /tmp/ccdd-local-packages
-export CCDD_DEMO_CORE_TARBALL=/tmp/ccdd-local-packages/ccdd-core-2.0.1.tgz
-export CCDD_DEMO_TOOLS_TARBALL=/tmp/ccdd-local-packages/ccdd-default-tools-2.0.1.tgz
+export CCDD_DEMO_CORE_TARBALL=/tmp/ccdd-local-packages/ccdd-core-2.0.2.tgz
+export CCDD_DEMO_TOOLS_TARBALL=/tmp/ccdd-local-packages/ccdd-default-tools-2.0.2.tgz
 ```
 
 These commands pack the current source directly. To prepare source fixed to a commit with full tests and installation verification, use `npm run release -- --commit <40-character SHA> --dry-run --output-dir <empty-external-directory>` and select the two relevant tarballs from its output folder. See the [local release guide](releases.md#releasing-a-specific-commit-locally) for the full procedure.

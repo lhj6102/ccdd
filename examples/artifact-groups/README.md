@@ -10,7 +10,7 @@ In a full Run, both group Critics must wait for the image review to pass because
 
 ## Running the example
 
-Install the three v2.0.1 packages on Node 24 or later. The following download command works after GitHub Release publication; before that, use the local source build below. Start in the CCDD source repository and copy the example into a new project outside it. The download command uses a GitHub CLI login with access to the repository.
+Install the three v2.0.2 packages on Node 24 or later. The following command works after npm publication; before that, use the local source build below. Start in the CCDD source repository and copy the example into a new project outside it.
 
 ```sh
 CCDD_EXAMPLE_ROOT=$(mktemp -d /tmp/ccdd-groups.XXXXXX)
@@ -18,14 +18,7 @@ cp -R examples/artifact-groups "$CCDD_EXAMPLE_ROOT/project"
 cd "$CCDD_EXAMPLE_ROOT/project"
 npm init -y
 npm pkg set type=module
-mkdir -p vendor/ccdd
-gh release download v2.0.1 --repo lhj6102/ccdd --dir vendor/ccdd \
-  --pattern '*.tgz' --pattern SHA256SUMS --pattern verification.json
-(cd vendor/ccdd && shasum -a 256 -c SHA256SUMS)
-npm install --ignore-scripts \
-  ./vendor/ccdd/ccdd-core-2.0.1.tgz \
-  ./vendor/ccdd/ccdd-project-2.0.1.tgz \
-  ./vendor/ccdd/ccdd-default-tools-2.0.1.tgz
+npm install --ignore-scripts @ccdd/core@2.0.2 @ccdd/project@2.0.2 @ccdd/default-tools@2.0.2
 
 # Check group member tool readiness without calling a Provider.
 npx ccdd tools check --artifact explosion --for agent
@@ -36,9 +29,9 @@ npx ccdd tools check --artifact preview --for agent --tool view_image --execute
 npx ccdd run --copy --critic explosion-review --codex-auth-file "$HOME/.codex/auth.json" --wait
 ```
 
-Actual Agent review requires authentication and access to a model supporting image input. See the main README for other authentication methods. Tool checks do not call a model. The `--execute` output above includes actual image blocks in base64.
+Actual Agent review requires authentication and access to a model supporting image input. See the [reviewer guide](../../docs/reviewers.md) for authentication methods. Tool checks do not call a model. The `--execute` output above includes actual image blocks in base64.
 
-If core is already installed, change the first `cp` source to `node_modules/@ccdd/core/examples/artifact-groups`. On Linux, `sha256sum -c SHA256SUMS` can replace `shasum`.
+If core is already installed, change the first `cp` source to `node_modules/@ccdd/core/examples/artifact-groups`.
 
 Start a full Run with Human review by registering a local notification:
 
@@ -64,4 +57,4 @@ npm pack --ignore-scripts --workspace @ccdd/project --pack-destination "$CCDD_LO
 npm pack --ignore-scripts --workspace @ccdd/default-tools --pack-destination "$CCDD_LOCAL_PACKAGES"
 ```
 
-In the same shell, create the new example project from the steps above, then replace Release download and installation with `npm install --ignore-scripts "$CCDD_LOCAL_PACKAGES"/*.tgz`. Subsequent tool checks and review commands are the same. To also run the full test suite and separate installation checks on source fixed to a commit, use `--dry-run` with the [local Release command](../../docs/releases.md#releasing-a-specific-commit-locally).
+In the same shell, create the new example project from the steps above, then replace the npm version installation with `npm install --ignore-scripts "$CCDD_LOCAL_PACKAGES"/*.tgz`. Subsequent tool checks and review commands are the same. To also run the full test suite and separate installation checks on source fixed to a commit, use `--dry-run` with the [local Release command](../../docs/releases.md#releasing-a-specific-commit-locally).

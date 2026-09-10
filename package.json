@@ -1,6 +1,6 @@
 {
   "name": "@ccdd/core",
-  "version": "2.0.1",
+  "version": "2.0.2",
   "publishConfig": { "access": "public", "registry": "https://registry.npmjs.org/" },
   "repository": { "type": "git", "url": "git+https://github.com/lhj6102/ccdd.git" },
   "description": "Artifact, Critic, relationship and tool definitions for CCDD",
