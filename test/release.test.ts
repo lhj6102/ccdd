@@ -1,6 +1,6 @@
 import test, { type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rename, rm, writeFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { gzipSync } from 'node:zlib';
 import { tmpdir } from 'node:os';
@@ -178,10 +178,12 @@ function announcementApi() {
   const api = {
     events,
     failPublish: false,
+    concurrentLatest: null as Record<string, unknown> | null,
     downloads: [] as unknown[],
     setTag(value: string) { tag = value; },
     setLatest(value: Record<string, unknown>) { latest = value; },
     getRelease() { return release; },
+    getLatest() { return latest; },
     async optional(path: string): Promise<unknown> {
       events.push(`GET ${path}`);
       if (path === 'git/ref/tags/v1.0.0') return tag ? { object: { type: 'commit', sha: tag } } : null;
@@ -197,6 +199,8 @@ function announcementApi() {
       if (method === 'POST' && path === 'releases' || method === 'PATCH' && path === 'releases/1') {
         if (api.failPublish) throw new Error('GitHub unavailable');
         release = { id: 1, html_url: 'https://github.com/lhj6102/ccdd/releases/tag/v1.0.0', ...body };
+        if (api.concurrentLatest) latest = api.concurrentLatest;
+        if (body?.make_latest === 'legacy' && (!latest || compareVersions(String(latest.tag_name).slice(1), String(body.tag_name).slice(1)) <= 0)) latest = release;
         if (body?.make_latest === 'true') latest = release;
         return release;
       }
@@ -213,7 +217,7 @@ test('successful npm publication automatically creates an npm announcement and r
   assert.equal(data.published.size, 3);
   const release = api.getRelease()!;
   assert.equal(release.target_commitish, sha);
-  assert.equal(release.make_latest, 'true');
+  assert.equal(release.make_latest, 'legacy');
   assert.equal(release.draft, false);
   assert.match(String(release.body), /npm install --ignore-scripts @ccdd\/core@1\.0\.0 @ccdd\/project@1\.0\.0 @ccdd\/default-tools@1\.0\.0/);
   assert.match(String(release.body), new RegExp(`/blob/${sha}/docs/releases/v1.0.0.md`));
@@ -246,8 +250,16 @@ test('dry runs, partial npm publication and tag conflicts cannot create an annou
 
 test('announcement-only recovery verifies retained bytes and never republishes npm packages', async t => {
   const data = await npmFixture(t), api = announcementApi();
+  const directory = join(data.root, "assets $release `printf unused` 'quoted'");
+  await rename(data.assetsDir, directory);
+  data.assetsDir = directory;
   api.failPublish = true;
-  await assert.rejects(publishNpmAndAnnounce({ ...data, api }), /GitHub unavailable.*\nRetry.*--announce-only --assets-dir/);
+  await assert.rejects(publishNpmAndAnnounce({ ...data, api }), (error: unknown) => {
+    assert.ok(error instanceof Error);
+    assert.match(error.message, /GitHub unavailable.*\nRetry.*--announce-only --assets-dir/);
+    assert.ok(error.message.endsWith("assets $release `printf unused` '\\''quoted'\\'''"));
+    return true;
+  });
   assert.equal(data.published.size, 3);
   data.events.length = 0; api.failPublish = false;
   await publishNpmAndAnnounce({ ...data, api, announceOnly: true });
@@ -266,13 +278,24 @@ test('announcement updates preserve newer Latest releases and refuse to delete e
   api.getRelease()!.body = 'Stale installation instructions';
   api.setLatest({ id: 2, tag_name: 'v2.0.0' });
   await publishNpmAnnouncement({ ...data, api });
-  assert.equal(api.getRelease()!.make_latest, 'false');
+  assert.equal(api.getRelease()!.make_latest, 'legacy');
+  assert.equal(api.getLatest()!.tag_name, 'v2.0.0');
   api.downloads.push({ id: 100, name: 'historical.tgz' });
   api.events.length = 0;
   await assert.rejects(publishNpmAnnouncement({ ...data, api }), /download assets/);
   assert.ok(api.events.every(event => event.startsWith('GET')));
   api.downloads.length = 0; api.setTag(otherSha);
   await assert.rejects(publishNpmAnnouncement({ ...data, api }), /different commit/);
+});
+
+test('an older announcement retry delegates Latest selection when a newer release publishes concurrently', async t => {
+  const data = await npmFixture(t), api = announcementApi();
+  await publishNpmAndAnnounce({ ...data, api });
+  api.getRelease()!.body = 'Needs an announcement refresh';
+  api.concurrentLatest = { id: 2, tag_name: 'v2.0.0' };
+  await publishNpmAnnouncement({ ...data, api });
+  assert.equal(api.getRelease()!.make_latest, 'legacy', 'GitHub must choose Latest on the server rather than receiving a stale forced update');
+  assert.equal(api.getLatest()!.tag_name, 'v2.0.0');
 });
 
 function fakeApi(options: { published?: boolean; draft?: boolean; target?: string; tagged?: string; annotated?: boolean; failUpload?: boolean; corruptDownload?: boolean } = {}) {

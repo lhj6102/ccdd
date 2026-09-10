@@ -48,13 +48,13 @@ export async function publishNpmAnnouncement({ assetsDir, metadata, sourceCommit
     catch (error) { if (error.status !== 422 || await tagCommit(api, metadata.tag) !== sourceCommit) throw error; }
   }
   assert.equal(await tagCommit(api, metadata.tag), sourceCommit, 'Release tag changed; refusing to announce');
-  // Retrying an older release must not displace a newer Latest announcement.
+  // Let GitHub select Latest atomically; a read followed by make_latest:true races newer releases.
   const latest = await api.optional('releases/latest');
-  const latestVersion = /^v(\d+\.\d+\.\d+)$/.exec(latest?.tag_name ?? '')?.[1];
-  const makeLatest = !latestVersion || compareVersions(metadata.version, latestVersion) >= 0;
-  const fields = { tag_name: metadata.tag, target_commitish: sourceCommit, name: `CCDD ${metadata.tag} — Install from npm`, body, draft: false, prerelease: false, make_latest: String(makeLatest) };
+  const latestVersion = /^v((?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*))(?![\s\S])/.exec(latest?.tag_name ?? '')?.[1];
+  const newerLatest = latestVersion && compareVersions(metadata.version, latestVersion) < 0;
+  const fields = { tag_name: metadata.tag, target_commitish: sourceCommit, name: `CCDD ${metadata.tag} — Install from npm`, body, draft: false, prerelease: false, make_latest: 'legacy' };
   const unchanged = state.release && ['name', 'body', 'draft', 'prerelease'].every(key => state.release[key] === fields[key]);
-  if (unchanged && (!makeLatest || latest?.id === state.release.id)) return { status: 'ALREADY_ANNOUNCED', url: state.release.html_url };
+  if (unchanged && (newerLatest || latest?.id === state.release.id)) return { status: 'ALREADY_ANNOUNCED', url: state.release.html_url };
   const release = state.release
     ? await api.request('PATCH', `releases/${state.release.id}`, fields)
     : await api.request('POST', 'releases', fields);
@@ -69,6 +69,7 @@ export async function publishNpmAndAnnounce(options) {
   if (options.dryRun) return result;
   try { return { ...result, announcement: await publishNpmAnnouncement(options) }; }
   catch (error) {
-    throw new Error(`${error.message}\nRetry only the GitHub announcement with npm run release:npm -- --commit ${options.sourceCommit} --announce-only --assets-dir ${JSON.stringify(options.assetsDir)}`);
+    const quotedDirectory = `'${options.assetsDir.replaceAll("'", "'\\''")}'`;
+    throw new Error(`${error.message}\nRetry only the GitHub announcement in a POSIX shell with npm run release:npm -- --commit ${options.sourceCommit} --announce-only --assets-dir ${quotedDirectory}`);
   }
 }
