@@ -1,6 +1,8 @@
-# @lhj6102/ccdd-project
+# @ccdd/project
 
-CCDD 프로젝트 검증 도구. `@lhj6102/ccdd`는 정의만 제공하며 이 패키지가 검증 이력, CLI, Broker, 실행기와 선택적인 모니터를 제공합니다. 기본 도구는 별도 `@lhj6102/ccdd-default-tools` 패키지입니다.
+CCDD 프로젝트 검증 도구. `@ccdd/core`는 정의만 제공하며 이 패키지가 검증 이력, CLI, Broker, 실행기와 선택적인 모니터를 제공합니다. 기본 도구는 별도 `@ccdd/default-tools` 패키지입니다.
+
+Node.js 24 이상이 필요합니다. npm에 게시된 버전은 `npm install --ignore-scripts @ccdd/core @ccdd/project`로 프로젝트에 설치하고 `npx ccdd-project`로 실행합니다. 기본 도구를 사용할 경우 `@ccdd/default-tools`도 설치하세요.
 
 ```sh
 ccdd-project status

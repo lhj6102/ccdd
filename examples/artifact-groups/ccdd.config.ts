@@ -1,5 +1,5 @@
-import { defineConfig } from '@lhj6102/ccdd';
-import { agent, human } from '@lhj6102/ccdd-default-tools';
+import { defineConfig } from '@ccdd/core';
+import { agent, human } from '@ccdd/default-tools';
 
 export default defineConfig({
   artifacts: {

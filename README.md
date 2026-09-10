@@ -4,31 +4,41 @@
 
 | 패키지 | 책임 |
 | --- | --- |
-| `@lhj6102/ccdd` | `defineConfig`, `defineTool`, Artifact·Critic·stale 전략 타입. 실행 의존성과 DB가 없습니다. |
-| `@lhj6102/ccdd-project` | 현재 검증 조회, 필요한 검증 의뢰, 실제 판정 이력, Broker·실행기·모니터. |
-| `@lhj6102/ccdd-default-tools` | 프로젝트가 선택하여 명시적으로 등록하는 관측 도구. |
+| `@ccdd/core` | `defineConfig`, `defineTool`, Artifact·Critic·stale 전략 타입. 실행 의존성과 DB가 없습니다. |
+| `@ccdd/project` | 현재 검증 조회, 필요한 검증 의뢰, 실제 판정 이력, Broker·실행기·모니터. |
+| `@ccdd/default-tools` | 프로젝트가 선택하여 명시적으로 등록하는 관측 도구. |
 
 ## 시작하기
 
-Node.js 24 이상이 필요합니다. [v2.0.0 Release](https://github.com/lhj6102/ccdd/releases/tag/v2.0.0)의 파일을 내려받아 체크섬을 확인한 뒤 리뷰 대상 프로젝트에 설치합니다. 다운로드에는 저장소 접근 권한이 있는 GitHub CLI 로그인이 필요합니다.
+Node.js 24 이상이 필요합니다. 공개 npm 배포를 지원하며, 첫 게시가 완료된 버전부터 리뷰 대상 프로젝트에 다음과 같이 설치할 수 있습니다. npm 게시 절차와 버전 확인은 [배포 안내](docs/releases.md#npm-공개-배포)를 참고하세요.
+
+```sh
+npm init -y
+npm pkg set type=module
+npm install --ignore-scripts @ccdd/core @ccdd/project @ccdd/default-tools
+npx ccdd-project help
+```
+
+GitHub에 같은 버전의 Release가 게시된 경우 tarball로도 설치할 수 있습니다. 다음은 v2.0.1 게시 후의 설치 명령입니다. 다운로드에는 저장소 접근 권한이 있는 GitHub CLI 로그인이 필요합니다.
 
 ```sh
 npm init -y
 npm pkg set type=module
 mkdir -p vendor/ccdd
-gh release download v2.0.0 --repo lhj6102/ccdd --dir vendor/ccdd \
+gh release download v2.0.1 --repo lhj6102/ccdd --dir vendor/ccdd \
   --pattern '*.tgz' --pattern SHA256SUMS --pattern verification.json
 (cd vendor/ccdd && shasum -a 256 -c SHA256SUMS)
 npm install --ignore-scripts \
-  ./vendor/ccdd/lhj6102-ccdd-2.0.0.tgz \
-  ./vendor/ccdd/lhj6102-ccdd-project-2.0.0.tgz \
-  ./vendor/ccdd/lhj6102-ccdd-default-tools-2.0.0.tgz
+  ./vendor/ccdd/ccdd-core-2.0.1.tgz \
+  ./vendor/ccdd/ccdd-project-2.0.1.tgz \
+  ./vendor/ccdd/ccdd-default-tools-2.0.1.tgz
 npx ccdd-project help
 ```
 
-Linux에서는 `sha256sum -c SHA256SUMS`도 사용할 수 있습니다. v1에서 업그레이드할 때는 CLI가 포함된 Project 패키지를 함께 설치합니다. [v2.0.0 변경과 이전 안내](docs/releases/v2.0.0.md)를 참고하세요. 소스 저장소에서 개발할 때는 다음 명령을 사용합니다.
+Linux에서는 `sha256sum -c SHA256SUMS`도 사용할 수 있습니다. v2.0.0까지의 `@lhj6102/ccdd*` 패키지에서는 import 이름도 변경해야 합니다. [v2.0.1 이전 안내](docs/releases/v2.0.1.md)를 참고하세요. 소스 저장소에서 개발할 때는 다음 명령을 사용합니다.
 
 ```sh
+nvm use # nvm 사용 시 .nvmrc의 Node 24 선택
 npm ci
 npm run build
 node dist/src/project/cli.js help
@@ -38,7 +48,7 @@ node dist/src/project/cli.js verify spec --recursive --wait --repo /path/to/proj
 node dist/src/project/cli.js status spec --repo /path/to/project
 ```
 
-리뷰할 프로젝트에는 아래 예제처럼 `ccdd.config.ts`와 그 설정이 가리키는 파일을 둡니다. 설정이 import하는 core와 선택한 도구 라이브러리는 그 프로젝트에도 설치해야 합니다. 세 패키지의 tarball을 설치하면 `npx ccdd-project`를 사용할 수 있습니다. 기본 도구 없이 custom 도구를 사용한다면 core와 Project를 설치합니다. 정의만 사용하는 프로젝트는 core만 설치할 수 있습니다.
+리뷰할 프로젝트에는 아래 예제처럼 `ccdd.config.ts`와 그 설정이 가리키는 파일을 둡니다. 설정이 import하는 core와 선택한 도구 라이브러리는 그 프로젝트에도 설치해야 합니다. 세 패키지를 설치하면 `npx ccdd-project`를 사용할 수 있습니다. 기본 도구 없이 custom 도구를 사용한다면 core와 Project를 설치합니다. 정의만 사용하는 프로젝트는 core만 설치할 수 있습니다.
 
 `status`·`plan`은 현재 입력에 적용 가능한 실제 판정을 조회합니다. `verify`는 필요한 검증을 의뢰하며 기본 입력 정책은 copy입니다. `--recursive`가 없으면 선택한 Critic 중 실행 가능한 것부터 진행하고, 선행 검증이 필요한 항목은 미완료로 보고합니다. 검증 조회는 Provider나 리뷰 도구를 실행하지 않습니다. TS 설정의 평가는 명시적인 현재 입력 조회 시 일어납니다.
 
@@ -126,11 +136,11 @@ ccdd doctor --repo /path/to/project --codex-auth-file "$HOME/.codex/auth.json" -
 
 ## Artifact 도구 설정
 
-설정은 `ccdd.config.ts`입니다. 프로젝트 `package.json`의 `type`은 `module`로 지정합니다(`npm pkg set type=module`). 설정 객체 또는 객체를 반환하는 동기·비동기 함수를 default export합니다. `@lhj6102/ccdd`는 가벼운 `defineConfig`, `defineTool`과 도구 타입을 제공하고, `@lhj6102/ccdd-default-tools`는 선택적으로 설치하는 구현 라이브러리입니다. import하거나 factory를 호출하는 것만으로 파일을 읽거나 프로그램을 실행하지 않습니다.
+설정은 `ccdd.config.ts`입니다. 프로젝트 `package.json`의 `type`은 `module`로 지정합니다(`npm pkg set type=module`). 설정 객체 또는 객체를 반환하는 동기·비동기 함수를 default export합니다. `@ccdd/core`는 가벼운 `defineConfig`, `defineTool`과 도구 타입을 제공하고, `@ccdd/default-tools`는 선택적으로 설치하는 구현 라이브러리입니다. import하거나 factory를 호출하는 것만으로 파일을 읽거나 프로그램을 실행하지 않습니다.
 
 ```ts
-import { defineConfig } from '@lhj6102/ccdd';
-import { agent, human } from '@lhj6102/ccdd-default-tools';
+import { defineConfig } from '@ccdd/core';
+import { agent, human } from '@ccdd/default-tools';
 
 export default defineConfig(() => ({
   artifactTypes: {
@@ -239,9 +249,9 @@ ccdd tools check --artifact tests --for agent --tool read --execute --args '{"pa
 설치한 CLI와 Release의 두 tarball로 네 가지 시나리오를 만들 수 있습니다. tarball 환경변수는 절대경로로 지정하고, 업그레이드할 때는 새 데모 폴더를 선택하세요.
 
 ```sh
-export CCDD_DEMO_CORE_TARBALL="$PWD/vendor/ccdd/lhj6102-ccdd-2.0.0.tgz"
-export CCDD_DEMO_TOOLS_TARBALL="$PWD/vendor/ccdd/lhj6102-ccdd-default-tools-2.0.0.tgz"
-export CCDD_DEMO_DIR="$HOME/.local/share/ccdd/demo-2.0.0"
+export CCDD_DEMO_CORE_TARBALL="$PWD/vendor/ccdd/ccdd-core-2.0.1.tgz"
+export CCDD_DEMO_TOOLS_TARBALL="$PWD/vendor/ccdd/ccdd-default-tools-2.0.1.tgz"
+export CCDD_DEMO_DIR="$HOME/.local/share/ccdd/demo-2.0.1"
 npx ccdd prepare-demo --demo-dir "$CCDD_DEMO_DIR"
 npx ccdd run --demo --demo-dir "$CCDD_DEMO_DIR" --scenario why-change --copy --critic spec-why --wait
 npx ccdd run --demo --demo-dir "$CCDD_DEMO_DIR" --scenario runtime-failure --copy --critic implementation-tests --wait

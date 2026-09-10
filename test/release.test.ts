@@ -8,10 +8,11 @@ import { join } from 'node:path';
 
 // The release driver intentionally stays executable before npm ci / TypeScript build.
 const driverUrl = new URL('../../scripts/release.mjs', import.meta.url);
-const { validateVersions, compareVersions, planRelease, publishRelease, createGitHubClient, validateAssets } = await import(driverUrl.href);
-const sha = 'a'.repeat(40), otherSha = 'b'.repeat(40), coreName = '@lhj6102/ccdd', toolsName = '@lhj6102/ccdd-default-tools';
+const { validateVersions, compareVersions, planRelease, publishRelease, createGitHubClient, validateAssets, readReleaseMetadata } = await import(driverUrl.href);
+const { publishNpmRelease, createNpmClient } = await import(new URL('../../scripts/npm-release.mjs', import.meta.url).href);
+const sha = 'a'.repeat(40), otherSha = 'b'.repeat(40), coreName = '@ccdd/core', toolsName = '@ccdd/default-tools';
 const hash = (bytes: Buffer | string) => createHash('sha256').update(bytes).digest('hex');
-const metadata = { version: '1.0.0', tag: 'v1.0.0', coreFile: 'lhj6102-ccdd-1.0.0.tgz', toolsFile: 'lhj6102-ccdd-default-tools-1.0.0.tgz' };
+const metadata = { version: '1.0.0', tag: 'v1.0.0', coreFile: 'ccdd-core-1.0.0.tgz', toolsFile: 'ccdd-default-tools-1.0.0.tgz' };
 const repository = 'lhj6102/ccdd';
 
 function versions(version = '1.0.0') {
@@ -32,8 +33,8 @@ async function fixture(t: TestContext) {
   return { root, repository, sourceCommit: sha, head: sha };
 }
 
-function tarball(name: string, version = '1.0.0') {
-  const contents = Buffer.from(JSON.stringify({ name, version })), header = Buffer.alloc(512);
+function tarball(name: string, version = '1.0.0', publishConfig?: Record<string, unknown>) {
+  const contents = Buffer.from(JSON.stringify({ name, version, publishConfig })), header = Buffer.alloc(512);
   header.write('package/package.json');
   header.write('0000644\0', 100); header.write('0000000\0', 108); header.write('0000000\0', 116);
   header.write(`${contents.length.toString(8).padStart(11, '0')}\0`, 124);
@@ -45,8 +46,8 @@ function tarball(name: string, version = '1.0.0') {
 
 async function assets(root: string, reportOverrides: Record<string, unknown> = {}) {
   const assetsDir = join(root, 'assets'); await mkdir(assetsDir, { recursive: true });
-  const packages = [[coreName, metadata.coreFile], [toolsName, metadata.toolsFile], ...(typeof reportOverrides.projectFile === 'string' ? [['@lhj6102/ccdd-project', reportOverrides.projectFile]] : [])].map(([name, file]) => {
-    const bytes = tarball(name); return { name, version: '1.0.0', file, sha256: hash(bytes), bytes: bytes.length, content: bytes };
+  const packages = [[coreName, metadata.coreFile], [toolsName, metadata.toolsFile], ...(typeof reportOverrides.projectFile === 'string' ? [['@ccdd/project', reportOverrides.projectFile]] : [])].map(([name, file]) => {
+    const bytes = tarball(name, '1.0.0', reportOverrides.publishConfig as Record<string, unknown> | undefined); return { name, version: '1.0.0', file, sha256: hash(bytes), bytes: bytes.length, content: bytes };
   });
   for (const item of packages) await writeFile(join(assetsDir, item.file), item.content);
   const installations = [
@@ -62,13 +63,98 @@ async function assets(root: string, reportOverrides: Record<string, unknown> = {
 interface Draft { id: number; draft: boolean; tag_name: string; target_commitish: string; html_url: string; upload_url: string }
 
 test('split-package releases require the Project tarball and its installed validation proof', async t => {
-  const f = await fixture(t), projectFile = 'lhj6102-ccdd-project-1.0.0.tgz';
+  const f = await fixture(t), projectFile = 'ccdd-project-1.0.0.tgz';
   const directory = await assets(f.root, { projectFile });
   const files = await validateAssets(directory, { ...metadata, projectFile }, sha);
   assert.equal(files.size, 5); assert.ok(files.has(projectFile));
   await assert.rejects(validateAssets(directory, metadata, sha), /exactly/);
 });
 interface Asset { id: number; name: string; bytes: Buffer }
+
+async function npmFixture(t: TestContext) {
+  const data = await fixture(t), npmMetadata = { ...metadata, projectFile: 'ccdd-project-1.0.0.tgz' };
+  const assetsDir = await assets(data.root, { projectFile: npmMetadata.projectFile, publishConfig: { access: 'public', registry: 'https://registry.npmjs.org/' } });
+  const files = await validateAssets(assetsDir, npmMetadata, sha);
+  const events: string[] = [], published = new Map<string, unknown>();
+  const client = {
+    async version(name: string) { events.push(`GET ${name}`); return published.get(name) ?? null; },
+    async publish(file: string, bytes: Buffer, { dryRun }: { dryRun: boolean }) {
+      events.push(`${dryRun ? 'DRY_RUN' : 'PUBLISH'} ${file}`);
+      assert.deepEqual(bytes, files.get(file), 'Publish the exact verified tarball');
+      if (dryRun) return;
+      const name = file === npmMetadata.coreFile ? coreName : file === npmMetadata.toolsFile ? toolsName : '@ccdd/project';
+      published.set(name, { name, version: '1.0.0', dist: { integrity: `sha512-${createHash('sha512').update(bytes).digest('base64')}` } });
+    },
+  };
+  return { ...data, assetsDir, metadata: npmMetadata, client, events, published };
+}
+
+test('npm release dry-run verifies all three packages without registry writes', async t => {
+  const data = await npmFixture(t);
+  const result = await publishNpmRelease({ ...data, dryRun: true });
+  assert.equal(result.status, 'VERIFIED'); assert.equal(result.published, false); assert.equal(data.published.size, 0);
+  assert.deepEqual(data.events.slice(0, 3), [`GET ${coreName}`, 'GET @ccdd/project', `GET ${toolsName}`]);
+  assert.equal(data.events.filter(event => event.startsWith('DRY_RUN')).length, 3);
+});
+
+test('npm release resumes a partial publish using identical registry integrity and keeps core first', async t => {
+  const data = await npmFixture(t), publish = data.client.publish;
+  data.client.publish = async (...args) => {
+    if (args[0] === data.metadata.projectFile) throw new Error('Interrupted publication');
+    return publish(...args);
+  };
+  await assert.rejects(publishNpmRelease(data), /Interrupted/);
+  assert.deepEqual([...data.published.keys()], [coreName]);
+  data.client.publish = publish;
+  assert.equal((await publishNpmRelease(data)).status, 'PUBLISHED');
+  assert.deepEqual([...data.published.keys()], [coreName, '@ccdd/project', toolsName]);
+  assert.equal(data.events.filter(event => event === `PUBLISH ${metadata.coreFile}`).length, 1);
+  const before = data.events.length;
+  assert.equal((await publishNpmRelease(data)).status, 'ALREADY_PUBLISHED');
+  assert.ok(data.events.slice(before).every(event => event.startsWith('GET')));
+});
+
+test('npm release rejects conflicting remote bytes or bad local evidence before any publish', async t => {
+  const data = await npmFixture(t);
+  data.published.set(toolsName, { name: toolsName, version: '1.0.0', dist: { integrity: 'sha512-different' } });
+  await assert.rejects(publishNpmRelease(data), /different bytes/);
+  assert.ok(data.events.every(event => event.startsWith('GET')));
+  data.published.clear(); data.events.length = 0;
+  await writeFile(join(data.assetsDir, metadata.coreFile), 'tampered');
+  await assert.rejects(publishNpmRelease(data), /SHA-256/);
+  assert.deepEqual(data.events, []);
+});
+
+test('npm release refuses archives without explicit public publishing configuration', async t => {
+  const data = await npmFixture(t);
+  await assets(data.root, { projectFile: data.metadata.projectFile });
+  await assert.rejects(publishNpmRelease(data), /explicitly publish/);
+  assert.deepEqual(data.events, []);
+});
+
+test('npm publication does not claim success when registry metadata is not yet available', async t => {
+  const data = await npmFixture(t);
+  data.client.version = async () => null;
+  await assert.rejects(publishNpmRelease(data), /not confirmed.*Rerun the same commit/);
+  assert.deepEqual([...data.published.keys()], [coreName], 'Stop before publishing dependent packages');
+});
+
+test('npm metadata errors and cancellation cannot masquerade as an unpublished version', async () => {
+  for (const status of [401, 403, 429, 500]) {
+    const client = createNpmClient({}, async () => new Response('sensitive response', { status }));
+    await assert.rejects(client.version(coreName, '1.0.0'), new RegExp(`HTTP ${status}`));
+  }
+  const missing = createNpmClient({}, async (url: string, options: { headers?: unknown }) => {
+    assert.equal(url, 'https://registry.npmjs.org/%40ccdd%2Fcore/1.0.0');
+    assert.equal(options.headers, undefined);
+    return new Response('', { status: 404 });
+  });
+  assert.equal(await missing.version(coreName, '1.0.0'), null);
+  const cancelled = createNpmClient({ signal: AbortSignal.abort(new Error('Cancelled')) }, async () => assert.fail('Cancelled lookup must not fetch'));
+  await assert.rejects(cancelled.version(coreName, '1.0.0'), /Cancelled/);
+  await assert.rejects(cancelled.publish('unused.tgz', Buffer.from('unused'), { dryRun: true }), /Cancelled/);
+});
+
 function fakeApi(options: { published?: boolean; draft?: boolean; target?: string; tagged?: string; annotated?: boolean; failUpload?: boolean; corruptDownload?: boolean } = {}) {
   let nextAsset = 1;
   const api = {
@@ -117,6 +203,21 @@ test('release versions require aligned packages, lock entries, stable semver and
   ]) { const data = versions(); mutate(data); assert.throws(() => validateVersions(data.core, data.tools, data.lock)); }
   for (const version of ['1.0.0-rc.1', '1.0', '01.0.0', '1.0.0\n', 'v1.0.0']) { const data = versions(version); assert.throws(() => validateVersions(data.core, data.tools, data.lock)); }
   assert.equal(compareVersions('1.10.0', '1.9.0'), 1);
+});
+
+test('historical release metadata keeps the original namespace and archive filenames', async t => {
+  const data = await fixture(t), oldCore = '@lhj6102/ccdd', oldTools = '@lhj6102/ccdd-default-tools';
+  const core = { name: oldCore, version: '1.0.0' }, tools = { name: oldTools, version: '1.0.0', peerDependencies: { [oldCore]: '>=1.0.0 <2' } };
+  const lock = { ...core, packages: { '': core, 'packages/default-tools': tools } };
+  await writeFile(join(data.root, 'package.json'), JSON.stringify(core));
+  await writeFile(join(data.root, 'packages/default-tools/package.json'), JSON.stringify(tools));
+  await writeFile(join(data.root, 'package-lock.json'), JSON.stringify(lock));
+  const result = await readReleaseMetadata(data.root);
+  assert.equal(result.coreFile, 'lhj6102-ccdd-1.0.0.tgz');
+  assert.equal(result.toolsFile, 'lhj6102-ccdd-default-tools-1.0.0.tgz');
+  assert.equal(result.packageNames.core, oldCore);
+  assert.equal(result.projectFile, undefined);
+  assert.throws(() => validateVersions(core, versions().tools, lock), /package names/);
 });
 
 test('local plans use explicit repository and commit inputs and only read remote release state', async t => {

@@ -1,6 +1,6 @@
 # Implementation contracts
 
-Definition-only core `@lhj6102/ccdd`, project tool `@lhj6102/ccdd-project`, and optional library `@lhj6102/ccdd-default-tools` use strict TypeScript compiled to Node 24 ESM. Core exports definitions and identity helpers with no runtime dependencies, CLI or database. Project Validation, Broker and Executors are separate bounded contexts packaged in Project; its SQLite stores evidence and execution history. A request-scoped worker runs one Run; no daemon, global broker-owner lock, or automatic queue scanner is required. The optional local monitor delegates explicit current-input inspection to Project Validation and Human actions to the Broker. It does not own execution.
+Definition-only core `@ccdd/core`, project tool `@ccdd/project`, and optional library `@ccdd/default-tools` use strict TypeScript compiled to Node 24 ESM. Core exports definitions and identity helpers with no runtime dependencies, CLI or database. Project Validation, Broker and Executors are separate bounded contexts packaged in Project; its SQLite stores evidence and execution history. A request-scoped worker runs one Run; no daemon, global broker-owner lock, or automatic queue scanner is required. The optional local monitor delegates explicit current-input inspection to Project Validation and Human actions to the Broker. It does not own execution.
 
 Artifact groups and the default image tool are included in v1.1.0. Existing leaf-only configurations and recorded requests retain their contracts.
 
@@ -48,8 +48,8 @@ The config declares `artifacts`, `artifactTypes`, and a `critics` array whose or
 Groups are independent review targets and dependencies. Their required Critics determine their verdict, without propagating it to members or inheriting member verdicts. Membership grants observation scope but adds no dependency edge or scheduling gate. A group Critic must explicitly declare member IDs in `deps` if their evaluations must pass first.
 
 ```ts
-import { defineConfig } from '@lhj6102/ccdd';
-import { agent, human } from '@lhj6102/ccdd-default-tools';
+import { defineConfig } from '@ccdd/core';
+import { agent, human } from '@ccdd/default-tools';
 
 export default defineConfig(() => ({
   artifacts: {
@@ -112,7 +112,7 @@ Common auditing records only safe successful tool name, arguments, time, bound A
 
 ## Default tool library
 
-`@lhj6102/ccdd-default-tools` is a separate optional package with a compatible core peer dependency and type-only SDK imports. Importing it or calling a factory performs no I/O and registers nothing. Projects explicitly import and register the definitions they want. Both packages can be installed from local tarballs without private npm publication.
+`@ccdd/default-tools` is a separate optional package with a compatible core peer dependency and type-only SDK imports. Importing it or calling a factory performs no I/O and registers nothing. Projects explicitly import and register the definitions they want. Both packages can be installed from local tarballs without private npm publication.
 
 Agent defaults use packaged Node CLIs with fixed operation arguments; no general shell tool or global executable is installed. `agent.text.read()` supports a file Artifact. `agent.files.read()` and `agent.files.list()` support directory Artifacts. Read args are `startLine` (default 1) and `lineCount` (default 80, maximum 500); directory read also requires an internal file `path`. List args keep optional internal `path`, zero-based `offset`, and `limit` up to 200.
 

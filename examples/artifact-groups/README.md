@@ -10,7 +10,7 @@
 
 ## 실행
 
-Node 24 이상에서 [v2.0.0 Release](https://github.com/lhj6102/ccdd/releases/tag/v2.0.0)의 세 tarball을 설치합니다. 아래 명령은 CCDD 소스 저장소에서 시작하며, 예제를 저장소 밖의 새 프로젝트로 복사합니다. 다운로드에는 이 비공개 저장소에 접근할 수 있는 GitHub CLI 로그인이 필요합니다.
+Node 24 이상에서 v2.0.1의 세 패키지를 설치합니다. 다음 다운로드 명령은 GitHub Release 게시 후 사용할 수 있으며, 게시 전에는 아래 로컬 소스 빌드 절차를 사용합니다. 아래 명령은 CCDD 소스 저장소에서 시작하며, 예제를 저장소 밖의 새 프로젝트로 복사합니다. 다운로드에는 이 비공개 저장소에 접근할 수 있는 GitHub CLI 로그인이 필요합니다.
 
 ```sh
 CCDD_EXAMPLE_ROOT=$(mktemp -d /tmp/ccdd-groups.XXXXXX)
@@ -19,13 +19,13 @@ cd "$CCDD_EXAMPLE_ROOT/project"
 npm init -y
 npm pkg set type=module
 mkdir -p vendor/ccdd
-gh release download v2.0.0 --repo lhj6102/ccdd --dir vendor/ccdd \
+gh release download v2.0.1 --repo lhj6102/ccdd --dir vendor/ccdd \
   --pattern '*.tgz' --pattern SHA256SUMS --pattern verification.json
 (cd vendor/ccdd && shasum -a 256 -c SHA256SUMS)
 npm install --ignore-scripts \
-  ./vendor/ccdd/lhj6102-ccdd-2.0.0.tgz \
-  ./vendor/ccdd/lhj6102-ccdd-project-2.0.0.tgz \
-  ./vendor/ccdd/lhj6102-ccdd-default-tools-2.0.0.tgz
+  ./vendor/ccdd/ccdd-core-2.0.1.tgz \
+  ./vendor/ccdd/ccdd-project-2.0.1.tgz \
+  ./vendor/ccdd/ccdd-default-tools-2.0.1.tgz
 
 # Provider 호출 없이 그룹 구성원의 도구 준비 상태를 확인합니다.
 npx ccdd tools check --artifact explosion --for agent
@@ -38,7 +38,7 @@ npx ccdd run --copy --critic explosion-review --codex-auth-file "$HOME/.codex/au
 
 실제 Agent 리뷰에는 이미지 입력을 지원하는 모델의 인증·접근 권한이 필요합니다. 다른 인증 방식은 본체 README를 참고하세요. 도구 검사는 모델을 호출하지 않습니다. 위 명령의 `--execute` 결과에는 실제 이미지의 base64 블록이 포함됩니다.
 
-이미 본체를 설치했다면 첫 `cp`의 원본을 `node_modules/@lhj6102/ccdd/examples/artifact-groups`로 바꿉니다. Linux에서는 `shasum` 대신 `sha256sum -c SHA256SUMS`를 사용할 수 있습니다.
+이미 본체를 설치했다면 첫 `cp`의 원본을 `node_modules/@ccdd/core/examples/artifact-groups`로 바꿉니다. Linux에서는 `shasum` 대신 `sha256sum -c SHA256SUMS`를 사용할 수 있습니다.
 
 전체 Run과 Human 검토는 로컬 알림을 등록하여 시작합니다.
 
@@ -60,8 +60,8 @@ npm ci
 npm run build
 CCDD_LOCAL_PACKAGES=$(mktemp -d /tmp/ccdd-group-packages.XXXXXX)
 npm pack --ignore-scripts --pack-destination "$CCDD_LOCAL_PACKAGES"
-npm pack --ignore-scripts --workspace @lhj6102/ccdd-project --pack-destination "$CCDD_LOCAL_PACKAGES"
-npm pack --ignore-scripts --workspace @lhj6102/ccdd-default-tools --pack-destination "$CCDD_LOCAL_PACKAGES"
+npm pack --ignore-scripts --workspace @ccdd/project --pack-destination "$CCDD_LOCAL_PACKAGES"
+npm pack --ignore-scripts --workspace @ccdd/default-tools --pack-destination "$CCDD_LOCAL_PACKAGES"
 ```
 
 같은 셸에서 위 실행 절차의 새 예제 프로젝트를 만들고, Release 다운로드·설치 대신 `npm install --ignore-scripts "$CCDD_LOCAL_PACKAGES"/*.tgz`를 실행합니다. 이후 도구 검사·리뷰 명령은 같습니다. 커밋에 고정된 소스의 전체 테스트와 별도 설치 검증도 하려면 [로컬 Release 명령](../../docs/releases.md#커밋을-지정하여-로컬에서-배포)의 `--dry-run`을 사용합니다.

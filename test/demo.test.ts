@@ -1,6 +1,6 @@
 import test, { type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
-import {mkdtemp,mkdir,cp,rm,readFile,writeFile,access,readdir} from 'node:fs/promises';
+import {mkdtemp,mkdir,cp,rm,readFile,writeFile,access,readdir,rename} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join,dirname} from 'node:path';
 import {spawnSync} from 'node:child_process';
@@ -12,13 +12,13 @@ import {readWorkspaceConfig} from '../src/broker/config.js';
 
 /** Avoid network in scenario tests while using the actual built SDK/default library modules. */
 const installFixtureDependencies:DemoDependencyInstaller=async({stagePath})=>{
-  const core=join(stagePath,'node_modules/@lhj6102/ccdd');
-  const tools=join(stagePath,'node_modules/@lhj6102/ccdd-default-tools');
+  const core=join(stagePath,'node_modules/@ccdd/core');
+  const tools=join(stagePath,'node_modules/@ccdd/default-tools');
   await mkdir(core,{recursive:true}); await mkdir(tools,{recursive:true});
   await cp(fileURLToPath(new URL('../src/sdk.js',import.meta.url)),join(core,'sdk.js'));
   const {version}=JSON.parse(await readFile(new URL('../../package.json',import.meta.url),'utf8'));
-  await writeFile(join(core,'package.json'),JSON.stringify({name:'@lhj6102/ccdd',version,type:'module',exports:'./sdk.js'}));
-  const toolsDist=dirname(fileURLToPath(import.meta.resolve('@lhj6102/ccdd-default-tools')));
+  await writeFile(join(core,'package.json'),JSON.stringify({name:'@ccdd/core',version,type:'module',exports:'./sdk.js'}));
+  const toolsDist=dirname(fileURLToPath(import.meta.resolve('@ccdd/default-tools')));
   await cp(toolsDist,join(tools,'dist'),{recursive:true});
   await cp(join(toolsDist,'../package.json'),join(tools,'package.json'));
   await writeFile(join(stagePath,'package-lock.json'),JSON.stringify({name:'ccdd-focus-demo',lockfileVersion:3,packages:{}}));
@@ -93,4 +93,19 @@ test('a new demo requires both package inputs before creating any directory',asy
   await assert.rejects(access(root),{code:'ENOENT'});
   await assert.rejects(prepareDemo({root,coreTarball:join(dir,'missing.tgz'),toolsTarball:join(dir,'also-missing.tgz')}),/existing regular files/);
   assert.deepEqual(await readdir(dir),[]);
+});
+
+test('saved demos using the previous npm namespace are reused without rewriting their config', async t => {
+  const options = await demoOptions(t), manifest = await prepareDemo(options);
+  const saved: string[] = [];
+  for (const scenario of manifest.scenarios) {
+    const configPath = join(scenario.repoPath, 'ccdd.config.ts');
+    const config = (await readFile(configPath, 'utf8')).replaceAll('@ccdd/core', '@lhj6102/ccdd').replaceAll('@ccdd/default-tools', '@lhj6102/ccdd-default-tools');
+    await writeFile(configPath, config); saved.push(config);
+    await mkdir(join(scenario.repoPath, 'node_modules/@lhj6102'), { recursive: true });
+    await rename(join(scenario.repoPath, 'node_modules/@ccdd/core'), join(scenario.repoPath, 'node_modules/@lhj6102/ccdd'));
+    await rename(join(scenario.repoPath, 'node_modules/@ccdd/default-tools'), join(scenario.repoPath, 'node_modules/@lhj6102/ccdd-default-tools'));
+  }
+  assert.deepEqual(await prepareDemo({ root: options.root }), manifest);
+  for (const [index, scenario] of manifest.scenarios.entries()) assert.equal(await readFile(join(scenario.repoPath, 'ccdd.config.ts'), 'utf8'), saved[index]);
 });

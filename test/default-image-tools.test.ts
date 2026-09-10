@@ -4,7 +4,7 @@ import { access, cp, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile 
 import { tmpdir } from 'node:os';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { agent } from '@lhj6102/ccdd-default-tools';
+import { agent } from '@ccdd/default-tools';
 import { fauxAssistantMessage, fauxProvider, fauxToolCall } from '@earendil-works/pi-ai';
 import type { ToolContext } from '../src/sdk.js';
 import { createExecutorRegistry } from '../src/executors/index.js';
@@ -114,9 +114,9 @@ test('default image tool preserves cancellation and process time limits', async 
 test('explicit default view_image registration reaches the scoped Runner and Pi Agent with an audited image observation', async t => {
   const data = await fixture(t);
   const repoPath = join(data.root, 'project');
-  const defaultsRoot = fileURLToPath(new URL('../', import.meta.resolve('@lhj6102/ccdd-default-tools')));
+  const defaultsRoot = fileURLToPath(new URL('../', import.meta.resolve('@ccdd/default-tools')));
   const sourceModules = resolve(defaultsRoot, '../../node_modules');
-  const targetDefaults = join(repoPath, 'node_modules/@lhj6102/ccdd-default-tools');
+  const targetDefaults = join(repoPath, 'node_modules/@ccdd/default-tools');
   await mkdir(targetDefaults, { recursive: true });
   await cp(join(defaultsRoot, 'package.json'), join(targetDefaults, 'package.json'));
   await cp(join(defaultsRoot, 'dist'), join(targetDefaults, 'dist'), { recursive: true });
@@ -128,7 +128,7 @@ test('explicit default view_image registration reaches the scoped Runner and Pi 
   }
   await writeFile(join(repoPath, 'preview.png'), png);
   await writeFile(join(repoPath, 'ccdd.config.ts'), `
-import { agent } from '@lhj6102/ccdd-default-tools';
+import { agent } from '@ccdd/default-tools';
 export default {
   artifacts: { preview: { type: 'image', path: 'preview.png' } },
   artifactTypes: { image: { agentTools: { view_image: agent.image.view() } } },

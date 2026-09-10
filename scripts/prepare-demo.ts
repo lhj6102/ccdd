@@ -27,15 +27,18 @@ export async function prepareDemo({root=join(process.env.CCDD_DEMO_HOME || join(
     if(existing.version!==9 || existing.scenarios?.length!==4)throw new Error('Incompatible demo manifest.');
     for(const scenario of existing.scenarios) {
       await access(resolve(scenario.repoPath,'ccdd.config.ts'));
-      await access(resolve(scenario.repoPath,'node_modules/@lhj6102/ccdd/package.json'));
-      await access(resolve(scenario.repoPath,'node_modules/@lhj6102/ccdd-default-tools/package.json'));
+      // Saved demos keep their original package imports and installed implementation.
+      let names = ['@ccdd/core', '@ccdd/default-tools'];
+      try { await access(resolve(scenario.repoPath, `node_modules/${names[0]}/package.json`)); }
+      catch { names = ['@lhj6102/ccdd', '@lhj6102/ccdd-default-tools']; }
+      for (const name of names) await access(resolve(scenario.repoPath, `node_modules/${name}/package.json`));
     }
     return existing;
   }catch(error){
     const entries=await readdir(root).catch(e=>{if((e as NodeJS.ErrnoException).code==='ENOENT')return [];throw e;});
     if(entries.length)throw new Error('Demo directory already contains files; choose a new --demo-dir to preserve them.');
   }
-  if (!coreTarball || !toolsTarball) throw new Error('A new TS demo requires local package tarballs. Build and pack @lhj6102/ccdd and @lhj6102/ccdd-default-tools, then set CCDD_DEMO_CORE_TARBALL and CCDD_DEMO_TOOLS_TARBALL to their absolute paths. See README.md CLI demo.');
+  if (!coreTarball || !toolsTarball) throw new Error('A new TS demo requires local package tarballs. Build and pack @ccdd/core and @ccdd/default-tools, then set CCDD_DEMO_CORE_TARBALL and CCDD_DEMO_TOOLS_TARBALL to their absolute paths. See README.md CLI demo.');
   coreTarball=resolve(coreTarball);toolsTarball=resolve(toolsTarball);
   for(const path of [coreTarball,toolsTarball]) if(!(await stat(path).catch(()=>null))?.isFile()) throw new Error('Demo package tarballs must be existing regular files; build and pack both packages before preparing the demo.');
   await mkdir(root,{recursive:true});
@@ -43,11 +46,11 @@ export async function prepareDemo({root=join(process.env.CCDD_DEMO_HOME || join(
   await mkdir(join(stagePath,'vendor'),{recursive:true});
   await cp(coreTarball,join(stagePath,'vendor/ccdd.tgz'));
   await cp(toolsTarball,join(stagePath,'vendor/default-tools.tgz'));
-  const packageJson={name:'ccdd-focus-demo',version:'1.0.0',private:true,type:'module',dependencies:{'@lhj6102/ccdd':'file:vendor/ccdd.tgz','@lhj6102/ccdd-default-tools':'file:vendor/default-tools.tgz'}};
+  const packageJson={name:'ccdd-focus-demo',version:'1.0.0',private:true,type:'module',dependencies:{'@ccdd/core':'file:vendor/ccdd.tgz','@ccdd/default-tools':'file:vendor/default-tools.tgz'}};
   await writeFile(join(stagePath,'package.json'),JSON.stringify(packageJson,null,2)+'\n');
   await installDependencies({stagePath,coreTarball,toolsTarball});
-  await access(join(stagePath,'node_modules/@lhj6102/ccdd/package.json'));
-  await access(join(stagePath,'node_modules/@lhj6102/ccdd-default-tools/package.json'));
+  await access(join(stagePath,'node_modules/@ccdd/core/package.json'));
+  await access(join(stagePath,'node_modules/@ccdd/default-tools/package.json'));
 
   const why=(limit:number)=>`# Why — 한 번에 집중할 일\n\n해야 할 일이 많으면 다음 일을 고르는 데 시간을 쓴다.\n미완료 작업 중 중요도가 높은 일을 먼저, 중요도가 같다면 예상 시간이 짧은 일을 먼저 보여준다.\n한 번에 제안하는 작업은 최대 ${limit}개다. 완료한 일은 제안에서 제외한다.\n추천을 조회하는 것만으로 원래 작업 목록이나 작업 내용을 변경해서는 안 된다.\n같은 중요도와 예상 시간이면 원래 입력 순서를 지킨다.\n이 데모의 목적은 우선순위를 정하는 규칙을 명확히 검증하는 것이다.\n`;
   const spec=(limit:number)=>`# Spec — focusTasks\n\n## 입력\n작업 배열의 각 원소는 id, title, priority(1~5, 높을수록 중요), minutes(양의 정수), done(boolean)를 가진다.\n입력은 이 형식을 만족한다고 가정하며 입력 오류 처리는 이번 범위에 포함하지 않는다.\n\n## 동작\n1. done이 false인 작업만 남긴다.\n2. priority가 큰 순서로 정렬한다.\n3. priority가 같으면 minutes가 작은 순서로 정렬한다.\n4. 두 값 모두 같으면 입력 순서를 유지한다.\n5. 정렬 결과에서 최대 ${limit}개 작업을 반환한다.\n6. 원래 배열과 작업 객체의 내용은 변경하지 않는다.\n7. 미완료 작업이 없으면 빈 배열을 반환한다.\n\n## 구현 경계\nimplementation/focus.mjs에서 focusTasks(tasks)를 named export한다. 반환값은 위 조건을 만족하는 작업들의 배열이다.\n외부 네트워크나 시간 의존성을 두지 않는다.\n`;
@@ -61,8 +64,8 @@ export async function prepareDemo({root=join(process.env.CCDD_DEMO_HOME || join(
     {id:'tests-spec',title:'Tests가 Spec에 부합하는가',target:'tests',deps:['spec'],profile,payload:{instruction:`${common}\nBasis: {spec}. Target: {tests}. Read the test files and check their assertions cover the stated behavior. The implementation code is intentionally unavailable: this review evaluates the tests as an artifact, not whether implementation passes them. Standard JS test/assert imports are allowed.`}},
     {id:'implementation-tests',title:'테스트 런타임 통과',target:'implementation',deps:['tests'],profile:{kind:'runtime',command:'node',args:['--test','tests/rank.test.mjs']},payload:{instruction:'Run the actual Node test suite against the snapshot implementation. Return GREEN only on exit code 0.'}}
   ];
-  const configSource=`import { defineConfig } from '@lhj6102/ccdd';
-import { agent, human } from '@lhj6102/ccdd-default-tools';
+  const configSource=`import { defineConfig } from '@ccdd/core';
+import { agent, human } from '@ccdd/default-tools';
 
 export default defineConfig(() => ({
   artifacts: ${JSON.stringify(artifacts,null,2)},

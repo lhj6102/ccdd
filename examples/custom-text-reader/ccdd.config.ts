@@ -1,5 +1,5 @@
 import { readFile } from 'node:fs/promises';
-import { defineConfig, defineTool } from '@lhj6102/ccdd';
+import { defineConfig, defineTool } from '@ccdd/core';
 
 // This factory defines a tool. It does not read the Artifact or execute an app.
 function customTextReader() {

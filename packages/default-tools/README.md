@@ -1,10 +1,12 @@
 # CCDD default tools
 
-Optional tool implementations for `@lhj6102/ccdd`. This library does not register tools automatically. Import a factory and explicitly put its returned definition in your repository's `ccdd.config.ts`:
+Published versions can be installed with `npm install --ignore-scripts @ccdd/core @ccdd/default-tools` on Node.js 24 or later. Install `@ccdd/project` as well to use the project CLI.
+
+Optional tool implementations for `@ccdd/core`. This library does not register tools automatically. Import a factory and explicitly put its returned definition in your repository's `ccdd.config.ts`:
 
 ```ts
-import { defineConfig } from '@lhj6102/ccdd';
-import { agent, human } from '@lhj6102/ccdd-default-tools';
+import { defineConfig } from '@ccdd/core';
+import { agent, human } from '@ccdd/default-tools';
 
 export default defineConfig(() => ({
   artifactTypes: {

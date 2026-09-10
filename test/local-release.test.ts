@@ -35,11 +35,14 @@ test('local release requires an exact commit and rejects ambiguous or repeated C
   assert.equal(options.help, false);
   assert.equal(parseArguments(['--commit', commit]).dryRun, false);
   assert.equal(parseArguments(['--help']).help, true);
+  assert.equal(parseArguments(['--npm', '--commit', commit, '--dry-run']).npm, true);
+  assert.equal(parseArguments(['--commit', commit]).npm, false);
   for (const argv of [
     [], ['--dry-run'], ['--commit'], ['--commit', '--dry-run'],
     ['--commit', 'main'], ['--commit', 'a'.repeat(39)], ['--commit', 'a'.repeat(41)],
     ['--commit', 'A'.repeat(40)], ['--commit', `${commit}\n`], ['--commit', ` ${commit}`],
     ['--commit', commit, '--commit', commit], ['--commit', commit, '--dry-run', '--dry-run'],
+    ['--commit', commit, '--npm', '--npm'],
     ['--commit', commit, '--output-dir'], ['--commit', commit, '--force'],
     ['--commit', commit, 'unexpected'],
   ]) assert.throws(() => parseArguments(argv), JSON.stringify(argv));

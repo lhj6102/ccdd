@@ -15,17 +15,17 @@ gh release download v2.0.0 --repo lhj6102/ccdd --dir vendor/ccdd \
   --pattern '*.tgz' --pattern SHA256SUMS --pattern verification.json
 (cd vendor/ccdd && shasum -a 256 -c SHA256SUMS)
 npm install --ignore-scripts \
-  ./vendor/ccdd/lhj6102-ccdd-2.0.0.tgz \
-  ./vendor/ccdd/lhj6102-ccdd-project-2.0.0.tgz
+  ./vendor/ccdd/ccdd-core-2.0.0.tgz \
+  ./vendor/ccdd/ccdd-project-2.0.0.tgz
 npx ccdd tools check --artifact spec --for agent --tool read
 npx ccdd tools check --artifact spec --for agent --tool read --execute --args '{"startLine":1,"lineCount":20}'
 npx ccdd run --copy --critic spec-why --codex-auth-file "$HOME/.codex/auth.json" --wait
 ```
 
-다운로드에는 저장소 접근 권한이 있는 GitHub CLI 로그인이 필요합니다. 이 예제는 core와 Project를 설치하며 기본 도구 라이브러리는 사용하지 않습니다. 소스 저장소에서 `npm run release -- --commit <40자리 SHA> --dry-run`으로 검증·생성한 같은 버전의 core·Project tarball로도 설치할 수 있습니다. 이 로컬 검증에는 GitHub 인증이 필요하지 않습니다. 이미 CCDD를 설치했다면 첫 `cp`의 원본을 `node_modules/@lhj6102/ccdd/examples/custom-text-reader`로 바꿉니다.
+다운로드에는 저장소 접근 권한이 있는 GitHub CLI 로그인이 필요합니다. 이 예제는 core와 Project를 설치하며 기본 도구 라이브러리는 사용하지 않습니다. 소스 저장소에서 `npm run release -- --commit <40자리 SHA> --dry-run`으로 검증·생성한 같은 버전의 core·Project tarball로도 설치할 수 있습니다. 이 로컬 검증에는 GitHub 인증이 필요하지 않습니다. 이미 CCDD를 설치했다면 첫 `cp`의 원본을 `node_modules/@ccdd/core/examples/custom-text-reader`로 바꿉니다.
 
 도구의 `preflight`는 생략했습니다. 기본 검사는 등록 확인과 실제 실행 미검증을 구분하며, `--execute`는 파일을 실제로 읽습니다. Agent 리뷰에는 유효한 Provider 인증이 필요합니다.
 
 이 Reader는 구조를 보여주기 위한 작은 구현입니다. 파일을 메모리로 읽은 뒤 1MiB 이하인지 확인하며, 반환 텍스트는 64KiB로 제한합니다. 큰 파일은 스트리밍 리더가 적합합니다. UTF-8·CRLF와 마지막 줄바꿈을 보존하고, 빈 파일과 EOF 이후 읽기를 구분합니다. 실제 내용이나 빈 파일을 관측했을 때만 관측 receipt를 반환합니다.
 
-Human 도구를 Agent Reader로 복제하지 않았습니다. 이 타입에는 Human 도구가 없으므로 Human Critic에 사용할 수 없습니다. 사람의 열람을 추가하려면 데스크톱 프로그램을 여는 사용자 도구를 작성하거나 `@lhj6102/ccdd-default-tools`의 `human.desktop.open()`을 명시적으로 등록합니다.
+Human 도구를 Agent Reader로 복제하지 않았습니다. 이 타입에는 Human 도구가 없으므로 Human Critic에 사용할 수 없습니다. 사람의 열람을 추가하려면 데스크톱 프로그램을 여는 사용자 도구를 작성하거나 `@ccdd/default-tools`의 `human.desktop.open()`을 명시적으로 등록합니다.

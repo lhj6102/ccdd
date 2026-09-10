@@ -1,7 +1,8 @@
 {
-  "name": "@lhj6102/ccdd",
-  "version": "2.0.0",
-  "private": true,
+  "name": "@ccdd/core",
+  "version": "2.0.1",
+  "publishConfig": { "access": "public", "registry": "https://registry.npmjs.org/" },
+  "repository": { "type": "git", "url": "git+https://github.com/lhj6102/ccdd.git" },
   "description": "Artifact, Critic, relationship and tool definitions for CCDD",
   "type": "module",
   "types": "./dist/src/sdk.d.ts",
@@ -13,7 +14,7 @@
   "scripts": {
     "build": "node scripts/clean-build.mjs && npm run build:core && npm run build:tools && node node_modules/typescript/bin/tsc -p tsconfig.json && npm run build:ui && npm run build:project",
     "build:core": "node node_modules/typescript/bin/tsc -p tsconfig.runtime.json",
-    "build:tools": "npm run build --workspace @lhj6102/ccdd-default-tools",
+    "build:tools": "npm run build --workspace @ccdd/default-tools",
     "build:project": "node scripts/build-project.mjs",
     "build:ui": "npm run typecheck:ui && vite build --config vite.config.ts",
     "typecheck:ui": "node src/monitor/ui/typecheck.cjs -p tsconfig.ui.json --noEmit",
@@ -22,6 +23,8 @@
     "test:packages": "npm run build && node scripts/smoke-project.mjs",
     "prepack": "npm run build",
     "release": "node scripts/local-release.mjs",
+    "release:npm": "node scripts/local-release.mjs --npm",
+    "release:npm:check": "node scripts/check-npm.mjs",
     "demo:prepare": "npm run build && node dist/src/cli.js prepare-demo",
     "demo": "npm run build && node dist/src/cli.js run --demo --copy --wait"
   },

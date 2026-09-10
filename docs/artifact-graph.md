@@ -3,8 +3,8 @@
 Critic은 평가할 Artifact 하나를 `target`으로, 판단의 근거로 읽는 다른 Artifact들을 `deps` 배열로 선언합니다. `critics` 배열의 순서는 실행 순서가 아닙니다. `deps → target` 관계가 Artifact DAG를 만들며, 같은 Artifact를 여러 Critic이 평가할 수 있습니다.
 
 ```ts
-import { defineConfig } from '@lhj6102/ccdd';
-import { agent, human } from '@lhj6102/ccdd-default-tools';
+import { defineConfig } from '@ccdd/core';
+import { agent, human } from '@ccdd/default-tools';
 
 export default defineConfig(() => ({
   artifacts: {

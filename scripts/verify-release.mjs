@@ -10,9 +10,9 @@ import { promisify } from 'node:util';
 
 const exec = promisify(execFile);
 const sourceDirectory = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const coreName = '@lhj6102/ccdd';
-const toolsName = '@lhj6102/ccdd-default-tools';
-const projectName = '@lhj6102/ccdd-project';
+const coreName = '@ccdd/core';
+const toolsName = '@ccdd/default-tools';
+const projectName = '@ccdd/project';
 const sha256 = bytes => createHash('sha256').update(bytes).digest('hex');
 const within = (parent, child) => { const path = relative(parent, child); return path === '' || (!path.startsWith(`..${sep}`) && path !== '..' && !isAbsolute(path)); };
 
@@ -105,7 +105,9 @@ export async function packPackage(cwd, expectedName, version, outputDirectory, e
   const manifest = JSON.parse((await command('tar', ['-xOf', tarball, 'package/package.json'], { env: environment })).stdout);
   assert.equal(manifest.name, expectedName);
   assert.equal(manifest.version, version);
-  assert.equal(manifest.private, true, 'GitHub Releases must not change npm publication policy');
+  const sourceManifest = JSON.parse(await readFile(join(cwd, 'package.json'), 'utf8'));
+  assert.equal(manifest.private, sourceManifest.private, 'Packing must preserve npm publication policy');
+  assert.deepEqual(manifest.publishConfig, sourceManifest.publishConfig, 'Packing must preserve npm registry and access settings');
   const required = expectedName === coreName
     ? ['dist/src/sdk.js', 'dist/src/sdk.d.ts', 'dist/src/definitions.d.ts', 'dist/src/tools/contracts.d.ts', 'examples/custom-text-reader/ccdd.config.ts']
     : expectedName === projectName ? ['dist/src/cli.js', 'dist/src/project/cli.js', 'dist/src/project/index.js', 'dist/src/worker.js', 'dist/scripts/prepare-demo.js', 'dist/monitor-ui/index.html']
@@ -118,8 +120,8 @@ export async function packPackage(cwd, expectedName, version, outputDirectory, e
 
 function fixtureConfig(withDefaults) {
   const imports = withDefaults
-    ? "import { defineConfig } from '@lhj6102/ccdd';\nimport { agent } from '@lhj6102/ccdd-default-tools';"
-    : "import { defineConfig, defineTool } from '@lhj6102/ccdd';\nimport { readFile } from 'node:fs/promises';";
+    ? "import { defineConfig } from '@ccdd/core';\nimport { agent } from '@ccdd/default-tools';"
+    : "import { defineConfig, defineTool } from '@ccdd/core';\nimport { readFile } from 'node:fs/promises';";
   const reader = withDefaults ? 'agent.text.read()' : `defineTool({
     metadata: { description: 'Read {artifactName} with a custom tool.',
       inputSchema: { type: 'object', properties: {}, additionalProperties: false },

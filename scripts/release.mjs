@@ -5,9 +5,9 @@ import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { gunzipSync } from 'node:zlib';
 
-const coreName = '@lhj6102/ccdd';
-const toolsName = '@lhj6102/ccdd-default-tools';
-const projectName = '@lhj6102/ccdd-project';
+const coreName = '@ccdd/core';
+const toolsName = '@ccdd/default-tools';
+const projectName = '@ccdd/project';
 const stable = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?![\s\S])/;
 const commitPattern = /^[0-9a-f]{40}(?![\s\S])/;
 const hashPattern = /^[0-9a-f]{64}(?![\s\S])/;
@@ -15,6 +15,13 @@ const repositoryPattern = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+(?![\s\S])/;
 const sha256 = bytes => createHash('sha256').update(bytes).digest('hex');
 const invariant = (condition, message) => { if (!condition) throw new Error(message); };
 const jsonFile = async file => JSON.parse(await readFile(file, 'utf8'));
+
+function namesForCore(name) {
+  invariant(name === coreName || name === '@lhj6102/ccdd', 'Unexpected release package names.');
+  return name === coreName ? { core: coreName, tools: toolsName, project: projectName }
+    : { core: '@lhj6102/ccdd', tools: '@lhj6102/ccdd-default-tools', project: '@lhj6102/ccdd-project' };
+}
+const tarballFile = (name, version) => `${name.slice(1).replace('/', '-')}-${version}.tgz`;
 
 export function compareVersions(left, right) {
   invariant(stable.test(left) && stable.test(right), 'Release versions must be stable major.minor.patch values.');
@@ -24,7 +31,8 @@ export function compareVersions(left, right) {
 }
 
 export function validateVersions(core, tools, lock) {
-  invariant(core.name === coreName && tools.name === toolsName, 'Unexpected release package names.');
+  const { core: coreName, tools: toolsName } = namesForCore(core.name);
+  invariant(tools.name === toolsName, 'Unexpected release package names.');
   invariant(typeof core.version === 'string' && stable.test(core.version), 'Release version must be stable major.minor.patch.');
   invariant(core.version === tools.version, 'Core and default tools versions must match.');
   const peer = tools.peerDependencies?.[coreName];
@@ -42,17 +50,18 @@ export async function readReleaseMetadata(root) {
     jsonFile(resolve(root, 'package.json')), jsonFile(resolve(root, 'packages/default-tools/package.json')), jsonFile(resolve(root, 'package-lock.json')),
   ]);
   const version = validateVersions(core, tools, lock), tag = `v${version}`;
+  const packageNames = namesForCore(core.name);
   // Historical two-package releases remain verifiable; current workspaces must include Project.
   const project = await jsonFile(resolve(root, 'packages/project/package.json')).catch(error => { if (error.code === 'ENOENT' && !core.workspaces?.includes('packages/project')) return null; throw error; });
   if (project) {
-    invariant(project.name === projectName && project.version === version, 'Project package name or version differs from core.');
-    const peer = project.peerDependencies?.[coreName], range = typeof peer === 'string' && /^>=(\d+\.\d+\.\d+) <(0|[1-9]\d*)$/.exec(peer);
+    invariant(project.name === packageNames.project && project.version === version, 'Project package name or version differs from core.');
+    const peer = project.peerDependencies?.[packageNames.core], range = typeof peer === 'string' && /^>=(\d+\.\d+\.\d+) <(0|[1-9]\d*)$/.exec(peer);
     invariant(range && compareVersions(version, range[1]) >= 0 && BigInt(version.split('.')[0]) < BigInt(range[2]), 'Project peer range must include this core version.');
-    invariant(lock.packages?.['packages/project']?.version === version && lock.packages['packages/project'].peerDependencies?.[coreName] === peer, 'Project package-lock version or peer range is stale.');
+    invariant(lock.packages?.['packages/project']?.version === version && lock.packages['packages/project'].peerDependencies?.[packageNames.core] === peer, 'Project package-lock version or peer range is stale.');
   }
   const notes = await readFile(resolve(root, `docs/releases/${tag}.md`), 'utf8');
   invariant(notes.trim(), `Release notes docs/releases/${tag}.md must not be empty.`);
-  return { version, tag, notes, coreFile: `lhj6102-ccdd-${version}.tgz`, toolsFile: `lhj6102-ccdd-default-tools-${version}.tgz`, ...(project ? { projectFile: `lhj6102-ccdd-project-${version}.tgz` } : {}) };
+  return { version, tag, notes, packageNames, coreFile: tarballFile(core.name, version), toolsFile: tarballFile(tools.name, version), ...(project ? { projectFile: tarballFile(project.name, version) } : {}) };
 }
 
 function validateRepository(repository) {
@@ -130,7 +139,7 @@ export async function planRelease({ root = process.cwd(), repository, sourceComm
 }
 
 // Read the packed manifest without extracting or executing archive contents.
-function packedManifest(bytes) {
+export function packedManifest(bytes) {
   const tar = gunzipSync(bytes, { maxOutputLength: 256 * 1024 * 1024 });
   let manifest;
   for (let offset = 0; offset + 512 <= tar.length;) {
@@ -153,7 +162,8 @@ function packedManifest(bytes) {
 }
 
 export async function validateAssets(directory, metadata, sha) {
-  const packages = [[coreName, metadata.coreFile], [toolsName, metadata.toolsFile], ...(metadata.projectFile ? [[projectName, metadata.projectFile]] : [])];
+  const namesForRelease = metadata.packageNames ?? namesForCore(coreName);
+  const packages = [[namesForRelease.core, metadata.coreFile], [namesForRelease.tools, metadata.toolsFile], ...(metadata.projectFile ? [[namesForRelease.project, metadata.projectFile]] : [])];
   const names = [...packages.map(([, file]) => file), 'verification.json', 'SHA256SUMS'].sort();
   invariant(JSON.stringify((await readdir(directory)).sort()) === JSON.stringify(names), 'Release assets must contain exactly the declared package tarballs, verification.json and SHA256SUMS.');
   const files = new Map();

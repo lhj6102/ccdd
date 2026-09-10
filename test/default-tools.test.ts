@@ -4,7 +4,7 @@ import { access, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } fr
 import { tmpdir } from 'node:os';
 import { isAbsolute, join, relative, sep } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
-import { agent, human } from '@lhj6102/ccdd-default-tools';
+import { agent, human } from '@ccdd/default-tools';
 import type { JsonValue, ToolContext, ToolResult } from '../src/sdk.js';
 
 async function fixture(t: TestContext, contents = '첫째\r\nsecond\nthird', directory = false) {

@@ -2,7 +2,7 @@ import { constants } from 'node:fs';
 import { access, stat } from 'node:fs/promises';
 import { delimiter, isAbsolute, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import type { JsonSchema, JsonValue, ToolContext, ToolDefinition, ToolResult } from '@lhj6102/ccdd';
+import type { JsonSchema, JsonValue, ToolContext, ToolDefinition, ToolResult } from '@ccdd/core';
 import { internalPath, objectArguments } from './reader.js';
 import { runToolProcess, toolEnvironment } from './process.js';
 import { imageContent, MAX_IMAGE_OUTPUT_BYTES } from './image-result.js';

@@ -1,6 +1,6 @@
 # Project Validation CLI UX
 
-CCDD config는 Artifact, Critic, 관계와 입력 동일성 기준을 정의한다. `@lhj6102/ccdd-project`의 `ccdd-project` 명령은 현재 검증 조회, 실제 검증 의뢰와 이력을 담당한다. 기존 `ccdd` 실행 파일은 같은 Project 패키지의 호환 인터페이스로 유지한다.
+CCDD config는 Artifact, Critic, 관계와 입력 동일성 기준을 정의한다. `@ccdd/project`의 `ccdd-project` 명령은 현재 검증 조회, 실제 검증 의뢰와 이력을 담당한다. 기존 `ccdd` 실행 파일은 같은 Project 패키지의 호환 인터페이스로 유지한다.
 
 ## 합의한 동작
 
