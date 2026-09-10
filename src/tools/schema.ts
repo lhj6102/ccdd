@@ -1,6 +1,7 @@
 import { Type } from 'typebox';
 import { Compile } from 'typebox/compile';
-import type { JsonSchema, ToolMetadata } from './contracts.js';
+import type { EnvironmentRequirement, JsonSchema, ToolMetadata } from './contracts.js';
+import { posix, win32 } from 'node:path';
 
 export const object = (value: unknown): value is Record<string, any> => value !== null && typeof value === 'object' && !Array.isArray(value);
 export function jsonCopy<T>(value: T): T {
@@ -48,11 +49,37 @@ export function validateArguments(schema: JsonSchema, args: unknown): Record<str
 }
 export function metadata(value: unknown): ToolMetadata {
   const result = jsonCopy(value);
-  if (!object(result) || Object.keys(result).some(key=>!['description','inputSchema','resultKinds','observation','artifactKind','timeoutMs'].includes(key))) throw new Error('Invalid tool metadata.');
+  if (!object(result) || Object.keys(result).some(key=>!['description','inputSchema','resultKinds','observation','artifactKind','timeoutMs','executionPaths'].includes(key))) throw new Error('Invalid tool metadata.');
   if (typeof result.description !== 'string' || !result.description.trim() || result.description.length>4000 || /[{}]/.test(result.description.replaceAll('{artifactName}',''))) throw new Error('Tool description requires text and supports only {artifactName}.');
   validateSchema(result.inputSchema);
   if (!Array.isArray(result.resultKinds) || !result.resultKinds.length || new Set(result.resultKinds).size!==result.resultKinds.length || result.resultKinds.some((v:unknown)=>!['text','json','image','launch'].includes(v as string))) throw new Error('Invalid tool resultKinds.');
   if (!['content','none'].includes(result.observation) || (result.artifactKind!==undefined && !['file','directory','any'].includes(result.artifactKind))) throw new Error('Invalid tool observation or artifact kind.');
   if (result.timeoutMs!==undefined && (!Number.isSafeInteger(result.timeoutMs)||result.timeoutMs<1||result.timeoutMs>900000)) throw new Error('Tool timeoutMs must be 1–900000.');
+  if (result.executionPaths !== undefined) declaredPaths(result.executionPaths);
   return result as unknown as ToolMetadata;
+}
+
+export function projectInputPath(value: unknown): asserts value is string {
+  if (typeof value !== 'string' || !value || value.length > 1024 || posix.isAbsolute(value) || win32.isAbsolute(value) || /[\\\x00-\x1f\x7f]/.test(value) || value.split('/').some(part => !part || part === '.' || part === '..')) {
+    throw new Error('Execution input must be a safe project-relative path.');
+  }
+}
+
+function declaredPaths(value: unknown): asserts value is string[] {
+  if (!Array.isArray(value) || value.length > 64 || new Set(value).size !== value.length) throw new Error('Execution inputs must be at most 64 unique project-relative paths.');
+  value.forEach(projectInputPath);
+}
+
+export function environmentRequirements(value: unknown): Record<string, EnvironmentRequirement> {
+  if (!object(value) || Object.keys(value).length > 32) throw new Error('envRequirements must be a map of at most 32 checks.');
+  const result = jsonCopy(value);
+  for (const [id, requirement] of Object.entries(result)) {
+    if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(id) || !object(requirement) || Object.keys(requirement).some(key => !['description','script','timeoutMs','inputs'].includes(key))) throw new Error('Invalid environment requirement.');
+    if (typeof requirement.description !== 'string' || !requirement.description.trim() || requirement.description.length > 2000) throw new Error(`Environment requirement ${id} needs a description.`);
+    projectInputPath(requirement.script);
+    if (!/\.(?:[cm]?js|[cm]?ts)$/.test(requirement.script)) throw new Error(`Environment requirement ${id} must use a Node JavaScript or TypeScript script.`);
+    if (requirement.timeoutMs !== undefined && (!Number.isSafeInteger(requirement.timeoutMs) || requirement.timeoutMs < 1 || requirement.timeoutMs > 900000)) throw new Error('Environment timeoutMs must be 1–900000.');
+    if (requirement.inputs !== undefined) declaredPaths(requirement.inputs);
+  }
+  return result as Record<string, EnvironmentRequirement>;
 }

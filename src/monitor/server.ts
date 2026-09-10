@@ -11,6 +11,7 @@ import { reopenWorkspace } from '../workspaces/index.js';
 import { createMonitorStore } from './store.js';
 import { inspectProject } from '../project/index.js';
 import { MonitorActionError, authorizeWorkspace, claimReview, completeReview, executeReviewTool } from './actions.js';
+import { activeTryClaim } from '../broker/human-claims.js';
 import type { MonitorArtifactPage, MonitorDetail, MonitorFilter, MonitorLane, MonitorSession, MonitorSources } from './types.js';
 
 const ARTIFACT_BUDGET_MS = 10_000;
@@ -141,10 +142,12 @@ async function staticAssets(): Promise<Map<string, [string, Buffer]>> {
 async function decorateDetail(detail: MonitorDetail, record: MonitorStoredRequest, reviewerId?: string): Promise<MonitorDetail> {
   const waiting = detail.request.kind === 'human' && detail.request.status === 'WAITING_HUMAN';
   const claimedByMe = Boolean(reviewerId && detail.request.claimedBy === reviewerId);
+  const reservation = waiting ? activeTryClaim(record.request) : undefined;
   detail.human = {
-    canClaim: waiting && !detail.request.claimedBy && detail.request.workerState !== 'missing',
+    canClaim: waiting && !detail.request.claimedBy && !reservation && detail.request.workerState !== 'missing',
     canComplete: waiting && claimedByMe && Boolean(record.request.notifiedAt) && detail.request.workerState !== 'missing',
     claimedByMe,
+    ...(reservation ? { tryClaim: { reviewerId: reservation.reviewerId, expiresAt: reservation.expiresAt, preparingByMe: reservation.reviewerId === reviewerId } } : {}),
   };
   detail.tools = [];
   detail.artifactPreview = record.request.configManifest ? 'tools' : 'legacy';
@@ -227,7 +230,13 @@ export async function startMonitor(options: MonitorSources & { port?: number } =
           if (!record) throw new HttpError(404, 'Review request not found.');
           if (record.request.id !== requestId) throw new HttpError(409, 'The stored review identifier does not match.');
           if (action[3] === 'claim') {
-            bodyShape(input, []); await claimReview(record, reviewerId);
+            bodyShape(input, []);
+            const controller = new AbortController();
+            const disconnect = () => { if (!response.writableEnded) controller.abort(new Error('Monitor client disconnected.')); };
+            response.once('close', disconnect); active.add(controller);
+            const timer = setTimeout(() => controller.abort(new HttpError(504, 'Review preparation timed out.')), 900_000);
+            try { await claimReview(record, reviewerId, controller.signal); }
+            finally { clearTimeout(timer); response.off('close', disconnect); active.delete(controller); }
           } else if (action[3] === 'complete') {
             bodyShape(input, ['verdict', 'summary', 'evidence']);
             if ((input.verdict !== 'GREEN' && input.verdict !== 'RED') || typeof input.summary !== 'string' || !input.summary.trim() || input.summary.length > 12_000 || !Array.isArray(input.evidence) || input.evidence.length < 1 || input.evidence.length > 100 || !input.evidence.every(item => typeof item === 'string' && item.trim().length > 0 && item.length <= 4_000)) throw new HttpError(400, 'Check the verdict, summary, and evidence list.');
@@ -246,7 +255,7 @@ export async function startMonitor(options: MonitorSources & { port?: number } =
           }
           const updated = await store.detail(projectId, requestId);
           if (!updated) throw new HttpError(404, 'Review request not found.');
-          json(response, await decorateDetail(updated, record, reviewerId));
+          json(response, await decorateDetail(updated, await store.request(projectId, requestId) ?? record, reviewerId));
         } finally { mutations.delete(key); }
         return;
       }

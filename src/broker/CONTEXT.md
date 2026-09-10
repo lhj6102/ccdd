@@ -60,9 +60,13 @@ _Avoid_: execution error, progress status
 A review request that cannot start yet because required reviews of referenced Artifacts are not satisfied.
 _Avoid_: failed review, RED verdict
 
+**Human Try Claim**:
+An exclusive temporary reservation while a human reviewer prepares the fixed review input and checks the required environment. Successful preparation confirms a Human Claim; unsuccessful preparation leaves the request available for another attempt.
+_Avoid_: Human Claim, review failure, verdict
+
 **Human Claim**:
-A commitment by one human reviewer to submit the result of a waiting review.
-_Avoid_: completion, verdict
+A confirmed commitment by one human reviewer, after preparing the review input and environment, to submit the result of a waiting review.
+_Avoid_: Human Try Claim, completion, verdict
 
 **Review Workspace**:
 The complete workspace from which a review reads input. It either monitors the original for changes or uses an immutable copy.

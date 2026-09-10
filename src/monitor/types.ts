@@ -23,7 +23,10 @@ export interface MonitorOverview {
 }
 export interface MonitorSession { reviewerId: string; csrfToken: string }
 export interface MonitorValidation { plan: ProjectPlan; observedAt: string }
-export interface MonitorHumanState { canClaim: boolean; canComplete: boolean; claimedByMe: boolean }
+export interface MonitorHumanState {
+  canClaim: boolean; canComplete: boolean; claimedByMe: boolean;
+  tryClaim?: { reviewerId: string; expiresAt: string; preparingByMe: boolean };
+}
 export interface MonitorHumanTool {
   name: string; description: string; inputSchema: Record<string, unknown>;
   artifactId: string; operation: string;

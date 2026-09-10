@@ -58,7 +58,7 @@ test('JSON Human group review resumes from its copied composition and reads leaf
   const resumed = open();
   assert.deepEqual(resumed.getRequest(request.id)?.artifactGroups, groups);
   await assert.rejects(resumed.executeHumanTool(request.id, { reviewerId: 'reviewer', toolName: 'read_spec' }), /reviewer who claimed/);
-  resumed.claimHuman(request.id, 'reviewer');
+  await resumed.claimHuman(request.id, 'reviewer');
   for (const [id, content] of [['spec', 'Original specification.'], ['preview', 'Original preview notes.'], ['why', 'Original purpose.']]) {
     const result = await resumed.executeHumanTool(request.id, { reviewerId: 'reviewer', toolName: `read_${id}` });
     assert.ok('content' in result);

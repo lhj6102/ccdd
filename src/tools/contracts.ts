@@ -10,6 +10,8 @@ export interface ToolMetadata {
   observation: 'content' | 'none';
   artifactKind?: 'file' | 'directory' | 'any';
   timeoutMs?: number;
+  /** Project-relative runtime files or directories whose bytes affect this tool. */
+  executionPaths?: string[];
 }
 export interface ToolContext {
   artifactId: string;
@@ -19,6 +21,8 @@ export interface ToolContext {
   tmpDir: string;
   signal: AbortSignal;
   resolvePath(path?: string): Promise<string>;
+  /** Resolve only paths explicitly registered in metadata.executionPaths. */
+  resolveExecutionPath?(path: string): Promise<string>;
 }
 export type ToolContent = { type: 'text'; text: string } | { type: 'json'; data: JsonValue }
   | { type: 'image'; path: string; mimeType: 'image/png' | 'image/jpeg' | 'image/webp' }
@@ -31,13 +35,24 @@ export interface ToolDefinition<Args = Record<string, unknown>> {
   preflight?(context: ToolContext): { ok: boolean; message: string } | Promise<{ ok: boolean; message: string }>;
 }
 export interface ArtifactToolsConfig { agentTools?: Record<string, ToolDefinition<any>>; humanTools?: Record<string, ToolDefinition<any>> }
-export interface Config { artifacts: Record<string, ArtifactEntryDefinition>; artifactTypes: Record<string, ArtifactToolsConfig>; critics: CriticDefinition[] }
+export interface EnvironmentRequirement {
+  description: string;
+  /** Project-relative Node script; a zero exit status confirms readiness. */
+  script: string;
+  timeoutMs?: number;
+  /** Additional project files or directories used by the check. */
+  inputs?: string[];
+}
+export interface Config { artifacts: Record<string, ArtifactEntryDefinition>; artifactTypes: Record<string, ArtifactToolsConfig>; critics: CriticDefinition[]; envRequirements?: Record<string, EnvironmentRequirement> }
 export type ConfigFactory = () => Config | Promise<Config>;
 export interface ConfigManifest {
   version: 1;
   configHash: string;
   modules: { path: string; hash: string }[];
   types: Record<string, { agentTools: Record<string, ToolMetadata>; humanTools: Record<string, ToolMetadata> }>;
+  envRequirements?: Record<string, EnvironmentRequirement>;
+  environmentInputs?: { path: string; hash: string }[];
+  executionInputs?: { path: string; hash: string }[];
 }
 type Properties<S> = S extends { properties: infer P } ? P : {};
 type RequiredKeys<S> = S extends { required: readonly (infer K)[] } ? K : never;

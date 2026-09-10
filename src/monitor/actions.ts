@@ -31,11 +31,11 @@ function available(record: MonitorStoredRequest, reviewerId: string, requireClai
 }
 
 /** Mutations are explicitly requested; normal monitor reads never open a Broker. */
-export async function claimReview(record: MonitorStoredRequest, reviewerId: string): Promise<void> {
+export async function claimReview(record: MonitorStoredRequest, reviewerId: string, signal?: AbortSignal): Promise<void> {
   available(record, reviewerId, false);
   await authorizeWorkspace(record);
   const broker = createBroker(record);
-  try { broker.claimHuman(record.request.id, reviewerId); }
+  try { await broker.claimHuman(record.request.id, reviewerId, { signal }); }
   finally { await broker.close(); }
 }
 

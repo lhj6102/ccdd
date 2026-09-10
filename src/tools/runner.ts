@@ -139,7 +139,8 @@ export async function createReviewTools(options:ReviewToolsOptions):Promise<Revi
       const artifact=artifacts.find(value=>value.id===tool.artifactId)!;
       const path=await scopedPath(root,artifact.path),info=await lstat(path),shape=tool.metadata?.artifactKind;
       if(shape==='file'&&!info.isFile()||shape==='directory'&&!info.isDirectory())throw new Error('Tool does not support this Artifact shape.');
-      return host.call({action,artifact,type:artifact.type,audience,toolKey:tool.operation,args:arguments_,outputDir,tmpDir:temporary},action==='preflight'?10000:tool.metadata?.timeoutMs??120000);
+      const reviewerEnvironment=audience==='human'?Object.fromEntries(['HOME','USERPROFILE','CARGO_HOME','RUSTUP_HOME'].flatMap(name=>process.env[name]===undefined?[]:[[name,process.env[name]!]])):undefined;
+      return host.call({action,artifact,type:artifact.type,audience,toolKey:tool.operation,args:arguments_,outputDir,tmpDir:temporary,...(reviewerEnvironment?{reviewerEnvironment}:{})},action==='preflight'?10000:tool.metadata?.timeoutMs??120000);
     };
     return {tools,toolCalls,validateArguments:args,close:host.close,
       async call(name,value={}){

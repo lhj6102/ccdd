@@ -37,7 +37,7 @@ test('Human tools require the active claimant, read the snapshot, and never subm
   await broker.run(run.id);
   const requestId = run.requests[0].id;
   await assert.rejects(broker.executeHumanTool(requestId, { reviewerId: 'alice', toolName: 'read_why' }), /reviewer who claimed/);
-  broker.claimHuman(requestId, 'alice');
+  await broker.claimHuman(requestId, 'alice');
   await assert.rejects(broker.executeHumanTool(requestId, { reviewerId: 'bob', toolName: 'read_why' }), /reviewer who claimed/);
   await fs.writeFile(path.join(repoPath, 'why.md'), 'Builder has a newer version.');
   const result = await broker.executeHumanTool(requestId, { reviewerId: 'alice', toolName: 'read_why' });
@@ -61,7 +61,7 @@ test('Human tools reject a changed copy without executing and preserve ERROR sep
   const run = await broker.submit({ requesterId: 'builder', criticId: 'spec-why' });
   await broker.run(run.id);
   const requestId = run.requests[0].id;
-  broker.claimHuman(requestId, 'alice');
+  await broker.claimHuman(requestId, 'alice');
   const target = path.join(run.workspace.path, 'why.md');
   await fs.chmod(target, 0o600);
   await fs.writeFile(target, 'Tampered input');
@@ -83,7 +83,7 @@ test('a Human program that mutates its reviewed Artifact invalidates the review 
   const run = await broker.submit({ requesterId: 'builder', criticId: 'spec-why' });
   await broker.run(run.id);
   const requestId = run.requests[0].id;
-  broker.claimHuman(requestId, 'alice');
+  await broker.claimHuman(requestId, 'alice');
   await assert.rejects(broker.executeHumanTool(requestId, { reviewerId: 'alice', toolName: 'open_why' }));
   assert.equal(broker.getRequest(requestId).status, 'ERROR');
   assert.equal(broker.getRequest(requestId).result, null);
@@ -344,8 +344,8 @@ test('Human copy wait persists without a worker and separate clients claim, comp
   const alice = open(); const bob = open();
   const requestId = waiting.requests[0].id;
   await assert.rejects(alice.completeHuman(requestId, { reviewerId: 'alice', result: green }), /claimed/);
-  alice.claimHuman(requestId, 'alice');
-  assert.throws(() => bob.claimHuman(requestId, 'bob'), /another reviewer/);
+  await alice.claimHuman(requestId, 'alice');
+  await assert.rejects(bob.claimHuman(requestId, 'bob'), /another reviewer/);
   await assert.rejects(bob.completeHuman(requestId, { reviewerId: 'bob', result: green }), /claimed/);
   const completions = await Promise.allSettled([
     alice.completeHuman(requestId, { reviewerId: 'alice', result: green }),
@@ -374,7 +374,7 @@ test('Human lock wait keeps its monitoring worker and rejects changes during the
   const waiting = await until(() => worker.getRun(record.id), value => value.requests[0].notifiedAt);
   assert.equal(waiting.status, 'WAITING_HUMAN');
   assert.equal(present(waiting.owner).pid, process.pid);
-  const reviewer = open(); reviewer.claimHuman(waiting.requests[0].id, 'alice');
+  const reviewer = open(); await reviewer.claimHuman(waiting.requests[0].id, 'alice');
   await fs.writeFile(path.join(repoPath, 'spec.md'), 'Changed while Human was reading.');
   await running;
   assert.equal(reviewer.getRun(record.id).status, 'ERROR');
@@ -388,7 +388,7 @@ test('Human lock completion can arrive through another broker while the original
   const record = await worker.submit({ mode: 'lock', requesterId: 'builder' });
   const running = worker.run(record.id);
   const waiting = await until(() => worker.getRun(record.id), value => value.requests[0].notifiedAt);
-  const reviewer = open(); reviewer.claimHuman(waiting.requests[0].id, 'alice');
+  const reviewer = open(); await reviewer.claimHuman(waiting.requests[0].id, 'alice');
   await reviewer.completeHuman(waiting.requests[0].id, { reviewerId: 'alice', result: green });
   await running;
   assert.equal(reviewer.getRun(record.id).status, 'GREEN');
@@ -511,7 +511,7 @@ test('Human completion during copied-input validation keeps the original owner e
     assert.equal(runId, record.id); assert.equal(pid, process.pid); startCalls += 1;
   } });
   await atValidation;
-  reviewer.claimHuman(record.requests[0].id, 'alice');
+  await reviewer.claimHuman(record.requests[0].id, 'alice');
   await reviewer.completeHuman(record.requests[0].id, { reviewerId: 'alice', result: green });
   const competing = open(executors);
   await assert.rejects(competing.run(record.id, { onStarted: () => { startCalls += 1; } }), { code: 'RUN_ALREADY_OWNED' });
@@ -545,7 +545,7 @@ test('copy wait releases ownership before asynchronous cleanup, so an immediate 
   const waitingWorker = worker.run(record.id);
   await atCleanup;
   assert.equal(reviewer.getRun(record.id).owner, null);
-  reviewer.claimHuman(record.requests[0].id, 'alice');
+  await reviewer.claimHuman(record.requests[0].id, 'alice');
   await reviewer.completeHuman(record.requests[0].id, { reviewerId: 'alice', result: green });
   const resumed = worker.run(record.id);
   release(); await Promise.all([waitingWorker, resumed]);
@@ -566,7 +566,7 @@ test('copied Human review and its successor remain usable after the original bui
   await fs.rm(repoPath, { recursive: true });
   const reviewer = open();
   assert.equal(reviewer.getRun(record.id).status, 'WAITING_HUMAN');
-  reviewer.claimHuman(record.requests[0].id, 'alice');
+  await reviewer.claimHuman(record.requests[0].id, 'alice');
   await reviewer.completeHuman(record.requests[0].id, { reviewerId: 'alice', result: green });
   const worker = open(executors); await worker.run(record.id);
   assert.equal(reviewer.getRun(record.id).status, 'GREEN');
@@ -723,7 +723,7 @@ test('multiple Human copy reviews pause together and each completion can resume 
   assert.equal(waiting.requests.filter(request => request.status === 'WAITING_HUMAN').length, 2);
   const left = present(waiting.requests.find(request => request.criticId === 'left'));
   const right = present(waiting.requests.find(request => request.criticId === 'right'));
-  const reviewer = open(); reviewer.claimHuman(left.id, 'alice'); reviewer.claimHuman(right.id, 'bob');
+  const reviewer = open(); await reviewer.claimHuman(left.id, 'alice'); await reviewer.claimHuman(right.id, 'bob');
   await reviewer.completeHuman(left.id, { reviewerId: 'alice', result: green });
   assert.equal(reviewer.getRun(submitted.id).status, 'QUEUED');
   const firstResume = open(executors); await firstResume.run(submitted.id);
@@ -782,7 +782,7 @@ test('lock integrity failure invalidates pending Human branches while preserving
   const running = worker.run(run.id);
   const waiting = await until(() => worker.getRun(run.id), value => value.requests.filter(request => request.notifiedAt).length === 2);
   const reviewer = open(), left = present(waiting.requests.find(request => request.criticId === 'left'));
-  reviewer.claimHuman(left.id, 'alice'); await reviewer.completeHuman(left.id, { reviewerId: 'alice', result: green });
+  await reviewer.claimHuman(left.id, 'alice'); await reviewer.completeHuman(left.id, { reviewerId: 'alice', result: green });
   await fs.writeFile(path.join(repoPath, 'unrelated.txt'), 'Workspace changed during the other Human review.');
   await running;
   const failed = reviewer.getRun(run.id);
@@ -802,7 +802,7 @@ test('failed Human alarm leaves an unrelated delivered Human review claimable an
   assert.equal(waiting.requests.find(request => request.criticId === 'left')?.status, 'ERROR');
   const right = present(waiting.requests.find(request => request.criticId === 'right'));
   assert.equal(right.status, 'WAITING_HUMAN'); assert.ok(right.notifiedAt);
-  broker.claimHuman(right.id, 'reviewer');
+  await broker.claimHuman(right.id, 'reviewer');
   await broker.completeHuman(right.id, { reviewerId: 'reviewer', result: green });
   const result = broker.getRun(submitted.id);
   assert.equal(result.status, 'ERROR');
@@ -862,7 +862,7 @@ test('pending historical chains resume through explicit predecessor links and ol
   const waiting = worker.getRun(run.id);
   assert.deepEqual(waiting.scope, { kind: 'chain' }); assert.equal(waiting.graph, undefined);
   assert.equal(waiting.status, 'WAITING_HUMAN');
-  worker.claimHuman(waiting.requests[0].id, 'legacy-reviewer');
+  await worker.claimHuman(waiting.requests[0].id, 'legacy-reviewer');
   const read = await worker.executeHumanTool(waiting.requests[0].id, { reviewerId: 'legacy-reviewer', toolName: 'read_spec' });
   assert.ok('content' in read); assert.equal(read.content, 'Current workspace specification.');
   await worker.completeHuman(waiting.requests[0].id, { reviewerId: 'legacy-reviewer', result: green });

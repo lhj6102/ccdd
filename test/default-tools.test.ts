@@ -53,7 +53,7 @@ test('default factories return independent metadata and preparation never launch
   first.metadata.description = 'changed';
   assert.notEqual(first.metadata.description, second.metadata.description);
   assert.deepEqual(Object.keys(agent), ['text', 'files', 'image']);
-  assert.deepEqual(Object.keys(human), ['desktop']);
+  assert.deepEqual(Object.keys(human), ['desktop', 'project']);
   assert.equal((await human.desktop.open({ command: '/missing-ccdd-viewer' }).preflight!(data.context)).ok, false);
 });
 

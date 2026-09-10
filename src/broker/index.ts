@@ -9,6 +9,10 @@ import { prepareReviewRequests, readStoredArtifactScope } from '../requester/ind
 import { readWorkspaceConfig } from './config.js';
 import { createGraphDefinition, prerequisiteCriticIds, type GraphDefinition } from './graph.js';
 import { createReviewTools } from '../tools/runner.js';
+import { describeReviewTools } from '../tools/runner.js';
+import { validateArguments } from '../tools/schema.js';
+import { createHumanClaims, HUMAN_PREPARATION_LEASE_MS } from './human-claims.js';
+import { prepareHumanReview } from '../executors/human-preparation.js';
 import { prepareWorkspace, reopenWorkspace, type WorkspaceDescriptor, type WorkspaceHandle, type WorkspaceMode } from '../workspaces/index.js';
 import { createProjectSnapshot } from '../project/identity.js';
 import { includedCritics, planProject } from '../project/query.js';
@@ -201,6 +205,21 @@ export function createBroker({ repoPath, stateDir, repoId = 'demo', executors, w
     db.prepare('INSERT INTO events(run_id,request_id,created_at,type,message,data) VALUES (?,?,?,?,?,?)').run(runId, requestId, now(), type, message.slice(0, 4000), data === null ? null : JSON.stringify(data));
   };
   const changed = () => { for (const callback of listeners) { try { callback(); } catch {} } };
+  const humanClaims = createHumanClaims({ transaction, read: requestData, save: saveRequest, changed,
+    event: (request, type, message) => appendEvent(request.runId, request.id, type, message),
+    assertWaiting: request => {
+      ensureOpen();
+      if (!request.notifiedAt) throw new Error('Human alarm delivery is still pending.');
+      if (request.workspace.mode === 'lock' && !ownerAlive(ownerData(request.runId))) throw new Error('A lock review requires its monitoring worker to remain alive.');
+    },
+  });
+  const assertRemoteClaim = (requestId: string, reviewerId: string, attemptId: string) => {
+    ensureOpen();
+    const request = required(requestData(requestId), 'request');
+    if (request.profile.kind !== 'human' || request.status !== 'WAITING_HUMAN' || request.claimedBy !== reviewerId || request.claimAttemptId !== attemptId) throw new Error('This confirmed Claim is no longer owned by this reviewer.');
+    if (request.workspace.mode !== 'copy') throw new Error('Remote Human review requires a copied workspace.');
+    return request;
+  };
   function prerequisites(request: ReviewRequest, run: RunRecord, requests: ReviewRequest[]): ReviewRequest[] {
     if (run.project) return []; // Project requests are issued only after a pull readiness check.
     if (run.scope?.kind === 'critic') return [];
@@ -617,21 +636,61 @@ export function createBroker({ repoPath, stateDir, repoId = 'demo', executors, w
       if (request) reconcile(request.runId);
       return requestData(id);
     },
-    claimHuman(requestId: string, reviewerId: unknown) {
+    tryClaimHuman(requestId: string, reviewerId: string, options: { leaseMs?: number } = {}) {
       ensureOpen();
-      if (typeof reviewerId !== 'string' || !reviewerId.trim() || reviewerId.length > 200) throw new Error('A reviewerId is required.');
       const existing = requestData(requestId);
       if (existing) reconcile(existing.runId);
+      return humanClaims.begin(requestId, reviewerId, options.leaseMs);
+    },
+    renewHumanTryClaim: humanClaims.renew,
+    releaseHumanTryClaim: humanClaims.release,
+    confirmHumanClaim: humanClaims.confirm,
+    async claimHuman(requestId: string, reviewerId: unknown, { signal }: { signal?: AbortSignal } = {}) {
+      ensureOpen();
+      if (typeof reviewerId !== 'string' || !reviewerId.trim()) throw new Error('A reviewerId is required.');
+      const existing = requestData(requestId);
+      if (existing) reconcile(existing.runId);
+      const request = required(requestData(requestId), 'request');
+      if (request.status === 'WAITING_HUMAN' && request.claimedBy === reviewerId) return request;
+      if (request.claimedBy) throw new Error('This review is already claimed by another reviewer.');
+      signal?.throwIfAborted();
+      const attempt = humanClaims.begin(requestId, reviewerId);
+      const controller = new AbortController();
+      const executionSignal = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal;
+      const heartbeat = setInterval(() => {
+        try { humanClaims.renew(requestId, reviewerId, attempt.id); }
+        catch (error) { controller.abort(error); }
+      }, HUMAN_PREPARATION_LEASE_MS / 3);
+      try {
+        const prepared = await prepareHumanReview(request, request.workspace, path.join(stateDir, 'runs', request.runId, request.id, 'preparation', attempt.id), executionSignal);
+        executionSignal.throwIfAborted();
+        return humanClaims.confirm(requestId, reviewerId, attempt.id, prepared);
+      } catch (error) {
+        humanClaims.release(requestId, reviewerId, attempt.id);
+        throw error;
+      } finally { clearInterval(heartbeat); }
+    },
+    authorizeRemoteHumanTool(requestId: string, { reviewerId, attemptId, toolName, arguments: args = {} }: { reviewerId: string; attemptId: string; toolName: string; arguments?: unknown }) {
+      const request = assertRemoteClaim(requestId, reviewerId, attemptId);
+      if (!request.configManifest) throw new Error('Remote tool execution requires a TypeScript tool manifest.');
+      const tool = describeReviewTools({ artifacts: request.artifacts, configManifest: request.configManifest, audience: 'human' }).find(value => value.name === toolName);
+      if (!tool) throw new Error('Unknown registered Human tool.');
+      validateArguments(tool.inputSchema, args);
+      return tool;
+    },
+    recordRemoteHumanTool(requestId: string, { reviewerId, attemptId, toolName, arguments: args = {} }: { reviewerId: string; attemptId: string; toolName: string; arguments?: unknown }) {
+      // Client reports only after real local execution and input validation. A receipt
+      // never constitutes content observation or a semantic verdict.
+      const request = assertRemoteClaim(requestId, reviewerId, attemptId);
+      if (!request.configManifest) throw new Error('Remote tool execution requires a TypeScript tool manifest.');
+      const tool = describeReviewTools({ artifacts: request.artifacts, configManifest: request.configManifest, audience: 'human' }).find(value => value.name === toolName);
+      if (!tool) throw new Error('Unknown registered Human tool.');
+      validateArguments(tool.inputSchema, args);
       transaction(() => {
-        const request = requestData(requestId);
-        if (!request || request.profile.kind !== 'human' || request.status !== 'WAITING_HUMAN') throw new Error('Request is not waiting for a human review.');
-        if (request.claimedBy && request.claimedBy !== reviewerId) throw new Error('This review is already claimed by another reviewer.');
-        if (!request.claimedBy) {
-          request.claimedBy = reviewerId; request.claimedAt = now(); saveRequest(request);
-          appendEvent(request.runId, request.id, 'human.claimed', `Review claimed by ${reviewerId}.`);
-        }
+        assertRemoteClaim(requestId, reviewerId, attemptId);
+        appendEvent(request.runId, requestId, 'human.tool.executed', 'The claimed reviewer reported successful local tool execution.', { name: tool.name, artifactId: tool.artifactId, operation: tool.operation });
       });
-      changed(); return requestData(requestId);
+      changed();
     },
     async executeHumanTool(requestId: string, { reviewerId, toolName, arguments: args = {}, signal }: { reviewerId: unknown; toolName: string; arguments?: unknown; signal?: AbortSignal }) {
       ensureOpen();

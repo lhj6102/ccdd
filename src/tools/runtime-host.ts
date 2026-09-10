@@ -4,7 +4,8 @@ import { readFileSync, realpathSync, existsSync } from 'node:fs';
 import { mkdir, lstat } from 'node:fs/promises';
 import { join, relative, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { metadata, jsonCopy, object, validateArguments } from './schema.js';
+import { metadata, jsonCopy, object, validateArguments, environmentRequirements } from './schema.js';
+import { hashExecutionInputs, resolveExecutionInput } from './inputs.js';
 import { scopedPath, within } from './paths.js';
 import type { Config, ConfigManifest, ToolDefinition, ToolContext } from './contracts.js';
 
@@ -52,8 +53,14 @@ async function load(workspace: string) {
     }
   }
   const values=jsonCopy({artifacts:config.artifacts,critics:config.critics});
+  const envRequirements=config.envRequirements===undefined?undefined:environmentRequirements(config.envRequirements);
+  const environmentInputs=envRequirements===undefined?undefined:await hashExecutionInputs(root,Object.values(envRequirements).flatMap(value=>[value.script,...value.inputs??[]]));
+  if (envRequirements) for (const value of Object.values(envRequirements)) if (!(await lstat(await scopedPath(root,value.script))).isFile()) throw new Error('Environment scripts must be regular files.');
+  const executionPaths=Object.values(types).flatMap(type=>[...Object.values(type.agentTools),...Object.values(type.humanTools)].flatMap(tool=>tool.executionPaths??[]));
+  const executionInputs=executionPaths.length?await hashExecutionInputs(root,executionPaths):undefined;
+  const extensions={...(envRequirements===undefined?{}:{envRequirements,environmentInputs}),...(executionInputs===undefined?{}:{executionInputs})};
   const moduleList=[...modules].sort(([a],[b])=>a.localeCompare(b)).map(([path,hash])=>({path,hash}));
-  const manifest:ConfigManifest={version:1,configHash:hash(JSON.stringify({values,types,modules:moduleList})),modules:moduleList,types};
+  const manifest:ConfigManifest={version:1,configHash:hash(JSON.stringify({values,types,modules:moduleList,...extensions})),modules:moduleList,types,...extensions};
   loaded={config:{...values,artifactTypes:Object.fromEntries(Object.keys(types).map(type=>[type,{custom:true}])),configManifest:manifest}};
   // Keep hooks installed throughout execution so deferred imports cannot escape the snapshot.
   void hooks;
@@ -66,8 +73,15 @@ process.on('message',async (message:any)=>{
     if (action==='load') { process.send?.({id,value:await load(message.root)}); return; }
     if (!loaded) throw new Error('Configuration is not loaded.');
     const {artifact,type,audience,toolKey,args,outputDir,tmpDir}=message;
+    // Human environment requirements inspect these same reviewer-local values. Set them
+    // only after snapshot configuration has loaded in its existing restricted environment.
+    if (audience==='human'&&object(message.reviewerEnvironment)) for (const name of ['HOME','USERPROFILE','CARGO_HOME','RUSTUP_HOME']) {
+      const value=message.reviewerEnvironment[name];
+      if (typeof value==='string') process.env[name]=value;
+    }
     const definition=registry.get(`${type}/${audience==='agent'?'agentTools':'humanTools'}/${toolKey}`);
     if (!definition) throw new Error('Unknown tool.');
+    const declaredMetadata=(loaded.config.configManifest as ConfigManifest).types[type][audience==='agent'?'agentTools':'humanTools'][toolKey];
     const artifactPath=await scopedPath(root,artifact.path);
     const info=await lstat(artifactPath);
     if (!info.isFile()&&!info.isDirectory()) throw new Error('Artifact requires a regular file or directory.');
@@ -80,6 +94,9 @@ process.on('message',async (message:any)=>{
       controller.signal.throwIfAborted();
       if (!info.isDirectory()&&path) throw new Error('File Artifact does not accept an internal path.');
       return path?scopedPath(artifactPath,path):artifactPath;
+    },resolveExecutionPath:async(path:string)=>{
+      controller.signal.throwIfAborted();
+      return resolveExecutionInput(root,declaredMetadata.executionPaths??[],path);
     }};
     try {
       const value=action==='preflight'?(definition.preflight?await definition.preflight(context):{ok:true,message:'Registered; no custom preflight, actual execution unverified.'}):await definition.execute(context,validateArguments(definition.metadata.inputSchema,args));

@@ -18,6 +18,32 @@ export function toolEnvironment(tmpDir: string, desktop = false): NodeJS.Process
   return { ...Object.fromEntries(names.flatMap(name => process.env[name] === undefined ? [] : [[name, process.env[name]!]])), TMPDIR: tmpDir, TMP: tmpDir, TEMP: tmpDir };
 }
 
+/** Hand a real desktop process to the reviewer after startup; it may outlive the tool host. */
+export function launchToolProcess(command: string, args: string[], options: ProcessOptions): Promise<void> {
+  options.signal.throwIfAborted();
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, { cwd: options.cwd, env: options.env, shell: false, detached: true, stdio: 'ignore', windowsHide: false });
+    let settled = false, failure: Error | undefined, startupTimer: NodeJS.Timeout | undefined, killTimer: NodeJS.Timeout | undefined;
+    const kill = (signal: NodeJS.Signals): void => { try { if (process.platform !== 'win32' && child.pid) process.kill(-child.pid, signal); else child.kill(signal); } catch { /* Already exited. */ } };
+    const finish = (error?: Error): void => {
+      if (settled) return;
+      settled = true; clearTimeout(startupTimer); clearTimeout(killTimer); options.signal.removeEventListener('abort', abort);
+      if (error) { kill('SIGKILL'); reject(error); }
+      else { child.unref(); resolve(); }
+    };
+    const abort = (): void => {
+      if (settled || failure) return;
+      failure = new Error('Project application launch was cancelled.');
+      kill('SIGTERM'); killTimer = setTimeout(() => finish(failure), 500);
+    };
+    child.on('error', () => finish(failure ?? new Error('The project application could not be started.')));
+    child.on('exit', code => finish(failure ?? (code === 0 ? undefined : new Error('The project application failed during startup.'))));
+    child.on('spawn', () => { startupTimer = setTimeout(() => finish(failure), Math.min(100, Math.max(1, options.timeoutMs / 2))); });
+    options.signal.addEventListener('abort', abort, { once: true });
+    if (options.signal.aborted) abort();
+  });
+}
+
 /** Kill the complete launcher group on cancellation, including children surviving their parent. */
 export function runToolProcess(command: string, args: string[], options: ProcessOptions): Promise<string> {
   options.signal.throwIfAborted();
