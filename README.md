@@ -10,40 +10,7 @@ You choose the materials, the review criteria, and the tools reviewers can use. 
 
 **Blue dashed lines: configuration. Orange solid lines: requests and reviews.**
 
-```mermaid
-flowchart LR
-  subgraph PROJECT["Your project"]
-    direction TB
-    REQUIREMENTS["Requirements"]
-    DESIGN["Design"]
-    TESTS["Tests"]
-    IMPLEMENTATION["Implementation"]
-
-    REQUIREMENTS -.->|"Design Critic"| DESIGN
-    REQUIREMENTS -.->|"Test Critic"| TESTS
-    DESIGN -.->|"Implementation Critic"| IMPLEMENTATION
-    TESTS -.->|"Implementation Critic"| IMPLEMENTATION
-  end
-
-  subgraph CCDD["CCDD"]
-    direction TB
-    ARTIFACTS["Artifact layer<br/>Materials and tools"]
-    VALIDATION["Validation<br/>Checks, reuse, and reviews"]
-  end
-
-  subgraph REVIEWERS["Reviewers"]
-    REVIEWER["AI agent<br/>Person<br/>Test runner"]
-  end
-
-  PROJECT -.->|"Register Artifacts and tools"| ARTIFACTS
-  PROJECT -.->|"Define Critics"| VALIDATION
-  PROJECT <-->|"Request / result"| VALIDATION
-  VALIDATION <-->|"Review / findings"| REVIEWER
-  ARTIFACTS <-->|"Access / observations"| REVIEWER
-
-  linkStyle 0,1,2,3,4,5 stroke:#3b82f6,stroke-width:2px
-  linkStyle 6,7,8 stroke:#f59e0b,stroke-width:3px
-```
+![CCDD: a Critic DAG, customizable Artifact types and tools, Validation, and Pi-based AI agents, people, and test runners.](.github/assets/how-it-fits-together.png)
 
 Three terms explain the picture:
 
@@ -53,7 +20,7 @@ Three terms explain the picture:
 | **Critic** | A check with one target, reference materials, and a reviewer. | “Does this design meet these requirements?” |
 | **Artifact tool** | A way for a reviewer to inspect an Artifact. | Read text, view an image, or open a desktop application. |
 
-Each Critic declares its target and references. These relationships form a directed acyclic graph, or **DAG**: checks can branch and join, but cannot depend on themselves through a cycle. The two Implementation arrows above belong to one Critic that references both Design and Tests. Requirements are an explicitly accepted starting point in this example.
+Each Critic declares its target and references. These relationships form a directed acyclic graph, or **DAG**: checks can branch and join, but cannot depend on themselves through a cycle. Design and Tests connect to Implementation through separate Critic lines. Requirements are an explicitly accepted starting point in this example.
 
 ## What you do
 
