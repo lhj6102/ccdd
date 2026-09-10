@@ -2,14 +2,14 @@
 
 CCDD packages are distributed through npm. GitHub Releases announce each version with an installation command, npm package links, and release notes. They do not host installation tarballs. GitHub still supplies automatic Source code archives; those contain source, not installable packages.
 
-See [getting started](getting-started.md) for setup and [v3.1.0 release notes](releases/v3.1.0.md) for the current changes.
+See [getting started](getting-started.md) for setup and [v3.1.1 release notes](releases/v3.1.1.md) for the current changes.
 
 ## Installing and upgrading
 
-CCDD 3.1.0 supports Node.js 22 LTS (22.19.0 or later). Install matching versions of the three packages:
+CCDD 3.1.1 supports Node.js 22 LTS (22.19.0 or later). Install matching versions of the three packages:
 
 ```sh
-npm install --ignore-scripts @ccdd/core@3.1.0 @ccdd/project@3.1.0 @ccdd/default-tools@3.1.0
+npm install --ignore-scripts @ccdd/core@3.1.1 @ccdd/project@3.1.1 @ccdd/default-tools@3.1.1
 npx ccdd-project config check
 npx ccdd-project tools check
 ```
@@ -31,8 +31,8 @@ To publish, merge the version change and release notes, wait for that commit's
 CI to succeed, then push its version tag:
 
 ```sh
-git tag v3.1.0 COMMIT_SHA
-git push origin v3.1.0
+git tag v3.1.1 COMMIT_SHA
+git push origin v3.1.1
 ```
 
 `release.yml` runs one Node 22 LTS job. It installs npm 11.19.1 for Trusted

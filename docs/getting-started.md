@@ -149,8 +149,8 @@ In your new project, install the actual tarballs produced by those commands toge
 
 ```sh
 npm install --ignore-scripts \
-  /absolute/path/to/ccdd-packages/ccdd-core-3.1.0.tgz \
-  /absolute/path/to/ccdd-packages/ccdd-project-3.1.0.tgz
+  /absolute/path/to/ccdd-packages/ccdd-core-3.1.1.tgz \
+  /absolute/path/to/ccdd-packages/ccdd-project-3.1.1.tgz
 ```
 
 To use default tools too, pack `@ccdd/default-tools` and include its tarball in the same install command. Package versions must be compatible. These commands build and install locally; they do not publish a release.
