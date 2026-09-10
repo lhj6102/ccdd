@@ -44,6 +44,9 @@ async function fixture(t: TestContext) {
         CREATE TABLE requests (id TEXT PRIMARY KEY, run_id TEXT NOT NULL, ordinal INTEGER NOT NULL, status TEXT NOT NULL, data TEXT NOT NULL);
         CREATE TABLE run_owners (run_id TEXT PRIMARY KEY, pid INTEGER NOT NULL, process_identity TEXT, token TEXT NOT NULL, claimed_at TEXT NOT NULL);
         CREATE TABLE events (id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL, request_id TEXT, created_at TEXT NOT NULL, type TEXT NOT NULL, message TEXT NOT NULL, data TEXT);`);
+      // Seed the read-only adapter fixture in one transaction. Per-row durability
+      // adds thousands of disk flushes without exercising monitor behavior.
+      db.exec('BEGIN');
       db.prepare('INSERT INTO metadata VALUES (?,?)').run('registered-repo', JSON.stringify({ repoPath, repoId: 'local' }));
       const runs = new Set<string>();
       for (const [ordinal, request] of requests.entries()) {
@@ -55,6 +58,7 @@ async function fixture(t: TestContext) {
       }
       for (const owner of options.owners ?? []) db.prepare('INSERT INTO run_owners VALUES (?,?,?,?,?)').run(owner.runId, owner.pid, owner.identity ?? null, 'owner-token-secret', at(0));
       for (const event of options.events ?? []) db.prepare('INSERT INTO events (run_id,request_id,created_at,type,message,data) VALUES (?,?,?,?,?,?)').run(event.runId, event.requestId, event.at, event.type, 'event-secret', JSON.stringify({ token: 'event-token-secret' }));
+      db.exec('COMMIT');
     } finally { db.close(); }
     return { stateDir, repoPath, id: createHash('sha256').update(await fs.realpath(stateDir)).digest('hex') };
   }
