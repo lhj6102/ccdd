@@ -142,6 +142,44 @@ test('strict arguments prevent execution and tool scope rejects traversal and sy
   await assert.rejects(readWorkspaceConfig(scoped.repoPath), /escapes|symlinks/);
 });
 
+test('nested native image paths return the same PNG bytes for absolute and relative output paths', async t => {
+  const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aD1sAAAAASUVORK5CYII=';
+  const data = await fixture(t, {
+    audience: 'agent',
+    meta: { ...metadata, resultKinds: ['image'] },
+    prelude: "import { mkdir, writeFile } from 'node:fs/promises'; import { join } from 'node:path';",
+    execute: `async execute(context) {
+      const directory = join(context.outputDir, 'render');
+      await mkdir(directory);
+      const path = join(directory, 'preview.png');
+      await writeFile(path, Buffer.from('${png}', 'base64'));
+      return { content: [path, join('render', 'preview.png')].map(path => ({ type: 'image', path, mimeType: 'image/png' })), observation: { kind: 'content' } };
+    }`,
+  });
+  const registry = await createReviewTools(await data.optionsFor());
+  t.after(() => registry.close());
+  const result = await registry.call('inspect_spec');
+  assert.deepEqual(result.content, Array.from({ length: 2 }, () => ({ type: 'image', data: png, mimeType: 'image/png' })));
+  assert.deepEqual(registry.toolCalls[0].observation, { artifactId: 'spec', operation: 'inspect', kind: 'content' });
+});
+
+test('image output paths reject traversal and directory symlinks without recording observations', async t => {
+  for (const [setup, path, error] of [
+    ['', "join('..', 'outside.png')", /outside the tool output/],
+    ["await mkdir(join(context.outputDir, 'source')); await symlink(join(context.outputDir, 'source'), join(context.outputDir, 'render'), 'junction');", "join('render', 'preview.png')", /symlinks/],
+  ] as const) {
+    const data = await fixture(t, {
+      prelude: "import { mkdir, symlink } from 'node:fs/promises'; import { join } from 'node:path';",
+      execute: `async execute(context) { ${setup} return { content: [{ type: 'image', path: ${path}, mimeType: 'image/png' }], observation: { kind: 'content' } }; }`,
+    });
+    const registry = await createReviewTools(await data.optionsFor());
+    try {
+      await assert.rejects(registry.call('inspect_spec'), error);
+      assert.equal(registry.toolCalls.length, 0);
+    } finally { await registry.close(); }
+  }
+});
+
 test('images cannot refer to inputs or masquerade as a different MIME type and launches do not prove observation', async t => {
   for (const execute of [
     "execute(context) { return { content: [{ type: 'image', path: context.artifactPath, mimeType: 'image/png' }] }; }",

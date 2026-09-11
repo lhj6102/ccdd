@@ -79,6 +79,13 @@ npx ccdd-project monitor
 
 Open the local address printed by the monitor. Choose the project, switch to Kanban, and open the Human review card. Select **Claim review**. The request enters **Try Claim** while its input and environment are prepared; successful preparation confirms the assignment. Use the provided tools to inspect the materials, then enter a verdict, a summary, and at least one item of evidence before selecting **Submit result**.
 
+During Claim, the card shows the current preparation phase, elapsed time, last
+heartbeat, and available scan progress. Expand **Phase timings** to see which
+completed checks took time. Each attempt has an ID; a retry identifies the attempt
+it replaces. A released or expired attempt stops preparing and shows the next
+action. The fixed input is still checked before assignment, and preparation does
+not launch a viewer or establish that its rendered content is ready.
+
 Artifact references in the instruction are buttons that take you to the relevant tool choices. Selecting a reference does not itself execute a tool. Opening an application does not automatically approve the review.
 
 For a terminal-only workflow, use `request claim`, `request tool`, and `request submit`. See [Human actions and review history](project-validation.md#execution-history-and-human-actions).

@@ -3,7 +3,7 @@ import type { WorkspaceDescriptor } from './workspaces/index.js';
 import type { ConfigManifest } from './tools/contracts.js';
 import type { CriticProfile, ReviewPayload, CriticDefinition, ArtifactEntryDefinition, ArtifactGroupReference } from './definitions.js';
 import type { ValidationInput } from './project/types.js';
-import type { HumanTryClaim } from './broker/human-claims.js';
+import type { HumanTryClaim, HumanPreparationAttempt } from './broker/human-claims.js';
 export type * from './definitions.js';
 
 export type { ArtifactReference, ArtifactTypeDefinition, ArtifactToolCall } from './artifacts/index.js';
@@ -34,6 +34,7 @@ export interface ReviewRequest extends ReviewEnvelope {
   predecessorId?: string | null; status: ReviewStatus; createdAt: string;
   startedAt?: string | null; completedAt?: string | null; claimedBy?: string | null; claimedAt?: string | null;
   tryClaim?: HumanTryClaim;
+  preparationAttempt?: HumanPreparationAttempt;
   claimAttemptId?: string;
   notifiedAt?: string | null; errorCode?: string | null; blockedReason?: string | null;
   result?: ReviewResult | null; error?: string | null;

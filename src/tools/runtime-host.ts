@@ -69,6 +69,7 @@ async function load(workspace: string) {
 
 process.on('message',async (message:any)=>{
   const {id,action}=message;
+  let encodingResult=false;
   try {
     if (action==='load') { process.send?.({id,value:await load(message.root)}); return; }
     if (!loaded) throw new Error('Configuration is not loaded.');
@@ -101,8 +102,14 @@ process.on('message',async (message:any)=>{
     }};
     try {
       const value=action==='preflight'?(definition.preflight?await definition.preflight(context):{ok:true,message:'Registered; no custom preflight, actual execution unverified.'}):await definition.execute(context,validateArguments(definition.metadata.inputSchema,args));
+      encodingResult=action==='execute';
       process.send?.({id,value:jsonCopy(value)});
     } finally { process.off('SIGTERM',abort); }
-  } catch(error) { process.send?.({id,error:{message:error instanceof Error?error.message:'Tool host failed.',code:'ARTIFACT_TOOL_FAILED'}}); }
+  } catch(error) {
+    // Transport only recognized operational codes; diagnosis substitutes fixed safe text.
+    const underlyingCode=error&&typeof error==='object'&&'code' in error?error.code:undefined;
+    const code=encodingResult?'ARTIFACT_TOOL_RESULT_INVALID':typeof underlyingCode==='string'&&['ENOENT','EACCES','EPERM','ENOTDIR','EISDIR','ENOSPC','EIO','ETIMEDOUT'].includes(underlyingCode)?underlyingCode:'ARTIFACT_TOOL_FAILED';
+    process.send?.({id,error:{message:error instanceof Error?error.message:'Tool host failed.',code}});
+  }
 });
 process.on('disconnect',()=>process.exit(0));

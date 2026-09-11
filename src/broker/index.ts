@@ -660,13 +660,16 @@ export function createBroker({ repoPath, stateDir, repoId = 'demo', executors, w
       const heartbeat = setInterval(() => {
         try { humanClaims.renew(requestId, reviewerId, attempt.id); }
         catch (error) { controller.abort(error); }
-      }, HUMAN_PREPARATION_LEASE_MS / 3);
+      }, Math.min(5_000, HUMAN_PREPARATION_LEASE_MS / 3));
       try {
-        const prepared = await prepareHumanReview(request, request.workspace, path.join(stateDir, 'runs', request.runId, request.id, 'preparation', attempt.id), executionSignal);
+        const prepared = await prepareHumanReview(request, request.workspace, path.join(stateDir, 'runs', request.runId, request.id, 'preparation', attempt.id), executionSignal,
+          progress => humanClaims.progress(requestId, reviewerId, attempt.id, progress));
         executionSignal.throwIfAborted();
+        humanClaims.progress(requestId, reviewerId, attempt.id, { phase: 'confirming-assignment' });
         return humanClaims.confirm(requestId, reviewerId, attempt.id, prepared);
       } catch (error) {
-        humanClaims.release(requestId, reviewerId, attempt.id);
+        const code = errorCode(error);
+        humanClaims.release(requestId, reviewerId, attempt.id, signal?.aborted ? 'cancelled' : code === 'HUMAN_PREPARATION_FAILED' ? 'checks-failed' : typeof code === 'string' && code.startsWith('WORKSPACE_') ? 'input-invalid' : 'preparation-failed');
         throw error;
       } finally { clearInterval(heartbeat); }
     },

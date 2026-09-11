@@ -8,6 +8,7 @@ import { createReviewTools, type ReviewToolDefinition } from '../tools/runner.js
 import type { ToolResult } from '../tools/contracts.js';
 import { assertArtifactAudience, type ArtifactAudience } from './types.js';
 import { isArtifactGroup, resolveArtifactScope } from './groups.js';
+import { safeToolFailure, toolFailureStage, type ArtifactToolCheckStage } from '../tools/diagnostics.js';
 
 export interface ArtifactToolCheck {
   artifactId?: string;
@@ -16,6 +17,7 @@ export interface ArtifactToolCheck {
   ok: boolean;
   message: string;
   code?: string;
+  stage: ArtifactToolCheckStage;
 }
 export interface ArtifactToolCheckReport {
   ok: boolean;
@@ -24,6 +26,7 @@ export interface ArtifactToolCheckReport {
   checkedAt: string;
   snapshotHash?: string;
   workspacePath?: string;
+  outputDir?: string;
   checks: ArtifactToolCheck[];
   tools: Array<ReviewToolDefinition & { audience: ArtifactAudience }>;
   result?: HumanToolResult | ToolResult;
@@ -41,35 +44,27 @@ export interface DiagnoseArtifactToolsOptions {
   signal?: AbortSignal;
 }
 
-function safeFailure(error: unknown, aborted: boolean): { code: string; message: string } {
-  const code = error && typeof error === 'object' && 'code' in error ? error.code : undefined;
-  if (aborted || code === 'ABORTED') return { code: 'ABORTED', message: 'Artifact tool diagnosis was cancelled.' };
-  if (code === 'WORKSPACE_CHANGED' || code === 'WORKSPACE_CACHE_TAMPERED') return { code, message: 'The workspace changed during Artifact tool diagnosis.' };
-  if (code === 'ARTIFACT_TOOLS_UNAVAILABLE') return { code, message: 'A Critic references an Artifact with no tools for its reviewer kind. Register the corresponding agentTools or humanTools.' };
-  if (code === 'HUMAN_TOOL_TIMEOUT') return { code, message: 'The registered Human tool exceeded its configured time limit.' };
-  if (code === 'HUMAN_TOOL_UNAVAILABLE') return { code, message: 'The registered Human tool executable is unavailable.' };
-  if (code === 'HUMAN_TOOL_FAILED') return { code, message: 'The registered Human tool did not finish successfully.' };
-  return { code: 'ARTIFACT_TOOL_CHECK_FAILED', message: 'Artifact tool diagnosis failed. Check the configuration, selected tool, scoped arguments and workspace access.' };
-}
-
 /** Diagnose registered tools without creating a Broker, Run, request, alarm, Agent session or verdict. */
 export async function diagnoseArtifactTools({ repoPath, mode = 'copy', stateDir, artifactId, audience, toolName, arguments: args, execute = false, signal }: DiagnoseArtifactToolsOptions): Promise<ArtifactToolCheckReport> {
   const report: ArtifactToolCheckReport = { ok: false, status: 'NOT_READY', mode, checkedAt: new Date().toISOString(), checks: [], tools: [] };
   let workspace: WorkspaceHandle | undefined;
+  let stage: ArtifactToolCheckStage = 'preflight';
   try {
     if ((audience !== undefined && audience !== 'agent' && audience !== 'human') || (execute && (!artifactId || !audience || !toolName)) || (!execute && args !== undefined)) throw new Error('Actual tool execution requires explicit Artifact, audience and tool selection.');
     signal?.throwIfAborted();
+    stage = 'snapshot';
     const context = await localContext({ repoPath, stateDir });
     workspace = await prepareWorkspace({ repoPath: context.repoPath, stateDir: context.stateDir, mode, signal });
     const worktreePath = workspace.descriptor.path;
     report.snapshotHash = workspace.descriptor.hash;
     // Cached copies are retained: a desktop viewer can continue reading after its launcher exits.
     report.workspacePath = worktreePath;
+    stage = 'preflight';
     const { config } = await readWorkspaceConfig(worktreePath);
     const { configManifest } = config;
     if (artifactId !== undefined && !Object.hasOwn(config.artifacts, artifactId)) throw new Error('Unknown selected Artifact.');
     if (execute && artifactId !== undefined && isArtifactGroup(config.artifacts[artifactId])) {
-      report.checks.push({ artifactId, ok: false, message: 'Groups collect member tools. Select a leaf Artifact with --artifact to execute its tool.' });
+      report.checks.push({ artifactId, stage, ok: false, code: 'ARTIFACT_GROUP_NOT_EXECUTABLE', message: 'Groups collect member tools. Select a leaf Artifact with --artifact to execute its tool.' });
       return report;
     }
     const selectedScope = resolveArtifactScope(config.artifacts, artifactId === undefined ? Object.keys(config.artifacts) : [artifactId]);
@@ -80,47 +75,58 @@ export async function diagnoseArtifactTools({ repoPath, mode = 'copy', stateDir,
         try {
           assertArtifactAudience({ profile: critic.profile, ...resolveArtifactScope(config.artifacts, [critic.target, ...critic.deps]), artifactTypes: config.artifactTypes, configManifest });
         } catch (error) {
-          report.checks.push({ ok: false, ...safeFailure(error, false) });
+          report.checks.push({ stage, ok: false, ...safeToolFailure(error) });
         }
       }
     }
     for (const targetAudience of audience ? [audience] : ['agent', 'human'] as const) {
+      stage = 'preflight';
       const registry = await createReviewTools({ worktreePath, ...selectedScope, artifactTypes: config.artifactTypes, configManifest, audience: targetAudience, runDir: join(context.stateDir, 'tool-check', randomUUID()), signal: workspace.signal });
+      if (execute && targetAudience === audience && registry.outputDir) report.outputDir = registry.outputDir;
       try {
         // Explicit Artifact selection makes the short operation name unambiguous; published names win.
         const resolvedToolName = toolName === undefined || registry.tools.some(tool => tool.name === toolName) || artifactId === undefined ? toolName : `${toolName}_${artifactId}`;
         const definitions = registry.tools.filter(tool => resolvedToolName === undefined || tool.name === resolvedToolName);
         if (toolName !== undefined && !definitions.length) {
-          report.checks.push({ artifactId, audience: targetAudience, toolName, ok: false, message: 'The selected tool is not registered for this Artifact and reviewer kind.' });
+          report.checks.push({ artifactId, audience: targetAudience, toolName, stage, ok: false, code: 'ARTIFACT_TOOL_NOT_REGISTERED', message: 'The selected tool is not registered for this Artifact and reviewer kind.' });
           continue;
         }
         report.tools.push(...definitions.map(tool => ({ ...tool, audience: targetAudience })));
         for (const artifact of selected) {
           if (definitions.some(tool => tool.artifactId === artifact.id)) continue;
           const required = audience !== undefined || config.critics.some(critic => critic.profile.kind === targetAudience && resolveArtifactScope(config.artifacts, [critic.target, ...critic.deps]).artifacts.some(leaf => leaf.id === artifact.id));
-          report.checks.push({ artifactId: artifact.id, audience: targetAudience, ok: !required, message: `No ${targetAudience} tools are available for this Artifact. It cannot be used by a ${targetAudience} Critic.` });
+          report.checks.push({ artifactId: artifact.id, audience: targetAudience, stage, ok: !required, ...(required ? { code: 'ARTIFACT_TOOLS_UNAVAILABLE' } : {}), message: `No ${targetAudience} tools are available for this Artifact. It cannot be used by a ${targetAudience} Critic.` });
         }
-        report.checks.push(...(await registry.preflight({ toolName: resolvedToolName })).map(check => ({ ...check, audience: targetAudience })));
+        report.checks.push(...(await registry.preflight({ toolName: resolvedToolName })).map(check => ({ ...check, ...(!check.ok ? safeToolFailure({ code: check.code ?? 'ARTIFACT_TOOL_PREFLIGHT_FAILED' }) : {}), stage: 'preflight' as const, audience: targetAudience })));
         if (execute && targetAudience === audience && definitions.length === 1 && report.checks.every(check => check.ok)) {
+          registry.validateArguments(definitions[0].name, args ?? {});
+          stage = 'input-integrity';
           await workspace.assertUnchanged();
+          stage = 'execute';
           const result = await registry.call(definitions[0].name, args ?? {});
+          stage = 'input-integrity';
           await workspace.assertUnchanged();
           report.result = result;
-          report.checks.push({ artifactId, audience, toolName: definitions[0].name, ok: true, message: 'The selected registered tool completed successfully. No review result was created.' });
+          report.checks.push({ artifactId, audience, toolName: definitions[0].name, stage: 'execute', ok: true, message: 'The selected registered tool completed successfully. No review result was created.' });
         }
-      } finally { await registry.close(); }
+      } finally {
+        try { await registry.close(); }
+        catch (error) { report.checks.push({ artifactId, audience: targetAudience, toolName, stage, ok: false, ...safeToolFailure(error) }); }
+      }
     }
+    stage = 'input-integrity';
     await workspace.assertUnchanged();
   } catch (error) {
     delete report.result;
     // A mutated workspace can abort a running program before its boundary check resumes.
     // Preserve that integrity failure instead of relabeling it as an ordinary cancellation.
     const reason = workspace?.signal.aborted && !signal?.aborted ? workspace.signal.reason : error;
-    report.checks.push({ artifactId, audience, toolName, ok: false, ...safeFailure(reason, signal?.aborted ?? false) });
+    report.checks.push({ artifactId, audience, toolName, stage: toolFailureStage(reason, stage), ok: false, ...safeToolFailure(reason, signal?.aborted ?? false) });
   } finally {
     try { await workspace?.close(); }
-    catch { report.checks.push({ ok: false, code: 'WORKSPACE_CLEANUP_FAILED', message: 'Could not finish workspace observation cleanup.' }); }
+    catch { report.checks.push({ stage: 'input-integrity', ok: false, code: 'WORKSPACE_CLEANUP_FAILED', message: 'Could not finish workspace observation cleanup.' }); }
     report.ok = report.checks.length > 0 && report.checks.every(check => check.ok);
+    if (!report.ok) delete report.result;
     report.status = report.ok ? 'READY' : 'NOT_READY';
     report.checkedAt = new Date().toISOString();
   }

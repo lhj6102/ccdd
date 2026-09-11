@@ -13,29 +13,37 @@ import '../src/monitor/ui/api.js';
 import '../src/monitor/ui/tool-input.js';
 import '../src/monitor/ui/tool-content.js';
 import '../src/monitor/ui/critic-presentation.js';
+import '../src/monitor/ui/format.js';
 
 type Node = {
   type: string; text: string; props: Record<string, any>; children: Node[]; parent: Node | null;
-  value: unknown; checked: boolean; tagName: string; readonly options: Node[];
+  value: unknown; checked: boolean; tagName: string; readonly options: Node[]; style: Record<string, string>;
   focus(): void; scrollIntoView(): void; addEventListener(): void; removeEventListener(): void;
-  querySelector(): null; getRootNode(): typeof documentState;
+  querySelector(): null; getRootNode(): typeof documentState; showModal(): void; close(): void;
 };
-const documentState = { activeElement: null as Node | null };
+const documentState = { activeElement: null as Node | null, hidden: false, addEventListener() {}, removeEventListener() {}, body: { classList: { add() {}, remove() {} } } };
 function browserGlobals(t: TestContext): void {
-  for (const [key, value] of Object.entries({ document: documentState, Document: class {}, ShadowRoot: class {}, HTMLInputElement: class {},
-    window: { addEventListener() {}, removeEventListener() {} } })) {
+  for (const [key, value] of Object.entries({ document: documentState, Document: class {}, ShadowRoot: class {}, HTMLInputElement: class {}, HTMLElement: class {},
+    window: { addEventListener() {}, removeEventListener() {} }, location: { hash: '#project/request', pathname: '/' },
+    history: { replaceState() {} }, localStorage: { getItem: () => 'kanban' } })) {
     const previous = Object.getOwnPropertyDescriptor(globalThis, key);
     Object.defineProperty(globalThis, key, { value, configurable: true });
     t.after(() => { if (previous) Object.defineProperty(globalThis, key, previous); else Reflect.deleteProperty(globalThis, key); });
   }
 }
 function node(type: string, text = ''): Node {
-  return { type, text, props: {}, children: [], parent: null, value: '', checked: false, tagName: type.toUpperCase(),
+  return { type, text, props: {}, style: {}, children: [], parent: null, value: '', checked: false, tagName: type.toUpperCase(),
     get options() { return this.children; },
-    focus() { documentState.activeElement = this; }, scrollIntoView() {}, addEventListener() {}, removeEventListener() {}, querySelector() { return null; }, getRootNode() { return documentState; } };
+    focus() { documentState.activeElement = this; }, scrollIntoView() {}, addEventListener() {}, removeEventListener() {}, querySelector() { return null; }, getRootNode() { return documentState; }, showModal() {}, close() {} };
 }
 const renderer = createRenderer<Node, Node>({
   querySelector: () => node('body'),
+  insertStaticContent(content, parent, anchor) {
+    const child = node('#static', content); child.parent = parent;
+    const index = anchor ? parent.children.indexOf(anchor) : -1;
+    parent.children.splice(index < 0 ? parent.children.length : index, 0, child);
+    return [child, child];
+  },
   createElement: type => node(type), createText: text => node('#text', text), createComment: text => node('#comment', text),
   insert(child, parent, anchor = null) {
     if (child.parent) child.parent.children.splice(child.parent.children.indexOf(child), 1);
@@ -60,19 +68,23 @@ function mount(component: Component, props: Record<string, unknown>, host: Node)
   const app = renderer.createApp({ setup: () => () => h(component, { ...props, ref: view }) });
   app.mount(host); return { app, view: view.value as { showArtifactTools(artifactId: string): void } };
 }
-async function component(name: string): Promise<Component> {
+async function componentUrl(name: string): Promise<string> {
   const source = await readFile(new URL(`../../src/monitor/ui/${name}.vue`, import.meta.url), 'utf8');
   const script = compileScript(parse(source, { filename: `${name}.vue` }).descriptor, { id: name, inlineTemplate: true });
   let code = stripTypeScriptTypes(script.content, { mode: 'transform' });
   code = code.replace(/from (['"])vue\1/g, `from ${JSON.stringify(import.meta.resolve('vue'))}`);
   code = code.replace(/from (['"])@lucide\/vue\1/g, `from ${JSON.stringify(import.meta.resolve('@lucide/vue'))}`);
-  code = code.replace(/import ToolOutput from ['"]\.\/ToolOutput\.vue['"];?/, 'const ToolOutput = { render: () => null };');
+  for (const match of [...code.matchAll(/from ['"]\.\/([A-Za-z]+)\.vue['"]/g)]) {
+    const url = ['ToolOutput', 'ArtifactBrowser'].includes(match[1]) ? 'data:text/javascript,export default {render:()=>null}' : await componentUrl(match[1]);
+    code = code.replace(match[0], `from ${JSON.stringify(url)}`);
+  }
   code = code.replace(/from (['"])(\.{1,2}\/[^'"]+)\1/g, (_whole, _quote, path: string) => {
     const relative = path.endsWith('.js') ? path : `${path}.js`;
     return `from ${JSON.stringify(new URL(`../src/monitor/ui/${relative}`, import.meta.url).href)}`;
   });
-  return (await import(`data:text/javascript;base64,${Buffer.from(code).toString('base64')}`)).default;
+  return `data:text/javascript;base64,${Buffer.from(code).toString('base64')}`;
 }
+async function component(name: string): Promise<Component> { return (await import(await componentUrl(name))).default; }
 const tool = (artifactId: string, operation = 'open', inputSchema: Record<string, unknown> = { type: 'object', additionalProperties: false }): MonitorHumanTool => ({
   name: `${operation}_${artifactId}`, artifactId, operation, description: `Inspect ${artifactId} in a desktop application.`, inputSchema,
 });
@@ -156,6 +168,158 @@ test('refocusing the same Human Artifact preserves selected custom tool argument
   assert.equal(matching(host, 'button', 'spec · preview').props['aria-pressed'], true);
   view.showArtifactTools('outside'); await nextTick();
   assert.match(text(host), /spec · Available tools/); assert.equal(calls, 0);
+});
+
+test('Human Claim displays preparation phases and stops waiting when its attempt is released', async t => {
+  browserGlobals(t);
+  let clock = Date.UTC(2026, 8, 11, 7), tick = () => {};
+  let claimSignal: AbortSignal | null | undefined;
+  let finishClaim = (_response: Response) => {};
+  t.mock.method(Date, 'now', () => clock);
+  t.mock.method(globalThis, 'setInterval', (callback: () => void) => { tick = callback; return 0; });
+  const host = node('root');
+  const props = reactive({ detail: detail(false), session: { reviewerId: 'me', csrfToken: 'csrf' }, sessionError: '',
+    onUpdated: (updated: MonitorDetail) => { props.detail = updated; } });
+  t.mock.method(globalThis, 'fetch', (_url: unknown, options: RequestInit) => new Promise<Response>((resolve, reject) => {
+    claimSignal = options.signal;
+    finishClaim = resolve;
+    options.signal?.addEventListener('abort', () => reject(new Error('Claim connection closed')), { once: true });
+  }));
+  const { app } = mount(await component('HumanReview'), props, host); t.after(() => app.unmount());
+  const pending = matching(host, 'button', 'Claim review').props.onClick();
+  await nextTick();
+  const startedAt = new Date(Date.now() - 12000).toISOString();
+  const attempt = { id: 'attempt-one', reviewerId: 'me', preparingByMe: true, status: 'preparing',
+    startedAt, expiresAt: new Date(Date.now() + 120000).toISOString(), heartbeatAt: startedAt,
+    phase: 'checking-environment', phaseStartedAt: startedAt, timings: [], elapsedMs: 12000, phaseElapsedMs: 12000 };
+  props.detail = { ...detail(false), human: { canClaim: false, claimedByMe: false, canComplete: false,
+    preparation: attempt } } as MonitorDetail;
+  await nextTick();
+  assert.match(text(host), /Checking environment requirements/);
+  assert.match(text(host), /attempt-one/);
+  assert.match(text(host), /Elapsed.*12s/);
+  assert.match(text(host), /Last heartbeat/);
+  clock += 121000; tick(); await nextTick();
+  assert.match(text(host), /Awaiting preparation update/);
+  assert.equal(claimSignal?.aborted, false, 'A stale GET record must not cancel a lease renewed by the server');
+  props.detail = { ...detail(false), human: { ...detail(false).human!, preparation: {
+    ...attempt, status: 'released', completedAt: new Date().toISOString(),
+  } } } as MonitorDetail;
+  await nextTick();
+  assert.match(text(host), /Preparation released/);
+  assert.doesNotMatch(text(host), /Preparing…/);
+  assert.equal(matching(host, 'button', 'Claim review').props.disabled, false);
+  assert.equal(claimSignal?.aborted, false, 'Keep the released attempt response available for its diagnostic');
+  finishClaim(Response.json({ error: 'Install the missing viewer runtime.' }, { status: 409 }));
+  await pending; await nextTick();
+  assert.match(text(host), /Install the missing viewer runtime/);
+  assert.doesNotMatch(text(host), /Claim connection closed/);
+
+  const retry = matching(host, 'button', 'Claim review').props.onClick();
+  props.detail = { ...detail(false), human: { canClaim: false, claimedByMe: false, canComplete: false,
+    preparation: { ...attempt, id: 'attempt-two', previousAttemptId: 'attempt-one', phase: 'final-validation', expiresAt: new Date(Date.now() + 120000).toISOString() } } } as MonitorDetail;
+  await nextTick();
+  assert.match(text(host), /Final input validation/);
+  assert.match(text(host), /attempt-two/);
+  assert.match(text(host), /Replaces attempt attempt-one/);
+  props.detail = { ...props.detail, human: { ...props.detail.human!, preparation: {
+    ...props.detail.human!.preparation!, id: 'attempt-three', previousAttemptId: 'attempt-two',
+  } } };
+  await nextTick();
+  assert.match(text(host), /attempt-three/);
+  assert.equal(claimSignal?.aborted, false, 'Observing another attempt must not cancel an unrelated pending POST');
+  app.unmount(); await retry;
+  assert.equal(claimSignal?.aborted, true, 'Closing the view still cancels its pending Claim requests');
+  assert.doesNotMatch(text(host), /Claim connection closed/);
+});
+
+test('Human Claim renders expired and confirmed attempts without an indefinite preparation spinner', async t => {
+  browserGlobals(t);
+  let clock = Date.UTC(2026, 8, 11, 7), tick = () => {};
+  t.mock.method(Date, 'now', () => clock);
+  t.mock.method(globalThis, 'setInterval', (callback: () => void) => { tick = callback; return 0; });
+  const host = node('root'), startedAt = new Date(Date.now() - 180000).toISOString();
+  const attempt = { id: 'expired-attempt', reviewerId: 'me', preparingByMe: true, status: 'preparing',
+    startedAt, expiresAt: new Date(Date.now() + 1000).toISOString(), heartbeatAt: startedAt,
+    phase: 'validating-input', phaseStartedAt: startedAt, timings: [], elapsedMs: 180000, phaseElapsedMs: 180000 };
+  const props = reactive({ detail: { ...detail(false), human: { ...detail(false).human!, preparation: attempt } } as MonitorDetail,
+    session: { reviewerId: 'me', csrfToken: 'csrf' }, sessionError: '' });
+  const { app } = mount(await component('HumanReview'), props, host); t.after(() => app.unmount());
+  assert.match(text(host), /Validating fixed input/);
+  assert.match(text(host), /No recent preparation heartbeat/);
+  clock += 2000; tick(); await nextTick();
+  assert.match(text(host), /Awaiting preparation update/);
+  assert.doesNotMatch(text(host), /Preparation expired/);
+  props.detail = { ...detail(false), human: { ...detail(false).human!, preparation: { ...attempt, status: 'expired' } } } as MonitorDetail;
+  await nextTick();
+  assert.match(text(host), /Preparation expired/);
+  assert.match(text(host), /Claim review/);
+  assert.doesNotMatch(text(host), /Preparing…/);
+  props.detail = { ...detail(true), human: { ...detail(true).human!, preparation: {
+    ...attempt, status: 'claimed', completedAt: new Date().toISOString(),
+    timings: [{ phase: 'validating-input', startedAt, completedAt: new Date().toISOString(), durationMs: 75000 }],
+  } } } as MonitorDetail;
+  await nextTick();
+  assert.match(text(host), /Assignment confirmed/);
+  assert.match(text(host), /Assigned to me/);
+  assert.match(text(host), /Validating fixed input.*1m 15s/);
+  assert.doesNotMatch(text(host), /Preparing…/);
+});
+
+test('a delayed refresh from a failed Claim cannot cancel the next Claim attempt', async t => {
+  browserGlobals(t);
+  let poll = () => {};
+  t.mock.method(globalThis, 'setInterval', (callback: () => void, interval: number) => { if (interval === 2000) poll = callback; return 0; });
+  const initial = detail(false, []);
+  const withAttempt = (id: string, status: 'released' | 'preparing'): MonitorDetail => {
+    const startedAt = new Date().toISOString();
+    return { ...initial, human: { ...initial.human!, canClaim: status === 'released', preparation: {
+      id, reviewerId: 'me', preparingByMe: true, status, startedAt, expiresAt: new Date(Date.now() + 120000).toISOString(), heartbeatAt: startedAt,
+      phase: 'checking-environment', phaseStartedAt: startedAt, timings: [], elapsedMs: 0, phaseElapsedMs: 0,
+      ...(status === 'released' ? { completedAt: startedAt } : {}),
+    } } };
+  };
+  let serverDetail = initial, claims = 0, holdRefresh = false, retrySignal: AbortSignal | null | undefined;
+  let finishClaim = (_response: Response) => {};
+  const delayed: { signal: AbortSignal | null | undefined; resolve: () => void }[] = [];
+  t.mock.method(globalThis, 'fetch', (input: string | URL | Request, options: RequestInit) => {
+    const url = String(input);
+    if (url === '/api/session') return Promise.resolve(Response.json({ reviewerId: 'me', csrfToken: 'csrf' }));
+    if (url.startsWith('/api/requests?')) return Promise.resolve(Response.json({ projects: [], requests: [], total: 0, hasMore: false, observedAt: new Date().toISOString() }));
+    if (url.endsWith('/claim')) {
+      claims++;
+      if (claims === 1) { serverDetail = withAttempt('attempt-A', 'released'); holdRefresh = true; return Promise.resolve(Response.json({ error: 'Temporary check failure.' }, { status: 409 })); }
+      assert.equal(claims, 2); serverDetail = withAttempt('attempt-B', 'preparing'); retrySignal = options.signal;
+      return new Promise<Response>((resolve, reject) => {
+        finishClaim = resolve;
+        options.signal?.addEventListener('abort', () => reject(new Error('Claim cancelled by browser')), { once: true });
+      });
+    }
+    assert.equal(url, '/api/requests/project/request');
+    const captured = structuredClone(serverDetail);
+    if (!holdRefresh) return Promise.resolve(Response.json(captured));
+    return new Promise<Response>((resolve, reject) => {
+      delayed.push({ signal: options.signal, resolve: () => resolve(Response.json(captured)) });
+      options.signal?.addEventListener('abort', () => reject(new Error('Refresh superseded')), { once: true });
+    });
+  });
+  const settle = async () => { for (let i = 0; i < 6; i++) { await new Promise(resolve => setImmediate(resolve)); await nextTick(); } };
+  const host = node('root'), { app } = mount(await component('App'), {}, host);
+  try {
+  await settle();
+  await matching(host, 'button', 'Claim review').props.onClick(); await settle();
+  assert.match(text(host), /Temporary check failure/);
+  const refresh = delayed.findLast(item => !item.signal?.aborted); assert.ok(refresh);
+  const retry = matching(host, 'button', 'Claim review').props.onClick(); await settle();
+  assert.equal(claims, 2); assert.equal(retrySignal?.aborted, false);
+  holdRefresh = false; refresh.resolve(); await settle();
+  assert.match(text(host), /attempt-A/);
+  poll(); await settle();
+  assert.match(text(host), /attempt-B/);
+  assert.equal(retrySignal?.aborted, false, 'A previous attempt observed by polling must not cancel the current POST');
+  finishClaim(Response.json(detail(true, []))); await retry; await settle();
+  assert.match(text(host), /Assigned to me/);
+  } finally { app.unmount(); }
 });
 
 test('Human group references expose deduplicated scoped member tools and preserve claim gating', async t => {
