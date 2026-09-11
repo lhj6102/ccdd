@@ -15,6 +15,7 @@ import { reviewMain } from '../src/review/cli.js';
 import { startMonitor } from '../src/monitor/server.js';
 import { prepareHumanReview } from '../src/executors/human-preparation.js';
 import type { RemoteReviewOptions } from '../src/review/client.js';
+import type { MonitorDetail } from '../src/monitor/types.js';
 
 const aliceToken = 'a'.repeat(48), bobToken = 'b'.repeat(48);
 
@@ -220,10 +221,16 @@ test('local monitor projects Try Claim without executing checks and returns prep
   const route = `${monitor.url}/api/requests/${projectId}/${data.request.id}`;
   const attempt = data.broker.tryClaimHuman(data.request.id, session.reviewerId);
   const before = await readFile(data.configMarker, 'utf8');
-  const detail = await (await fetch(route, { headers: { cookie } })).json() as { human: { canClaim: boolean; canComplete: boolean; tryClaim?: { preparingByMe: boolean } }; request: { waitingReason: string } };
-  assert.equal(detail.human.canClaim, false); assert.equal(detail.human.canComplete, false);
-  assert.equal(detail.human.tryClaim?.preparingByMe, true);
-  assert.match(detail.request.waitingReason, /Try Claim/);
+  const detail = await (await fetch(route, { headers: { cookie } })).json() as MonitorDetail;
+  assert.equal(detail.human!.canClaim, false); assert.equal(detail.human!.canComplete, false);
+  assert.equal(detail.human!.tryClaim?.preparingByMe, true);
+  const preparation = detail.human!.preparation;
+  assert.equal(preparation?.id, attempt.id, 'The active preparation attempt must be identifiable while the Claim is pending.');
+  assert.equal(preparation?.status, 'preparing');
+  assert.equal(preparation?.phase, 'validating-input');
+  assert.ok(preparation!.elapsedMs >= 0);
+  assert.ok(Number.isFinite(Date.parse(preparation!.heartbeatAt)));
+  assert.match(detail.request.waitingReason!, /Try Claim/);
   assert.equal(await readFile(data.configMarker, 'utf8'), before);
   data.broker.releaseHumanTryClaim(data.request.id, session.reviewerId, attempt.id);
   const failed = await fetch(route + '/claim', { method: 'POST', headers: { cookie, origin: monitor.url, 'x-ccdd-csrf': session.csrfToken, 'content-type': 'application/json' }, body: '{}' });
@@ -232,6 +239,87 @@ test('local monitor projects Try Claim without executing checks and returns prep
   assert.equal(data.broker.getRequest(data.request.id)!.claimedBy, null);
   assert.equal(data.broker.getRequest(data.request.id)!.tryClaim, undefined);
   assert.equal(data.broker.getRequest(data.request.id)!.status, 'WAITING_HUMAN');
+  const released = await (await fetch(route, { headers: { cookie } })).json() as MonitorDetail;
+  assert.equal(released.human!.canClaim, true);
+  assert.equal(released.human!.preparation!.status, 'released');
+  assert.equal(released.human!.preparation!.failureCode, 'checks-failed');
+  assert.match(released.human!.preparation!.nextAction!, /retry Claim/);
+  assert.notEqual(released.human!.preparation!.id, attempt.id);
+  assert.equal(released.human!.preparation!.previousAttemptId, attempt.id);
+  assert.ok(released.human!.preparation!.timings.some(timing => timing.phase === 'checking-environment'));
+  const expiring = data.broker.tryClaimHuman(data.request.id, session.reviewerId, { leaseMs: 20 });
+  await delay(50);
+  const storedBefore = await readFile(join(data.stateDir, 'broker.sqlite'));
+  const importsBefore = await readFile(data.configMarker, 'utf8');
+  const expired = await (await fetch(route, { headers: { cookie } })).json() as MonitorDetail;
+  assert.equal(expired.human!.canClaim, true);
+  assert.equal(expired.human!.tryClaim, undefined);
+  assert.equal(expired.human!.preparation!.id, expiring.id);
+  assert.equal(expired.human!.preparation!.status, 'expired');
+  assert.equal(expired.human!.preparation!.completedAt, expiring.expiresAt);
+  assert.equal(expired.human!.preparation!.previousAttemptId, released.human!.preparation!.id);
+  assert.match(expired.human!.preparation!.nextAction!, /Retry Claim/);
+  assert.deepEqual(await readFile(join(data.stateDir, 'broker.sqlite')), storedBefore);
+  assert.equal(await readFile(data.configMarker, 'utf8'), importsBefore);
+});
+
+test('a pending local Claim exposes real phases, heartbeat, scanner counts and terminal timings through observational monitor reads', async t => {
+  const control = await mkdtemp(join(tmpdir(), 'ccdd-preparation-progress-'));
+  t.after(() => rm(control, { recursive: true, force: true }));
+  const gate = join(control, 'continue');
+  const environmentStarted = join(control, 'started');
+  const data = await fixture(t, `import { existsSync, writeFileSync } from 'node:fs';
+    writeFileSync(${JSON.stringify(environmentStarted)}, 'started');
+    while (!existsSync(${JSON.stringify(gate)})) await new Promise(resolve => setTimeout(resolve, 20));
+    console.log('Environment is ready.');`);
+  const monitor = await startMonitor({ stateDirs: [data.stateDir], stateHome: join(data.dir, 'empty-state-home'), port: 0 });
+  t.after(() => monitor.close());
+  const response = await fetch(monitor.url + '/api/session');
+  const session = await response.json() as { reviewerId: string; csrfToken: string };
+  const cookie = response.headers.get('set-cookie')!.split(';')[0];
+  const overview = await (await fetch(monitor.url + '/api/requests')).json() as { requests: { id: string; projectId: string }[] };
+  const projectId = overview.requests.find(request => request.id === data.request.id)!.projectId;
+  const route = `${monitor.url}/api/requests/${projectId}/${data.request.id}`;
+  const pending = fetch(route + '/claim', { method: 'POST', headers: { cookie, origin: monitor.url, 'x-ccdd-csrf': session.csrfToken, 'content-type': 'application/json' }, body: '{}' });
+  const read = async () => await (await fetch(route, { headers: { cookie } })).json() as MonitorDetail;
+  const waitFor = async (matches: (detail: MonitorDetail) => boolean) => {
+    const deadline = Date.now() + 8_000;
+    while (Date.now() < deadline) { const detail = await read(); if (matches(detail)) return detail; await delay(25); }
+    assert.fail('Expected real preparation progress before the environment check timed out.');
+  };
+  try {
+    const preparing = await waitFor(detail => detail.human?.preparation?.phase === 'checking-environment');
+    const attempt = preparing.human!.preparation!;
+    assert.equal(attempt.status, 'preparing');
+    assert.equal(attempt.preparingByMe, true);
+    assert.equal(preparing.request.claimedBy, null);
+    assert.equal(preparing.human!.tryClaim!.id, attempt.id);
+    for (let i = 0; i < 200 && !await readFile(environmentStarted).then(() => true, () => false); i++) await delay(10);
+    assert.equal(await readFile(environmentStarted, 'utf8'), 'started');
+    const importsBefore = await readFile(data.configMarker, 'utf8');
+    const heartbeat = await waitFor(detail => detail.human?.preparation?.heartbeatAt !== attempt.heartbeatAt);
+    assert.equal(heartbeat.human!.preparation!.id, attempt.id);
+    assert.equal(heartbeat.human!.preparation!.phase, 'checking-environment');
+    assert.ok(heartbeat.human!.preparation!.elapsedMs >= attempt.elapsedMs);
+    assert.ok(Date.parse(heartbeat.human!.preparation!.expiresAt) > Date.parse(attempt.expiresAt));
+    assert.equal(await readFile(data.configMarker, 'utf8'), importsBefore);
+    await writeFile(gate, 'continue');
+    assert.equal((await pending).status, 200);
+    const claimed = await read();
+    const completed = claimed.human!.preparation!;
+    assert.equal(completed.id, attempt.id);
+    assert.equal(completed.status, 'claimed');
+    assert.equal(claimed.human!.tryClaim, undefined);
+    assert.equal(claimed.human!.claimedByMe, true);
+    assert.equal(completed.completedAt, claimed.request.claimedAt);
+    assert.deepEqual(completed.timings.map(timing => timing.phase), ['validating-input', 'checking-manifest', 'checking-environment', 'preflighting-tools', 'final-validation', 'confirming-assignment']);
+    assert.ok(completed.timings.every(timing => timing.durationMs >= 0));
+    assert.equal(completed.progress!.kind, 'content');
+    assert.equal(completed.progress!.completed, true);
+    assert.ok(completed.progress!.files >= 4);
+    assert.ok(completed.progress!.bytes >= 256 * 1024);
+    assert.equal(data.broker.getRequest(data.request.id)!.result, null);
+  } finally { await writeFile(gate, 'continue'); await pending; }
 });
 
 test('both local CLI entrypoints cancel actual check processes and release Try Claim before exiting', async t => {

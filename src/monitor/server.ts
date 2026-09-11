@@ -12,6 +12,7 @@ import { createMonitorStore } from './store.js';
 import { inspectProject } from '../project/index.js';
 import { MonitorActionError, authorizeWorkspace, claimReview, completeReview, executeReviewTool } from './actions.js';
 import { activeTryClaim } from '../broker/human-claims.js';
+import { humanPreparationState } from './human-preparation.js';
 import type { MonitorArtifactPage, MonitorDetail, MonitorFilter, MonitorLane, MonitorSession, MonitorSources } from './types.js';
 
 const ARTIFACT_BUDGET_MS = 10_000;
@@ -144,11 +145,13 @@ async function decorateDetail(detail: MonitorDetail, record: MonitorStoredReques
   const waiting = detail.request.kind === 'human' && detail.request.status === 'WAITING_HUMAN';
   const claimedByMe = Boolean(reviewerId && detail.request.claimedBy === reviewerId);
   const reservation = waiting ? activeTryClaim(record.request) : undefined;
+  const preparation = humanPreparationState(record.request, reviewerId);
   detail.human = {
     canClaim: waiting && !detail.request.claimedBy && !reservation && detail.request.workerState !== 'missing',
     canComplete: waiting && claimedByMe && Boolean(record.request.notifiedAt) && detail.request.workerState !== 'missing',
     claimedByMe,
-    ...(reservation ? { tryClaim: { reviewerId: reservation.reviewerId, expiresAt: reservation.expiresAt, preparingByMe: reservation.reviewerId === reviewerId } } : {}),
+    ...(reservation ? { tryClaim: { id: reservation.id, reviewerId: reservation.reviewerId, expiresAt: reservation.expiresAt, preparingByMe: reservation.reviewerId === reviewerId } } : {}),
+    ...(preparation ? { preparation } : {}),
   };
   detail.tools = [];
   detail.artifactPreview = record.request.configManifest ? 'tools' : 'legacy';

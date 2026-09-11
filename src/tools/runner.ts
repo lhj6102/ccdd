@@ -1,7 +1,7 @@
 import { constants } from 'node:fs';
 import { access, lstat, mkdir, mkdtemp, readFile, realpath } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { join, relative, resolve, sep } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { createArtifactViewer, createAuditedArtifactTools, type ArtifactReference } from '../artifacts/index.js';
 import { createHumanArtifactTools } from '../artifacts/human.js';
@@ -12,6 +12,7 @@ import { metadata, object, jsonCopy, validateArguments } from './schema.js';
 import { openToolHost } from './host.js';
 import { matchesToolManifest } from './manifest.js';
 import { scopedPath, within } from './paths.js';
+import { safeToolFailure, ToolResultError } from './diagnostics.js';
 
 export interface ReviewToolDefinition {
   artifactId: string;
@@ -22,10 +23,11 @@ export interface ReviewToolDefinition {
   metadata?: ToolMetadata;
   annotations?: Record<string,boolean>;
 }
-export interface ReviewToolCheck { toolName: string; artifactId: string; ok: boolean; message: string }
+export interface ReviewToolCheck { toolName: string; artifactId: string; ok: boolean; message: string; code?: string }
 export interface ReviewToolRegistry {
   tools: ReviewToolDefinition[];
   toolCalls: ReviewToolCall[];
+  outputDir?: string;
   validateArguments(name:string,args:unknown):Record<string,unknown>;
   call(name:string,args?:unknown):Promise<any>;
   preflight(options?:{toolName?:string}):Promise<ReviewToolCheck[]>;
@@ -74,7 +76,7 @@ async function normalizeResult(value:unknown,meta:ToolMetadata,outputDir:string)
       if(typeof block.path==='string'){
         const imageRoot=await realpath(outputDir),candidate=resolve(outputDir,block.path);
         if(!within(imageRoot,candidate))throw new Error('Image is outside the tool output directory.');
-        const path=await scopedPath(imageRoot,candidate.slice(imageRoot.length+1));
+        const path=await scopedPath(imageRoot,relative(imageRoot,candidate).split(sep).join('/'));
         const info=await lstat(path);if(!info.isFile()||info.size>4*1024*1024)throw new Error('Image exceeds 4 MiB or is not a file.');
         bytes=await readFile(path);
       }else if(typeof block.data==='string'&&block.data.length<=5600000&&/^[A-Za-z0-9+/]*={0,2}$/.test(block.data))bytes=Buffer.from(block.data,'base64');
@@ -143,10 +145,14 @@ export async function createReviewTools(options:ReviewToolsOptions):Promise<Revi
       const reviewerEnvironment=audience==='human'?Object.fromEntries(['HOME','USERPROFILE','CARGO_HOME','RUSTUP_HOME','DISPLAY','WAYLAND_DISPLAY','XAUTHORITY','XDG_RUNTIME_DIR','DBUS_SESSION_BUS_ADDRESS'].flatMap(name=>process.env[name]===undefined?[]:[[name,process.env[name]!]])):undefined;
       return host.call({action,artifact,type:artifact.type,audience,toolKey:tool.operation,args:arguments_,outputDir,tmpDir:temporary,...(reviewerEnvironment?{reviewerEnvironment}:{})},action==='preflight'?10000:tool.metadata?.timeoutMs??120000);
     };
-    return {tools,toolCalls,validateArguments:args,close:host.close,
+    return {tools,toolCalls,outputDir,validateArguments:args,close:host.close,
       async call(name,value={}){
         const tool=find(name),actual=args(name,value);
-        const result=await normalizeResult(await invoke('execute',tool,actual),tool.metadata!,outputDir);signal?.throwIfAborted();
+        const value_=await invoke('execute',tool,actual);
+        let result:ToolResult;
+        try { result=await normalizeResult(value_,tool.metadata!,outputDir); }
+        catch(error) { throw new ToolResultError(error); }
+        signal?.throwIfAborted();
         const call:ReviewToolCall={name,arguments:actual,at:new Date().toISOString(),observation:{artifactId:tool.artifactId,operation:tool.operation,...result.observation}};
         await onCall?.(structuredClone(call));toolCalls.push(structuredClone(call));return result;
       },
@@ -154,7 +160,7 @@ export async function createReviewTools(options:ReviewToolsOptions):Promise<Revi
         const checks:ReviewToolCheck[]=[];
         for(const tool of tools.filter(tool=>!toolName||tool.name===toolName)){
           try{const value=await invoke('preflight',tool,{});if(!object(value)||typeof value.ok!=='boolean'||typeof value.message!=='string')throw new Error('Invalid preflight result.');checks.push({toolName:tool.name,artifactId:tool.artifactId,ok:value.ok,message:value.message.slice(0,2000)});}
-          catch(error){checks.push({toolName:tool.name,artifactId:tool.artifactId,ok:false,message:error instanceof Error?error.message:'Tool preparation failed.'});}
+          catch(error){checks.push({toolName:tool.name,artifactId:tool.artifactId,ok:false,...safeToolFailure(error)});}
         }return checks;
       },
     };

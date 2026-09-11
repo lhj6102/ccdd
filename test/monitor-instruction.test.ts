@@ -13,6 +13,7 @@ import '../src/monitor/ui/api.js';
 import '../src/monitor/ui/tool-input.js';
 import '../src/monitor/ui/tool-content.js';
 import '../src/monitor/ui/critic-presentation.js';
+import '../src/monitor/ui/format.js';
 
 type Node = {
   type: string; text: string; props: Record<string, any>; children: Node[]; parent: Node | null;
@@ -156,6 +157,99 @@ test('refocusing the same Human Artifact preserves selected custom tool argument
   assert.equal(matching(host, 'button', 'spec · preview').props['aria-pressed'], true);
   view.showArtifactTools('outside'); await nextTick();
   assert.match(text(host), /spec · Available tools/); assert.equal(calls, 0);
+});
+
+test('Human Claim displays preparation phases and stops waiting when its attempt is released', async t => {
+  browserGlobals(t);
+  let clock = Date.UTC(2026, 8, 11, 7), tick = () => {};
+  let claimSignal: AbortSignal | null | undefined;
+  let finishClaim = (_response: Response) => {};
+  t.mock.method(Date, 'now', () => clock);
+  t.mock.method(globalThis, 'setInterval', (callback: () => void) => { tick = callback; return 0; });
+  const host = node('root');
+  const props = reactive({ detail: detail(false), session: { reviewerId: 'me', csrfToken: 'csrf' }, sessionError: '',
+    onUpdated: (updated: MonitorDetail) => { props.detail = updated; } });
+  t.mock.method(globalThis, 'fetch', (_url: unknown, options: RequestInit) => new Promise<Response>((resolve, reject) => {
+    claimSignal = options.signal;
+    finishClaim = resolve;
+    options.signal?.addEventListener('abort', () => reject(new Error('Claim connection closed')), { once: true });
+  }));
+  const { app } = mount(await component('HumanReview'), props, host); t.after(() => app.unmount());
+  const pending = matching(host, 'button', 'Claim review').props.onClick();
+  await nextTick();
+  const startedAt = new Date(Date.now() - 12000).toISOString();
+  const attempt = { id: 'attempt-one', reviewerId: 'me', preparingByMe: true, status: 'preparing',
+    startedAt, expiresAt: new Date(Date.now() + 120000).toISOString(), heartbeatAt: startedAt,
+    phase: 'checking-environment', phaseStartedAt: startedAt, timings: [], elapsedMs: 12000, phaseElapsedMs: 12000 };
+  props.detail = { ...detail(false), human: { canClaim: false, claimedByMe: false, canComplete: false,
+    preparation: attempt } } as MonitorDetail;
+  await nextTick();
+  assert.match(text(host), /Checking environment requirements/);
+  assert.match(text(host), /attempt-one/);
+  assert.match(text(host), /Elapsed.*12s/);
+  assert.match(text(host), /Last heartbeat/);
+  clock += 121000; tick(); await nextTick();
+  assert.match(text(host), /Awaiting preparation update/);
+  assert.equal(claimSignal?.aborted, false, 'A stale GET record must not cancel a lease renewed by the server');
+  props.detail = { ...detail(false), human: { ...detail(false).human!, preparation: {
+    ...attempt, status: 'released', completedAt: new Date().toISOString(),
+  } } } as MonitorDetail;
+  await nextTick();
+  assert.match(text(host), /Preparation released/);
+  assert.doesNotMatch(text(host), /Preparing…/);
+  assert.equal(matching(host, 'button', 'Claim review').props.disabled, false);
+  assert.equal(claimSignal?.aborted, false, 'Keep the released attempt response available for its diagnostic');
+  finishClaim(Response.json({ error: 'Install the missing viewer runtime.' }, { status: 409 }));
+  await pending; await nextTick();
+  assert.match(text(host), /Install the missing viewer runtime/);
+  assert.doesNotMatch(text(host), /Claim connection closed/);
+
+  const retry = matching(host, 'button', 'Claim review').props.onClick();
+  props.detail = { ...detail(false), human: { canClaim: false, claimedByMe: false, canComplete: false,
+    preparation: { ...attempt, id: 'attempt-two', previousAttemptId: 'attempt-one', phase: 'final-validation', expiresAt: new Date(Date.now() + 120000).toISOString() } } } as MonitorDetail;
+  await nextTick();
+  assert.match(text(host), /Final input validation/);
+  assert.match(text(host), /attempt-two/);
+  assert.match(text(host), /Replaces attempt attempt-one/);
+  props.detail = { ...props.detail, human: { ...props.detail.human!, preparation: {
+    ...props.detail.human!.preparation!, id: 'attempt-three', previousAttemptId: 'attempt-two',
+  } } };
+  await nextTick(); await retry; await nextTick();
+  assert.match(text(host), /attempt-three/);
+  assert.doesNotMatch(text(host), /Claim connection closed/);
+});
+
+test('Human Claim renders expired and confirmed attempts without an indefinite preparation spinner', async t => {
+  browserGlobals(t);
+  let clock = Date.UTC(2026, 8, 11, 7), tick = () => {};
+  t.mock.method(Date, 'now', () => clock);
+  t.mock.method(globalThis, 'setInterval', (callback: () => void) => { tick = callback; return 0; });
+  const host = node('root'), startedAt = new Date(Date.now() - 180000).toISOString();
+  const attempt = { id: 'expired-attempt', reviewerId: 'me', preparingByMe: true, status: 'preparing',
+    startedAt, expiresAt: new Date(Date.now() + 1000).toISOString(), heartbeatAt: startedAt,
+    phase: 'validating-input', phaseStartedAt: startedAt, timings: [], elapsedMs: 180000, phaseElapsedMs: 180000 };
+  const props = reactive({ detail: { ...detail(false), human: { ...detail(false).human!, preparation: attempt } } as MonitorDetail,
+    session: { reviewerId: 'me', csrfToken: 'csrf' }, sessionError: '' });
+  const { app } = mount(await component('HumanReview'), props, host); t.after(() => app.unmount());
+  assert.match(text(host), /Validating fixed input/);
+  assert.match(text(host), /No recent preparation heartbeat/);
+  clock += 2000; tick(); await nextTick();
+  assert.match(text(host), /Awaiting preparation update/);
+  assert.doesNotMatch(text(host), /Preparation expired/);
+  props.detail = { ...detail(false), human: { ...detail(false).human!, preparation: { ...attempt, status: 'expired' } } } as MonitorDetail;
+  await nextTick();
+  assert.match(text(host), /Preparation expired/);
+  assert.match(text(host), /Claim review/);
+  assert.doesNotMatch(text(host), /Preparing…/);
+  props.detail = { ...detail(true), human: { ...detail(true).human!, preparation: {
+    ...attempt, status: 'claimed', completedAt: new Date().toISOString(),
+    timings: [{ phase: 'validating-input', startedAt, completedAt: new Date().toISOString(), durationMs: 75000 }],
+  } } } as MonitorDetail;
+  await nextTick();
+  assert.match(text(host), /Assignment confirmed/);
+  assert.match(text(host), /Assigned to me/);
+  assert.match(text(host), /Validating fixed input.*1m 15s/);
+  assert.doesNotMatch(text(host), /Preparing…/);
 });
 
 test('Human group references expose deduplicated scoped member tools and preserve claim gating', async t => {

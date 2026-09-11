@@ -221,6 +221,23 @@ reservations as available without changing stored state. A subsequent explicit
 begin action can retire them. Claim confirmation also checks the snapshot/config
 identities and the complete set of environment and tool readiness receipts.
 
+Local preparation records the current phase, attempt ID, preceding attempt ID,
+start/phase times, last heartbeat, and bounded completed phase timings in the
+Broker. Existing input scans report file/byte progress at most once per second
+plus scan boundaries; progress does not add a scan or bypass integrity checks.
+Phases cover fixed-input validation, manifest verification, environment checks,
+tool preflight, final input validation, and assignment confirmation. Claim
+preparation renews its reservation and heartbeat while those checks run.
+
+The latest attempt remains inspectable after release or confirmation. Monitor
+GETs project its stored state, deriving expiry and elapsed time without changing
+the reservation or executing code. The Human Claim panel shows phase, elapsed
+time, heartbeat, scan progress, and phase timings. Released or expired attempts
+show retry guidance; a subsequent attempt has its own identity and explicitly
+references the preceding attempt. A delayed HTTP response does not keep an ended
+attempt displayed as preparing. These diagnostics describe preparation, not a
+viewer's rendering readiness or a semantic review result.
+
 `ccdd.config.ts` may declare `envRequirements: { [id]: {description, script,
 timeoutMs?, inputs?} }`. `script` is a safe project-relative Node script. A zero
 exit code means ready; other exits, timeout, or excessive output fail preparation.
@@ -288,6 +305,10 @@ Human completion shares the CLI's saved execution configuration and detached wor
 Selecting a group with `--artifact` lists and preflights its deduplicated leaf tools. Actual `--execute` requires a leaf Artifact ID so one bound tool is selected explicitly; a group itself is not executable.
 
 Preparation confirms declarations, paths and registered preflight results. A missing custom preflight is labeled as registration confirmed but execution unverified. Actual execution confirms a schema-validated tool result; a GUI app's rendered content and a person's reading are not inferred. A launcher copy is retained so an asynchronously opened desktop viewer keeps its input after the command exits. Copies are revalidated and normal immutable cache lifetime rules apply. `doctor` remains the whole-project readiness command, including Human tool preflight without launching applications.
+
+Every diagnostic check identifies its stage: `snapshot` captures input, `preflight` loads configuration and checks registration and arguments, `execute` invokes the tool, `normalize-result` validates the returned content, and `input-integrity` confirms that reviewed input remained unchanged. Failures include a safe code and message by default, including in `--json` output. Runner-owned validation messages identify rejected image paths and malformed results. Recognized filesystem and timeout codes use fixed explanations; custom exception text, failed custom preflight messages, subprocess output, credentials, and environment values are not copied into failure diagnostics.
+
+Explicit execution reports the registered tool's `outputDir` once allocated, including when preflight, execution, or result validation fails. It is outside reviewed input and retained for inspecting renderer receipts or generated files. A rejected or integrity-invalid result is omitted from the report; retaining output never creates a review result or certifies those files as valid observations. Legacy tools that do not allocate a diagnostic output directory omit this field.
 
 v0.8 replaces Critic sequencing with Artifact target/deps, persists graph definitions, and adds GraphView alongside Kanban. Fresh demos use `demo-v8` with manifest version 8, explicit bases and audience tool maps. Existing demos and historic review snapshots are never rewritten automatically.
 

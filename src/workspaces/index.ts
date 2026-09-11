@@ -13,6 +13,7 @@ export interface WorkspaceHandle {
   descriptor: Readonly<WorkspaceDescriptor>; signal: AbortSignal;
   assertUnchanged: () => Promise<unknown>; close: () => Promise<void>;
 }
+export interface WorkspaceScanProgress { kind: 'metadata' | 'content'; files: number; bytes: number; completed: boolean }
 type WorkspaceEntry = { path: string; type: 'directory'; executable: number }
   | { path: string; type: 'file'; executable: number; content?: string }
   | { path: string; type: 'symlink'; target: string };
@@ -57,9 +58,16 @@ function metadata(info: BigIntStats) {
 }
 
 /** Every entry participates: no Git, ignore rules, extension filters or implicit exclusions. */
-async function inspect(root: string, { signal, requireReadonly = false, contents = true }: { signal?: AbortSignal; requireReadonly?: boolean; contents?: boolean } = {}): Promise<Inspection> {
+async function inspect(root: string, { signal, requireReadonly = false, contents = true, onProgress }: { signal?: AbortSignal; requireReadonly?: boolean; contents?: boolean; onProgress?: (progress: WorkspaceScanProgress) => void } = {}): Promise<Inspection> {
   const entries: WorkspaceEntry[] = [];
   const metadataEntries: string[][] = [];
+  let files = 0, bytes = 0, lastProgress = 0;
+  const progress = (force = false, completed = false) => {
+    if (!onProgress || (!force && Date.now() - lastProgress < 1000)) return;
+    lastProgress = Date.now();
+    onProgress({ kind: contents ? 'content' : 'metadata', files, bytes, completed });
+  };
+  progress(true);
   const walk = async (relative: string): Promise<void> => {
     signal?.throwIfAborted();
     const absolute = relative ? path.join(root, relative) : root;
@@ -85,12 +93,16 @@ async function inspect(root: string, { signal, requireReadonly = false, contents
           if (!bytesRead) break;
           hash.update(buffer.subarray(0, bytesRead));
           position += bytesRead;
+          bytes += bytesRead;
+          progress();
         }
         content = hash.digest('hex');
       } finally { await file.close(); }
       entries.push({ path: relative, type: 'file', executable: Number(before.mode & 0o111n), content });
+      files++; progress();
     } else if (before.isFile()) {
       entries.push({ path: relative, type: 'file', executable: Number(before.mode & 0o111n) });
+      files++; progress();
     } else if (before.isSymbolicLink()) {
       const target = await readlink(absolute);
       if (path.isAbsolute(target) || !contained(root, path.resolve(path.dirname(absolute), target))) {
@@ -108,6 +120,7 @@ async function inspect(root: string, { signal, requireReadonly = false, contents
     if (JSON.stringify(metadata(before)) !== JSON.stringify(metadata(after))) throw changed('lock', relative || '.');
   };
   await walk('');
+  progress(true, true);
   return { hash: digest(JSON.stringify(entries)), metadataHash: digest(JSON.stringify(metadataEntries)), entries };
 }
 
@@ -115,7 +128,7 @@ export async function fingerprintWorkspace(workspacePath: string) {
   return (await inspect(await realpath(workspacePath))).hash;
 }
 
-function observe(root: string, mode: WorkspaceMode, externalSignal?: AbortSignal) {
+function observe(root: string, mode: WorkspaceMode, externalSignal?: AbortSignal, onProgress?: (progress: WorkspaceScanProgress) => void) {
   const controller = new AbortController();
   let closed = false;
   let watcher: FSWatcher;
@@ -150,7 +163,7 @@ function observe(root: string, mode: WorkspaceMode, externalSignal?: AbortSignal
       let current;
       do {
         eventPending = false;
-        current = await inspect(root, { signal: controller.signal, requireReadonly: mode === 'copy', contents });
+        current = await inspect(root, { signal: controller.signal, requireReadonly: mode === 'copy', contents, ...(contents ? { onProgress } : {}) });
         if (baseline && ((contents && current.hash !== baseline.hash) || current.metadataHash !== baseline.metadataHash)) throw changed(mode);
         controller.signal.throwIfAborted();
       } while (eventPending);
@@ -169,8 +182,8 @@ function observe(root: string, mode: WorkspaceMode, externalSignal?: AbortSignal
   return {
     signal: controller.signal,
     async initialize(expected?: Pick<Inspection, 'hash' | 'metadataHash'>) {
-      const before = await inspect(root, { signal: controller.signal, requireReadonly: mode === 'copy', contents: false });
-      const current = await inspect(root, { signal: controller.signal, requireReadonly: mode === 'copy' });
+      const before = await inspect(root, { signal: controller.signal, requireReadonly: mode === 'copy', contents: false, onProgress });
+      const current = await inspect(root, { signal: controller.signal, requireReadonly: mode === 'copy', onProgress });
       if (before.metadataHash !== current.metadataHash) throw changed(mode, 'input changed while acquiring the workspace');
       baseline = current;
       if (expected && (expected.hash !== baseline.hash || expected.metadataHash !== baseline.metadataHash)) {
@@ -314,7 +327,7 @@ export async function prepareWorkspace({ repoPath, stateDir, mode = 'copy', sign
   }
 }
 
-export async function reopenWorkspace(descriptor: WorkspaceDescriptor, { signal }: { signal?: AbortSignal } = {}): Promise<WorkspaceHandle> {
+export async function reopenWorkspace(descriptor: WorkspaceDescriptor, { signal, onProgress }: { signal?: AbortSignal; onProgress?: (progress: WorkspaceScanProgress) => void } = {}): Promise<WorkspaceHandle> {
   if (!descriptor || descriptor.version !== 1 || !['copy', 'lock'].includes(descriptor.mode) ||
       !HASH.test(descriptor.hash ?? '') || !HASH.test(descriptor.baselineMetadataHash ?? '') ||
       (['sourcePath', 'path', 'stateDir'] as const).some(key => typeof descriptor[key] !== 'string' || !path.isAbsolute(descriptor[key]))) {
@@ -326,7 +339,7 @@ export async function reopenWorkspace(descriptor: WorkspaceDescriptor, { signal 
   if (descriptor.path !== expectedPath || await realpath(descriptor.path) !== expectedPath || !(await lstat(expectedPath)).isDirectory()) {
     throw failure('Persisted workspace descriptor has an invalid input path.');
   }
-  const observer = observe(expectedPath, mode, signal);
+  const observer = observe(expectedPath, mode, signal, onProgress);
   try {
     await observer.initialize({ hash: descriptor.hash, metadataHash: descriptor.baselineMetadataHash });
     return { descriptor: Object.freeze({ ...descriptor }), signal: observer.signal, assertUnchanged: observer.assertUnchanged, close: observer.close };

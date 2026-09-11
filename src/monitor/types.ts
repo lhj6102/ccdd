@@ -2,6 +2,7 @@ import type { ArtifactGroupReference, ArtifactReference, CriticProfile, ReviewSt
 import type { GraphProjection } from '../broker/graph.js';
 import type { ArtifactCallResult } from '../artifacts/index.js';
 import type { ProjectPlan } from '../project/types.js';
+import type { HumanPreparationAttempt } from '../broker/human-claims.js';
 
 export type MonitorLane = 'requested' | 'running' | 'success' | 'failure';
 export type MonitorFilter = 'all' | 'active' | 'attention';
@@ -25,7 +26,14 @@ export interface MonitorSession { reviewerId: string; csrfToken: string }
 export interface MonitorValidation { plan: ProjectPlan; observedAt: string }
 export interface MonitorHumanState {
   canClaim: boolean; canComplete: boolean; claimedByMe: boolean;
-  tryClaim?: { reviewerId: string; expiresAt: string; preparingByMe: boolean };
+  tryClaim?: { id: string; reviewerId: string; expiresAt: string; preparingByMe: boolean };
+  preparation?: MonitorHumanPreparation;
+}
+export interface MonitorHumanPreparation extends HumanPreparationAttempt {
+  preparingByMe: boolean;
+  elapsedMs: number;
+  phaseElapsedMs: number;
+  nextAction?: string;
 }
 export interface MonitorHumanTool {
   name: string; description: string; inputSchema: Record<string, unknown>;

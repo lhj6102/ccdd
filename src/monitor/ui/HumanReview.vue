@@ -5,6 +5,7 @@ import { api, ApiError, errorMessage, requestRoute } from './api';
 import ToolOutput from './ToolOutput.vue';
 import { artifactInstructionMembers } from '../../artifacts/instruction.js';
 import { initialToolFields, initialToolJson, parseToolFields, parseToolJson, toolInputForm, validateToolInput } from './tool-input';
+import { dateLabel } from './format';
 
 const props = defineProps<{ detail: MonitorDetail; session: MonitorSession | null; sessionError: string }>();
 const emit = defineEmits<{ updated: [detail: MonitorDetail]; refresh: []; sessionExpired: [] }>();
@@ -23,6 +24,48 @@ const form = computed(() => toolInputForm(tool.value?.inputSchema ?? { type: 'ob
 const definitions = computed(() => form.value.fields);
 const jsonMode = computed(() => form.value.json || preferJson.value);
 let toolController: AbortController | undefined, claimController: AbortController | undefined, alive = true;
+const now = ref(Date.now());
+const preparation = computed(() => props.detail.human?.preparation);
+const preparationStatus = computed(() => preparation.value?.status);
+const preparing = computed(() => preparationStatus.value === 'preparing');
+const reservationStale = computed(() => preparing.value && Date.parse(preparation.value!.expiresAt) <= now.value);
+const preparationEnd = computed(() => {
+  const attempt = preparation.value;
+  return attempt?.completedAt ? Date.parse(attempt.completedAt) : preparationStatus.value === 'expired' && attempt
+    ? Date.parse(attempt.expiresAt) : now.value;
+});
+const preparationTitle = computed(() => preparationStatus.value === 'released' ? 'Preparation released'
+  : preparationStatus.value === 'expired' ? 'Preparation expired'
+  : preparationStatus.value === 'claimed' ? 'Assignment confirmed'
+  : reservationStale.value ? 'Awaiting preparation update'
+  : preparation.value?.preparingByMe ? 'Preparing your review' : 'Another reviewer is preparing');
+const preparationTimer = setInterval(() => { now.value = Date.now(); }, 1000);
+let claimInitialAttemptId: string | undefined, claimAttemptId: string | undefined;
+
+function phaseLabel(phase: string): string {
+  const labels: Record<string, string> = {
+    'validating-input': 'Validating fixed input', 'checking-manifest': 'Checking the tool manifest',
+    'checking-environment': 'Checking environment requirements', 'preflighting-tools': 'Preflighting tools',
+    'final-validation': 'Final input validation', 'confirming-assignment': 'Confirming assignment',
+  };
+  return labels[phase] ?? 'Preparing review input';
+}
+function duration(milliseconds: number): string {
+  const seconds = Math.max(0, Math.floor(milliseconds / 1000));
+  return seconds >= 60 ? `${Math.floor(seconds / 60)}m ${seconds % 60}s` : `${seconds}s`;
+}
+watch([preparation, preparationStatus], ([attempt, status]) => {
+  if (!claimController || !attempt || attempt.id === claimInitialAttemptId) return;
+  if (attempt.preparingByMe && !claimAttemptId) claimAttemptId = attempt.id;
+  if (!attempt.preparingByMe || (claimAttemptId && attempt.id !== claimAttemptId)) {
+    const controller = claimController; claimController = undefined;
+    if (busy.value === 'claim') busy.value = null;
+    controller.abort();
+  } else if (status !== 'preparing' && busy.value === 'claim') {
+    // End the waiting state, but keep this attempt's response for its failure diagnostic.
+    busy.value = null;
+  }
+});
 
 function toolLabel(value: MonitorHumanTool): string {
   const action = value.operation === 'read' ? 'Read' : value.operation === 'list' ? 'List' : value.name.startsWith('open_') ? 'Open' : value.name.slice(0, -(value.artifactId.length + 1));
@@ -68,10 +111,12 @@ function report(problem: unknown): void {
 async function claim(): Promise<void> {
   if (!props.session || busy.value || !props.detail.human?.canClaim) return;
   busy.value = 'claim'; error.value = '';
-  claimController = new AbortController();
-  try { const value = await api<MonitorDetail>(`${route.value}/claim`, { body: {}, csrfToken: props.session.csrfToken, signal: claimController.signal }); if (alive) emit('updated', value); }
-  catch (problem) { if (alive) report(problem); }
-  finally { busy.value = null; }
+  claimInitialAttemptId = preparation.value?.id; claimAttemptId = undefined;
+  claimController?.abort();
+  const controller = new AbortController(); claimController = controller;
+  try { const value = await api<MonitorDetail>(`${route.value}/claim`, { body: {}, csrfToken: props.session.csrfToken, signal: controller.signal }); if (alive && claimController === controller) emit('updated', value); }
+  catch (problem) { if (alive && claimController === controller) { report(problem); emit('refresh'); } }
+  finally { if (claimController === controller) { claimController = undefined; if (busy.value === 'claim') busy.value = null; } }
 }
 function toggleJson(): void {
   if (!tool.value) return;
@@ -128,15 +173,30 @@ async function complete(): Promise<void> {
   } catch (problem) { if (alive) report(problem); }
   finally { busy.value = null; }
 }
-onUnmounted(() => { alive = false; toolController?.abort(); claimController?.abort(); });
+onUnmounted(() => { alive = false; clearInterval(preparationTimer); toolController?.abort(); claimController?.abort(); });
 </script>
 
 <template>
   <section class="human-review" aria-label="Human review">
     <p v-if="sessionError" class="inline-error" role="status">{{ sessionError }}</p>
-    <div v-if="detail.human?.canClaim || busy === 'claim'" class="claim-callout"><div><strong>{{ busy === 'claim' ? 'Try Claim: preparing your review.' : 'Claim this review.' }}</strong><p>The input and environment are checked before your assignment is confirmed.</p></div><button class="primary-button" :disabled="!session || !!busy" @click="claim">{{ busy === 'claim' ? 'Preparing…' : 'Claim review' }}</button></div>
-    <p v-else-if="detail.human?.tryClaim" class="other-reviewer">{{ detail.human.tryClaim.preparingByMe ? 'Your review input and environment are being prepared.' : 'Another reviewer is preparing this review.' }}</p>
-    <p v-else-if="!detail.human?.claimedByMe" class="other-reviewer">{{ detail.request.claimedBy ? 'Another reviewer has claimed this review.' : 'Waiting for the review to be ready.' }}</p>
+    <section v-if="preparation" class="claim-progress" aria-label="Claim preparation">
+      <p class="claim-progress-title" role="status"><strong>{{ preparationTitle }}</strong><span v-if="preparing">{{ phaseLabel(preparation.phase) }}</span></p>
+      <p v-if="preparationStatus === 'released' || preparationStatus === 'expired'" class="muted">{{ preparation.nextAction ?? 'This attempt ended without an assignment. Review any reported error, then claim the review to try again.' }}</p>
+      <p v-if="reservationStale" class="muted">The last observed reservation has expired. Waiting for the server to confirm whether preparation is still active.</p>
+      <p v-if="preparation.previousAttemptId" class="muted">Replaces attempt {{ preparation.previousAttemptId }}.</p>
+      <dl class="claim-progress-facts">
+        <div><dt>Attempt</dt><dd class="claim-attempt-id">{{ preparation.id }}</dd></div>
+        <div><dt>Elapsed</dt><dd>{{ duration(preparationEnd - Date.parse(preparation.startedAt)) }}</dd></div>
+        <div><dt>Last heartbeat</dt><dd><time :datetime="preparation.heartbeatAt">{{ dateLabel(preparation.heartbeatAt) }}</time><span v-if="preparing"> · {{ duration(now - Date.parse(preparation.heartbeatAt)) }} ago</span></dd></div>
+        <div v-if="preparing"><dt>Current phase</dt><dd>{{ duration(now - Date.parse(preparation.phaseStartedAt)) }}</dd></div>
+      </dl>
+      <p v-if="preparing && preparation.progress" class="muted">{{ preparation.progress.kind === 'content' ? 'Content scan' : 'Metadata scan' }}: {{ preparation.progress.files.toLocaleString() }} files · {{ (preparation.progress.bytes / 1024 / 1024).toFixed(1) }} MiB checked</p>
+      <p v-if="preparing && now - Date.parse(preparation.heartbeatAt) > 15000" class="inline-error" role="status">No recent preparation heartbeat. Waiting for an update; an expired attempt can be claimed again.</p>
+      <details v-if="preparation.timings.length" class="claim-phase-timings"><summary>Phase timings</summary><dl><div v-for="(timing, index) in preparation.timings" :key="index"><dt>{{ phaseLabel(timing.phase) }}</dt><dd>{{ duration(timing.durationMs) }}</dd></div></dl></details>
+    </section>
+    <div v-if="!preparing && (detail.human?.canClaim || busy === 'claim')" class="claim-callout"><div><strong>{{ busy === 'claim' ? 'Starting your claim attempt.' : 'Claim this review.' }}</strong><p>The input and environment are checked before your assignment is confirmed.</p></div><button class="primary-button" :disabled="!session || !!busy" @click="claim">{{ busy === 'claim' ? 'Starting…' : 'Claim review' }}</button></div>
+    <p v-else-if="!preparation && detail.human?.tryClaim" class="other-reviewer">{{ detail.human.tryClaim.preparingByMe ? 'Your review input and environment are being prepared.' : 'Another reviewer is preparing this review.' }}</p>
+    <p v-else-if="!preparing && !detail.human?.claimedByMe" class="other-reviewer">{{ detail.request.claimedBy ? 'Another reviewer has claimed this review.' : 'Waiting for the review to be ready.' }}</p>
     <section v-if="!detail.human?.claimedByMe && focusedArtifact" ref="toolsRegion" class="artifact-tool-preview" tabindex="-1" aria-labelledby="artifact-preview-title">
       <h3 id="artifact-preview-title" class="section-title">{{ focusedArtifact }} · Available tools</h3>
       <p class="muted">{{ detail.human?.canClaim ? 'Claim the review to use these tools.' : 'Only the assigned reviewer can run these tools.' }}</p>
@@ -179,3 +239,18 @@ onUnmounted(() => { alive = false; toolController?.abort(); claimController?.abo
     <p v-if="error" class="inline-error action-error" role="alert">{{ error }}</p>
   </section>
 </template>
+
+<style scoped>
+.claim-progress { margin-bottom: 18px; padding: 16px 18px; border: 1px solid var(--line); border-radius: 8px; font-size: 12px; line-height: 1.7; }
+.claim-progress-title { display: flex; flex-direction: column; gap: 4px; margin-bottom: 10px; }
+.claim-progress-title strong { font-size: 13px; color: #4f663e; }
+.claim-progress .muted { margin: 8px 0; overflow-wrap: anywhere; }
+.claim-progress-facts, .claim-phase-timings dl { display: grid; gap: 6px; margin: 12px 0; }
+.claim-progress-facts > div, .claim-phase-timings dl > div { display: flex; justify-content: space-between; gap: 16px; }
+.claim-progress dt { color: #667a56; flex-shrink: 0; }
+.claim-progress dd { margin: 0; text-align: right; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.claim-attempt-id { font-family: ui-monospace, monospace; font-size: 11px; }
+.claim-phase-timings { margin-top: 12px; }
+.claim-phase-timings summary { cursor: pointer; }
+@media (max-width: 700px) { .claim-progress-facts > div { flex-wrap: wrap; gap: 2px 12px; } }
+</style>

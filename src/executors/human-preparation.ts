@@ -1,7 +1,7 @@
 import { join } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import type { ReviewEnvelope, WorkspaceDescriptor } from '../contracts.js';
-import { reopenWorkspace } from '../workspaces/index.js';
+import { reopenWorkspace, type WorkspaceScanProgress } from '../workspaces/index.js';
 import { createReviewTools } from '../tools/runner.js';
 import { checkEnvironmentRequirements } from '../tools/environment.js';
 import { readStoredArtifactScope } from '../requester/index.js';
@@ -12,13 +12,19 @@ export interface HumanPreparation {
   environment: { id: string; ok: boolean; message: string }[];
   tools: { toolName: string; artifactId: string; ok: boolean; message: string }[];
 }
+export type HumanPreparationPhase = 'validating-input' | 'checking-manifest' | 'checking-environment' | 'preflighting-tools' | 'final-validation' | 'confirming-assignment';
+export interface HumanPreparationProgress { phase: HumanPreparationPhase; progress?: WorkspaceScanProgress }
 
 /** A claimant prepares the fixed input on the machine that will run its tools. */
-export async function prepareHumanReview(request: ReviewEnvelope, workspace: WorkspaceDescriptor, outputDir: string, signal?: AbortSignal): Promise<HumanPreparation> {
+export async function prepareHumanReview(request: ReviewEnvelope, workspace: WorkspaceDescriptor, outputDir: string, signal?: AbortSignal, onProgress?: (progress: HumanPreparationProgress) => void): Promise<HumanPreparation> {
   if (request.profile.kind !== 'human' || workspace.hash !== request.snapshotHash) throw new Error('Human preparation requires the recorded review input.');
-  const handle = await reopenWorkspace(workspace, { signal });
+  let phase: HumanPreparationPhase = 'validating-input';
+  const report = (next: HumanPreparationPhase) => { phase = next; onProgress?.({ phase }); };
+  report('validating-input');
+  const handle = await reopenWorkspace(workspace, { signal, onProgress: progress => onProgress?.({ phase, progress }) });
   try {
     await handle.assertUnchanged();
+    report('checking-manifest');
     if (!request.configManifest) {
       const expected = await readStoredArtifactScope({ repoPath: workspace.path, criticId: request.criticId });
       if (!expected || !isDeepStrictEqual(expected.artifacts, request.artifacts) || !isDeepStrictEqual(expected.artifactTypes, request.artifactTypes) || !isDeepStrictEqual(expected.artifactGroups ?? [], request.artifactGroups ?? [])) {
@@ -30,10 +36,13 @@ export async function prepareHumanReview(request: ReviewEnvelope, workspace: Wor
       artifactGroups: request.artifactGroups, artifactTypes: request.artifactTypes, configManifest: request.configManifest,
       criticId: request.criticId, audience: 'human', runDir: join(outputDir, 'tools'), signal: handle.signal });
     try {
+      report('checking-environment');
       const environment = await checkEnvironmentRequirements({ workspacePath: workspace.path, configManifest: request.configManifest, outputDir: join(outputDir, 'environment'), signal: handle.signal });
       if (!environment.ok) throw Object.assign(new Error(environment.checks.filter(check => !check.ok).map(check => `${check.id}: ${check.message}`).join('\n').slice(0, 8000)), { code: 'HUMAN_PREPARATION_FAILED' });
+      report('preflighting-tools');
       const tools = await registry.preflight();
       if (tools.some(check => !check.ok)) throw Object.assign(new Error(tools.filter(check => !check.ok).map(check => `${check.toolName}: ${check.message}`).join('\n').slice(0, 8000)), { code: 'HUMAN_PREPARATION_FAILED' });
+      report('final-validation');
       await handle.assertUnchanged(); handle.signal.throwIfAborted();
       return { snapshotHash: request.snapshotHash, ...(request.configManifest ? { configHash: request.configManifest.configHash } : {}), environment: environment.checks, tools };
     } finally { await registry.close(); }
