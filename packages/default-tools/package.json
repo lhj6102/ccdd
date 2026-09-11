@@ -1,6 +1,6 @@
 {
   "name": "@ccdd/default-tools",
-  "version": "3.1.1",
+  "version": "3.1.2",
   "license": "MIT",
   "publishConfig": { "access": "public", "registry": "https://registry.npmjs.org/" },
   "repository": { "type": "git", "url": "git+https://github.com/lhj6102/ccdd.git", "directory": "packages/default-tools" },

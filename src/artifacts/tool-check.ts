@@ -64,7 +64,7 @@ export async function diagnoseArtifactTools({ repoPath, mode = 'copy', stateDir,
     const { configManifest } = config;
     if (artifactId !== undefined && !Object.hasOwn(config.artifacts, artifactId)) throw new Error('Unknown selected Artifact.');
     if (execute && artifactId !== undefined && isArtifactGroup(config.artifacts[artifactId])) {
-      report.checks.push({ artifactId, stage, ok: false, message: 'Groups collect member tools. Select a leaf Artifact with --artifact to execute its tool.' });
+      report.checks.push({ artifactId, stage, ok: false, code: 'ARTIFACT_GROUP_NOT_EXECUTABLE', message: 'Groups collect member tools. Select a leaf Artifact with --artifact to execute its tool.' });
       return report;
     }
     const selectedScope = resolveArtifactScope(config.artifacts, artifactId === undefined ? Object.keys(config.artifacts) : [artifactId]);
@@ -88,14 +88,14 @@ export async function diagnoseArtifactTools({ repoPath, mode = 'copy', stateDir,
         const resolvedToolName = toolName === undefined || registry.tools.some(tool => tool.name === toolName) || artifactId === undefined ? toolName : `${toolName}_${artifactId}`;
         const definitions = registry.tools.filter(tool => resolvedToolName === undefined || tool.name === resolvedToolName);
         if (toolName !== undefined && !definitions.length) {
-          report.checks.push({ artifactId, audience: targetAudience, toolName, stage, ok: false, message: 'The selected tool is not registered for this Artifact and reviewer kind.' });
+          report.checks.push({ artifactId, audience: targetAudience, toolName, stage, ok: false, code: 'ARTIFACT_TOOL_NOT_REGISTERED', message: 'The selected tool is not registered for this Artifact and reviewer kind.' });
           continue;
         }
         report.tools.push(...definitions.map(tool => ({ ...tool, audience: targetAudience })));
         for (const artifact of selected) {
           if (definitions.some(tool => tool.artifactId === artifact.id)) continue;
           const required = audience !== undefined || config.critics.some(critic => critic.profile.kind === targetAudience && resolveArtifactScope(config.artifacts, [critic.target, ...critic.deps]).artifacts.some(leaf => leaf.id === artifact.id));
-          report.checks.push({ artifactId: artifact.id, audience: targetAudience, stage, ok: !required, message: `No ${targetAudience} tools are available for this Artifact. It cannot be used by a ${targetAudience} Critic.` });
+          report.checks.push({ artifactId: artifact.id, audience: targetAudience, stage, ok: !required, ...(required ? { code: 'ARTIFACT_TOOLS_UNAVAILABLE' } : {}), message: `No ${targetAudience} tools are available for this Artifact. It cannot be used by a ${targetAudience} Critic.` });
         }
         report.checks.push(...(await registry.preflight({ toolName: resolvedToolName })).map(check => ({ ...check, ...(!check.ok ? safeToolFailure({ code: check.code ?? 'ARTIFACT_TOOL_PREFLIGHT_FAILED' }) : {}), stage: 'preflight' as const, audience: targetAudience })));
         if (execute && targetAudience === audience && definitions.length === 1 && report.checks.every(check => check.ok)) {

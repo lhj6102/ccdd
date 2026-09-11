@@ -24,6 +24,7 @@ const form = computed(() => toolInputForm(tool.value?.inputSchema ?? { type: 'ob
 const definitions = computed(() => form.value.fields);
 const jsonMode = computed(() => form.value.json || preferJson.value);
 let toolController: AbortController | undefined, claimController: AbortController | undefined, alive = true;
+const pendingClaims = new Set<AbortController>();
 const now = ref(Date.now());
 const preparation = computed(() => props.detail.human?.preparation);
 const preparationStatus = computed(() => preparation.value?.status);
@@ -40,7 +41,7 @@ const preparationTitle = computed(() => preparationStatus.value === 'released' ?
   : reservationStale.value ? 'Awaiting preparation update'
   : preparation.value?.preparingByMe ? 'Preparing your review' : 'Another reviewer is preparing');
 const preparationTimer = setInterval(() => { now.value = Date.now(); }, 1000);
-let claimInitialAttemptId: string | undefined, claimAttemptId: string | undefined;
+let claimInitialAttemptId: string | undefined;
 
 function phaseLabel(phase: string): string {
   const labels: Record<string, string> = {
@@ -56,13 +57,8 @@ function duration(milliseconds: number): string {
 }
 watch([preparation, preparationStatus], ([attempt, status]) => {
   if (!claimController || !attempt || attempt.id === claimInitialAttemptId) return;
-  if (attempt.preparingByMe && !claimAttemptId) claimAttemptId = attempt.id;
-  if (!attempt.preparingByMe || (claimAttemptId && attempt.id !== claimAttemptId)) {
-    const controller = claimController; claimController = undefined;
-    if (busy.value === 'claim') busy.value = null;
-    controller.abort();
-  } else if (status !== 'preparing' && busy.value === 'claim') {
-    // End the waiting state, but keep this attempt's response for its failure diagnostic.
+  if (status !== 'preparing' && busy.value === 'claim') {
+    // Polls describe stored attempts, but cannot identify or cancel a pending POST.
     busy.value = null;
   }
 });
@@ -111,12 +107,12 @@ function report(problem: unknown): void {
 async function claim(): Promise<void> {
   if (!props.session || busy.value || !props.detail.human?.canClaim) return;
   busy.value = 'claim'; error.value = '';
-  claimInitialAttemptId = preparation.value?.id; claimAttemptId = undefined;
-  claimController?.abort();
+  claimInitialAttemptId = preparation.value?.id;
   const controller = new AbortController(); claimController = controller;
+  pendingClaims.add(controller);
   try { const value = await api<MonitorDetail>(`${route.value}/claim`, { body: {}, csrfToken: props.session.csrfToken, signal: controller.signal }); if (alive && claimController === controller) emit('updated', value); }
   catch (problem) { if (alive && claimController === controller) { report(problem); emit('refresh'); } }
-  finally { if (claimController === controller) { claimController = undefined; if (busy.value === 'claim') busy.value = null; } }
+  finally { pendingClaims.delete(controller); if (claimController === controller) { claimController = undefined; if (busy.value === 'claim') busy.value = null; } }
 }
 function toggleJson(): void {
   if (!tool.value) return;
@@ -173,7 +169,7 @@ async function complete(): Promise<void> {
   } catch (problem) { if (alive) report(problem); }
   finally { busy.value = null; }
 }
-onUnmounted(() => { alive = false; clearInterval(preparationTimer); toolController?.abort(); claimController?.abort(); });
+onUnmounted(() => { alive = false; clearInterval(preparationTimer); toolController?.abort(); for (const controller of pendingClaims) controller.abort(); });
 </script>
 
 <template>

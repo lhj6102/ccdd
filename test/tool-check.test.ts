@@ -83,6 +83,7 @@ test('tool diagnosis rejects empty and legacy-only Critic audiences including in
     await data.writeConfig(type);
     const report = await diagnoseArtifactTools(data);
     assert.equal(report.ok, false, JSON.stringify(report));
+    assert.ok(report.checks.filter(check => !check.ok).every(check => typeof check.code === 'string'));
   }
 });
 
@@ -111,7 +112,20 @@ test('tool diagnosis accepts short names only with an explicit Artifact and keep
     const report = await diagnoseArtifactTools({ ...data, ...options, audience: 'human' });
     assert.equal(report.ok, false);
     assert.equal(report.result, undefined);
+    assert.equal(report.checks.at(-1)?.code, 'ARTIFACT_TOOL_NOT_REGISTERED');
   }
+});
+
+test('group execution rejection includes a stable preflight failure code', async t => {
+  const data = await fixture(t);
+  const configPath = join(data.repoPath, 'ccdd.config.json');
+  const config = JSON.parse(await readFile(configPath, 'utf8'));
+  config.artifacts.group = { kind: 'group', members: ['why'] };
+  await writeFile(configPath, JSON.stringify(config));
+  const report = await diagnoseArtifactTools({ ...data, artifactId: 'group', audience: 'human', toolName: 'open', execute: true });
+  assert.equal(report.ok, false);
+  assert.equal(report.checks.at(-1)?.stage, 'preflight');
+  assert.equal(report.checks.at(-1)?.code, 'ARTIFACT_GROUP_NOT_EXECUTABLE');
 });
 
 async function customFixture(t: TestContext, execute: string, { preflight = "return { ok: true, message: 'Renderer is registered.' };", timeoutMs = 10_000 } = {}) {
