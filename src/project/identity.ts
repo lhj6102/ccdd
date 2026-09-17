@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { createReadStream } from 'node:fs';
 import { lstat, readdir } from 'node:fs/promises';
 import path from 'node:path';
-import type { RepoConfig } from '../contracts.js';
+import type { RepoConfig, WorkspaceIntegrity } from '../contracts.js';
 import { isArtifactGroup, resolveArtifactScope } from '../artifacts/groups.js';
 import { createGraphDefinition } from '../broker/graph.js';
 import { validateRelativePath } from '../broker/config.js';
@@ -45,7 +45,11 @@ async function hashPath(root: string, relative: string, signal?: AbortSignal): P
   return inputHash(entries);
 }
 
-export async function createProjectSnapshot(config: RepoConfig, root: string, snapshotHash: string, signal?: AbortSignal): Promise<ProjectSnapshot> {
+export async function createProjectSnapshot(config: RepoConfig, root: string, snapshotHash: string, signal?: AbortSignal, workspaceIntegrity: WorkspaceIntegrity = 'content'): Promise<ProjectSnapshot> {
+  if (!['content', 'metadata'].includes(workspaceIntegrity)) throw new Error('Workspace integrity must be content or metadata.');
+  // Keep historical strict hashes byte-for-byte stable; an opt-in trust policy
+  // must never let its evidence silently satisfy the strict default.
+  const integrityIdentity = workspaceIntegrity === 'metadata' ? { workspaceIntegrity } : {};
   createGraphDefinition(config);
   const artifactHashes: Record<string, string> = {}, reusable: Record<string, boolean> = {};
   const paths = new Map<string, Promise<string>>();
@@ -72,10 +76,10 @@ export async function createProjectSnapshot(config: RepoConfig, root: string, sn
     const executionPaths = new Set(audience ? Object.keys(types).flatMap(type => Object.values(config.configManifest?.types[type]?.[audience] ?? {}).flatMap(tool => tool.executionPaths ?? [])) : []);
     const executionInputs = config.configManifest?.executionInputs?.filter(input => executionPaths.has(input.path));
     const environment = critic.profile.kind === 'human' && config.configManifest?.envRequirements ? { requirements: config.configManifest.envRequirements, inputs: config.configManifest.environmentInputs } : undefined;
-    const criticHash = inputHash({ version: 1, executorVersion: packageVersion, critic, tools, modules, ...(executionInputs?.length ? { executionInputs } : {}), ...(environment ? { environment } : {}), runtime: critic.profile.kind === 'runtime' ? { node: process.versions.node, platform: process.platform, arch: process.arch } : undefined });
+    const criticHash = inputHash({ version: 1, executorVersion: packageVersion, critic, tools, modules, ...(executionInputs?.length ? { executionInputs } : {}), ...(environment ? { environment } : {}), ...integrityIdentity, runtime: critic.profile.kind === 'runtime' ? { node: process.versions.node, platform: process.platform, arch: process.arch } : undefined });
     const target = { id: critic.target, hash: artifactHashes[critic.target] };
     const deps = critic.deps.slice().sort().map(id => ({ id, hash: artifactHashes[id] }));
-    inputs[critic.id] = { version: 1, key: inputHash({ criticHash, target, deps }), criticHash, target, deps, reusable: [critic.target, ...critic.deps].every(id => reusable[id]) };
+    inputs[critic.id] = { version: 1, key: inputHash({ criticHash, target, deps }), criticHash, target, deps, reusable: [critic.target, ...critic.deps].every(id => reusable[id]), ...integrityIdentity };
   }
-  return { version: 1, config: structuredClone(config), snapshotHash, artifactHashes, inputs };
+  return { version: 1, config: structuredClone(config), snapshotHash, artifactHashes, inputs, ...integrityIdentity };
 }

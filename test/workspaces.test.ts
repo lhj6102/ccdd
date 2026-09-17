@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { chmod, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rename, symlink, writeFile, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { setTimeout as delay } from 'node:timers/promises';
+import { setImmediate as nextTurn, setTimeout as delay } from 'node:timers/promises';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { fingerprintWorkspace, prepareWorkspace, reopenWorkspace, removeOwnedWorkspaceTree, validateStateLocation } from '../src/workspaces/index.js';
@@ -81,7 +81,8 @@ test('a source mutation during capture fails without publishing a partial cache'
     while (!settled) {
       const entries = await readdir(join(data.stateDir, 'workspaces')).catch(() => []);
       if (entries.some(entry => entry.startsWith('.capture-'))) {
-        await writeFile(join(data.repoPath, 'why.md'), 'Changed while copying');
+        // Adding a file avoids Windows copyFile's temporary source-file lock.
+        await writeFile(join(data.repoPath, 'added-during-copy.txt'), 'Changed while copying');
         mutated = true;
         return;
       }
@@ -150,6 +151,58 @@ test('cache tampering is rejected by active and future users of the same hash', 
   await assert.rejects(prepareWorkspace(data), error => error instanceof Error && 'code' in error && error.code === 'WORKSPACE_CACHE_TAMPERED');
 });
 
+test('copy handoff returns a live cancellable observer and a reopenable published metadata baseline', async t => {
+  for (const cached of [false, true]) await t.test(cached ? 'existing cache' : 'new publication', async t => {
+    const data = await fixture(t);
+    if (cached) { const first = await prepareWorkspace(data); await first.close(); }
+    const controller = new AbortController();
+    const handle = await prepareWorkspace({ ...data, signal: controller.signal });
+    t.after(() => handle.close());
+    const reopened = await reopenWorkspace(structuredClone(handle.descriptor));
+    t.after(() => reopened.close());
+    await reopened.assertUnchanged();
+    assert.equal(await fingerprintWorkspace(handle.descriptor.path), handle.descriptor.hash);
+    controller.abort(new Error('The acquiring caller cancelled this copy.'));
+    await assert.rejects(handle.assertUnchanged(), /acquiring caller cancelled/);
+    assert.equal(handle.signal.aborted, true);
+    await reopened.assertUnchanged();
+  });
+});
+
+test('copy handoff rejects tampering after publication lock release for new and reused caches', async t => {
+  for (const cached of [false, true]) await t.test(cached ? 'existing cache' : 'new publication', async t => {
+    const data = await fixture(t);
+    await mkdir(join(data.repoPath, 'padding'));
+    for (let i = 0; i < 128; i++) await writeFile(join(data.repoPath, 'padding', `${i}.txt`), 'Bound the asynchronous acquisition window.\n');
+    if (cached) { const first = await prepareWorkspace(data); await first.close(); }
+    const hash = await fingerprintWorkspace(data.repoPath);
+    let settled = false;
+    const capture = prepareWorkspace(data).then(handle => { t.after(() => handle.close()); return handle; }).finally(() => { settled = true; });
+    const tamper = (async () => {
+      let publicationObserved = false;
+      while (!settled) {
+        const entries: string[] = await readdir(join(data.stateDir, 'workspaces')).catch(() => []);
+        const publishing = entries.includes(`.publish-${hash}`);
+        publicationObserved ||= publishing;
+        if (publicationObserved && !publishing && entries.includes(hash)) {
+          const file = join(data.stateDir, 'workspaces', hash, 'why.md');
+          await chmod(file, 0o600);
+          await writeFile(file, 'Changed after publication and before acquisition returned.');
+          await chmod(file, 0o444);
+          return true;
+        }
+        await delay(1);
+      }
+      return false;
+    })();
+    try {
+      await assert.rejects(capture, { code: 'WORKSPACE_CACHE_TAMPERED' });
+      assert.equal(await tamper, true, 'The test must mutate the actual published copy during handoff.');
+    } finally { await tamper; }
+    await assert.rejects(prepareWorkspace(data), { code: 'WORKSPACE_CACHE_TAMPERED' });
+  });
+});
+
 test('internal relative symlinks are copied without referring back to the mutable source', async t => {
   const data = await fixture(t);
   await symlink('why.md', join(data.repoPath, 'alias.md'));
@@ -193,6 +246,97 @@ test('external cancellation closes without publishing a partial copy', async t =
   controller.abort(new Error('cancelled'));
   await assert.rejects(prepareWorkspace({ ...data, signal: controller.signal }), /cancelled/);
 });
+
+test('copy preserves nested and empty directories while materializing many sibling files', async t => {
+  const data = await fixture(t);
+  await mkdir(join(data.repoPath, 'tree', 'nested', 'empty'), { recursive: true });
+  await mkdir(join(data.repoPath, '.hidden-empty'));
+  for (let i = 0; i < 40; i++) {
+    await writeFile(join(data.repoPath, 'tree', 'nested', `file-${i}`), Buffer.alloc(1024 + i, i));
+  }
+  const expected = await fingerprintWorkspace(data.repoPath);
+  const handle = await prepareWorkspace(data);
+  t.after(() => handle.close());
+  assert.equal(handle.descriptor.hash, expected);
+  assert.equal(await fingerprintWorkspace(handle.descriptor.path), expected);
+  assert.deepEqual(await readdir(join(handle.descriptor.path, 'tree', 'nested', 'empty')), []);
+  assert.deepEqual(await readdir(join(handle.descriptor.path, '.hidden-empty')), []);
+  assert.equal((await lstat(join(handle.descriptor.path, 'tree', 'nested'))).mode & 0o222, 0);
+  await handle.assertUnchanged();
+});
+
+test('cancelling an active copy drains file operations before removing private staging', async t => {
+  const data = await fixture(t);
+  for (let i = 0; i < 64; i++) await writeFile(join(data.repoPath, `file-${i}`), Buffer.alloc(256 * 1024, i));
+  const controller = new AbortController();
+  let settled = false, cancelled = false;
+  const capture = prepareWorkspace({ ...data, signal: controller.signal }).finally(() => { settled = true; });
+  const cancellation = (async () => {
+    while (!settled) {
+      const cache = join(data.stateDir, 'workspaces');
+      const stage = (await readdir(cache).catch(() => [])).find(entry => entry.startsWith('.capture-'));
+      if (stage && (await readdir(join(cache, stage)).catch(() => [])).length) {
+        cancelled = true;
+        controller.abort(new Error('cancelled during materialization'));
+        return;
+      }
+      await delay(1);
+    }
+  })();
+  await assert.rejects(capture, /cancelled during materialization/);
+  await cancellation;
+  assert.equal(cancelled, true);
+  assert.deepEqual(await readdir(join(data.stateDir, 'workspaces')), []);
+  // A late copy callback must not recreate or leave files after cleanup resolves.
+  await delay(25);
+  assert.deepEqual(await readdir(join(data.stateDir, 'workspaces')), []);
+});
+
+for (const finish of ['close', 'abort', 'change'] as const) {
+  test(`metadata fallback waits for completion, adapts its delay, and stops after ${finish}`, async t => {
+    const data = await fixture(t), controller = new AbortController();
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    const timeout = globalThis.setTimeout, scheduled: number[] = [];
+    t.mock.method(globalThis, 'setTimeout', (callback: (...args: any[]) => void, milliseconds?: number, ...args: any[]) => {
+      scheduled.push(milliseconds ?? 0);
+      return timeout(callback, milliseconds, ...args);
+    });
+    let clock = 0;
+    t.mock.method(performance, 'now', () => clock);
+    const handle = await prepareWorkspace({ ...data, mode: 'lock', signal: controller.signal });
+    t.after(() => handle.close());
+    const until = async (condition: () => boolean) => {
+      for (let attempt = 0; attempt < 10_000; attempt++) { if (condition()) return; await nextTurn(); }
+      assert.fail('The real filesystem check did not settle.');
+    };
+    assert.deepEqual(scheduled, [1000]);
+    t.mock.timers.tick(1000);
+    // Let virtual time advance while the real asynchronous filesystem scan is
+    // pending. No additional fallback callback may queue behind that scan.
+    t.mock.timers.tick(20_000);
+    assert.deepEqual(scheduled, [1000]);
+    clock = 250;
+    await until(() => scheduled.length === 2);
+    assert.deepEqual(scheduled, [1000, 2500]);
+    t.mock.timers.tick(2499);
+    assert.equal(scheduled.length, 2);
+    t.mock.timers.tick(1);
+    clock = 4250;
+    await until(() => scheduled.length === 3);
+    assert.deepEqual(scheduled, [1000, 2500, 30_000], 'Bound a slow fallback delay without weakening action boundaries.');
+    if (finish === 'close') await handle.close();
+    else if (finish === 'abort') controller.abort(new Error('Fixture cancelled.'));
+    else {
+      // A real watcher must detect this while the fallback is parked for 30 s.
+      await writeFile(join(data.repoPath, 'why.md'), 'Changed before the next fallback.');
+      await until(() => handle.signal.aborted);
+      await assert.rejects(handle.assertUnchanged(), { code: 'WORKSPACE_CHANGED' });
+    }
+    t.mock.timers.tick(60_000);
+    await nextTurn();
+    assert.equal(scheduled.length, 3, 'Closed or invalidated monitoring must not schedule another fallback.');
+  });
+}
 
 
 test('moving an observed workspace root classifies missing scan paths as input mutation', async t => {

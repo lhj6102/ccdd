@@ -23,7 +23,9 @@ export async function prepareHumanReview(request: ReviewEnvelope, workspace: Wor
   report('validating-input');
   const handle = await reopenWorkspace(workspace, { signal, onProgress: progress => onProgress?.({ phase, progress }) });
   try {
-    await handle.assertUnchanged();
+    // Reopening already validates input under its recorded integrity policy.
+    // Keep the next integrity check after configuration and readiness code run.
+    handle.signal.throwIfAborted();
     report('checking-manifest');
     if (!request.configManifest) {
       const expected = await readStoredArtifactScope({ repoPath: workspace.path, criticId: request.criticId });

@@ -1,0 +1,116 @@
+# Review overhead benchmark
+
+The CLI benchmark measures CCDD preparation and result handling separately from
+the instrumented custom Artifact operation. It runs actual CLI commands and
+detached workers against a synthetic Human-review fixture. Fixture verdicts are
+controlled test data, not real Human review evidence.
+
+## Recorded results
+
+Measured on Windows x64, Node 22.22.0 and an Intel Core i5-9400F on 2026-09-17.
+The baseline is `ef643ca343c3af152d706f30d7c4f045922cc852` (v3.1.2 main).
+The candidate is the runtime implementation introduced with this benchmark.
+The fixture contains 16,000 one-KiB files, a 64-MiB binary, a small configuration
+and a custom Artifact file. One warm-up per implementation is discarded; three
+measured pairs alternate execution order. No other tests or builds ran during
+the timed comparisons.
+
+**The baseline uses content integrity; the candidate explicitly selects metadata
+integrity. These policies have different guarantees.** The default remains
+content integrity. Metadata mode hashes bytes at initial capture, then relies on
+complete metadata and structure checks at later boundaries. It assumes trustworthy
+filesystem metadata, and its evidence cannot satisfy a content-policy query.
+See the [integrity contract](contracts.md#optional-metadata-integrity).
+
+| Workflow | Baseline median | Candidate median | Time remaining | Speedup | Below 10% |
+| --- | ---: | ---: | ---: | ---: | --- |
+| Lock | 152.96 s | 14.54 s | 9.50% | 10.52x | Yes |
+| Fresh copy | 225.65 s | 38.32 s | 16.98% | 5.89x | No |
+
+The less-than-10% target applies to the complete measured workflow, not to every
+phase. It is met only for this synthetic lock workflow with explicit metadata
+integrity. These results do not establish the same speedup for default content
+integrity, other file layouts, filesystems, or actual game reviews.
+
+| Phase | Lock baseline / candidate | Copy baseline / candidate |
+| --- | ---: | ---: |
+| Admission, input capture and worker startup | 23.62 / 5.64 s | 105.23 / 28.74 s |
+| Accepted request to notification readiness | 31.15 / 2.14 s | 30.86 / 2.29 s |
+| Claim and environment/tool preparation | 35.78 / 2.68 s | 33.79 / 2.98 s |
+| Tool response excluding custom read | 35.82 / 2.69 s | 31.58 / 2.77 s |
+| Result submission and return | 24.34 / 1.35 s | 23.51 / 1.39 s |
+| Result return to worker exit | 71.8 / 77.0 ms | 1.9 / 1.8 ms |
+
+Independent phase medians do not sum to the median total. Copy workers can pause
+and exit after notification, before result submission; their earlier work remains
+inside the measurement. The harness waits for every observed worker to exit
+before the next attempt.
+
+Lock paired remaining ratios: 9.72%, 9.37%, 9.52%. Candidate totals ranged from
+14.33 to 14.98 s. Copy paired ratios: 17.01%, 16.68%, 15.18%; candidate totals
+ranged from 34.10 to 38.38 s. Raw samples, timeouts and exact medians are in the
+[lock report](benchmarks/review-overhead-lock.windows.json) and
+[copy report](benchmarks/review-overhead-copy.windows.json).
+
+## Measurement scope
+
+- Include every CLI startup, request admission, input validation/copying,
+  detached worker startup, notification readiness, Claim preparation, tool
+  response, result submission and worker settlement.
+- Subtract only the instrumented custom file-read body. Trivial custom result
+  construction remains in the measured overhead.
+- Exclude fixture creation/deletion, dependency installation, Human think time,
+  HTTP transport and GUI rendering.
+- Use a unique external state directory per attempt. Every copy attempt starts
+  with an empty CCDD copy cache, so initial copying and publication are included.
+  The OS file cache is not flushed; this is not a cold-disk measurement.
+
+The harness verifies persisted integrity policy and worker identities. It retains
+private fixtures if cleanup cannot be proven. Both recorded runs completed all
+attempts and removed their private fixtures successfully.
+
+## Reproduce
+
+Use Node 22 LTS and build the baseline and this checkout separately. From this
+checkout, in PowerShell:
+
+```powershell
+git worktree add --detach ../ccdd-baseline ef643ca343c3af152d706f30d7c4f045922cc852
+Push-Location ../ccdd-baseline
+npm ci
+npm run build
+Pop-Location
+npm ci
+npm run build
+
+$env:BENCH_FILES = '16000'
+$env:BENCH_ROUNDS = '3'
+$env:BENCH_INTEGRITY = 'metadata'
+foreach ($mode in @('lock', 'copy')) {
+  $env:BENCH_MODE = $mode
+  $env:BENCH_REPORT_FILE = "../review-overhead-$mode.json"
+  node scripts/benchmark-cli-review.mjs ../ccdd-baseline .
+}
+```
+
+Use `BENCH_INTEGRITY=content` for a comparison that keeps both policies at content
+integrity. Do not apply the recorded metadata-mode speedup to that comparison.
+Smaller `BENCH_FILES` and `BENCH_ROUNDS` values can check functionality, but their
+timings are not directly comparable to the recorded fixture.
+
+## Remaining copy work
+
+The measured copy target is below 22.57 s, requiring about 41.12% less time than
+the current candidate median. Admission alone takes 28.74 s, so optimizing only
+the later CLI phases cannot meet that target.
+
+Static inspection shows that fresh metadata-mode copying still performs three
+full content traversals: source capture, staged-copy validation and published-copy
+observer initialization, in addition to the copy itself. Metadata traversals and
+read-only sealing also remain. The benchmark does not attribute separate timings
+to these internal operations.
+
+Potential next steps are a verified handoff from staged to published input and
+combining source hashing with copying. They require stage-level measurements and
+must preserve source-change detection, publication locking and directory identity
+across rename. No further speedup from these ideas is claimed here.

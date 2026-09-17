@@ -92,7 +92,7 @@ export function queryProject(snapshot: ProjectSnapshot, history: readonly Valida
   const artifacts = Object.keys(snapshot.config.artifacts).map(artifact);
   const critics = snapshot.config.critics.map(c => critic(c.id));
   const satisfied = selection.kind === 'artifact' ? !artifact(selection.artifactId).isStale : selection.kind === 'critic' ? !critic(selection.criticId).isStale : critics.every(c => !c.isStale);
-  return { snapshotHash: snapshot.snapshotHash, selection, satisfied, artifacts, critics };
+  return { snapshotHash: snapshot.snapshotHash, workspaceIntegrity: snapshot.workspaceIntegrity ?? 'content', selection, satisfied, artifacts, critics };
 }
 
 export function planProject(snapshot: ProjectSnapshot, history: readonly ValidationEvidence[], options: QueryOptions & { recursive?: boolean; force?: boolean } = {}): ProjectPlan {

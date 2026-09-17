@@ -1,0 +1,147 @@
+{
+  "node": "v22.22.0",
+  "platform": "win32",
+  "files": 16000,
+  "binaryBytes": 67108864,
+  "rounds": 3,
+  "mode": "copy",
+  "candidateIntegrity": "metadata",
+  "timeouts": {
+    "admission": 600000,
+    "ready": 600000,
+    "claim": 600000,
+    "tool": 600000,
+    "result": 600000,
+    "settlement": 60000,
+    "cleanup": 60000
+  },
+  "sqliteTimeoutMs": 5000,
+  "policyComparison": {
+    "baseline": "content",
+    "candidate": "metadata",
+    "identicalGuarantees": false,
+    "description": "Baseline rehashes content; candidate explicitly opts into metadata-verified byte reuse. This compares different integrity guarantees, not equivalent validation policies."
+  },
+  "scope": "Actual project CLI invocations, separate Node processes, detached worker startup, acquisition, claim, tool response, result return and worker settlement. Only the instrumented custom read body is subtracted; trivial custom result construction remains. Fixture setup, npm install and Human think time excluded. No HTTP/UI-rendering claim. Synthetic fixtures only.",
+  "summary": {
+    "baseline": {
+      "admissionMs": 105229.86800000002,
+      "readyMs": 30860.114300000016,
+      "claimMs": 33788.71279999998,
+      "toolOverheadMs": 31577.385899999987,
+      "resultReturnMs": 23505.287999999942,
+      "ownershipReleaseMs": 1.8322000000625849,
+      "workerStopMs": 1.9089999999850988,
+      "frameworkMs": 225653.99780000004
+    },
+    "candidate": {
+      "admissionMs": 28735.85109999997,
+      "readyMs": 2293.488100000075,
+      "claimMs": 2983.744799999986,
+      "toolOverheadMs": 2766.5132999999287,
+      "resultReturnMs": 1389.267700000084,
+      "ownershipReleaseMs": 1.693900000071153,
+      "workerStopMs": 1.8251999999629334,
+      "frameworkMs": 38321.40290000001
+    }
+  },
+  "pairedRatios": [
+    0.17006579973829278,
+    0.1668228654715408,
+    0.15180222371416666
+  ],
+  "remainingRatio": 0.16982372691648365,
+  "meetsTarget": false,
+  "samples": [
+    {
+      "label": "baseline",
+      "round": 0,
+      "mode": "copy",
+      "integrity": "content",
+      "admissionMs": 105193.30000000005,
+      "readyMs": 30831.864499999967,
+      "claimMs": 34555.75650000002,
+      "toolOverheadMs": 31208.947099999976,
+      "resultReturnMs": 23862.362699999998,
+      "ownershipReleaseMs": 1.693700000003446,
+      "workerStopMs": 1.767000000050757,
+      "customReadMs": 0.9678000000000111,
+      "frameworkMs": 225653.99780000004
+    },
+    {
+      "label": "candidate",
+      "round": 0,
+      "mode": "copy",
+      "integrity": "metadata",
+      "admissionMs": 28735.85109999997,
+      "readyMs": 2293.488100000075,
+      "claimMs": 2983.744799999986,
+      "toolOverheadMs": 2766.5132999999287,
+      "resultReturnMs": 1594.5879999999888,
+      "ownershipReleaseMs": 1.77710000006482,
+      "workerStopMs": 1.8423000000184402,
+      "customReadMs": 0.8749000000000251,
+      "frameworkMs": 38376.027599999965
+    },
+    {
+      "label": "candidate",
+      "round": 1,
+      "mode": "copy",
+      "integrity": "metadata",
+      "admissionMs": 28757.743200000026,
+      "readyMs": 2361.9194000000134,
+      "claimMs": 3022.220699999947,
+      "toolOverheadMs": 2788.4266999999713,
+      "resultReturnMs": 1389.267700000084,
+      "ownershipReleaseMs": 1.6803999999538064,
+      "workerStopMs": 1.8251999999629334,
+      "customReadMs": 0.8949999999999818,
+      "frameworkMs": 38321.40290000001
+    },
+    {
+      "label": "baseline",
+      "round": 1,
+      "mode": "copy",
+      "integrity": "content",
+      "admissionMs": 110301.01679999998,
+      "readyMs": 31717.5233,
+      "claimMs": 33788.71279999998,
+      "toolOverheadMs": 32028.503600000022,
+      "resultReturnMs": 21875.253099999973,
+      "ownershipReleaseMs": 2.040099999983795,
+      "workerStopMs": 2.12230000004638,
+      "customReadMs": 0.9686999999999557,
+      "frameworkMs": 229713.1319
+    },
+    {
+      "label": "baseline",
+      "round": 2,
+      "mode": "copy",
+      "integrity": "content",
+      "admissionMs": 105229.86800000002,
+      "readyMs": 30860.114300000016,
+      "claimMs": 33435.29139999999,
+      "toolOverheadMs": 31577.385899999987,
+      "resultReturnMs": 23505.287999999942,
+      "ownershipReleaseMs": 1.8322000000625849,
+      "workerStopMs": 1.9089999999850988,
+      "customReadMs": 1.066000000000031,
+      "frameworkMs": 224609.85659999994
+    },
+    {
+      "label": "candidate",
+      "round": 2,
+      "mode": "copy",
+      "integrity": "metadata",
+      "admissionMs": 25343.436400000006,
+      "readyMs": 2133.940100000007,
+      "claimMs": 2720.1700999999885,
+      "toolOverheadMs": 2551.1633999999335,
+      "resultReturnMs": 1345.812900000019,
+      "ownershipReleaseMs": 1.693900000071153,
+      "workerStopMs": 1.7528000001329929,
+      "customReadMs": 0.9699999999999704,
+      "frameworkMs": 34096.275700000086
+    }
+  ]
+}

@@ -13,7 +13,7 @@ import { describeReviewTools } from '../tools/runner.js';
 import { validateArguments } from '../tools/schema.js';
 import { createHumanClaims, HUMAN_PREPARATION_LEASE_MS } from './human-claims.js';
 import { prepareHumanReview } from '../executors/human-preparation.js';
-import { prepareWorkspace, reopenWorkspace, type WorkspaceDescriptor, type WorkspaceHandle, type WorkspaceMode } from '../workspaces/index.js';
+import { prepareWorkspace, reopenWorkspace, type WorkspaceDescriptor, type WorkspaceHandle, type WorkspaceMode, type WorkspaceIntegrity } from '../workspaces/index.js';
 import { createProjectSnapshot } from '../project/identity.js';
 import { includedCritics, planProject } from '../project/query.js';
 import { readEvidence } from '../project/store.js';
@@ -37,7 +37,7 @@ export interface BrokerExecutors {
   execute(request: ReviewRequest, context: ExecutionContext & { signal: AbortSignal }): Promise<unknown>;
   notifyHuman?(request: ReviewRequest, context: { signal: AbortSignal }): Promise<unknown>;
 }
-export interface BrokerOptions { repoPath: string; stateDir: string; repoId?: string; executors?: BrokerExecutors; workspaceAdapter?: { prepareWorkspace: typeof prepareWorkspace; reopenWorkspace: typeof reopenWorkspace } }
+export interface BrokerOptions { repoPath: string; stateDir: string; repoId?: string; executors?: BrokerExecutors; workspaceIntegrity?: WorkspaceIntegrity; workspaceAdapter?: { prepareWorkspace: typeof prepareWorkspace; reopenWorkspace: typeof reopenWorkspace } }
 interface ActiveRun { runId: string; token: string; abort: AbortController; promise: Promise<RunRecord & { requests: ReviewRequest[] }> | null }
 const object = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === 'object' && !Array.isArray(value);
 const errorCode = (error: unknown): string | undefined => object(error) && typeof error.code === 'string' ? error.code : undefined;
@@ -144,7 +144,8 @@ function prepareStateDirectory(repoPath: string, stateDir: string) {
 }
 
 /** Durable broker operations. Merely opening the store never starts a worker. */
-export function createBroker({ repoPath, stateDir, repoId = 'demo', executors, workspaceAdapter = { prepareWorkspace, reopenWorkspace } }: BrokerOptions) {
+export function createBroker({ repoPath, stateDir, repoId = 'demo', executors, workspaceIntegrity = 'content', workspaceAdapter = { prepareWorkspace, reopenWorkspace } }: BrokerOptions) {
+  if (!['content', 'metadata'].includes(workspaceIntegrity)) throw new Error('Workspace integrity must be content or metadata.');
   try {
     repoPath = fs.realpathSync(repoPath);
     if (!fs.statSync(repoPath).isDirectory()) throw new Error('Workspace must be a directory.');
@@ -509,8 +510,8 @@ export function createBroker({ repoPath, stateDir, repoId = 'demo', executors, w
           const waiting = requests.filter(request => request.status === 'WAITING_HUMAN');
           if (waiting.length) {
             if (waiting.some(request => !request.notifiedAt)) throw new Error('Human notification did not complete; submit a new Run to retry.');
-            await workspace.assertUnchanged();
             if (ownedRun.workspace.mode === 'copy') {
+              await workspace.assertUnchanged();
               // A result can arrive during input validation. Release only after rechecking all branches atomically.
               const paused = transaction(() => {
                 const pending = runRequests(runId).filter(request => !terminal.has(request.status));
@@ -523,6 +524,9 @@ export function createBroker({ repoPath, stateDir, repoId = 'demo', executors, w
               if (paused) break;
               continue;
             }
+            // The lock observer stays alive with filesystem events and metadata polls.
+            // Notification already crossed its final content boundary; idle waiting
+            // must not rehash the entire workspace on every scheduling iteration.
             await delay(100, undefined, { signal: reviewSignal });
             continue;
           }
@@ -558,10 +562,10 @@ export function createBroker({ repoPath, stateDir, repoId = 'demo', executors, w
       if (!requesterId.trim() || requesterId.length > 200) throw new Error('requesterId is required (maximum 200 characters).');
       if (!['lock', 'copy'].includes(mode)) throw new Error('mode must be lock or copy.');
       await requireExecutors().validateWorkspace?.(repoPath);
-      const workspace = await workspaceAdapter.prepareWorkspace({ repoPath, stateDir, mode });
+      const workspace = await workspaceAdapter.prepareWorkspace({ repoPath, stateDir, mode, integrity: workspaceIntegrity });
       try {
         const { config } = await readWorkspaceConfig(workspace.descriptor.path);
-        const snapshot = await createProjectSnapshot(config, workspace.descriptor.path, workspace.descriptor.hash, workspace.signal);
+        const snapshot = await createProjectSnapshot(config, workspace.descriptor.path, workspace.descriptor.hash, workspace.signal, workspace.descriptor.integrity);
         const ids = includedCritics(snapshot, selection, recursive);
         const templates: ReviewEnvelope[] = [];
         for (const id of ids) templates.push(...await prepareReviewRequests({ repoPath: workspace.descriptor.path, repoId, snapshotHash: workspace.descriptor.hash, criticId: id, preparedConfig: config }));
@@ -583,7 +587,7 @@ export function createBroker({ repoPath, stateDir, repoId = 'demo', executors, w
       if (typeof requesterId !== 'string' || !requesterId.trim() || requesterId.length > 200) throw new Error('requesterId is required (maximum 200 characters).');
       if (!['lock', 'copy'].includes(mode)) throw new Error('mode must be lock or copy.');
       await requireExecutors().validateWorkspace?.(repoPath);
-      const workspace = await workspaceAdapter.prepareWorkspace({ repoPath, stateDir, mode });
+      const workspace = await workspaceAdapter.prepareWorkspace({ repoPath, stateDir, mode, integrity: workspaceIntegrity });
       try {
         const descriptor = copy(workspace.descriptor);
         const { config } = await readWorkspaceConfig(descriptor.path);
@@ -712,7 +716,9 @@ export function createBroker({ repoPath, stateDir, repoId = 'demo', executors, w
       let inputsValidated = false;
       try {
         workspace = await workspaceAdapter.reopenWorkspace(request.workspace, { signal });
-        await workspace.assertUnchanged(); workspace.signal.throwIfAborted();
+        // Reopening already validates the complete input. The post-tool check below
+        // remains mandatory because configuration loading and tool execution can mutate it.
+        workspace.signal.throwIfAborted();
         inputsValidated = true;
         if (!request.configManifest) {
           if (Object.values(request.artifactTypes).some(type => type.custom)) throw codedError('Stored TS Artifact configuration has no tool manifest.', 'WORKSPACE_ARTIFACT_MISMATCH');
@@ -765,7 +771,9 @@ export function createBroker({ repoPath, stateDir, repoId = 'demo', executors, w
       let inputsValidated = false;
       try {
         workspace = await workspaceAdapter.reopenWorkspace(request.workspace);
-        await workspace.assertUnchanged(); workspace.signal.throwIfAborted(); ensureOpen();
+        // Reopening validates input under its integrity policy. No asynchronous work or
+        // user code runs between this boundary and committing the submitted result.
+        workspace.signal.throwIfAborted(); ensureOpen();
         inputsValidated = true;
         transaction(() => {
           const current = required(requestData(requestId), 'Request');

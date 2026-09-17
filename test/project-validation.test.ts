@@ -11,7 +11,9 @@ import { inspectProject, projectHistory, projectRun, projectRequests, queryProje
 import { main } from '../src/project/cli.js';
 import { setTimeout as delay } from 'node:timers/promises';
 import { createMonitorStore } from '../src/monitor/store.js';
-import type { RepoConfig, CriticDefinition } from '../src/contracts.js';
+import type { RepoConfig, CriticDefinition, WorkspaceIntegrity } from '../src/contracts.js';
+import { inputHash } from '../src/project/identity.js';
+import { packageVersion } from '../src/runtime-paths.js';
 
 async function fixture(t: TestContext, configure?: (config: RepoConfig) => void) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'ccdd-project-test-'));
@@ -27,7 +29,7 @@ async function fixture(t: TestContext, configure?: (config: RepoConfig) => void)
   const saveConfig = () => fs.writeFile(path.join(repoPath, 'ccdd.config.json'), JSON.stringify(config));
   await saveConfig();
   const brokers: ReturnType<typeof createBroker>[] = [];
-  const open = () => { const broker = createBroker({ repoPath, stateDir, repoId: 'local', executors: createExecutorRegistry({ alarmMethods: [async () => {}] }) }); brokers.push(broker); return broker; };
+  const open = (workspaceIntegrity?: WorkspaceIntegrity) => { const broker = createBroker({ repoPath, stateDir, repoId: 'local', workspaceIntegrity, executors: createExecutorRegistry({ alarmMethods: [async () => {}] }) }); brokers.push(broker); return broker; };
   t.after(async () => { for (const broker of brokers) await broker.close(); await removeOwnedWorkspaceTree(root); });
   return { root, repoPath, stateDir, config, saveConfig, open, inspect: (selection?: Parameters<typeof inspectProject>[0]['selection']) => inspectProject({ repoPath, stateDir, selection }) };
 }
@@ -39,6 +41,77 @@ test('pull queries do not create a database, tickets, or persistent stale states
   assert.equal(q.plan.items.find(c => c.id === 'b-own')?.action, 'EXECUTE');
   assert.equal(q.plan.items.find(c => c.id === 'b-a')?.action, 'WAIT');
   assert.equal(await fs.stat(f.stateDir).then(() => true, () => false), false);
+});
+
+test('metadata integrity evidence is isolated from strict validation while historical strict identity stays unchanged', async t => {
+  const f = await fixture(t), selection = { kind: 'artifact', artifactId: 'a' } as const;
+  const implicit = await f.inspect(selection);
+  const explicit = await inspectProject({ repoPath: f.repoPath, stateDir: f.stateDir, selection, workspaceIntegrity: 'content' });
+  assert.deepEqual(explicit.snapshot, implicit.snapshot);
+  assert.equal(Object.hasOwn(implicit.snapshot, 'workspaceIntegrity'), false);
+  const historicalCriticHash = inputHash({ version: 1, executorVersion: packageVersion, critic: f.config.critics[0],
+    tools: { code: f.config.artifactTypes.code }, modules: undefined,
+    runtime: { node: process.versions.node, platform: process.platform, arch: process.arch } });
+  assert.equal(implicit.snapshot.inputs['a-check'].criticHash, historicalCriticHash, 'Strict effective identity must retain its pre-policy shape.');
+  const metadata = f.open('metadata');
+  const first = await metadata.submitProject({ mode: 'lock', selection });
+  assert.equal(first.workspace.integrity, 'metadata');
+  assert.equal(first.project!.snapshot.workspaceIntegrity, 'metadata');
+  assert.equal(first.requests[0].validationInput!.workspaceIntegrity, 'metadata');
+  assert.notEqual(first.requests[0].validationInput!.key, implicit.snapshot.inputs['a-check'].key);
+  await metadata.run(first.id); // Executes the real deterministic Runtime fixture.
+  assert.equal(projectRun(f.stateDir, first.id)!.status, 'GREEN');
+  assert.equal((await f.inspect(selection)).plan.satisfied, false, 'Metadata evidence cannot satisfy the strict default.');
+  const relaxed = await inspectProject({ repoPath: f.repoPath, stateDir: f.stateDir, selection, workspaceIntegrity: 'metadata' });
+  assert.equal(relaxed.plan.satisfied, true);
+  assert.equal(relaxed.plan.workspaceIntegrity, 'metadata');
+  const strict = f.open();
+  const second = await strict.submitProject({ mode: 'lock', selection });
+  assert.equal(second.requests.length, 1, 'Strict verification must execute instead of reusing weaker evidence.');
+  assert.equal(second.workspace.integrity, undefined);
+  assert.equal(second.requests[0].validationInput!.key, implicit.snapshot.inputs['a-check'].key);
+  await strict.run(second.id);
+  assert.equal((await f.inspect(selection)).plan.satisfied, true);
+});
+
+test('invalid integrity policy is rejected before creating Broker state or CLI review work', async t => {
+  const f = await fixture(t);
+  assert.throws(() => createBroker({ repoPath: f.repoPath, stateDir: f.stateDir, workspaceIntegrity: 'unknown' as WorkspaceIntegrity }), /integrity must be content or metadata/);
+  let output = '';
+  const code = await main(['verify', 'a', '--integrity', 'unknown', '--repo', f.repoPath, '--state-dir', f.stateDir, '--json'], { stdout: { write: text => { output += text; } } });
+  assert.equal(code, 2);
+  assert.match(JSON.parse(output).error, /--integrity must be content or metadata/);
+  assert.equal(await fs.stat(f.stateDir).then(() => true, () => false), false);
+});
+
+test('project CLI records opt-in integrity through detached workers and queries keep the strict default', { timeout: 120_000 }, async t => {
+  const f = await fixture(t);
+  const call = async (args: string[]) => {
+    let output = '';
+    const code = await main([...args, '--repo', f.repoPath, '--state-dir', f.stateDir, '--json'], { stdout: { write: text => { output += text; } } });
+    return { code, value: JSON.parse(output) };
+  };
+  let help = '';
+  assert.equal(await main(['help'], { stdout: { write: text => { help += text; } } }), 0);
+  assert.match(help, /--integrity content\|metadata/);
+  assert.match(help, /weaker than full content checks/);
+  const metadata = await call(['verify', 'a', '--integrity', 'metadata', '--lock', '--wait']);
+  assert.equal(metadata.code, 0, JSON.stringify(metadata));
+  assert.equal(metadata.value.workspaceIntegrity, 'metadata');
+  assert.equal(metadata.value.workspace.integrity, 'metadata');
+  assert.equal(metadata.value.validation.workspaceIntegrity, 'metadata');
+  assert.equal(metadata.value.requests[0].validationInput.workspaceIntegrity, 'metadata');
+  const defaultStatus = await call(['status', 'a']);
+  assert.equal(defaultStatus.code, 1); assert.equal(defaultStatus.value.workspaceIntegrity, 'content');
+  const metadataStatus = await call(['status', 'a', '--integrity', 'metadata']);
+  assert.equal(metadataStatus.code, 0); assert.equal(metadataStatus.value.workspaceIntegrity, 'metadata');
+  const plan = await call(['plan', 'a', '--integrity', 'content']);
+  assert.equal(plan.value.counts.execute, 1);
+  const strict = await call(['verify', 'a', '--lock', '--wait']);
+  assert.equal(strict.code, 0, JSON.stringify(strict));
+  assert.equal(strict.value.workspaceIntegrity, 'content');
+  assert.equal(strict.value.requests.length, 1);
+  assert.equal(strict.value.requests[0].validationInput.workspaceIntegrity, undefined);
 });
 
 test('request list orders stored creation times and preserves run filtering and ordinal order', async t => {

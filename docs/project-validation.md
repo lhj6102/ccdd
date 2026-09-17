@@ -39,10 +39,26 @@ Artifact validation covers every required Critic targeting that Artifact. Critic
 | `--wait` | Waits for the accepted validation's result. A wait timeout does not cancel validation. |
 | `--timeout-ms N` | Sets the client's wait timeout. |
 | `--copy`, `--lock` | Chooses how review input is fixed. New `verify` requests default to copy; lock requires an explicit choice. The mandatory-option contract of legacy `ccdd run` is separate. |
+| `--integrity POLICY` | Selects `content` (default) or explicitly weaker `metadata` integrity for `verify`, `status`, and `plan`. Evidence reuse requires the same policy. |
 | `--json` | Returns structured output for automation. |
 | `--repo PATH`, `--state-dir PATH` | Specifies the project and external validation history location. |
 
 `plan --force` shows the plan for execution with the same option. When all applicable past PASS verdicts can be reused and no new validation is needed, `verify` returns reuse results with references to the original verdicts and creates no new review tickets.
+
+Content integrity hashes file bytes at acquisition and action boundaries. With
+`--integrity metadata`, the initial capture still hashes every file, but subsequent
+checks compare every entry's metadata and structure without rereading its bytes.
+This assumes trustworthy filesystem metadata; same-size changes with unchanged
+or forged metadata can escape detection. See the [integrity contract](contracts.md#optional-metadata-integrity).
+Use the same explicit option when querying metadata-policy reviews:
+
+```sh
+ccdd-project verify B --lock --integrity metadata
+ccdd-project status B --integrity metadata
+```
+
+Omitting the option selects content integrity and cannot reuse metadata-policy
+evidence. The policy does not exclude files or change the selected review scope.
 
 A request without `--recursive` is not a reservation to execute missing predecessor validations automatically later. Once ready selected Critics finish, the remaining incomplete items are reported. The user can validate predecessors and submit another request, or request recursive validation.
 
@@ -124,7 +140,7 @@ An Artifact's default strategy is `{kind:'file-hash'}`, which recursively hashes
 
 `{kind:'always'}` reviews Critics using that Artifact again for every new validation request. Reviews completed within the same request can satisfy prerequisites, preventing infinite recursive execution. Reviews affected by changing external conditions, such as models or services, can use this strategy or `--force` when needed.
 
-A change to a Critic's profile, instructions, or tool definitions requires revalidation even if target and direct dependency hashes are unchanged. Functions in TS configuration can reference imported values, so all module hashes recorded during configuration loading are conservatively included. Editing shared TS configuration can therefore require revalidation of some otherwise unrelated Critics. When multiple verdicts exist for the same input, the latest actual verdict applies; an older PASS cannot hide a later RED.
+A change to a Critic's profile, instructions, tool definitions, or selected workspace integrity policy requires revalidation even if target and direct dependency hashes are unchanged. Functions in TS configuration can reference imported values, so all module hashes recorded during configuration loading are conservatively included. Editing shared TS configuration can therefore require revalidation of some otherwise unrelated Critics. When multiple verdicts exist for the same input, the latest actual verdict applies; an older PASS cannot hide a later RED.
 
 The separate Project package stores data outside the repo, by default at `~/.local/state/ccdd/<normalized-repo-path-hash>/broker.sqlite`. Override the location with `--state-dir` or `CCDD_STATE_HOME`.
 
