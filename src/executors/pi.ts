@@ -3,6 +3,7 @@ import { Type, getSupportedThinkingLevels, hasApi, type Api, type Model, type TS
 import { builtinModels } from '@earendil-works/pi-ai/providers/all';
 import { Compile } from 'typebox/compile';
 import type { ArtifactReference } from '../artifacts/index.js';
+import { artifactReferenceMetadata } from '../artifacts/groups.js';
 import { createReviewTools, toToolContent, type ReviewToolRegistry, type ReviewToolDefinition } from '../tools/runner.js';
 import type { AgentProfile, CriticProfile, ExecutionEvent, ReviewEnvelope, ReviewToolCall } from '../contracts.js';
 import { createPiCredentialStore, PiAuthError, validatePiOptions, type PiOptions } from './auth.js';
@@ -139,7 +140,7 @@ export async function invokePi({ request, worktreePath, runDir, schema, makeProm
         agent?.abort();
       }
     });
-    const prompt = makePrompt({ viewer: { listArtifacts: () => request.artifacts }, tools: activeRegistry.tools });
+    const prompt = makePrompt({ viewer: { listArtifacts: () => artifactReferenceMetadata(request.artifacts) }, tools: activeRegistry.tools });
     checkAbort();
     await agent.prompt(prompt);
     checkAbort();

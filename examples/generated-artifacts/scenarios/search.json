@@ -1,0 +1,12 @@
+{
+  "name": "Empty search results",
+  "objective": "A user can recover from a search that finds no items.",
+  "criteria": [
+    "The result view states that no items match the search.",
+    "The user can change the query without leaving the result view."
+  ],
+  "details": [
+    { "id": "message", "observation": "The result heading reads No matching items." },
+    { "id": "query", "observation": "The original query remains in an editable search field above the heading." }
+  ]
+}

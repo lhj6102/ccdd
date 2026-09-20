@@ -1,7 +1,7 @@
 import path from 'node:path';
 import { lstat, readFile, readdir, realpath } from 'node:fs/promises';
 import { validateArtifactType } from '../artifacts/types.js';
-import { isArtifactGroup, validateArtifactDefinitions } from '../artifacts/groups.js';
+import { isArtifactGroup, isGeneratedArtifact, resolveArtifactScope, validateArtifactDefinitions } from '../artifacts/groups.js';
 import { createGraphDefinition } from './graph.js';
 import type { RepoConfig } from '../contracts.js';
 import { openToolHost } from '../tools/host.js';
@@ -58,7 +58,7 @@ export async function readWorkspaceConfig(repoPath: string, signal?: AbortSignal
   if (object(config) && object(config.artifacts)) {
     validateArtifactDefinitions(config.artifacts);
     for (const artifact of Object.values(config.artifacts)) {
-      if (!isArtifactGroup(artifact)) await walk(validateRelativePath(artifact.path));
+      if (!isArtifactGroup(artifact) && !isGeneratedArtifact(artifact)) await walk(validateRelativePath(artifact.path));
     }
   }
   validateConfig(config, tree);
@@ -79,6 +79,10 @@ export function validateConfig(config: unknown, tree: WorkspaceTreeEntry[]): ass
     if (isArtifactGroup(artifact)) continue;
     if (!Object.hasOwn(config.artifactTypes, artifact.type)) {
       throw new Error(`Invalid artifact definition or unknown type: ${id}`);
+    }
+    if (isGeneratedArtifact(artifact)) {
+      if (!object(config.configManifest) || !object(config.configManifest.sources) || !Object.hasOwn(config.configManifest.sources, artifact.source) || !(config.artifactTypes[artifact.type] as { custom?: boolean }).custom) throw new Error(`Generated Artifact ${id} requires a registered TS source and tools.`);
+      continue;
     }
     const artifactPath = validateRelativePath(artifact.path);
     const entries = tree.filter(entry => entry.path === artifactPath || entry.path.startsWith(`${artifactPath}/`));
@@ -115,6 +119,7 @@ export function validateConfig(config: unknown, tree: WorkspaceTreeEntry[]): ass
         !Array.isArray(profile.args) || profile.args.some(arg => typeof arg !== 'string'))) {
       throw new Error(`Runtime profile requires command and string args: ${critic.id}`);
     }
+    if (profile.kind === 'runtime' && resolveArtifactScope(artifacts, [critic.target as string, ...critic.deps as string[]]).artifacts.some(artifact => artifact.kind === 'generated')) throw new Error('Runtime Critics require file Artifacts; use an Agent or Human Critic for generated data.');
   }
   createGraphDefinition(config as unknown as RepoConfig);
 }

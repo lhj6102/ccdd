@@ -5,6 +5,7 @@ import type { ReviewResult, WorkspaceDescriptor } from '../contracts.js';
 import type { HumanTryClaim } from '../broker/human-claims.js';
 import { materializeWorkspace, validateWorkspaceManifest, type WorkspaceTransferProgress } from '../workspaces/transfer.js';
 import { reopenWorkspace } from '../workspaces/index.js';
+import { artifactReferenceMetadata } from '../artifacts/groups.js';
 import { prepareHumanReview } from '../executors/human-preparation.js';
 import { createReviewTools, describeReviewTools } from '../tools/runner.js';
 import { packageVersion } from '../runtime-paths.js';
@@ -93,7 +94,7 @@ export async function showRemoteReview(id: string, options: RemoteReviewOptions)
   const api = await connect(options);
   const { request, status } = await api.json<{ request: PortableReview; status: string }>(`/requests/${requestId(id)}`);
   return { id: request.id, title: request.title, status, claimedBy: request.claimedBy,
-    instruction: request.payload.instruction, artifacts: request.artifacts,
+    instruction: request.payload.instruction, artifacts: artifactReferenceMetadata(request.artifacts),
     ...(request.artifactGroups ? { artifactGroups: request.artifactGroups } : {}),
     environmentRequirements: request.configManifest?.envRequirements ?? {},
     tools: request.configManifest ? describeReviewTools({ artifacts: request.artifacts, configManifest: request.configManifest, audience: 'human' }) : [],

@@ -1,10 +1,15 @@
-import type { ArtifactEntryDefinition, ArtifactGroupDefinition, ArtifactGroupReference, ArtifactReference } from '../contracts.js';
+import type { ArtifactEntryDefinition, GeneratedArtifactDefinition, ArtifactGroupDefinition, ArtifactGroupReference, ArtifactReference } from '../contracts.js';
+import type { PreparedArtifactData } from '../tools/contracts.js';
+import { canonicalData } from './data.js';
 
 const object = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === 'object' && !Array.isArray(value);
 const identifier = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
 
 export function isArtifactGroup(value: unknown): value is ArtifactGroupDefinition {
   return object(value) && value.kind === 'group';
+}
+export function isGeneratedArtifact(value: unknown): value is GeneratedArtifactDefinition {
+  return object(value) && value.kind === 'generated';
 }
 
 /** Validate composition metadata without reading files or interpreting Critic dependencies. */
@@ -25,6 +30,9 @@ export function validateArtifactDefinitions(value: unknown): asserts value is Re
       if (!Array.isArray(artifact.members) || artifact.members.length === 0 || new Set(artifact.members).size !== artifact.members.length || artifact.members.some(member => typeof member !== 'string' || !identifier.test(member) || !Object.hasOwn(value, member))) {
         throw new Error(`Artifact group ${id} requires nonempty, unique, known members.`);
       }
+    } else if (isGeneratedArtifact(artifact)) {
+      if (Object.keys(artifact).some(key => !['kind', 'type', 'source', 'params', 'basis', 'stale'].includes(key)) || typeof artifact.type !== 'string' || !identifier.test(artifact.type) || typeof artifact.source !== 'string' || !identifier.test(artifact.source) || artifact.stale && artifact.stale.kind !== 'always') throw new Error(`Invalid generated Artifact definition: ${id}`);
+      if (artifact.params !== undefined) canonicalData(artifact.params);
     } else if (artifact.kind !== undefined || Object.hasOwn(artifact, 'members') || typeof artifact.type !== 'string' || !artifact.type || typeof artifact.path !== 'string' || !artifact.path) {
       throw new Error(`Invalid Artifact definition: ${id}`);
     }
@@ -46,7 +54,7 @@ export function validateArtifactDefinitions(value: unknown): asserts value is Re
 }
 
 /** Expand only explicitly selected entries and their members, in stable depth-first order. */
-export function resolveArtifactScope(definitions: Record<string, ArtifactEntryDefinition>, ids: readonly string[]): { artifacts: ArtifactReference[]; artifactGroups?: ArtifactGroupReference[] } {
+export function resolveArtifactScope(definitions: Record<string, ArtifactEntryDefinition>, ids: readonly string[], inputs?: Record<string, PreparedArtifactData>): { artifacts: ArtifactReference[]; artifactGroups?: ArtifactGroupReference[] } {
   validateArtifactDefinitions(definitions);
   const artifacts: ArtifactReference[] = [], artifactGroups: ArtifactGroupReference[] = [];
   const visited = new Set<string>();
@@ -58,8 +66,14 @@ export function resolveArtifactScope(definitions: Record<string, ArtifactEntryDe
     if (isArtifactGroup(artifact)) {
       artifactGroups.push({ id, members: [...artifact.members] });
       for (const member of artifact.members) visit(member);
-    } else artifacts.push({ id, type: artifact.type, path: artifact.path });
+    } else if (isGeneratedArtifact(artifact)) artifacts.push({ id, type: artifact.type, kind: 'generated', source: artifact.source, ...(inputs?.[id] ? { input: inputs[id] } : {}) });
+    else artifacts.push({ id, type: artifact.type, path: artifact.path });
   };
   for (const id of ids) visit(id);
   return { artifacts, ...(artifactGroups.length ? { artifactGroups } : {}) };
+}
+
+/** Safe metadata for prompts and scope matching; captured data stays behind tools. */
+export function artifactReferenceMetadata(artifacts: readonly ArtifactReference[]): ArtifactReference[] {
+  return artifacts.map(artifact => artifact.kind === 'generated' ? { id: artifact.id, type: artifact.type, kind: 'generated', source: artifact.source } : { id: artifact.id, type: artifact.type, path: artifact.path });
 }

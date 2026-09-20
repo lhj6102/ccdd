@@ -17,6 +17,7 @@ export function matchesToolManifest(config: RepoConfig, recorded: ConfigManifest
   const extensions = {
     ...(current.envRequirements === undefined ? {} : { envRequirements: current.envRequirements, environmentInputs: current.environmentInputs }),
     ...(current.executionInputs === undefined ? {} : { executionInputs: current.executionInputs }),
+    ...(current.sources === undefined ? {} : { sources: current.sources }),
   };
   const configHash = createHash('sha256').update(JSON.stringify({
     values: { artifacts: config.artifacts, critics: config.critics },
