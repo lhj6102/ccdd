@@ -14,8 +14,9 @@ if (!baselineRoot || !candidateRoot) throw new Error('Usage: node scripts/benchm
 const files = Number(process.env.BENCH_FILES ?? 4000), rounds = Number(process.env.BENCH_ROUNDS ?? 3);
 const mode = process.env.BENCH_MODE ?? 'lock';
 const integrity = process.env.BENCH_INTEGRITY ?? 'content';
+const baselineIntegrity = process.env.BENCH_BASELINE_INTEGRITY ?? 'content';
 assert.ok(Number.isSafeInteger(files) && files > 0 && Number.isSafeInteger(rounds) && rounds > 0);
-assert.ok(['copy', 'lock'].includes(mode) && ['content', 'metadata'].includes(integrity));
+assert.ok(['copy', 'lock'].includes(mode) && [integrity, baselineIntegrity].every(value => ['content', 'metadata'].includes(value)));
 const defaultTimeoutMs = Number(process.env.BENCH_TIMEOUT_MS ?? 600000);
 assert.ok(Number.isSafeInteger(defaultTimeoutMs) && defaultTimeoutMs > 0 && defaultTimeoutMs <= 3600000);
 const timeouts = Object.fromEntries(['admission', 'ready', 'claim', 'tool', 'result', 'settlement', 'cleanup'].map(stage => {
@@ -26,6 +27,11 @@ const timeouts = Object.fromEntries(['admission', 'ready', 'claim', 'tool', 'res
 const sqliteTimeoutMs = Number(process.env.BENCH_SQLITE_TIMEOUT_MS ?? 5000);
 assert.ok(Number.isSafeInteger(sqliteTimeoutMs) && sqliteTimeoutMs > 0 && sqliteTimeoutMs <= 60000);
 const runFile = promisify(execFile);
+const implementations = Object.fromEntries(await Promise.all([['baseline', baselineRoot], ['candidate', candidateRoot]].map(async ([label, cwd]) => {
+  const commit = (await runFile('git', ['rev-parse', 'HEAD'], { cwd })).stdout.trim();
+  const changed = (await runFile('git', ['--no-optional-locks', 'status', '--porcelain', '--untracked-files=no'], { cwd })).stdout.trim();
+  return [label, { commit, trackedChanges: Boolean(changed) }];
+})));
 const { removeOwnedWorkspaceTree } = await import(pathToFileURL(join(candidateRoot, 'dist/src/workspaces/index.js')).href);
 const root = await mkdtemp(join(tmpdir(), 'ccdd-cli-benchmark-')), repoPath = join(root, 'input');
 const samples = [], attempts = [], cleanupIssues = [];
@@ -183,9 +189,10 @@ try {
       attempts.push(attempt);
       try {
         const started = performance.now();
-        const accepted = await invoke(['verify', 'sample', `--${mode}`, '--force', '--human-inbox', ...(index && integrity === 'metadata' ? ['--integrity', 'metadata'] : [])], 'admission');
+        const expectedIntegrity = index ? integrity : baselineIntegrity;
+        const accepted = await invoke(['verify', 'sample', `--${mode}`, '--force', '--human-inbox', ...(expectedIntegrity === 'metadata' ? ['--integrity', 'metadata'] : [])], 'admission');
         attempt.admissionReturned = true;
-        const runId = accepted.id, expectedIntegrity = index ? integrity : 'content';
+        const runId = accepted.id;
         assert.ok(runId);
         const submitted = performance.now(), deadline = Date.now() + timeouts.ready;
         assertPolicy(accepted.workspace, expectedIntegrity);
@@ -215,7 +222,7 @@ try {
         const settlement = await awaitSettlement(attempt, Date.now() + timeouts.settlement);
         const stopped = settlement.stoppedAt;
         attempt.settled = true;
-        const row = { label, round, mode, integrity: index ? integrity : 'content', admissionMs: submitted - started,
+        const row = { label, round, mode, integrity: expectedIntegrity, admissionMs: submitted - started,
           readyMs: ready - submitted, claimMs: claimed - ready, toolOverheadMs: toolReturned - claimed - payload.executionMs,
           resultReturnMs: returned - toolReturned, ownershipReleaseMs: Math.max(0, settlement.ownershipReleasedAt - returned),
           workerStopMs: stopped - returned, customReadMs: payload.executionMs,
@@ -231,9 +238,9 @@ try {
   const metrics = ['admissionMs', 'readyMs', 'claimMs', 'toolOverheadMs', 'resultReturnMs', 'ownershipReleaseMs', 'workerStopMs', 'frameworkMs'];
   const summary = Object.fromEntries(['baseline', 'candidate'].map(label => [label, Object.fromEntries(metrics.map(metric => [metric, median(samples.filter(row => row.label === label).map(row => row[metric]))]))]));
   const pairedRatios = Array.from({ length: rounds }, (_, round) => samples.find(row => row.round === round && row.label === 'candidate').frameworkMs / samples.find(row => row.round === round && row.label === 'baseline').frameworkMs);
-  report = { node: process.version, platform: process.platform, files, binaryBytes: 64 * 1024 * 1024, rounds, mode, candidateIntegrity: integrity, timeouts, sqliteTimeoutMs,
-    policyComparison: { baseline: 'content', candidate: integrity, identicalGuarantees: integrity === 'content',
-      description: integrity === 'content' ? 'Both implementations rehash content at integrity boundaries.' : 'Baseline rehashes content; candidate explicitly opts into metadata-verified byte reuse. This compares different integrity guarantees, not equivalent validation policies.' },
+  report = { node: process.version, platform: process.platform, implementations, files, binaryBytes: 64 * 1024 * 1024, rounds, mode, baselineIntegrity, candidateIntegrity: integrity, timeouts, sqliteTimeoutMs,
+    policyComparison: { baseline: baselineIntegrity, candidate: integrity, identicalGuarantees: integrity === baselineIntegrity,
+      description: integrity === baselineIntegrity ? integrity === 'content' ? 'Both implementations rehash content at integrity boundaries.' : 'Both implementations use metadata integrity after full initial content capture.' : `Baseline uses ${baselineIntegrity} integrity; candidate uses ${integrity} integrity. This compares different integrity guarantees.` },
     scope: 'Actual project CLI invocations, separate Node processes, detached worker startup, acquisition, claim, tool response, result return and worker settlement. Only the instrumented custom read body is subtracted; trivial custom result construction remains. Fixture setup, npm install and Human think time excluded. No HTTP/UI-rendering claim. Synthetic fixtures only.',
     summary, pairedRatios, remainingRatio: summary.candidate.frameworkMs / summary.baseline.frameworkMs,
     meetsTarget: summary.candidate.frameworkMs / summary.baseline.frameworkMs < 0.1, samples };

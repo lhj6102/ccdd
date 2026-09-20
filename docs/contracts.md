@@ -57,11 +57,24 @@ source stability before atomic publication. Source checks use content and metada
 under the default policy, or metadata and structure under the explicit metadata
 policy. Capture consumes no further source bytes after that boundary;
 cache reuse still validates the source selecting that content hash. Acquisition
-checks the published copy's canonical path, readonly entries, content and metadata
-with its observer already active, then returns that same live observer. The saved
+checks the published copy's canonical path, readonly entries and metadata with
+its observer already active, then returns that same live observer. Content policy
+always hashes the published bytes. Cache hits also receive a full byte validation
+under either policy, without a duplicate scan before observer acquisition. The saved
 metadata baseline comes from the published directory, never the private staging
 directory. Public `reopenWorkspace` independently validates persisted descriptors
 as before.
+
+For a new metadata-policy copy, a full staged-content inspection can cross the
+controlled atomic rename without rehashing the published bytes. An in-memory
+publication proof compares every descendant's complete metadata, the full
+structure hash and the root's device, inode, mode, size, modification time and
+birth time. Only the root ctime change caused by publication is permitted. Any
+other difference falls back to a full content inspection and must still match
+the original captured hash. This accommodates platform-specific rename metadata
+without trusting an unmatched proof. The returned descriptor always records the
+actual published metadata baseline. No publication proof is persisted or accepted
+from configuration; ordinary reopening retains its existing policy checks.
 
 One observer owns at most one integrity scan at a time. Explicit assertions share
 only a queued traversal that starts after their call; late callers wait for a fresh

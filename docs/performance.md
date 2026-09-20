@@ -5,11 +5,13 @@ the instrumented custom Artifact operation. It runs actual CLI commands and
 detached workers against a synthetic Human-review fixture. Fixture verdicts are
 controlled test data, not real Human review evidence.
 
-## Recorded results
+## Original Windows results
 
 Measured on Windows x64, Node 22.22.0 and an Intel Core i5-9400F on 2026-09-17.
 The baseline is `ef643ca343c3af152d706f30d7c4f045922cc852` (v3.1.2 main).
-The candidate is the runtime implementation introduced with this benchmark.
+The candidate is the original PR #27 implementation at
+`e34b4c82b483d5301992016ef9d3a05f047de793`, before integration with v3.2.0
+and the subsequent publication optimization described below.
 The fixture contains 16,000 one-KiB files, a 64-MiB binary, a small configuration
 and a custom Artifact file. One warm-up per implementation is discarded; three
 measured pairs alternate execution order. No other tests or builds ran during
@@ -95,22 +97,31 @@ foreach ($mode in @('lock', 'copy')) {
 
 Use `BENCH_INTEGRITY=content` for a comparison that keeps both policies at content
 integrity. Do not apply the recorded metadata-mode speedup to that comparison.
+`BENCH_BASELINE_INTEGRITY` defaults to `content`. Set it to `metadata` only when
+the baseline already supports that policy and both sides should use it.
 Smaller `BENCH_FILES` and `BENCH_ROUNDS` values can check functionality, but their
 timings are not directly comparable to the recorded fixture.
 
 ## Remaining copy work
 
 The measured copy target is below 22.57 s, requiring about 41.12% less time than
-the current candidate median. Admission alone takes 28.74 s, so optimizing only
+the original candidate median. Admission alone takes 28.74 s, so optimizing only
 the later CLI phases cannot meet that target.
 
-Static inspection shows that fresh metadata-mode copying still performs three
+The original fresh metadata-mode copying performed three
 full content traversals: source capture, staged-copy validation and published-copy
 observer initialization, in addition to the copy itself. Metadata traversals and
 read-only sealing also remain. The benchmark does not attribute separate timings
 to these internal operations.
 
-Potential next steps are a verified handoff from staged to published input and
-combining source hashing with copying. They require stage-level measurements and
-must preserve source-change detection, publication locking and directory identity
-across rename. No further speedup from these ideas is claimed here.
+The integrated implementation can carry the staged proof across publication in
+metadata mode, eliminating the third content traversal when directory identity,
+structure and entry metadata still match. It allows only the root ctime change
+from rename; unexpected changes trigger full byte validation. Content mode keeps
+its full published-byte check. Cache hits under either policy now validate bytes
+once with the retained observer. See the [publication contract](contracts.md#workspace-contract).
+
+Combining source hashing with copying remains a possible next step. It requires
+measurements and a design that also preserves efficient cache hits, source-change
+detection, publication locking and cancellation. The original Windows target
+remains open until the updated implementation is measured on that fixture.

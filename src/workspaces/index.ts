@@ -19,7 +19,7 @@ export interface WorkspaceScanProgress { kind: 'metadata' | 'content'; files: nu
 type WorkspaceEntry = { path: string; type: 'directory'; executable: number }
   | { path: string; type: 'file'; executable: number; content?: string }
   | { path: string; type: 'symlink'; target: string };
-interface Inspection { hash: string; metadataHash: string; structureHash: string; entries: WorkspaceEntry[] }
+interface Inspection { hash: string; metadataHash: string; structureHash: string; entries: WorkspaceEntry[]; publicationMetadataHash?: string }
 interface ScanNode {
   relative: string; parent?: ScanNode; entry?: WorkspaceEntry;
   metadata?: string[]; children?: ScanNode[]; remaining?: number;
@@ -64,6 +64,12 @@ export async function validateStateLocation(repoPath: unknown, stateDir: unknown
 
 function metadata(info: BigIntStats) {
   return [info.dev, info.ino, info.mode, info.size, info.mtimeNs, info.ctimeNs, info.birthtimeNs].map(String);
+}
+
+/** Permit the root ctime change from publication; retain every child tuple and root identity. */
+function publicationMetadataHash(entries: string[][]): string {
+  const [rootPath, dev, ino, mode, size, mtime, , birthtime] = entries[0];
+  return digest(JSON.stringify([[rootPath, dev, ino, mode, size, mtime, birthtime], ...entries.slice(1)]));
 }
 
 /** Every entry participates: no Git, ignore rules, extension filters or implicit exclusions. */
@@ -184,7 +190,8 @@ async function inspect(root: string, { signal, requireReadonly = false, contents
   const hash = digest(JSON.stringify(entries));
   const structureHash = contents ? digest(JSON.stringify(entries.map(entry => entry.type === 'file'
     ? { path: entry.path, type: entry.type, executable: entry.executable } : entry))) : hash;
-  return { hash, metadataHash: digest(JSON.stringify(metadataEntries)), structureHash, entries };
+  return { hash, metadataHash: digest(JSON.stringify(metadataEntries)), structureHash, entries,
+    ...(requireReadonly ? { publicationMetadataHash: publicationMetadataHash(metadataEntries) } : {}) };
 }
 
 export async function fingerprintWorkspace(workspacePath: string) {
@@ -280,10 +287,14 @@ function observe(root: string, mode: WorkspaceMode, externalSignal?: AbortSignal
   };
   return {
     signal: controller.signal,
-    async initialize(expected?: Pick<Inspection, 'hash' | 'metadataHash'> & Partial<Pick<Inspection, 'structureHash'>>) {
+    async initialize(expected?: Pick<Inspection, 'hash' | 'metadataHash'> & Partial<Pick<Inspection, 'structureHash'>>, publishedFrom?: Inspection) {
       const before = await inspect(root, { signal: controller.signal, requireReadonly: mode === 'copy', contents: false, onProgress });
-      // Only a persisted full-capture proof permits skipping byte reads; new captures always hash.
-      const current = integrity === 'metadata' && expected ? { ...before, hash: expected.hash }
+      // A staged full-content inspection may cross our own atomic rename under metadata
+      // policy only when directory identity, structure and all other metadata still match.
+      // Any unexpected difference falls back to actual bytes, as does content policy.
+      const publicationMatches = publishedFrom?.publicationMetadataHash !== undefined &&
+        publishedFrom.publicationMetadataHash === before.publicationMetadataHash && publishedFrom.structureHash === before.structureHash;
+      const current = integrity === 'metadata' && (expected || publicationMatches) ? { ...before, hash: expected?.hash ?? publishedFrom!.hash }
         : await inspect(root, { signal: controller.signal, requireReadonly: mode === 'copy', onProgress });
       if (before.metadataHash !== current.metadataHash) throw changed(mode, 'input changed while acquiring the workspace');
       baseline = current;
@@ -421,19 +432,20 @@ export async function prepareWorkspace({ repoPath, stateDir, mode = 'copy', inte
     if (await realpath(cacheRoot) !== cacheRoot) throw failure('Workspace cache directory must not be a symlink.');
     const destination = path.join(cacheRoot, initial.hash);
     releasePublication = await acquirePublication(cacheRoot, initial.hash, observer.signal);
-    let cached;
+    let cached = false;
+    let publishedFrom: Inspection | undefined;
     try {
       if (!(await lstat(destination)).isDirectory()) throw changed('copy', 'cache root must be a regular directory');
-      cached = await inspect(destination, { signal, requireReadonly: true });
+      cached = true;
     }
     catch (error) { if (errorCode(error) !== 'ENOENT') throw error; }
-    if (cached && cached.hash !== initial.hash) throw changed('copy', 'cached content does not match its hash');
     if (!cached) {
       stage = path.join(cacheRoot, `.capture-${randomUUID()}`);
       await mkdir(stage, { mode: 0o700 });
       await copyEntries(source, stage, initial.entries, observer.signal);
       const copied = await inspect(stage, { signal: observer.signal, requireReadonly: true });
       if (copied.hash !== initial.hash) throw changed('lock', 'source changed during copy');
+      publishedFrom = copied;
       await observer.assertUnchanged();
       await rename(stage, destination);
       stage = undefined;
@@ -449,14 +461,14 @@ export async function prepareWorkspace({ repoPath, stateDir, mode = 'copy', inte
     if (stage) { await removeOwnedWorkspaceTree(stage); stage = undefined; }
     await releasePublication();
     releasePublication = undefined;
-    // Retain the observer that validates the published copy instead of checking
-    // it once here and immediately rehashing it again through public reopen.
+    // Cache hits have no staged proof and receive a full byte validation here under
+    // either policy. This same live observer owns every subsequent boundary.
     if (await realpath(destination) !== destination || !(await lstat(destination)).isDirectory()) {
       throw failure('Persisted workspace descriptor has an invalid input path.');
     }
     const copyObserver = observe(destination, 'copy', signal, undefined, integrity);
     try {
-      const verified = await copyObserver.initialize();
+      const verified = await copyObserver.initialize(undefined, publishedFrom);
       if (verified.hash !== initial.hash) throw changed('copy', 'cached content does not match its hash');
       copyObserver.signal.throwIfAborted();
       const descriptor = Object.freeze({ version: 1 as const, mode, sourcePath: source, path: destination, hash: initial.hash, stateDir: canonical.stateDir, baselineMetadataHash: verified.metadataHash,
