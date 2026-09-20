@@ -1,7 +1,7 @@
 import type { ELK, ELKConstructorArguments, ElkNode } from 'elkjs/lib/elk-api.js';
 
 export interface LayoutGraphInput {
-  artifacts: readonly { id: string; kind?: 'artifact' | 'group'; criticIds?: readonly string[] }[];
+  artifacts: readonly { id: string; kind?: 'artifact' | 'group' | 'generated'; criticIds?: readonly string[] }[];
   edges: readonly { source: string; target: string; criticIds: readonly string[] }[];
 }
 export interface GraphPoint { x: number; y: number }

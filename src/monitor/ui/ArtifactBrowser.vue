@@ -1,10 +1,10 @@
 <script setup lang="ts">
 import { computed, onUnmounted, ref, watch } from 'vue';
-import type { ArtifactReference } from '../../contracts.js';
+import type { ArtifactReferenceMetadata } from '../../artifacts/index.js';
 import type { MonitorArtifactPage } from '../types.js';
 import { api, errorMessage, requestRoute } from './api';
 
-const props = defineProps<{ projectId: string; requestId: string; artifacts: ArtifactReference[]; preview?: 'legacy' | 'tools'; humanReview?: boolean }>();
+const props = defineProps<{ projectId: string; requestId: string; artifacts: ArtifactReferenceMetadata[]; preview?: 'legacy' | 'tools'; humanReview?: boolean }>();
 const emit = defineEmits<{ review: [] }>();
 interface Choice { id: string; path?: string; operation?: 'read' | 'list'; startLine?: number; offset?: number }
 const choice = ref<Choice | null>(null), page = ref<MonitorArtifactPage | null>(null), loading = ref(false), error = ref(''), startLine = ref(1);
@@ -48,7 +48,7 @@ onUnmounted(() => { version++; controller?.abort(); });
   <div class="artifact-browser">
     <p v-if="!artifacts.length" class="muted">No Artifacts were provided.</p>
     <template v-else-if="preview === 'tools'">
-      <ul class="artifact-references"><li v-for="item in artifacts" :key="item.id"><strong>{{ item.id }}</strong><span>{{ item.path }}</span><small>{{ item.type }}</small></li></ul>
+      <ul class="artifact-references"><li v-for="item in artifacts" :key="item.id"><strong>{{ item.id }}</strong><span>{{ item.kind === 'generated' ? 'Generated data' : item.path }}</span><small>{{ item.type }}</small></li></ul>
       <p class="artifact-message">Inspect Artifacts with the tools provided to the reviewer. These tools can also open animations and images.</p>
       <button v-if="humanReview" class="secondary-button" @click="emit('review')">Go to review tools</button>
     </template>

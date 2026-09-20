@@ -53,7 +53,7 @@ export function metadata(value: unknown): ToolMetadata {
   if (typeof result.description !== 'string' || !result.description.trim() || result.description.length>4000 || /[{}]/.test(result.description.replaceAll('{artifactName}',''))) throw new Error('Tool description requires text and supports only {artifactName}.');
   validateSchema(result.inputSchema);
   if (!Array.isArray(result.resultKinds) || !result.resultKinds.length || new Set(result.resultKinds).size!==result.resultKinds.length || result.resultKinds.some((v:unknown)=>!['text','json','image','launch'].includes(v as string))) throw new Error('Invalid tool resultKinds.');
-  if (!['content','none'].includes(result.observation) || (result.artifactKind!==undefined && !['file','directory','any'].includes(result.artifactKind))) throw new Error('Invalid tool observation or artifact kind.');
+  if (!['content','none'].includes(result.observation) || (result.artifactKind!==undefined && !['file','directory','any','data'].includes(result.artifactKind))) throw new Error('Invalid tool observation or artifact kind.');
   if (result.timeoutMs!==undefined && (!Number.isSafeInteger(result.timeoutMs)||result.timeoutMs<1||result.timeoutMs>900000)) throw new Error('Tool timeoutMs must be 1–900000.');
   if (result.executionPaths !== undefined) declaredPaths(result.executionPaths);
   return result as unknown as ToolMetadata;

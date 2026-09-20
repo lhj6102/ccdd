@@ -15,6 +15,7 @@ import { createHumanClaims, HUMAN_PREPARATION_LEASE_MS } from './human-claims.js
 import { prepareHumanReview } from '../executors/human-preparation.js';
 import { prepareWorkspace, reopenWorkspace, type WorkspaceDescriptor, type WorkspaceHandle, type WorkspaceMode } from '../workspaces/index.js';
 import { createProjectSnapshot } from '../project/identity.js';
+import { assertGeneratedReviewInputs, prepareArtifactInputs } from '../artifacts/sources.js';
 import { includedCritics, planProject } from '../project/query.js';
 import { readEvidence } from '../project/store.js';
 import type { ProjectRunDefinition, ProjectSelection } from '../project/types.js';
@@ -393,6 +394,7 @@ export function createBroker({ repoPath, stateDir, repoId = 'demo', executors, w
       signal.throwIfAborted();
       await workspace.assertUnchanged();
       const request = required(requestData(requestId), 'Request');
+      assertGeneratedReviewInputs(request);
       const runDir = path.join(stateDir, 'runs', runId, request.id);
       fs.mkdirSync(runDir, { recursive: true, mode: 0o700 });
       if (required(runData(runId), 'Run').project) {
@@ -560,7 +562,8 @@ export function createBroker({ repoPath, stateDir, repoId = 'demo', executors, w
       await requireExecutors().validateWorkspace?.(repoPath);
       const workspace = await workspaceAdapter.prepareWorkspace({ repoPath, stateDir, mode });
       try {
-        const { config } = await readWorkspaceConfig(workspace.descriptor.path);
+        const loaded = await readWorkspaceConfig(workspace.descriptor.path);
+        const config = await prepareArtifactInputs(loaded.config, workspace.descriptor.path, 'review', workspace.signal);
         const snapshot = await createProjectSnapshot(config, workspace.descriptor.path, workspace.descriptor.hash, workspace.signal);
         const ids = includedCritics(snapshot, selection, recursive);
         const templates: ReviewEnvelope[] = [];
@@ -765,6 +768,7 @@ export function createBroker({ repoPath, stateDir, repoId = 'demo', executors, w
       let inputsValidated = false;
       try {
         workspace = await workspaceAdapter.reopenWorkspace(request.workspace);
+        assertGeneratedReviewInputs(request);
         await workspace.assertUnchanged(); workspace.signal.throwIfAborted(); ensureOpen();
         inputsValidated = true;
         transaction(() => {

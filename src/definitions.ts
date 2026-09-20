@@ -8,5 +8,7 @@ export interface CriticDefinition { id: string; title: string; target: string; d
 export type StaleStrategy = { kind: 'file-hash'; paths?: string[] } | { kind: 'always' };
 export interface ArtifactDefinition { type: string; path: string; basis?: boolean; stale?: StaleStrategy }
 export interface ArtifactGroupDefinition { kind: 'group'; members: string[]; basis?: boolean; stale?: StaleStrategy }
-export type ArtifactEntryDefinition = ArtifactDefinition | ArtifactGroupDefinition;
+/** Generated material is captured separately from configuration evaluation. */
+export interface GeneratedArtifactDefinition { kind: 'generated'; type: string; source: string; params?: import('./tools/contracts.js').JsonValue; basis?: boolean; stale?: { kind: 'always' }; path?: never }
+export type ArtifactEntryDefinition = ArtifactDefinition | GeneratedArtifactDefinition | ArtifactGroupDefinition;
 export interface ArtifactGroupReference { id: string; members: string[] }

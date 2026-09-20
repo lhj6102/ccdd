@@ -19,7 +19,7 @@ Three terms explain the picture:
 
 | Term | Meaning | Example |
 | --- | --- | --- |
-| **Artifact** | A named file, folder, or group of materials to review. | `spec.md`, `tests/`, or an image. |
+| **Artifact** | A named file, folder, captured data value, or group of materials to review. | `spec.md`, `tests/`, an image, or a generated scenario. |
 | **Critic** | A check with one target, reference materials, and a reviewer. | “Does this design meet these requirements?” |
 | **Artifact tool** | A way for a reviewer to inspect an Artifact. | Read text, view an image, or open a desktop application. |
 
@@ -27,7 +27,7 @@ Each Critic declares its target and references. These relationships form a direc
 
 ## What you do
 
-1. **Name your materials.** Give each Artifact an ID, a type, and a file or folder path. Groups collect existing Artifacts.
+1. **Name your materials.** Give each Artifact an ID, a type, and a file/folder path or a source for generated data. Groups collect existing Artifacts.
 2. **Connect tools.** Use the optional default tools or write your own `metadata` and `execute` function. Register them by Artifact type in `ccdd.config.ts`.
 3. **Define checks.** For each Critic, choose the target, its references, the review criteria, and an Agent, Human, or Runtime reviewer.
 4. **Request a review.** Read the findings, update your project, and request another check when needed.
@@ -72,6 +72,7 @@ Reviews use a fixed copy of the project by default. Records and generated output
 - [Write an Artifact tool](examples/custom-text-reader/README.md) using the public tool contract.
 - [Use default text, file, image, and desktop tools](packages/default-tools/README.md).
 - [Review a group of materials](examples/artifact-groups/README.md), such as an effect description and its preview image.
+- [Review generated scenario data](docs/generated-artifacts.md) through tools that read a fixed captured value.
 - [Use Agent and Human reviewers](docs/reviewers.md), including credentials and result submission.
 - [Explore the demo](docs/demo.md): Why → Spec → Tests → Implementation.
 - [Look up commands, reuse rules, and exit codes](docs/project-validation.md).

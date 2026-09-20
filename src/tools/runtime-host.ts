@@ -7,10 +7,13 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { metadata, jsonCopy, object, validateArguments, environmentRequirements } from './schema.js';
 import { hashExecutionInputs, resolveExecutionInput } from './inputs.js';
 import { scopedPath, within } from './paths.js';
-import type { Config, ConfigManifest, ToolDefinition, ToolContext } from './contracts.js';
+import type { Config, ConfigManifest, ToolDefinition, ToolContext, DataToolContext, ArtifactSourceDefinition } from './contracts.js';
+import { sourceMetadata, captureArtifactData, assertPreparedArtifactData } from '../artifacts/sources.js';
+import { isGeneratedArtifact } from '../artifacts/groups.js';
 
 const identifier=/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
-const registry=new Map<string,ToolDefinition<any>>();
+const registry=new Map<string,ToolDefinition<any, any>>();
+const sources = new Map<string, ArtifactSourceDefinition>();
 let root='', loaded: {config: Record<string,unknown>} | undefined;
 const hash=(value:string|Buffer)=>createHash('sha256').update(value).digest('hex');
 async function load(workspace: string) {
@@ -53,12 +56,22 @@ async function load(workspace: string) {
     }
   }
   const values=jsonCopy({artifacts:config.artifacts,critics:config.critics});
+  const sourceManifests: NonNullable<ConfigManifest['sources']> = {};
+  if (config.artifactSources !== undefined) {
+    if (!object(config.artifactSources)) throw new Error('artifactSources must be a map of registered source definitions.');
+    for (const [id, source] of Object.entries(config.artifactSources)) {
+      if (!identifier.test(id) || !object(source) || typeof source.prepare !== 'function' || Object.keys(source).some(key => !['metadata', 'prepare', 'fingerprint'].includes(key)) || source.fingerprint !== undefined && typeof source.fingerprint !== 'function') throw new Error('Invalid Artifact source definition.');
+      sourceManifests[id] = sourceMetadata(source.metadata);
+      if ((sourceManifests[id].identity.kind === 'custom') !== (typeof source.fingerprint === 'function')) throw new Error('Only custom identity strategies require fingerprint(data).');
+      sources.set(id, source as ArtifactSourceDefinition);
+    }
+  }
   const envRequirements=config.envRequirements===undefined?undefined:environmentRequirements(config.envRequirements);
   const environmentInputs=envRequirements===undefined?undefined:await hashExecutionInputs(root,Object.values(envRequirements).flatMap(value=>[value.script,...value.inputs??[]]));
   if (envRequirements) for (const value of Object.values(envRequirements)) if (!(await lstat(await scopedPath(root,value.script))).isFile()) throw new Error('Environment scripts must be regular files.');
   const executionPaths=Object.values(types).flatMap(type=>[...Object.values(type.agentTools),...Object.values(type.humanTools)].flatMap(tool=>tool.executionPaths??[]));
   const executionInputs=executionPaths.length?await hashExecutionInputs(root,executionPaths):undefined;
-  const extensions={...(envRequirements===undefined?{}:{envRequirements,environmentInputs}),...(executionInputs===undefined?{}:{executionInputs})};
+  const extensions={...(envRequirements===undefined?{}:{envRequirements,environmentInputs}),...(executionInputs===undefined?{}:{executionInputs}), ...(config.artifactSources === undefined ? {} : { sources: sourceManifests })};
   const moduleList=[...modules].sort(([a],[b])=>a<b?-1:a>b?1:0).map(([path,hash])=>({path,hash}));
   const manifest:ConfigManifest={version:1,configHash:hash(JSON.stringify({values,types,modules:moduleList,...extensions})),modules:moduleList,types,...extensions};
   loaded={config:{...values,artifactTypes:Object.fromEntries(Object.keys(types).map(type=>[type,{custom:true}])),configManifest:manifest}};
@@ -73,6 +86,20 @@ process.on('message',async (message:any)=>{
   try {
     if (action==='load') { process.send?.({id,value:await load(message.root)}); return; }
     if (!loaded) throw new Error('Configuration is not loaded.');
+    if (action === 'prepare-artifact') {
+      const artifact = (loaded.config.artifacts as Config['artifacts'])[message.artifactId];
+      if (!isGeneratedArtifact(artifact) || !['inspect', 'review'].includes(message.purpose)) throw new Error('Invalid Artifact preparation request.');
+      const source = sources.get(artifact.source);
+      if (!source) throw new Error('Unknown Artifact source.');
+      const controller = new AbortController();
+      const abort = () => controller.abort(new Error('Artifact preparation interrupted.'));
+      process.once('SIGTERM', abort);
+      try {
+        const value = await captureArtifactData(source, { artifactId: message.artifactId, params: structuredClone(artifact.params ?? null), signal: controller.signal, resolvePath: path => scopedPath(root, path) }, message.purpose);
+        process.send?.({ id, value });
+      } finally { process.off('SIGTERM', abort); }
+      return;
+    }
     const {artifact,type,audience,toolKey,args,outputDir,tmpDir}=message;
     // Human environment requirements inspect these same reviewer-local values. Set them
     // only after snapshot configuration has loaded in its existing restricted environment.
@@ -84,22 +111,34 @@ process.on('message',async (message:any)=>{
     const definition=registry.get(`${type}/${audience==='agent'?'agentTools':'humanTools'}/${toolKey}`);
     if (!definition) throw new Error('Unknown tool.');
     const declaredMetadata=(loaded.config.configManifest as ConfigManifest).types[type][audience==='agent'?'agentTools':'humanTools'][toolKey];
-    const artifactPath=await scopedPath(root,artifact.path);
-    const info=await lstat(artifactPath);
-    if (!info.isFile()&&!info.isDirectory()) throw new Error('Artifact requires a regular file or directory.');
-    if (definition.metadata.artifactKind==='file'&&!info.isFile()||definition.metadata.artifactKind==='directory'&&!info.isDirectory()) throw new Error('Tool does not support this Artifact shape.');
     const controller=new AbortController();
     const abort=()=>controller.abort(new Error('Tool host interrupted.'));
     process.once('SIGTERM',abort);
     await mkdir(outputDir,{recursive:true}); await mkdir(tmpDir,{recursive:true});
-    const context:ToolContext={artifactId:artifact.id,artifactPath,artifactDirectory:info.isDirectory(),outputDir,tmpDir,signal:controller.signal,resolvePath:async(path='')=>{
+    const executionPath = async (path: string) => {
+      controller.signal.throwIfAborted();
+      return resolveExecutionInput(root, declaredMetadata.executionPaths ?? [], path);
+    };
+    let context: ToolContext | DataToolContext;
+    if (artifact.kind === 'generated') {
+      if (declaredMetadata.artifactKind !== 'data') throw new Error('Generated Artifacts require data tools.');
+      const source = sources.get(artifact.source);
+      if (!source) throw new Error('Missing recorded Artifact source.');
+      assertPreparedArtifactData(artifact.input, source.metadata);
+      const data = structuredClone(artifact.input.data);
+      context = { artifactId: artifact.id, outputDir, tmpDir, signal: controller.signal, readData: () => { controller.signal.throwIfAborted(); return structuredClone(data); }, resolveExecutionPath: executionPath };
+    } else {
+      if (declaredMetadata.artifactKind === 'data') throw new Error('Data tools require generated Artifacts.');
+      const artifactPath=await scopedPath(root,artifact.path);
+      const info=await lstat(artifactPath);
+      if (!info.isFile()&&!info.isDirectory()) throw new Error('Artifact requires a regular file or directory.');
+      if (definition.metadata.artifactKind==='file'&&!info.isFile()||definition.metadata.artifactKind==='directory'&&!info.isDirectory()) throw new Error('Tool does not support this Artifact shape.');
+      context={artifactId:artifact.id,artifactPath,artifactDirectory:info.isDirectory(),outputDir,tmpDir,signal:controller.signal,resolvePath:async(path='')=>{
       controller.signal.throwIfAborted();
       if (!info.isDirectory()&&path) throw new Error('File Artifact does not accept an internal path.');
       return path?scopedPath(artifactPath,path):artifactPath;
-    },resolveExecutionPath:async(path:string)=>{
-      controller.signal.throwIfAborted();
-      return resolveExecutionInput(root,declaredMetadata.executionPaths??[],path);
-    }};
+      },resolveExecutionPath:executionPath};
+    }
     try {
       const value=action==='preflight'?(definition.preflight?await definition.preflight(context):{ok:true,message:'Registered; no custom preflight, actual execution unverified.'}):await definition.execute(context,validateArguments(definition.metadata.inputSchema,args));
       encodingResult=action==='execute';

@@ -8,6 +8,7 @@ import { createReviewTools, type ReviewToolDefinition } from '../tools/runner.js
 import type { ToolResult } from '../tools/contracts.js';
 import { assertArtifactAudience, type ArtifactAudience } from './types.js';
 import { isArtifactGroup, resolveArtifactScope } from './groups.js';
+import { prepareArtifactInputs } from './sources.js';
 import { safeToolFailure, toolFailureStage, type ArtifactToolCheckStage } from '../tools/diagnostics.js';
 
 export interface ArtifactToolCheck {
@@ -60,14 +61,15 @@ export async function diagnoseArtifactTools({ repoPath, mode = 'copy', stateDir,
     // Cached copies are retained: a desktop viewer can continue reading after its launcher exits.
     report.workspacePath = worktreePath;
     stage = 'preflight';
-    const { config } = await readWorkspaceConfig(worktreePath);
+    const loaded = await readWorkspaceConfig(worktreePath);
+    const config = await prepareArtifactInputs(loaded.config, worktreePath, 'review', workspace.signal);
     const { configManifest } = config;
     if (artifactId !== undefined && !Object.hasOwn(config.artifacts, artifactId)) throw new Error('Unknown selected Artifact.');
     if (execute && artifactId !== undefined && isArtifactGroup(config.artifacts[artifactId])) {
       report.checks.push({ artifactId, stage, ok: false, code: 'ARTIFACT_GROUP_NOT_EXECUTABLE', message: 'Groups collect member tools. Select a leaf Artifact with --artifact to execute its tool.' });
       return report;
     }
-    const selectedScope = resolveArtifactScope(config.artifacts, artifactId === undefined ? Object.keys(config.artifacts) : [artifactId]);
+    const selectedScope = resolveArtifactScope(config.artifacts, artifactId === undefined ? Object.keys(config.artifacts) : [artifactId], config.artifactInputs);
     const selected = selectedScope.artifacts;
     if (!selected.length) throw new Error('Unknown selected Artifact.');
     if (!artifactId && !audience && !toolName) {

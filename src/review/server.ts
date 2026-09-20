@@ -10,6 +10,7 @@ import type { ReviewRequest } from '../contracts.js';
 import type { HumanPreparation } from '../executors/human-preparation.js';
 import { packageVersion } from '../runtime-paths.js';
 import { portableReview } from './types.js';
+import { artifactReferenceMetadata } from '../artifacts/groups.js';
 
 export interface ReviewServerOptions {
   stateDir: string;
@@ -119,7 +120,7 @@ export async function startReviewServer(options: ReviewServerOptions): Promise<{
       if (!stored) throw new HttpError(404, 'Unknown review request.');
       const portable = portableReview(stored);
       if (request.method === 'GET') {
-        if (!action) { json(response, { request: portable, status: stored.status }); return; }
+        if (!action) { json(response, { request: { ...portable, artifacts: artifactReferenceMetadata(portable.artifacts) }, status: stored.status }); return; }
         const reservation = activeTryClaim(stored);
         if (stored.status !== 'WAITING_HUMAN' || (stored.claimedBy !== reviewerId && reservation?.reviewerId !== reviewerId)) throw new HttpError(403, 'Reserve this review before downloading its input.');
         if (action === 'snapshot') { json(response, await manifestFor(stored)); return; }

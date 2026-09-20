@@ -327,6 +327,7 @@ function artifactReferences(value: unknown): ArtifactReference[] {
   if (!Array.isArray(value)) throw storageError();
   return value.map(item => {
     if (!object(item)) throw storageError();
+    if (item.kind === 'generated') return { id: string(item.id), type: string(item.type), kind: 'generated' as const, source: string(item.source) };
     return { id: string(item.id), path: string(item.path), type: string(item.type) };
   });
 }

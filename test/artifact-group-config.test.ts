@@ -26,7 +26,7 @@ function config(): RepoConfig {
     critics: [critic('group-review', 'explosion'), critic('effect-review', 'effect'), critic('preview-review', 'preview'), critic('publish', 'outside', ['explosion'])],
   };
 }
-const tree = Object.values(definitions).flatMap(artifact => 'path' in artifact ? [{ path: artifact.path, type: 'blob', mode: '100644' }] : []);
+const tree = Object.values(definitions).flatMap(artifact => 'path' in artifact && typeof artifact.path === 'string' ? [{ path: artifact.path, type: 'blob', mode: '100644' }] : []);
 
 test('workspace config validates leaf files and preserves pathless group definitions', async () => {
   const c = config();
