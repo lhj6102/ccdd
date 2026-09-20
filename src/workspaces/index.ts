@@ -74,6 +74,7 @@ function publicationMetadataHash(entries: string[][]): string {
 
 /** Every entry participates: no Git, ignore rules, extension filters or implicit exclusions. */
 async function inspect(root: string, { signal, requireReadonly = false, contents = true, publicationProof = false, onProgress }: { signal?: AbortSignal; requireReadonly?: boolean; contents?: boolean; publicationProof?: boolean; onProgress?: (progress: WorkspaceScanProgress) => void } = {}): Promise<Inspection> {
+  const mode = requireReadonly ? 'copy' : 'lock';
   const entries: WorkspaceEntry[] = [];
   const metadataEntries: string[][] = [];
   const rootNode: ScanNode = { relative: '' };
@@ -100,7 +101,7 @@ async function inspect(root: string, { signal, requireReadonly = false, contents
     const finishDirectory = async (node: ScanNode) => {
       check();
       const after = await lstat(node.relative ? path.join(root, node.relative) : root, { bigint: true });
-      if (JSON.stringify(node.metadata) !== JSON.stringify(metadata(after))) throw changed('lock', node.relative || '.');
+      if (JSON.stringify(node.metadata) !== JSON.stringify(metadata(after))) throw changed(mode, node.relative || '.');
       complete(node);
     };
     const walk = async (node: ScanNode): Promise<void> => {
@@ -123,7 +124,7 @@ async function inspect(root: string, { signal, requireReadonly = false, contents
         let content;
         try {
           const opened = await file.stat({ bigint: true });
-          if (JSON.stringify(metadata(before)) !== JSON.stringify(metadata(opened))) throw changed('lock', relative);
+          if (JSON.stringify(metadata(before)) !== JSON.stringify(metadata(opened))) throw changed(mode, relative);
           const hash = createHash('sha256');
           const buffer = Buffer.allocUnsafe(128 * 1024);
           let position = 0;
@@ -157,7 +158,7 @@ async function inspect(root: string, { signal, requireReadonly = false, contents
         throw failure(`Unsupported workspace entry (only directories, regular files and internal symlinks are supported): ${relative}`);
       }
       const after = await lstat(absolute, { bigint: true });
-      if (JSON.stringify(metadata(before)) !== JSON.stringify(metadata(after))) throw changed('lock', relative || '.');
+      if (JSON.stringify(metadata(before)) !== JSON.stringify(metadata(after))) throw changed(mode, relative || '.');
       complete(node);
     };
     const pump = () => {

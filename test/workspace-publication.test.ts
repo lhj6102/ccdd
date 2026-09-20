@@ -91,6 +91,30 @@ test('a changed child after publication cannot inherit the staged metadata proof
   assert.equal(invoked(), true);
 });
 
+test('mutation during published copy acquisition is classified as cache tampering under either policy', async t => {
+  for (const integrity of ['content', 'metadata'] as WorkspaceIntegrity[]) await t.test(integrity, async t => {
+    const f = await fixture(t);
+    const lstat = fs.lstat;
+    let tampered = false;
+    t.mock.method(fs, 'lstat', async (...args: Parameters<typeof fs.lstat>) => {
+      const info = await lstat(...args);
+      const file = String(args[0]);
+      const parts = relative(join(f.stateDir, 'workspaces'), file).split(/[/\\]/);
+      if (!tampered && /^[a-f0-9]{64}$/.test(parts[0]) && parts.at(-1) === 'file') {
+        tampered = true;
+        await fs.chmod(file, 0o644);
+        await fs.writeFile(file, 'Changed during published acquisition.');
+        await fs.chmod(file, 0o444);
+      }
+      return info;
+    });
+    syncBuiltinESMExports();
+    t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
+    await assert.rejects(prepareWorkspace({ ...f, integrity }), { code: 'WORKSPACE_CACHE_TAMPERED' });
+    assert.equal(tampered, true, 'the actual published file changed between scan observations');
+  });
+});
+
 test('unexpected directory timestamp changes fall back to content validation and record the published baseline', async t => {
   const f = await fixture(t);
   const reads = trackPublishedReads(t, f.stateDir);
