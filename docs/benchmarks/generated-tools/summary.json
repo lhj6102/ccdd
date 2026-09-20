@@ -1,0 +1,65 @@
+{
+  "baselineCommit": "731856a0b161659f27c49bd1bf651adf1c526e53",
+  "trials": 3,
+  "order": [
+    [
+      "baseline",
+      "candidate"
+    ],
+    [
+      "candidate",
+      "baseline"
+    ],
+    [
+      "baseline",
+      "candidate"
+    ]
+  ],
+  "environment": {
+    "node": "v22.22.0",
+    "platform": "linux",
+    "arch": "x64",
+    "cpu": "Intel Core i5-9400F @ 2.90GHz",
+    "availableParallelism": 6,
+    "integrity": "content",
+    "concurrency": 1
+  },
+  "results": {
+    "baseline": [
+      {
+        "bytes": 12882,
+        "noopMedianMs": 2.618249999999989,
+        "readMedianMs": 2.901247999999896,
+        "setupMs": 257.6575690000001,
+        "inspectMs": 575.057871,
+        "perCallBytes": 13496.0
+      },
+      {
+        "bytes": 65682,
+        "noopMedianMs": 8.30874700000004,
+        "readMedianMs": 9.62789100000009,
+        "setupMs": 262.0761660000003,
+        "inspectMs": 582.7377899999997,
+        "perCallBytes": 66296.0
+      }
+    ],
+    "candidate": [
+      {
+        "bytes": 12882,
+        "noopMedianMs": 1.1947990000001028,
+        "readMedianMs": 1.5061859999998433,
+        "setupMs": 261.13406,
+        "inspectMs": 582.063243,
+        "perCallBytes": 285.0
+      },
+      {
+        "bytes": 65682,
+        "noopMedianMs": 1.229309999999714,
+        "readMedianMs": 2.68989799999963,
+        "setupMs": 273.903996,
+        "inspectMs": 580.6078619999998,
+        "perCallBytes": 285.0
+      }
+    ]
+  }
+}

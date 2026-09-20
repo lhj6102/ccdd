@@ -8,6 +8,7 @@ import { readWorkspaceConfig } from '../src/broker/config.js';
 import { createExecutorRegistry } from '../src/executors/index.js';
 import { inspectProject, projectHistory, queryProject } from '../src/project/index.js';
 import { prepareArtifactInputs } from '../src/artifacts/sources.js';
+import { resolveArtifactScope } from '../src/artifacts/groups.js';
 import { createReviewTools } from '../src/tools/runner.js';
 import { removeOwnedWorkspaceTree } from '../src/workspaces/index.js';
 import type { ArtifactSourceMetadata, JsonValue } from '../src/tools/contracts.js';
@@ -39,6 +40,7 @@ const inspect = {
   metadata: { description: 'Inspect captured {artifactName}.', inputSchema: { type: 'object', properties: { summaryOnly: { type: 'boolean' } }, additionalProperties: false }, resultKinds: ['json'], observation: 'content', artifactKind: 'data' },
   preflight(context) {
     if ('artifactPath' in context || 'resolvePath' in context) throw new Error('Data tools must not receive filesystem Artifact paths.');
+    context.readData().summary = 'Preflight-local mutation';
     return { ok: true, message: 'Captured data is available.' };
   },
   execute(context, args) {
@@ -208,6 +210,35 @@ test('stored generated data reopens after source edits and Broker restart withou
   await assert.rejects(createReviewTools({ ...options, artifacts: missing }), /snapshot|material/i);
   await reopened.completeHuman(request.id, { reviewerId: 'fixture-reviewer', result: { verdict: 'GREEN', summary: 'Fixture Human accepted the captured material after restart.', evidence: ['inspect_alpha returned the original complete Scenario A.'] } });
   assert.equal(reopened.getRequest(request.id)?.result?.verdict, 'GREEN');
+});
+
+test('repeated data tools isolate captured inputs, returned values and new snapshots of the same Artifact', async t => {
+  const f = await fixture(t);
+  async function open() {
+    const { snapshot: { config } } = await f.inspect();
+    const scope = resolveArtifactScope(config.artifacts, ['alpha'], config.artifactInputs);
+    const tools = await createReviewTools({ worktreePath: f.repoPath, ...scope, artifactTypes: config.artifactTypes,
+      configManifest: config.configManifest, criticId: 'alpha-review', audience: 'human', runDir: join(f.root, 'tools') });
+    t.after(() => tools.close());
+    return { tools, scope };
+  }
+  const first = await open();
+  const artifact = first.scope.artifacts[0];
+  if (artifact.kind !== 'generated' || !artifact.input) throw new Error('Expected captured data.');
+  artifact.input.data = { summary: 'Caller mutation after registry creation' };
+  assert.ok((await first.tools.preflight()).every(check => check.ok));
+  const observed = await first.tools.call('inspect_alpha');
+  assert.deepEqual(observed.content[0].data, f.original);
+  observed.content[0].data = { summary: 'Caller mutation of returned observation' };
+  for (const result of await Promise.all([first.tools.call('inspect_alpha'), first.tools.call('inspect_alpha')])) {
+    assert.deepEqual(result.content[0].data, f.original);
+  }
+
+  const changed = { summary: 'New captured revision', details: { hidden: 'New evidence' } };
+  await f.saveData('alpha', changed);
+  const next = await open();
+  assert.deepEqual((await next.tools.call('inspect_alpha')).content[0].data, changed);
+  assert.deepEqual((await first.tools.call('inspect_alpha')).content[0].data, f.original);
 });
 
 test('queries reject explicit preparation before calling the source while verification can capture it', async t => {

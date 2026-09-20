@@ -1,0 +1,35 @@
+{
+  "modelCalls": 0,
+  "states": 31,
+  "callsPerImplementation": 1953,
+  "observationMismatches": 0,
+  "note": "The lostbuilds application query cache is enabled on both sides; only the CCDD implementation changes. Host describe outputs have their identical logicalPath wrapper omitted for direct-comparison hashes.",
+  "results": {
+    "baseline": {
+      "totalToolMs": 9404.193029000075,
+      "totalHostSetupMs": 9231.781620000012,
+      "toolMedians": {
+        "describe": 3.797373000001244,
+        "tooltips": 3.8135130000009667,
+        "resolve_tooltips": 4.573405000002822,
+        "cooldown": 3.6308909999997923,
+        "damage_summary": 4.54007300000012,
+        "hit_damage": 4.222664000000805,
+        "deferred_damage": 4.035418000003119
+      }
+    },
+    "candidate": {
+      "totalToolMs": 3890.1867869999696,
+      "totalHostSetupMs": 9197.48569799999,
+      "toolMedians": {
+        "describe": 1.4191719999998895,
+        "tooltips": 1.4293589999997494,
+        "resolve_tooltips": 1.9796370000003662,
+        "cooldown": 1.231141999999636,
+        "damage_summary": 1.7931909999997515,
+        "hit_damage": 1.9564010000012786,
+        "deferred_damage": 1.8760350000011385
+      }
+    }
+  }
+}

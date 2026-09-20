@@ -205,6 +205,15 @@ The runner supplies `{artifactId, artifactPath, artifactDirectory, outputDir, tm
 
 For generated Artifacts, `defineDataTool` sets `artifactKind: 'data'` and the runner supplies `{artifactId, outputDir, tmpDir, signal, readData, resolveExecutionPath}` instead. Every `readData()` returns a new clone of the same saved value. No Artifact filesystem path is available. Identity must cover all observable data, including fields a particular review never requests. The same schema, result, output, and observation validation applies to these tools.
 
+The registry validates its captured generated references and registers each one
+once with its private tool host. The host independently verifies the definition,
+source identity and full content hash, retains a private copy, and rejects
+replacement of an existing binding. Subsequent invocations identify that binding
+without transporting the data again. Only `readData()` clones it during a call.
+Bindings end with the host; fresh registries and process restarts repeat full
+registration against their supplied snapshot. This does not weaken either
+workspace integrity policy or change persisted Artifact identities.
+
 New runners also supply `resolveExecutionPath(path)`, limited to that tool's
 registered `executionPaths`. This capability does not widen `resolvePath` or the
 reviewer's Artifact scope. The optional TypeScript signature permits historical
