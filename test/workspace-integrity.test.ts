@@ -81,6 +81,9 @@ test('ordinary edits, restoration, additions, permissions and replacement invali
   ];
   for (const change of changes) {
     const data = await fixture(t);
+    // Make writes differ from captured mtime even within one timestamp tick. The separate
+    // spoofed-stat test covers metadata that cannot distinguish different bytes.
+    await fs.utimes(join(data.repoPath, 'file'), new Date(0), new Date(0));
     const handle = await prepareWorkspace({ ...data, mode: 'lock', integrity: 'metadata' });
     const descriptor = handle.descriptor;
     try {
