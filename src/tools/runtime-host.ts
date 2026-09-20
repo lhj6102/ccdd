@@ -10,10 +10,13 @@ import { scopedPath, within } from './paths.js';
 import type { Config, ConfigManifest, ToolDefinition, ToolContext, DataToolContext, ArtifactSourceDefinition } from './contracts.js';
 import { sourceMetadata, captureArtifactData, assertPreparedArtifactData } from '../artifacts/sources.js';
 import { isGeneratedArtifact } from '../artifacts/groups.js';
+import type { GeneratedArtifactReference } from '../artifacts/index.js';
 
 const identifier=/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
 const registry=new Map<string,ToolDefinition<any, any>>();
 const sources = new Map<string, ArtifactSourceDefinition>();
+// A registry owns one host. Captured inputs never cross that host's lifetime.
+const capturedArtifacts = new Map<string, GeneratedArtifactReference>();
 let root='', loaded: {config: Record<string,unknown>} | undefined;
 const hash=(value:string|Buffer)=>createHash('sha256').update(value).digest('hex');
 async function load(workspace: string) {
@@ -100,7 +103,21 @@ process.on('message',async (message:any)=>{
       } finally { process.off('SIGTERM', abort); }
       return;
     }
-    const {artifact,type,audience,toolKey,args,outputDir,tmpDir}=message;
+    if (action === 'register-artifact') {
+      const artifact = message.artifact as GeneratedArtifactReference;
+      const saved = (loaded.config.artifacts as Config['artifacts'])[artifact.id];
+      if (!isGeneratedArtifact(artifact) || !isGeneratedArtifact(saved) || saved.type !== artifact.type || saved.source !== artifact.source) throw new Error('Recorded Artifact does not match its snapshot.');
+      if (capturedArtifacts.has(artifact.id)) throw new Error('Artifact is already registered in this tool host.');
+      const source = sources.get(artifact.source);
+      if (!source) throw new Error('Missing recorded Artifact source.');
+      assertPreparedArtifactData(artifact.input, source.metadata);
+      capturedArtifacts.set(artifact.id, structuredClone(artifact));
+      process.send?.({ id, value: true });
+      return;
+    }
+    const {type,audience,toolKey,args,outputDir,tmpDir}=message;
+    const artifact = typeof message.artifact === 'string' ? capturedArtifacts.get(message.artifact) : message.artifact;
+    if (!artifact || artifact.kind === 'generated' && (typeof message.artifact !== 'string' || artifact.type !== type)) throw new Error('Generated Artifact is not registered for this tool.');
     // Human environment requirements inspect these same reviewer-local values. Set them
     // only after snapshot configuration has loaded in its existing restricted environment.
     if (audience==='human'&&object(message.reviewerEnvironment)) for (const name of ['HOME','USERPROFILE','CARGO_HOME','RUSTUP_HOME','DISPLAY','WAYLAND_DISPLAY','XAUTHORITY','XDG_RUNTIME_DIR','DBUS_SESSION_BUS_ADDRESS']) {
@@ -122,10 +139,7 @@ process.on('message',async (message:any)=>{
     let context: ToolContext | DataToolContext;
     if (artifact.kind === 'generated') {
       if (declaredMetadata.artifactKind !== 'data') throw new Error('Generated Artifacts require data tools.');
-      const source = sources.get(artifact.source);
-      if (!source) throw new Error('Missing recorded Artifact source.');
-      assertPreparedArtifactData(artifact.input, source.metadata);
-      const data = structuredClone(artifact.input.data);
+      const data = artifact.input.data;
       context = { artifactId: artifact.id, outputDir, tmpDir, signal: controller.signal, readData: () => { controller.signal.throwIfAborted(); return structuredClone(data); }, resolveExecutionPath: executionPath };
     } else {
       if (declaredMetadata.artifactKind === 'data') throw new Error('Data tools require generated Artifacts.');

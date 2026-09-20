@@ -123,6 +123,16 @@ const overview = defineDataTool({
 
 Register it explicitly as `artifactTypes.scenario.agentTools.overview`, `humanTools.overview`, or both. The generated tool name retains the Artifact ID, such as `overview_checkout`. The context supplies `{ artifactId, outputDir, tmpDir, signal, readData, resolveExecutionPath }`. Every `readData()` call returns a fresh copy of the same captured value. No filesystem Artifact path or cross-Artifact selector is exposed. `resolveExecutionPath` remains limited to declared tool implementation inputs; it is not an alternative source of live review evidence.
 
+Each tool registry registers its captured generated inputs once with its own host.
+Registration checks the snapshot definition, source identity and complete content
+hash before keeping a private copy. Later tool calls carry the bound Artifact ID
+and arguments, without retransmitting or rehashing that data. A tool that does not
+call `readData()` does not copy it; each `readData()` still returns an independent
+clone. Closing the host discards these bindings. A fresh registry validates and
+registers its own input again, including changed data under the same logical ID.
+This is observation reuse within one fixed input, not source preparation or
+verdict reuse across reviews. See the [tool overhead benchmark](generated-tool-performance.md).
+
 Data stays behind these tools. The initial Agent prompt, instruction references, and monitor scope metadata contain Artifact references and registered tool metadata, not the captured data or snapshot descriptors. A tool can return an overview, one detail, a rendered image, or another schema-validated result. Existing per-result size limits and Agent observation requirements apply. A successful selective read does not prove the reviewer inspected every detail; the Critic instruction defines the necessary investigation, and the complete captured value still participates in identity.
 
 ## Reuse across scenarios

@@ -141,6 +141,7 @@ export async function createReviewTools(options:ReviewToolsOptions):Promise<Revi
         const source = configManifest.sources?.[artifact.source];
         if (!source) throw new Error('Missing recorded Artifact source.');
         assertPreparedArtifactData(artifact.input, source);
+        await host.call({ action: 'register-artifact', artifact });
       }
     }
     const base=options.runDir?resolve(options.runDir):await mkdtemp(join(tmpdir(),'ccdd-tools-'));
@@ -156,7 +157,7 @@ export async function createReviewTools(options:ReviewToolsOptions):Promise<Revi
         if(shape==='file'&&!info.isFile()||shape==='directory'&&!info.isDirectory())throw new Error('Tool does not support this Artifact shape.');
       }
       const reviewerEnvironment=audience==='human'?Object.fromEntries(['HOME','USERPROFILE','CARGO_HOME','RUSTUP_HOME','DISPLAY','WAYLAND_DISPLAY','XAUTHORITY','XDG_RUNTIME_DIR','DBUS_SESSION_BUS_ADDRESS'].flatMap(name=>process.env[name]===undefined?[]:[[name,process.env[name]!]])):undefined;
-      return host.call({action,artifact,type:artifact.type,audience,toolKey:tool.operation,args:arguments_,outputDir,tmpDir:temporary,...(reviewerEnvironment?{reviewerEnvironment}:{})},action==='preflight'?10000:tool.metadata?.timeoutMs??120000);
+      return host.call({action,artifact:artifact.kind === 'generated' ? artifact.id : artifact,type:artifact.type,audience,toolKey:tool.operation,args:arguments_,outputDir,tmpDir:temporary,...(reviewerEnvironment?{reviewerEnvironment}:{})},action==='preflight'?10000:tool.metadata?.timeoutMs??120000);
     };
     return {tools,toolCalls,outputDir,validateArguments:args,close:host.close,
       async call(name,value={}){
