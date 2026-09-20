@@ -71,8 +71,8 @@ export default {
   };
   await writeConfig();
   const brokers: ReturnType<typeof createBroker>[] = [];
-  const open = () => {
-    const broker = createBroker({ repoPath, stateDir, executors: createExecutorRegistry({ alarmMethods: [async () => {}] }) });
+  const open = (workspaceIntegrity: 'content' | 'metadata' = 'content') => {
+    const broker = createBroker({ repoPath, stateDir, workspaceIntegrity, executors: createExecutorRegistry({ alarmMethods: [async () => {}] }) });
     brokers.push(broker);
     return broker;
   };
@@ -94,6 +94,27 @@ async function humanReview(broker: ReturnType<typeof createBroker>, artifactId: 
   } });
   return broker.getRun(run.id)!;
 }
+
+test('generated Artifact capture and evidence reuse remain isolated by workspace integrity policy', async t => {
+  const f = await fixture(t);
+  const metadataBroker = f.open('metadata');
+  const completed = await humanReview(metadataBroker, 'alpha', 'GREEN');
+  assert.equal(completed.workspace.integrity, 'metadata');
+  const metadata = await inspectProject({ repoPath: f.repoPath, stateDir: f.stateDir, workspaceIntegrity: 'metadata' });
+  const strict = await f.inspect();
+  assert.deepEqual(metadata.snapshot.config.artifactInputs?.alpha.data, f.original);
+  assert.equal(metadata.snapshot.artifactHashes.alpha, strict.snapshot.artifactHashes.alpha);
+  assert.notEqual(metadata.snapshot.inputs['alpha-review'].key, strict.snapshot.inputs['alpha-review'].key);
+  assert.equal(metadata.plan.critics.find(critic => critic.id === 'alpha-review')?.status, 'PASS');
+  assert.equal(strict.plan.critics.find(critic => critic.id === 'alpha-review')?.needsReview, true);
+  const reused = await metadataBroker.submitProject({ selection: { kind: 'artifact', artifactId: 'alpha' } });
+  assert.equal(reused.status, 'GREEN');
+  assert.equal(reused.requests.length, 0);
+  const strictBroker = f.open();
+  const strictRun = await humanReview(strictBroker, 'alpha', 'GREEN');
+  assert.equal(strictRun.workspace.integrity, undefined);
+  assert.equal((await f.inspect()).plan.critics.find(critic => critic.id === 'alpha-review')?.status, 'PASS');
+});
 
 test('config loading never prepares generated material and explicit inspection creates no stored review state', async t => {
   const f = await fixture(t);

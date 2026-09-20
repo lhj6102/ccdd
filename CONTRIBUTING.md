@@ -33,6 +33,10 @@ Keep the main README approachable. Put detailed command options and execution co
 - Keep one owner for each contract. Remove internal helper/output-shape checks and repeated scenarios already covered at that seam; preserve distinct failure modes, encoding, and isolation contracts. Run the affected tests after changes, then the complete suite once.
 - Describe the problem, the resulting behavior, and the validation in your pull request.
 
+For review preparation and result-handling performance, see the
+[CLI overhead benchmark](docs/performance.md), including reproduction commands,
+recorded lock/copy results and integrity-policy limitations.
+
 Test fixtures may use controlled transports for deterministic tests. Distinguish those fixtures from actual Provider evaluations and release verification evidence.
 
 ## Releases

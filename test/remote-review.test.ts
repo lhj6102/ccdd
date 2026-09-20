@@ -1,6 +1,6 @@
 import test, { type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
@@ -110,6 +110,21 @@ test('environment failure releases Try Claim without failing the request and ret
   await assert.rejects(data.broker.claimHuman(request.id, 'alice'), /Install Cargo and retry/);
   assert.equal(data.broker.getRequest(request.id)!.status, 'WAITING_HUMAN');
   assert.equal(data.broker.getRequest(request.id)!.claimedBy, null);
+});
+
+test('remote Claim resume, tool entry, and result entry reject a corrupted local snapshot before handoff', async t => {
+  const data = await fixture(t);
+  const prepared = await claimRemoteReview(data.request.id, data.alice);
+  const imported = await readFile(data.configMarker, 'utf8');
+  await chmod(join(prepared.workspacePath, 'asset.txt'), 0o600);
+  await writeFile(join(prepared.workspacePath, 'asset.txt'), 'corrupted reviewer cache');
+  await assert.rejects(claimRemoteReview(data.request.id, data.alice), /workspace changed|readonly|read.only/i);
+  await assert.rejects(executeRemoteHumanTool(data.request.id, 'view_asset', {}, data.alice), /workspace changed|readonly|read.only/i);
+  // This synthetic submission must fail before any result reaches the Broker.
+  await assert.rejects(submitRemoteHumanReview(data.request.id, { verdict: 'GREEN', summary: 'Must not be accepted.', evidence: ['Invalid fixture input.'] }, data.alice), /workspace changed|readonly|read.only/i);
+  assert.equal(await readFile(data.configMarker, 'utf8'), imported);
+  assert.equal(data.broker.getRequest(data.request.id)!.status, 'WAITING_HUMAN');
+  assert.equal(data.broker.getRequest(data.request.id)!.result, null);
 });
 
 test('Try Claim is exclusive, expires without GET mutation, and stale attempts cannot confirm, renew or release a newer reservation', async t => {

@@ -22,7 +22,7 @@ import { claimHumanFromCli } from '../review/local-claim.js';
 type Output = { write(value: string): unknown };
 const terminal = new Set(['GREEN', 'RED', 'ERROR', 'INCOMPLETE']);
 const flags = new Set(['--all', '--recursive', '--force', '--wait', '--json', '--help', '--copy', '--lock', '--human-inbox']);
-const values = new Set(['--repo', '--state-dir', '--critic', '--timeout-ms', '--requester', '--reviewer', '--result-file', '--tool', '--args', '--run', '--pi-auth-file', '--codex-auth-file']);
+const values = new Set(['--repo', '--state-dir', '--critic', '--timeout-ms', '--requester', '--reviewer', '--result-file', '--tool', '--args', '--run', '--pi-auth-file', '--codex-auth-file', '--integrity']);
 const help = `CCDD Project — pull validation and explicit review execution
 
   ccdd-project status [ARTIFACT | --critic ID] [--json]
@@ -48,6 +48,9 @@ Individual verification runs ready selected Critics and reports blocked Critics 
 --force reviews selected Critics again, keeping dependency gates and ancestor reuse.
 Queries never create review tickets, send alarms or execute review tools or Providers.
 verify defaults to --copy; --lock is explicit. State must be outside the repository.
+verify/status/plan accept --integrity content|metadata (default: content).
+metadata trusts unchanged filesystem metadata to reuse captured content identity;
+it is opt-in, weaker than full content checks, and its evidence cannot satisfy content verification.
 Common options: --repo PATH, --state-dir PATH, --json.
 Execution: --human-inbox, --pi-auth-file PATH, --codex-auth-file PATH.
 --wait: 0=fulfilled, 1=RED, 2=ERROR, 3=timeout, 4=incomplete. Timeout does not cancel.
@@ -69,11 +72,11 @@ function parse(argv: string[]) {
 }
 
 const exitFor = (run: ProjectRunView) => run.status === 'GREEN' ? 0 : run.status === 'RED' ? 1 : run.status === 'INCOMPLETE' ? 4 : 2;
-const publicRun = ({ project, ...run }: ProjectRunView) => run;
+const publicRun = ({ project, ...run }: ProjectRunView) => ({ ...run, workspaceIntegrity: run.workspace?.integrity ?? 'content' });
 function planText(plan: ProjectPlan): string {
   const target = plan.selection.kind === 'artifact' ? plan.selection.artifactId : plan.selection.kind === 'critic' ? plan.selection.criticId : 'Project';
   const artifacts = plan.artifacts.filter(a => plan.selection.kind === 'all' || plan.selection.kind === 'artifact' && a.id === plan.selection.artifactId);
-  return `${target}: ${plan.satisfied ? 'SATISFIED' : 'NOT SATISFIED'}\nSnapshot: ${plan.snapshotHash}\n` + artifacts.map(a => `  Artifact ${a.id}: ${a.status} (${a.passed}/${a.total} Critics)\n`).join('') + plan.items.map(c => `  ${c.id}: ${c.action} · ${c.status}\n    ${c.reason}`).join('\n') +
+  return `${target}: ${plan.satisfied ? 'SATISFIED' : 'NOT SATISFIED'}\nSnapshot: ${plan.snapshotHash}\nIntegrity: ${plan.workspaceIntegrity ?? 'content'}\n` + artifacts.map(a => `  Artifact ${a.id}: ${a.status} (${a.passed}/${a.total} Critics)\n`).join('') + plan.items.map(c => `  ${c.id}: ${c.action} · ${c.status}\n    ${c.reason}`).join('\n') +
     `\nReuse ${plan.counts.reuse} · Ready ${plan.counts.execute} · Waiting ${plan.counts.wait} · Active ${plan.counts.active} · Failed ${plan.counts.failed}`;
 }
 
@@ -91,11 +94,14 @@ export async function main(argv = process.argv.slice(2), { stdout = process.stdo
     if (!['status', 'plan', 'verify', 'history', 'graph', 'config', 'run', 'request'].includes(command)) throw new Error(`Unknown command: ${command}`);
     const common = ['--repo', '--state-dir', '--json'];
     const permitted = new Set([...common, ...(['status', 'plan', 'verify', 'history'].includes(command) ? ['--critic', '--all'] : []),
+      ...(['status', 'plan', 'verify'].includes(command) ? ['--integrity'] : []),
       ...(['plan', 'verify'].includes(command) ? ['--recursive', '--force'] : []),
       ...(command === 'verify' ? ['--wait', '--timeout-ms', '--requester', '--human-inbox', '--pi-auth-file', '--codex-auth-file', '--copy', '--lock'] : []),
       ...(command === 'run' ? ['--wait', '--timeout-ms'] : []),
       ...(command === 'request' ? ['--run', '--reviewer', '--result-file', '--tool', '--args'] : [])]);
     for (const key of Object.keys(options)) if (!permitted.has(key)) throw new Error(`${key} is not supported by ${command}.`);
+    const workspaceIntegrity = get('--integrity') ?? 'content';
+    if (workspaceIntegrity !== 'content' && workspaceIntegrity !== 'metadata') throw new Error('--integrity must be content or metadata.');
     if (options['--copy'] && options['--lock']) throw new Error('--copy and --lock are mutually exclusive.');
     const timeoutMs = Number(get('--timeout-ms') ?? 600000);
     if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 86400000) throw new Error('--timeout-ms must be between 1 and 86400000.');
@@ -120,7 +126,7 @@ export async function main(argv = process.argv.slice(2), { stdout = process.stdo
       return { kind: 'all' };
     };
     const verifySelection = command === 'verify' ? select(true) : undefined;
-    const printRun = (run: ProjectRunView) => print(publicRun(run), `Run: ${run.id}\nExecution: ${run.status}${run.validation ? `\n${planText(run.validation)}` : ''}`);
+    const printRun = (run: ProjectRunView) => print(publicRun(run), `Run: ${run.id}\nExecution: ${run.status}\nIntegrity: ${run.workspace?.integrity ?? 'content'}${run.validation ? `\n${planText(run.validation)}` : ''}`);
     const wait = async (id: string): Promise<number> => {
       const deadline = Date.now() + timeoutMs;
       for (;;) {
@@ -134,7 +140,7 @@ export async function main(argv = process.argv.slice(2), { stdout = process.stdo
     if (['status', 'plan', 'graph', 'config'].includes(command)) {
       if (command === 'config' && (positional.length !== 1 || positional[0] !== 'check')) throw new Error('Use config check.');
       const selection = command === 'config' ? { kind: 'all' } as const : select(command === 'plan');
-      const { snapshot, plan } = await inspectProject({ ...context, selection, recursive: Boolean(options['--recursive']), force: Boolean(options['--force']) });
+      const { snapshot, plan } = await inspectProject({ ...context, selection, recursive: Boolean(options['--recursive']), force: Boolean(options['--force']), workspaceIntegrity });
       if (command === 'config') { print({ ok: true, artifacts: Object.keys(snapshot.config.artifacts).length, critics: snapshot.config.critics.length, snapshotHash: snapshot.snapshotHash }, 'Configuration and Artifact DAG are valid.'); return 0; }
       if (command === 'graph') {
         const graph = createGraphDefinition(snapshot.config);
@@ -175,7 +181,7 @@ export async function main(argv = process.argv.slice(2), { stdout = process.stdo
     if (codexFile) piOptions.codexAuthFile = resolve(codexFile);
     const humanInbox = Boolean(options['--human-inbox']);
     const executors = createExecutorRegistry({ piOptions, alarmMethods: createLocalAlarmMethods({ ...context, humanInbox }) });
-    broker = createBroker({ ...context, executors });
+    broker = createBroker({ ...context, executors, workspaceIntegrity });
     if (command === 'verify') {
       const run = await broker.submitProject({ selection: verifySelection!, recursive: Boolean(options['--recursive']), force: Boolean(options['--force']), requesterId: get('--requester') ?? 'cli', mode: options['--lock'] ? 'lock' : 'copy' });
       if (!terminal.has(run.status)) await ensureRunWorker({ broker, context, run, initialConfig: { piOptions, humanInbox } });

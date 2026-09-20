@@ -112,7 +112,7 @@ export async function claimRemoteReview(id: string, options: RemoteReviewOptions
     const session = await api.readSession(id);
     if (session.attemptId !== current.request.claimAttemptId) throw new Error('This Claim was prepared by another local session.');
     const handle = await reopenWorkspace(session.workspace, { signal: options.signal });
-    try { await handle.assertUnchanged(); } finally { await handle.close(); }
+    try { handle.signal.throwIfAborted(); } finally { await handle.close(); }
     return { requestId: id, reviewerId: api.reviewerId, snapshotHash: session.request.snapshotHash, workspacePath: session.workspace.path, downloadedFiles: 0, downloadedBytes: 0, reusedFiles: 0 };
   }
   const { attempt, request } = await api.json<{ attempt: HumanTryClaim; request: PortableReview }>(`${route}/try-claim`, {});
@@ -163,7 +163,8 @@ export async function executeRemoteHumanTool(id: string, toolName: string, args:
   await api.json(`/requests/${id}/authorize-tool`, action);
   const handle = await reopenWorkspace(session.workspace, { signal: options.signal });
   try {
-    await handle.assertUnchanged();
+    // Acquisition validates the recorded snapshot; validate again after user code.
+    handle.signal.throwIfAborted();
     const request = session.request;
     const registry = await createReviewTools({ worktreePath: session.workspace.path, artifacts: request.artifacts,
       artifactGroups: request.artifactGroups, artifactTypes: request.artifactTypes, configManifest: request.configManifest,
@@ -182,7 +183,8 @@ export async function submitRemoteHumanReview(id: string, result: Pick<ReviewRes
   const api = await connect(options), session = await api.readSession(requestId(id));
   const handle = await reopenWorkspace(session.workspace, { signal: options.signal });
   try {
-    await handle.assertUnchanged(); handle.signal.throwIfAborted();
+    // No user code runs between the input integrity check and this submission.
+    handle.signal.throwIfAborted();
     return await api.json(`/requests/${id}/submit`, { attemptId: session.attemptId, result });
   } finally { await handle.close(); }
 }

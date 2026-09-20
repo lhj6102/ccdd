@@ -4,7 +4,6 @@ import { constants } from 'node:fs';
 import { access, mkdir, mkdtemp, writeFile, realpath, stat, rm } from 'node:fs/promises';
 import { randomBytes } from 'node:crypto';
 import { delimiter, dirname, basename, join, resolve, relative, isAbsolute, sep } from 'node:path';
-import { invokePi, validatePiProfile } from './pi.js';
 import type { PiOptions, StreamFn } from './pi.js';
 import { diagnosticError, errorMessage, errorCode } from './errors.js';
 import type { AgentProfile, RuntimeProfile, AlarmMethod, ReviewEnvelope, ReviewRequest, ReviewResult, ExecutionContext, ExecutorReadiness, ProbeResult } from '../contracts.js';
@@ -126,6 +125,7 @@ async function probeAgent(request: ReviewEnvelope, { piOptions, streamFn, worktr
   };
   try {
     await writeFile(artifactPath, `${nonce}\n`, { flag: 'wx', mode: 0o600 });
+    const { invokePi } = await import('./pi.js');
     const { final, toolCalls } = await invokePi({
       piOptions, streamFn, request: diagnosticRequest, worktreePath, runDir, signal, onEvent,
       schema: { type: 'object', additionalProperties: false, required: ['ready', 'nonce'], properties: { ready: { type: 'boolean' }, nonce: { type: 'string' } } },
@@ -156,6 +156,7 @@ export function createExecutorRegistry({ piOptions, streamFn, alarmMethods = [],
         if (profile.kind === 'human') return alarms.length ? { ok: true } : { ok: false, code: 'HUMAN_ALARM_MISSING', reason: 'Human review requires at least one registered alarm method', remedy: 'Register at least one alarm method for the Human executor.' };
         if (profile.kind === 'runtime') { runtimeProfile(profile); return { ok: true }; }
         if (profile.kind !== 'agent') return { ok: false, reason: 'Unknown executor kind' };
+        const { validatePiProfile } = await import('./pi.js');
         validatePiProfile(profile, piOptions);
         timeout(profile, 240_000);
         return { ok: true };
@@ -201,6 +202,7 @@ export function createExecutorRegistry({ piOptions, streamFn, alarmMethods = [],
         };
       } else {
         await prepareRunDirectory(worktreePath, runDir);
+        const { invokePi } = await import('./pi.js');
         const { final, toolCalls } = await invokePi({ piOptions, streamFn, request, worktreePath, runDir, signal, onEvent, schema: RESULT_SCHEMA, makePrompt: ({ viewer, tools }) => [
           'You are a CCDD critic. Review only the supplied immutable snapshot; do not implement or repair. Execute only registered Artifact observation tools.',
           'Use the registered Artifact tools to inspect EVERY supplied artifact. Use each tool according to its description and input schema. Listing files or launching a desktop application alone is not content observation.',

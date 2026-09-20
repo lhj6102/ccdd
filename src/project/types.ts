@@ -1,14 +1,17 @@
-import type { RepoConfig, ReviewEnvelope, ReviewResult, ReviewRequest } from '../contracts.js';
+import type { RepoConfig, ReviewEnvelope, ReviewResult, ReviewRequest, WorkspaceIntegrity } from '../contracts.js';
 
 export type ProjectSelection = { kind: 'all' } | { kind: 'artifact'; artifactId: string } | { kind: 'critic'; criticId: string };
 export interface ValidationInput {
   version: 1; key: string; criticHash: string;
   target: { id: string; hash: string }; deps: { id: string; hash: string }[];
   reusable: boolean;
+  /** Omitted for historical/default content verification. Part of the effective Critic identity when nondefault. */
+  workspaceIntegrity?: WorkspaceIntegrity;
 }
 export interface ProjectSnapshot {
   version: 1; config: RepoConfig; snapshotHash: string;
   artifactHashes: Record<string, string>; inputs: Record<string, ValidationInput>;
+  workspaceIntegrity?: WorkspaceIntegrity;
 }
 export interface ValidationEvidence {
   requestId: string; runId: string; criticId: string; input: ValidationInput;
@@ -35,6 +38,7 @@ export interface ArtifactValidation {
 }
 export interface ProjectQuery {
   snapshotHash: string; selection: ProjectSelection; satisfied: boolean;
+  workspaceIntegrity?: WorkspaceIntegrity;
   artifacts: ArtifactValidation[]; critics: CriticValidation[];
 }
 export interface ProjectPlan extends ProjectQuery {

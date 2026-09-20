@@ -30,7 +30,7 @@ Monitor GETs only observe stored definitions and actual evidence. The explicit, 
 
 `run` requires exactly one CLI flag: `--copy` (recommended) or `--lock`. `doctor` defaults to copy. Git and commits are not required. Every directory entry participates, including ignored/untracked files, `.git` and dependencies. No dependency manifest or implicit exclusion list is used.
 
-- **Lock:** use the original source. Monitor filesystem events and metadata; verify the full content hash at boundaries. A detected change, including ordinary edit-and-restore or create-and-delete, invalidates the review with `ERROR`, never a semantic `RED`. Monitoring remains alive through Human waiting. A dead lock worker invalidates its unfinished Run when inspected.
+- **Lock:** use the original source. Monitor filesystem events and metadata; by default verify the full content hash at boundaries. A detected change, including ordinary edit-and-restore or create-and-delete, invalidates the review with `ERROR`, never a semantic `RED`. Monitoring remains alive through Human waiting. A dead lock worker invalidates its unfinished Run when inspected.
 - **Copy:** capture all current files in private staging; verify stable source and copied content before atomic publication. An unstable capture fails explicitly and can be retried. Same-hash inputs share one immutable cache directory, including concurrent submissions. Original edits after capture do not invalidate the copied review. The workspace layer itself never decides verdict reuse; Project Validation applies the evidence contract above.
 
 Snapshot hash is SHA-256 over sorted relative paths, entry types, file content hashes, executable permission bits, and relative symlink targets. Empty directories participate. Timestamps, inode numbers and write-permission bits are excluded from the content hash but metadata is separately tracked for mutation detection. Copies remove write permissions. Internal relative symlinks are supported; escaping, absolute, dangling symlinks and special files are rejected. Artifact definitions retain the stricter no-symlink policy.
@@ -39,7 +39,90 @@ CCDD state must be outside the source workspace, including through symlinks. Inp
 
 This is cooperative local execution, not an OS sandbox against a hostile process running as the same user. Event/metadata checks are conservative and cannot prove the absence of every adversarial transient write on every filesystem. Unsupported monitoring fails closed. Copy permissions do not isolate environment, network, external services or test side effects. Runtime output must use per-review paths rather than modify shared inputs. Lock results retain the input hash but do not preserve the old source after later edits.
 
-`prepareWorkspace({repoPath,stateDir,mode,signal?})` and `reopenWorkspace(descriptor,{signal?})` return `{descriptor,signal,assertUnchanged(),close()}`. The serializable descriptor contains `{version:1,mode,sourcePath,path,hash,stateDir,baselineMetadataHash}`. It is stored with the Run and every request. Copy source need not remain present after capture.
+`prepareWorkspace({repoPath,stateDir,mode,integrity?,signal?})` and `reopenWorkspace(descriptor,{integrity?,signal?,onProgress?})` return `{descriptor,signal,assertUnchanged(),close()}`. Preparation defaults to `integrity:'content'`; reopening uses the recorded policy unless explicitly overridden as described below. The serializable descriptor contains `{version:1,mode,sourcePath,path,hash,stateDir,baselineMetadataHash}`, with `integrity` and `structureHash` added for metadata-policy input. It is stored with the Run and every request. Copy source need not remain present after capture.
+
+Under the default content policy, `reopenWorkspace` completes full content and metadata validation against the
+recorded descriptor before returning its monitored handle. Human preparation,
+local Broker commands and remote Human actions use this acquisition as their
+entry integrity check without immediately repeating the same full scan. They
+retain cancellation, claim, status and lock-owner checks. A full
+`assertUnchanged()` still follows configuration loading, readiness checks or
+registered tool execution before accepting preparation or returning tool results.
+Resuming a prepared Claim or submitting its result runs no user code between
+acquisition and handoff. Broker completion commits directly after acquisition
+with authoritative transaction checks.
+
+Fresh copy capture compares staged content with the source capture and checks
+source stability before atomic publication. Source checks use content and metadata
+under the default policy, or metadata and structure under the explicit metadata
+policy. Capture consumes no further source bytes after that boundary;
+cache reuse still validates the source selecting that content hash. Acquisition
+checks the published copy's canonical path, readonly entries and metadata with
+its observer already active, then returns that same live observer. Content policy
+always hashes the published bytes. Cache hits also receive a full byte validation
+under either policy, without a duplicate scan before observer acquisition. The saved
+metadata baseline comes from the published directory, never the private staging
+directory. Public `reopenWorkspace` independently validates persisted descriptors
+as before.
+
+For a new metadata-policy copy, a full staged-content inspection can cross the
+controlled atomic rename without rehashing the published bytes. An in-memory
+publication proof compares every descendant's complete metadata, the full
+structure hash and the root's device, inode, mode, size, modification time and
+birth time. Only the root ctime change caused by publication is permitted. Any
+other difference falls back to a full content inspection and must still match
+the original captured hash. This accommodates platform-specific rename metadata
+without trusting an unmatched proof. The returned descriptor always records the
+actual published metadata baseline. No publication proof is persisted or accepted
+from configuration; ordinary reopening retains its existing policy checks.
+
+One observer owns at most one integrity scan at a time. Explicit assertions share
+only a queued traversal that starts after their call; late callers wait for a fresh
+successor batch. A metadata-only poll cannot satisfy a content-policy boundary.
+Filesystem events still retry the active scan and changes remain latched.
+Sequential boundaries remain fresh. Closing an observer drains its owned scan,
+and waiting callers cannot restart work after closure or cancellation.
+
+### Optional metadata integrity
+
+Content integrity remains the default. `prepareWorkspace({...,integrity:'metadata'})`
+explicitly selects a weaker policy for a cooperative local filesystem. The first
+capture still hashes all input bytes. The descriptor additionally records
+`integrity:'metadata'` and `structureHash`, the SHA-256 identity of the same ordered
+entries with file-content fields removed. Old descriptors without `integrity`
+retain strict content validation and their existing evidence identity.
+
+When reopening a metadata-policy descriptor, CCDD registers the watcher before
+inspecting every current path. Metadata tuples must match the full-capture
+`baselineMetadataHash`, and names, entry types, executable bits, empty directories,
+and symlink targets must match `structureHash`. Readonly checks for copied inputs
+and symlink containment still apply. Every subsequent boundary performs the same
+complete metadata and structure traversal. No entry is ignored and no extra
+certificate file is created. Ordinary edits, restoration, replacement, permission
+changes, or structural changes invalidate the review; malformed or missing policy
+proofs fail closed rather than silently enabling the optimization.
+An explicit action boundary starts a fresh traversal after its call; it cannot
+inherit a background scan that began before the action, even if notifications
+have not yet arrived.
+
+This policy assumes trusted persisted descriptors and metadata that reflects file
+changes. It cannot prove unchanged file bytes across a process gap when the
+filesystem reports unchanged metadata for different same-size contents, including
+coarse timestamps or deliberately spoofed stat information. An unchanged metadata
+tuple is not a cryptographic content proof. Keep content integrity on such storage
+or whenever this weaker assumption is unacceptable.
+
+`reopenWorkspace(descriptor,{integrity:'content'})` forces actual byte hashing at
+acquisition and every boundary even for a metadata-policy descriptor. The returned
+runtime handle reflects the effective content policy without mutating the stored
+source descriptor. Reopening a strict descriptor with a metadata override is
+rejected; an explicit new metadata-policy capture is required.
+
+The Project CLI accepts `--integrity content|metadata` for `verify`, `status`, and
+`plan`; the default is `content`. Nondefault integrity participates in the effective
+Critic identity, so metadata-policy review evidence cannot satisfy a strict query,
+and strict evidence is not silently substituted for a metadata-policy request.
+Explicit content mode retains historical strict identity keys.
 
 Remote Human review transfers complete copy-mode snapshots with a file manifest.
 Clients cache verified file bytes by content hash and construct a new immutable
@@ -272,6 +355,21 @@ Copy-mode waiting and owner release are coordinated transactionally. After the w
 Human tool execution requires the active claimant and a WAITING_HUMAN request. The Broker reopens and validates the recorded workspace, matches stored Artifact definitions against its config, resolves registered tools, and validates workspace/claim again after execution. Only safe tool name, Artifact ID and operation metadata are persisted. Launch errors do not become RED or complete the review; input mutation invalidates the review with ERROR. Human result submission requires a nonempty summary and at least one nonblank evidence entry.
 
 Lock-mode waiting keeps its worker and input monitoring alive. Human completion requires a live owner. Changes or owner death invalidate the review. Result files and notification output must be outside the locked workspace.
+
+An idle lock wait uses the live filesystem observer and periodic metadata checks;
+it does not perform a full content scan on each Broker scheduling iteration.
+Under the default content policy, full content checks remain at acquisition,
+execution/notification boundaries, explicit Human actions, result submission and
+copy-mode pause before ownership release. Metadata-policy input uses complete
+metadata and structure checks at these boundaries after its initial full capture.
+Human waiting time alone is not an execution boundary.
+
+The observer schedules a fallback metadata check after the preceding fallback
+finishes, with a delay of ten times that check's duration, at least one second and
+at most thirty seconds. Filesystem events still request immediate checks. A
+missed event can therefore take longer to appear as an operational error, while
+the selected policy's checks before accepting explicit actions and results remain
+unchanged. Closing, cancellation, or invalidation stops fallback scheduling.
 
 ## Doctor
 

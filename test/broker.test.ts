@@ -1,6 +1,7 @@
 import test, { type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
+import { unlinkSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
@@ -66,6 +67,103 @@ test('Human tools reject a changed copy without executing and preserve ERROR sep
   await fs.chmod(target, 0o600);
   await fs.writeFile(target, 'Tampered input');
   await assert.rejects(broker.executeHumanTool(requestId, { reviewerId: 'alice', toolName: 'read_why' }), /changed|tampered/i);
+  assert.equal(broker.getRequest(requestId).status, 'ERROR');
+  assert.equal(broker.getRequest(requestId).result, null);
+  assert.equal(broker.getRun(run.id).events.some(event => event.type === 'human.tool.executed'), false);
+});
+
+test('Human commands validate acquisition once and retain a separate full check after tool execution', async t => {
+  const config = defaults(); config.critics[0].profile = { kind: 'human' };
+  const { open } = await fixture(t, config);
+  const broker = open(createExecutorRegistry({ alarmMethods: [async () => {}] }));
+  const run = await broker.submit({ requesterId: 'builder', criticId: 'spec-why' });
+  await broker.run(run.id);
+  const requestId = run.requests[0].id;
+  await broker.claimHuman(requestId, 'alice');
+  let scans = 0;
+  const reviewer = open(undefined, { workspaceAdapter: {
+    prepareWorkspace,
+    reopenWorkspace(descriptor, options) {
+      return reopenWorkspace(descriptor, { ...options, onProgress(progress) {
+        options?.onProgress?.(progress);
+        if (progress.kind === 'content' && progress.completed) scans++;
+      } });
+    },
+  } });
+  const observed = await reviewer.executeHumanTool(requestId, { reviewerId: 'alice', toolName: 'read_why' });
+  assert.ok('content' in observed && observed.content === 'Current workspace purpose.');
+  assert.equal(scans, 2, 'One acquisition scan and one mandatory post-tool scan.');
+  assert.equal(reviewer.getRequest(requestId).status, 'WAITING_HUMAN');
+  scans = 0;
+  await reviewer.completeHuman(requestId, { reviewerId: 'alice', result: green });
+  assert.equal(scans, 1, 'A submitted result needs the acquisition scan, with no repeated scan before commit.');
+  assert.equal(reviewer.getRequest(requestId).status, 'GREEN');
+  await assert.rejects(reviewer.completeHuman(requestId, { reviewerId: 'alice', result: red }), /not waiting/);
+  assert.deepEqual(reviewer.getRequest(requestId).result, green);
+});
+
+test('Human completion rejects changed input during acquisition without storing a semantic verdict', async t => {
+  const config = defaults(); config.critics[0].profile = { kind: 'human' };
+  const { open } = await fixture(t, config);
+  const broker = open(createExecutorRegistry({ alarmMethods: [async () => {}] }));
+  const run = await broker.submit({ requesterId: 'builder', criticId: 'spec-why' });
+  await broker.run(run.id);
+  const requestId = run.requests[0].id;
+  await broker.claimHuman(requestId, 'alice');
+  const target = path.join(run.workspace.path, 'why.md');
+  await fs.chmod(target, 0o600);
+  await fs.writeFile(target, 'Changed before the submitted result was acquired.');
+  await assert.rejects(broker.completeHuman(requestId, { reviewerId: 'alice', result: green }), /changed|tampered/i);
+  assert.equal(broker.getRequest(requestId).status, 'ERROR');
+  assert.equal(broker.getRequest(requestId).result, null);
+});
+
+test('Human completion rechecks authoritative status after asynchronous acquisition', async t => {
+  const config = defaults(); config.critics[0].profile = { kind: 'human' };
+  const { open } = await fixture(t, config);
+  const broker = open(createExecutorRegistry({ alarmMethods: [async () => {}] }));
+  const run = await broker.submit({ requesterId: 'builder', criticId: 'spec-why' });
+  await broker.run(run.id);
+  const requestId = run.requests[0].id;
+  await broker.claimHuman(requestId, 'alice');
+  const reviewer = open(undefined, { workspaceAdapter: {
+    prepareWorkspace,
+    async reopenWorkspace(...args: Parameters<typeof reopenWorkspace>) {
+      const workspace = await reopenWorkspace(...args);
+      broker.cancel(run.id);
+      return workspace;
+    },
+  } });
+  await assert.rejects(reviewer.completeHuman(requestId, { reviewerId: 'alice', result: green }), /completed or failed/);
+  assert.equal(broker.getRequest(requestId).status, 'ERROR');
+  assert.equal(broker.getRequest(requestId).errorCode, 'REVIEW_CANCELED');
+  assert.equal(broker.getRequest(requestId).result, null);
+});
+
+test('a custom Human tool that changes input cannot return a successful result', async t => {
+  const { repoPath, open } = await fixture(t);
+  await fs.unlink(path.join(repoPath, 'ccdd.config.json'));
+  await fs.writeFile(path.join(repoPath, 'ccdd.config.ts'), `
+import { chmod, writeFile } from 'node:fs/promises';
+export default {
+  artifacts: { spec: { type: 'custom', path: 'spec.md' } },
+  artifactTypes: { custom: { humanTools: { mutate: {
+    metadata: { description: 'Synthetic mutation fixture.', inputSchema: { type: 'object', properties: {}, additionalProperties: false }, resultKinds: ['text'], observation: 'none' },
+    async execute(context) {
+      await chmod(context.artifactPath, 0o600);
+      await writeFile(context.artifactPath, 'Input changed by a custom tool.');
+      return { content: [{ type: 'text', text: 'This result must not be accepted.' }] };
+    },
+  } } } },
+  critics: [{ id: 'custom-human', title: 'Custom Human', target: 'spec', deps: [], profile: { kind: 'human' }, payload: { instruction: 'Exercise the synthetic custom tool.' } }],
+};
+`);
+  const broker = open(createExecutorRegistry({ alarmMethods: [async () => {}] }));
+  const run = await broker.submit({ requesterId: 'builder', criticId: 'custom-human' });
+  await broker.run(run.id);
+  const requestId = run.requests[0].id;
+  await broker.claimHuman(requestId, 'alice');
+  await assert.rejects(broker.executeHumanTool(requestId, { reviewerId: 'alice', toolName: 'mutate_spec' }));
   assert.equal(broker.getRequest(requestId).status, 'ERROR');
   assert.equal(broker.getRequest(requestId).result, null);
   assert.equal(broker.getRun(run.id).events.some(event => event.type === 'human.tool.executed'), false);
@@ -380,6 +478,59 @@ test('Human lock wait keeps its monitoring worker and rejects changes during the
   assert.equal(reviewer.getRun(record.id).status, 'ERROR');
   await assert.rejects(reviewer.completeHuman(waiting.requests[0].id, { reviewerId: 'alice', result: green }), /not waiting/);
 });
+
+test('idle Human lock waiting keeps monitoring active without repeating full content checks', async t => {
+  const config = defaults(); config.critics[0].profile = { kind: 'human' };
+  const { open } = await fixture(t, config);
+  let fullChecks = 0;
+  const worker = open({ ...registry(async () => { throw new Error('No Artifact execution during idle waiting.'); }), notifyHuman: async () => {} }, { workspaceAdapter: {
+    prepareWorkspace,
+    async reopenWorkspace(...args: Parameters<typeof reopenWorkspace>) {
+      const workspace = await reopenWorkspace(...args);
+      return { ...workspace, async assertUnchanged() { fullChecks++; return workspace.assertUnchanged(); } };
+    },
+  } });
+  const record = await worker.submit({ mode: 'lock', requesterId: 'idle-fixture', criticId: 'spec-why' });
+  const running = worker.run(record.id);
+  try {
+    await until(() => worker.getRun(record.id), value => value.requests[0].notifiedAt);
+    assert.equal(fullChecks, 2, 'Keep the full checks before and after actual notification.');
+    await delay(1300); // Cross a metadata-poll interval, without executing user code.
+    const waiting = worker.getRun(record.id);
+    assert.equal(fullChecks, 2, 'Elapsed Human waiting alone must not trigger another content scan.');
+    assert.equal(waiting.status, 'WAITING_HUMAN');
+    assert.equal(present(waiting.owner).pid, process.pid);
+    assert.equal(waiting.requests[0].result, null);
+  } finally { worker.cancel(record.id); await running; }
+});
+
+for (const mutation of ['edit-and-restore', 'create-and-delete'] as const) {
+  test(`idle Human lock monitoring still rejects ${mutation} without a polling content scan`, async t => {
+    const config = defaults(); config.critics[0].profile = { kind: 'human' };
+    const { repoPath, open } = await fixture(t, config);
+    const worker = open({ ...registry(async () => { throw new Error('No Artifact execution in this fixture.'); }), notifyHuman: async () => {} });
+    const record = await worker.submit({ mode: 'lock', requesterId: 'mutation-fixture', criticId: 'spec-why' });
+    const running = worker.run(record.id);
+    try {
+      const waiting = await until(() => worker.getRun(record.id), value => value.requests[0].notifiedAt);
+      const reviewer = open(); await reviewer.claimHuman(waiting.requests[0].id, 'fixture-reviewer');
+      if (mutation === 'edit-and-restore') {
+        const target = path.join(repoPath, 'spec.md'), original = await fs.readFile(target);
+        writeFileSync(target, 'A transient edit while waiting.'); writeFileSync(target, original);
+      } else {
+        const target = path.join(repoPath, 'transient.txt');
+        writeFileSync(target, 'A transient file while waiting.'); unlinkSync(target);
+      }
+      await until(() => worker.getRun(record.id), value => value.status === 'ERROR');
+      await running;
+      const failed = worker.getRun(record.id).requests[0];
+      assert.equal(failed.errorCode, 'WORKSPACE_CHANGED');
+      assert.equal(failed.result, null);
+      // A deterministic test submission must be rejected, never recorded as evidence.
+      await assert.rejects(reviewer.completeHuman(failed.id, { reviewerId: 'fixture-reviewer', result: green }), /not waiting/);
+    } finally { worker.cancel(record.id); await running; }
+  });
+}
 
 test('Human lock completion can arrive through another broker while the original worker continues the chain', async t => {
   const config = defaults(); config.critics[0].profile = { kind: 'human' };
