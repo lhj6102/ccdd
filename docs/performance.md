@@ -54,6 +54,37 @@ ranged from 34.10 to 38.38 s. Raw samples, timeouts and exact medians are in the
 [lock report](benchmarks/review-overhead-lock.windows.json) and
 [copy report](benchmarks/review-overhead-copy.windows.json).
 
+## Additional publication optimization on Linux
+
+Measured on Linux with Node 22.22.0 on 2026-09-20, using the same 16,000-file and
+64-MiB fixture. The baseline is the original PR integrated with v3.2.0 at
+`7eb9d636c314d4aae080193d87820c98d4a00d74`; the candidate is
+`fd712c5fccb4f2040216eba5676160879313660b`. Both source trees were clean and built
+before measurement. No tests or builds ran concurrently. Each implementation
+had one discarded warm-up, and every attempt used a fresh CCDD copy cache.
+
+Unlike the original Windows comparison, each Linux comparison uses the same
+integrity policy on both sides. These measurements isolate the additional
+publication changes; they do not compare against the original v3.1.2 baseline.
+
+| Fresh-copy policy | Measured pairs | Baseline framework time | Candidate framework time | Reduction |
+| --- | ---: | ---: | ---: | ---: |
+| Metadata | 3, alternating order | 43.20 s median | 37.55 s median | 13.09% |
+| Content | 1 | 92.71 s | 90.67 s | 2.20% |
+
+Metadata admission medians fell from 27.44 s to 21.64 s, a 21.14% reduction.
+Paired framework-time reductions were 13.37%, 13.09% and 12.93%. The content run
+is a single-pair sanity check, not evidence of a general default-policy speedup.
+The full published-byte check remains in content mode. Cache-hit tests verify
+that both policies now perform one published-byte traversal instead of two;
+these fresh-copy measurements do not establish an end-to-end cache-hit speedup.
+
+Exact source revisions, policy selection, raw samples and medians are in the
+[metadata report](benchmarks/copy-publication-metadata.linux.json) and
+[content report](benchmarks/copy-publication-content.linux.json). Their remaining
+ratios compare against the integrated original PR, so they cannot determine
+whether the original Windows target is met. That target remains open.
+
 ## Measurement scope
 
 - Include every CLI startup, request admission, input validation/copying,
@@ -68,7 +99,7 @@ ranged from 34.10 to 38.38 s. Raw samples, timeouts and exact medians are in the
   The OS file cache is not flushed; this is not a cold-disk measurement.
 
 The harness verifies persisted integrity policy and worker identities. It retains
-private fixtures if cleanup cannot be proven. Both recorded runs completed all
+private fixtures if cleanup cannot be proven. All recorded runs completed all
 attempts and removed their private fixtures successfully.
 
 ## Reproduce
@@ -102,6 +133,23 @@ the baseline already supports that policy and both sides should use it.
 Smaller `BENCH_FILES` and `BENCH_ROUNDS` values can check functionality, but their
 timings are not directly comparable to the recorded fixture.
 
+To reproduce the additional Linux metadata comparison, build the integrated
+baseline separately and run the current harness from this built checkout:
+
+```sh
+git worktree add --detach ../ccdd-integrated-baseline 7eb9d636c314d4aae080193d87820c98d4a00d74
+(cd ../ccdd-integrated-baseline && npm ci && npm run build)
+BENCH_FILES=16000 BENCH_ROUNDS=3 BENCH_MODE=copy \
+BENCH_BASELINE_INTEGRITY=metadata BENCH_INTEGRITY=metadata \
+BENCH_REPORT_FILE=../copy-publication-metadata.linux.json \
+node scripts/benchmark-cli-review.mjs ../ccdd-integrated-baseline .
+```
+
+Set both integrity variables to `content` and `BENCH_ROUNDS=1` for the recorded
+content sanity check. Use more alternating pairs for conclusions about a small
+timing difference. The committed candidate revision above reproduces the
+measured implementation; subsequent documentation changes do not alter it.
+
 ## Remaining copy work
 
 The measured copy target is below 22.57 s, requiring about 41.12% less time than
@@ -121,7 +169,8 @@ from rename; unexpected changes trigger full byte validation. Content mode keeps
 its full published-byte check. Cache hits under either policy now validate bytes
 once with the retained observer. See the [publication contract](contracts.md#workspace-contract).
 
-Combining source hashing with copying remains a possible next step. It requires
-measurements and a design that also preserves efficient cache hits, source-change
-detection, publication locking and cancellation. The original Windows target
-remains open until the updated implementation is measured on that fixture.
+The current optimization stays within existing workspace acquisition and
+observation. Combining source hashing with copying is deferred because it would
+require broader changes to cache selection, source-change detection, publication
+locking and cancellation. The original Windows target remains open until the
+updated implementation is measured on that fixture.

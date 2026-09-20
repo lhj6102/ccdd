@@ -1,0 +1,96 @@
+{
+  "node": "v22.22.0",
+  "platform": "linux",
+  "implementations": {
+    "baseline": {
+      "commit": "7eb9d636c314d4aae080193d87820c98d4a00d74",
+      "trackedChanges": false
+    },
+    "candidate": {
+      "commit": "fd712c5fccb4f2040216eba5676160879313660b",
+      "trackedChanges": false
+    }
+  },
+  "files": 16000,
+  "binaryBytes": 67108864,
+  "rounds": 1,
+  "mode": "copy",
+  "baselineIntegrity": "content",
+  "candidateIntegrity": "content",
+  "timeouts": {
+    "admission": 600000,
+    "ready": 600000,
+    "claim": 600000,
+    "tool": 600000,
+    "result": 600000,
+    "settlement": 60000,
+    "cleanup": 60000
+  },
+  "sqliteTimeoutMs": 5000,
+  "policyComparison": {
+    "baseline": "content",
+    "candidate": "content",
+    "identicalGuarantees": true,
+    "description": "Both implementations rehash content at integrity boundaries."
+  },
+  "scope": "Actual project CLI invocations, separate Node processes, detached worker startup, acquisition, claim, tool response, result return and worker settlement. Only the instrumented custom read body is subtracted; trivial custom result construction remains. Fixture setup, npm install and Human think time excluded. No HTTP/UI-rendering claim. Synthetic fixtures only.",
+  "summary": {
+    "baseline": {
+      "admissionMs": 36736.12761600001,
+      "readyMs": 18918.116573000007,
+      "claimMs": 14978.91026199999,
+      "toolOverheadMs": 14259.151885000025,
+      "resultReturnMs": 7812.363990999991,
+      "ownershipReleaseMs": 0.7263219999731518,
+      "workerStopMs": 0.7849960000021383,
+      "frameworkMs": 92705.45532300003
+    },
+    "candidate": {
+      "admissionMs": 35604.710054000025,
+      "readyMs": 18986.04171399999,
+      "claimMs": 14025.094823000021,
+      "toolOverheadMs": 14042.873522999978,
+      "resultReturnMs": 8006.923968999996,
+      "ownershipReleaseMs": 0.8699289999785833,
+      "workerStopMs": 0.9324170000036247,
+      "frameworkMs": 90666.57650000001
+    }
+  },
+  "pairedRatios": [
+    0.9780069164657436
+  ],
+  "remainingRatio": 0.9780069164657436,
+  "meetsTarget": false,
+  "samples": [
+    {
+      "label": "baseline",
+      "round": 0,
+      "mode": "copy",
+      "integrity": "content",
+      "admissionMs": 36736.12761600001,
+      "readyMs": 18918.116573000007,
+      "claimMs": 14978.91026199999,
+      "toolOverheadMs": 14259.151885000025,
+      "resultReturnMs": 7812.363990999991,
+      "ownershipReleaseMs": 0.7263219999731518,
+      "workerStopMs": 0.7849960000021383,
+      "customReadMs": 1.0774900000000116,
+      "frameworkMs": 92705.45532300003
+    },
+    {
+      "label": "candidate",
+      "round": 0,
+      "mode": "copy",
+      "integrity": "content",
+      "admissionMs": 35604.710054000025,
+      "readyMs": 18986.04171399999,
+      "claimMs": 14025.094823000021,
+      "toolOverheadMs": 14042.873522999978,
+      "resultReturnMs": 8006.923968999996,
+      "ownershipReleaseMs": 0.8699289999785833,
+      "workerStopMs": 0.9324170000036247,
+      "customReadMs": 1.0251410000000192,
+      "frameworkMs": 90666.57650000001
+    }
+  ]
+}

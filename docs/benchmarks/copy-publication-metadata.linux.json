@@ -1,0 +1,158 @@
+{
+  "node": "v22.22.0",
+  "platform": "linux",
+  "implementations": {
+    "baseline": {
+      "commit": "7eb9d636c314d4aae080193d87820c98d4a00d74",
+      "trackedChanges": false
+    },
+    "candidate": {
+      "commit": "fd712c5fccb4f2040216eba5676160879313660b",
+      "trackedChanges": false
+    }
+  },
+  "files": 16000,
+  "binaryBytes": 67108864,
+  "rounds": 3,
+  "mode": "copy",
+  "baselineIntegrity": "metadata",
+  "candidateIntegrity": "metadata",
+  "timeouts": {
+    "admission": 600000,
+    "ready": 600000,
+    "claim": 600000,
+    "tool": 600000,
+    "result": 600000,
+    "settlement": 60000,
+    "cleanup": 60000
+  },
+  "sqliteTimeoutMs": 5000,
+  "policyComparison": {
+    "baseline": "metadata",
+    "candidate": "metadata",
+    "identicalGuarantees": true,
+    "description": "Both implementations use metadata integrity after full initial content capture."
+  },
+  "scope": "Actual project CLI invocations, separate Node processes, detached worker startup, acquisition, claim, tool response, result return and worker settlement. Only the instrumented custom read body is subtracted; trivial custom result construction remains. Fixture setup, npm install and Human think time excluded. No HTTP/UI-rendering claim. Synthetic fixtures only.",
+  "summary": {
+    "baseline": {
+      "admissionMs": 27436.908998,
+      "readyMs": 5043.587703999947,
+      "claimMs": 4243.976101000037,
+      "toolOverheadMs": 4182.132508000019,
+      "resultReturnMs": 2348.3852779999725,
+      "ownershipReleaseMs": 0.7194989999989048,
+      "workerStopMs": 0.7856849999952829,
+      "frameworkMs": 43199.08715800002
+    },
+    "candidate": {
+      "admissionMs": 21637.49780099999,
+      "readyMs": 5172.5105860000185,
+      "claimMs": 4199.64575299999,
+      "toolOverheadMs": 4147.26024700001,
+      "resultReturnMs": 2265.8763250000193,
+      "ownershipReleaseMs": 0.7507159999804571,
+      "workerStopMs": 0.8131619999767281,
+      "frameworkMs": 37546.009712000014
+    }
+  },
+  "pairedRatios": [
+    0.8662797870426723,
+    0.8691389606145159,
+    0.8707227302138273
+  ],
+  "remainingRatio": 0.8691389606145159,
+  "meetsTarget": false,
+  "samples": [
+    {
+      "label": "baseline",
+      "round": 0,
+      "mode": "copy",
+      "integrity": "metadata",
+      "admissionMs": 27436.908998,
+      "readyMs": 5098.633971000003,
+      "claimMs": 4249.905524000002,
+      "toolOverheadMs": 4238.211445999995,
+      "resultReturnMs": 2372.448807000008,
+      "ownershipReleaseMs": 0.6828349999996135,
+      "workerStopMs": 0.7856849999952829,
+      "customReadMs": 1.098308999999972,
+      "frameworkMs": 43396.894431
+    },
+    {
+      "label": "candidate",
+      "round": 0,
+      "mode": "copy",
+      "integrity": "metadata",
+      "admissionMs": 21707.25858399998,
+      "readyMs": 5172.5105860000185,
+      "claimMs": 4303.0753879999975,
+      "toolOverheadMs": 4144.326798999985,
+      "resultReturnMs": 2265.8763250000193,
+      "ownershipReleaseMs": 0.6925779999874067,
+      "workerStopMs": 0.8047840000072028,
+      "customReadMs": 1.0132530000000202,
+      "frameworkMs": 37593.85246600001
+    },
+    {
+      "label": "candidate",
+      "round": 1,
+      "mode": "copy",
+      "integrity": "metadata",
+      "admissionMs": 21637.49780099999,
+      "readyMs": 5307.267404000013,
+      "claimMs": 4199.64575299999,
+      "toolOverheadMs": 4147.26024700001,
+      "resultReturnMs": 2253.330037000007,
+      "ownershipReleaseMs": 0.8459670000011101,
+      "workerStopMs": 1.0084700000006706,
+      "customReadMs": 0.9262950000000387,
+      "frameworkMs": 37546.009712000014
+    },
+    {
+      "label": "baseline",
+      "round": 1,
+      "mode": "copy",
+      "integrity": "metadata",
+      "admissionMs": 27507.420948000014,
+      "readyMs": 5015.73115800001,
+      "claimMs": 4222.132262999978,
+      "toolOverheadMs": 4114.628532000007,
+      "resultReturnMs": 2338.362261000002,
+      "ownershipReleaseMs": 0.7194989999989048,
+      "workerStopMs": 0.811996000004001,
+      "customReadMs": 0.6534909999999741,
+      "frameworkMs": 43199.08715800002
+    },
+    {
+      "label": "baseline",
+      "round": 2,
+      "mode": "copy",
+      "integrity": "metadata",
+      "admissionMs": 27054.04028700001,
+      "readyMs": 5043.587703999947,
+      "claimMs": 4243.976101000037,
+      "toolOverheadMs": 4182.132508000019,
+      "resultReturnMs": 2348.3852779999725,
+      "ownershipReleaseMs": 0.7221150000113994,
+      "workerStopMs": 0.784535999991931,
+      "customReadMs": 1.0230870000000323,
+      "frameworkMs": 42872.906413999975
+    },
+    {
+      "label": "candidate",
+      "round": 2,
+      "mode": "copy",
+      "integrity": "metadata",
+      "admissionMs": 21593.170146999997,
+      "readyMs": 5095.046682999993,
+      "claimMs": 4151.937563000014,
+      "toolOverheadMs": 4203.984348999989,
+      "resultReturnMs": 2285.4622209999943,
+      "ownershipReleaseMs": 0.7507159999804571,
+      "workerStopMs": 0.8131619999767281,
+      "customReadMs": 0.9869070000000306,
+      "frameworkMs": 37330.41412499997
+    }
+  ]
+}
