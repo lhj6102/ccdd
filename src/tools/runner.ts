@@ -6,7 +6,8 @@ import { isDeepStrictEqual } from 'node:util';
 import { createArtifactViewer, createAuditedArtifactTools, type ArtifactReference } from '../artifacts/index.js';
 import { createHumanArtifactTools } from '../artifacts/human.js';
 import type { ArtifactGroupReference, ReviewToolCall } from '../contracts.js';
-import { isArtifactGroup, resolveArtifactScope } from '../artifacts/groups.js';
+import { isArtifactGroup, isGeneratedArtifact, artifactReferenceMetadata, resolveArtifactScope } from '../artifacts/groups.js';
+import { assertPreparedArtifactData } from '../artifacts/sources.js';
 import type { ConfigManifest, JsonSchema, ToolMetadata, ToolResult } from './contracts.js';
 import { metadata, object, jsonCopy, validateArguments } from './schema.js';
 import { openToolHost } from './host.js';
@@ -50,6 +51,7 @@ export function describeReviewTools({artifacts,configManifest,audience}:{artifac
     for(const [key,value] of Object.entries(registered)){
       if(!/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(key))throw new Error('Invalid tool identifier.');
       const meta=metadata(value),name=`${key}_${artifact.id}`;
+      if ((artifact.kind === 'generated') !== (meta.artifactKind === 'data')) continue;
       if(names.has(name))throw new Error('Artifact tool names collide.');names.add(name);
       tools.push({name,artifactId:artifact.id,operation:key,description:meta.description.replaceAll('{artifactName}',()=>artifact.id),inputSchema:meta.inputSchema,metadata:meta,annotations:{readOnlyHint:false,destructiveHint:false,idempotentHint:false,openWorldHint:true}});
     }
@@ -105,7 +107,8 @@ export async function toToolContent(result:unknown):Promise<Array<{type:'text';t
 }
 
 export async function createReviewTools(options:ReviewToolsOptions):Promise<ReviewToolRegistry>{
-  const {worktreePath,artifacts,artifactTypes,configManifest,audience,signal,onCall}=options;
+  const {worktreePath,artifactTypes,configManifest,audience,signal,onCall}=options;
+  const artifacts = structuredClone(options.artifacts);
   if(!configManifest){
     const viewer=await createArtifactViewer({worktreePath,artifacts,artifactTypes,signal});
     if(audience==='human'){
@@ -129,9 +132,17 @@ export async function createReviewTools(options:ReviewToolsOptions):Promise<Revi
     if(options.criticId!==undefined){
       const critic=host.config.critics.find(value=>value.id===options.criticId);
       const expected=critic?resolveArtifactScope(host.config.artifacts,[critic.target,...critic.deps]):undefined;
-      if(!critic||critic.profile.kind!==audience||!isDeepStrictEqual(expected?.artifacts,artifacts)||!isDeepStrictEqual(expected?.artifactGroups??[],options.artifactGroups??[]))throw Object.assign(new Error('Recorded Artifact scope does not match its Critic in the snapshot.'),{code:'WORKSPACE_ARTIFACT_MISMATCH'});
+      if(!critic||critic.profile.kind!==audience||!isDeepStrictEqual(expected?.artifacts,artifactReferenceMetadata(artifacts))||!isDeepStrictEqual(expected?.artifactGroups??[],options.artifactGroups??[]))throw Object.assign(new Error('Recorded Artifact scope does not match its Critic in the snapshot.'),{code:'WORKSPACE_ARTIFACT_MISMATCH'});
     }
-    for(const artifact of artifacts){const saved=host.config.artifacts[artifact.id];if(!saved||isArtifactGroup(saved)||saved.path!==artifact.path||saved.type!==artifact.type)throw Object.assign(new Error('Recorded Artifact does not match its snapshot.'),{code:'WORKSPACE_ARTIFACT_MISMATCH'});}
+    for(const artifact of artifacts){
+      const saved=host.config.artifacts[artifact.id];
+      if(!saved||isArtifactGroup(saved)||saved.type!==artifact.type || (artifact.kind === 'generated' ? !isGeneratedArtifact(saved) || saved.source !== artifact.source : isGeneratedArtifact(saved) || saved.path!==artifact.path)) throw Object.assign(new Error('Recorded Artifact does not match its snapshot.'),{code:'WORKSPACE_ARTIFACT_MISMATCH'});
+      if (artifact.kind === 'generated') {
+        const source = configManifest.sources?.[artifact.source];
+        if (!source) throw new Error('Missing recorded Artifact source.');
+        assertPreparedArtifactData(artifact.input, source);
+      }
+    }
     const base=options.runDir?resolve(options.runDir):await mkdtemp(join(tmpdir(),'ccdd-tools-'));
     await mkdir(base,{recursive:true});const actualBase=await realpath(base);if(within(root,actualBase))throw new Error('Tool output must be outside reviewed input.');
     const outputDir=await mkdtemp(join(actualBase,'tool-output-')),temporary=join(outputDir,'.tmp');
@@ -140,8 +151,10 @@ export async function createReviewTools(options:ReviewToolsOptions):Promise<Revi
     const invoke=async(action:string,tool:ReviewToolDefinition,arguments_:unknown)=>{
       signal?.throwIfAborted();
       const artifact=artifacts.find(value=>value.id===tool.artifactId)!;
-      const path=await scopedPath(root,artifact.path),info=await lstat(path),shape=tool.metadata?.artifactKind;
-      if(shape==='file'&&!info.isFile()||shape==='directory'&&!info.isDirectory())throw new Error('Tool does not support this Artifact shape.');
+      if (artifact.kind !== 'generated') {
+        const path=await scopedPath(root,artifact.path),info=await lstat(path),shape=tool.metadata?.artifactKind;
+        if(shape==='file'&&!info.isFile()||shape==='directory'&&!info.isDirectory())throw new Error('Tool does not support this Artifact shape.');
+      }
       const reviewerEnvironment=audience==='human'?Object.fromEntries(['HOME','USERPROFILE','CARGO_HOME','RUSTUP_HOME','DISPLAY','WAYLAND_DISPLAY','XAUTHORITY','XDG_RUNTIME_DIR','DBUS_SESSION_BUS_ADDRESS'].flatMap(name=>process.env[name]===undefined?[]:[[name,process.env[name]!]])):undefined;
       return host.call({action,artifact,type:artifact.type,audience,toolKey:tool.operation,args:arguments_,outputDir,tmpDir:temporary,...(reviewerEnvironment?{reviewerEnvironment}:{})},action==='preflight'?10000:tool.metadata?.timeoutMs??120000);
     };

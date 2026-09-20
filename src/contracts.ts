@@ -1,6 +1,6 @@
 import type { ArtifactReference, ArtifactTypeDefinition, ArtifactToolCall } from './artifacts/index.js';
 import type { WorkspaceDescriptor } from './workspaces/index.js';
-import type { ConfigManifest } from './tools/contracts.js';
+import type { ConfigManifest, PreparedArtifactData } from './tools/contracts.js';
 import type { CriticProfile, ReviewPayload, CriticDefinition, ArtifactEntryDefinition, ArtifactGroupReference } from './definitions.js';
 import type { ValidationInput } from './project/types.js';
 import type { HumanTryClaim, HumanPreparationAttempt } from './broker/human-claims.js';
@@ -39,7 +39,7 @@ export interface ReviewRequest extends ReviewEnvelope {
   notifiedAt?: string | null; errorCode?: string | null; blockedReason?: string | null;
   result?: ReviewResult | null; error?: string | null;
 }
-export interface RepoConfig { artifacts: Record<string, ArtifactEntryDefinition>; artifactTypes: Record<string, ArtifactTypeDefinition>; critics: CriticDefinition[]; configManifest?: ConfigManifest }
+export interface RepoConfig { artifacts: Record<string, ArtifactEntryDefinition>; artifactTypes: Record<string, ArtifactTypeDefinition>; critics: CriticDefinition[]; configManifest?: ConfigManifest; artifactInputs?: Record<string, PreparedArtifactData> }
 export interface ExecutionEvent { type: string; [key: string]: unknown }
 export interface ExecutionContext { worktreePath: string; workspacePath?: string; runDir: string; signal?: AbortSignal; onEvent?: (event: ExecutionEvent) => void | Promise<void> }
 export type ExecutorReadiness = { ok: true } | { ok: false; code?: string; reason: string; remedy?: string };

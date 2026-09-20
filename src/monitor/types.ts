@@ -1,4 +1,5 @@
-import type { ArtifactGroupReference, ArtifactReference, CriticProfile, ReviewStatus, RunStatus } from '../contracts.js';
+import type { ArtifactGroupReference, CriticProfile, ReviewStatus, RunStatus } from '../contracts.js';
+import type { ArtifactReferenceMetadata } from '../artifacts/index.js';
 import type { GraphProjection } from '../broker/graph.js';
 import type { ArtifactCallResult } from '../artifacts/index.js';
 import type { ProjectPlan } from '../project/types.js';
@@ -46,7 +47,7 @@ export interface MonitorDetail {
   result: { summary: string; evidence: string[] } | null;
   error: string | null;
   timeline: { label: string; at: string }[];
-  artifacts: ArtifactReference[];
+  artifacts: ArtifactReferenceMetadata[];
   artifactGroups?: ArtifactGroupReference[];
   artifactPreview?: 'legacy' | 'tools';
   human?: MonitorHumanState;

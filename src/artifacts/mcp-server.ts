@@ -14,7 +14,7 @@ interface ArtifactManifest extends ArtifactViewerOptions { auditPath?: string; c
 interface McpRequest { jsonrpc: '2.0'; id?: unknown; method: string; params?: unknown }
 
 function artifactReference(value: unknown): value is ArtifactReference {
-  return object(value) && typeof value.id === 'string' && typeof value.type === 'string' && typeof value.path === 'string';
+  return object(value) && typeof value.id === 'string' && typeof value.type === 'string' && (value.kind === 'generated' ? typeof value.source === 'string' && object(value.input) : typeof value.path === 'string');
 }
 function parseManifest(value: unknown): ArtifactManifest {
   if (!object(value) || typeof value.worktreePath !== 'string' || !Array.isArray(value.artifacts) || !value.artifacts.every(artifactReference) ||

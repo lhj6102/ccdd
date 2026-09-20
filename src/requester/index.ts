@@ -7,6 +7,7 @@ import { createHumanArtifactTools } from '../artifacts/human.js';
 import type { ReviewEnvelope, RepoConfig } from '../contracts.js';
 import { describeReviewTools } from '../tools/runner.js';
 import { resolveArtifactScope } from '../artifacts/groups.js';
+import { prepareArtifactInputs } from '../artifacts/sources.js';
 
 /** Repo-side adapter: prepare explicit envelopes from one prepared workspace definition. */
 export async function prepareReviewRequests({ repoPath, repoId = 'demo', snapshotHash, criticId, allowLegacyTools = false, preparedConfig }: { repoPath: string; repoId?: unknown; snapshotHash: unknown; criticId?: unknown; allowLegacyTools?: boolean; preparedConfig?:RepoConfig }): Promise<ReviewEnvelope[]> {
@@ -16,6 +17,7 @@ export async function prepareReviewRequests({ repoPath, repoId = 'demo', snapsho
     throw new Error('criticId must be a non-empty safe Critic identifier.');
   }
   const snapshot = preparedConfig ? {config:preparedConfig} : await readWorkspaceConfig(repoPath);
+  if (!snapshot.config.artifactInputs) snapshot.config = await prepareArtifactInputs(snapshot.config, repoPath, 'review');
   const critics = criticId === undefined ? snapshot.config.critics : snapshot.config.critics.filter(critic => critic.id === criticId);
   if (!critics.length) throw new Error(`Unknown Critic in the requested snapshot: ${criticId}`);
   const requests: ReviewEnvelope[] = critics.map(critic => structuredClone({
@@ -23,7 +25,7 @@ export async function prepareReviewRequests({ repoPath, repoId = 'demo', snapsho
     snapshotHash,
     criticId: critic.id,
     title: critic.title,
-    ...resolveArtifactScope(snapshot.config.artifacts, [critic.target, ...critic.deps]),
+    ...resolveArtifactScope(snapshot.config.artifacts, [critic.target, ...critic.deps], snapshot.config.artifactInputs),
     artifactTypes: snapshot.config.artifactTypes,
     ...(snapshot.config.configManifest ? {configManifest:snapshot.config.configManifest} : {}),
     payload: critic.payload,
@@ -36,6 +38,10 @@ export async function prepareReviewRequests({ repoPath, repoId = 'demo', snapsho
     if (request.configManifest) {
       const tools=describeReviewTools({artifacts:request.artifacts,configManifest:request.configManifest,audience:request.profile.kind});
       for(const artifact of request.artifacts){
+        if (artifact.kind === 'generated') {
+          if (!tools.some(tool => tool.artifactId === artifact.id && tool.metadata?.artifactKind === 'data')) throw new Error(`Generated Artifact ${artifact.id} has no usable ${request.profile.kind} data tools.`);
+          continue;
+        }
         const info=await lstat(join(repoPath,artifact.path));
         if(!tools.some(tool=>tool.artifactId===artifact.id&&(!tool.metadata?.artifactKind||tool.metadata.artifactKind==='any'||tool.metadata.artifactKind==='file'&&info.isFile()||tool.metadata.artifactKind==='directory'&&info.isDirectory())))throw Object.assign(new Error(`Artifact ${artifact.id} has no usable ${request.profile.kind} tools.`),{code:'ARTIFACT_TOOLS_UNAVAILABLE'});
       }

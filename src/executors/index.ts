@@ -84,7 +84,10 @@ async function runtimeEnvironment(workspacePath: string, runDir: string) {
 
 async function probeRuntime(request: ReviewEnvelope & { profile: RuntimeProfile }, { worktreePath, signal, spawnImpl }: ExecutionContext & { spawnImpl?: SpawnImplementation }) {
   const root = await realpath(worktreePath);
-  const roots = await Promise.all(request.artifacts.map(artifact => realpath(resolve(root, artifact.path))));
+  const roots = await Promise.all(request.artifacts.map(artifact => {
+    if (artifact.kind === 'generated') throw new Error('Runtime Critics require file Artifacts; use an Agent or Human Critic for generated data.');
+    return realpath(resolve(root, artifact.path));
+  }));
   for (const path of request.profile.args.slice(1)) {
     let target;
     try { target = await realpath(resolve(root, path)); await access(target, constants.R_OK); }

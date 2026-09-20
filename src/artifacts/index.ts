@@ -7,19 +7,22 @@ import type { ArtifactAudience, ArtifactOperation, ArtifactTypeDefinition, Artif
 export type { ArtifactAudience, ArtifactOperation, ArtifactTypeDefinition, ArtifactViewerKind } from './types.js';
 export { assertArtifactAudience } from './types.js';
 
-export interface ArtifactReference { id: string; type: string; path: string }
+export interface FileArtifactReference { id: string; type: string; path: string; kind?: never }
+export interface GeneratedArtifactReference { id: string; type: string; kind: 'generated'; source: string; path?: never; input?: import('../tools/contracts.js').PreparedArtifactData }
+export type ArtifactReference = FileArtifactReference | GeneratedArtifactReference;
+export type ArtifactReferenceMetadata = FileArtifactReference | Omit<GeneratedArtifactReference, 'input'>;
 export interface ArtifactViewerOptions {
   worktreePath: string;
   artifacts: readonly ArtifactReference[];
   artifactTypes?: Readonly<Record<string, unknown>>;
   signal?: AbortSignal;
 }
-export interface ArtifactDescriptor extends ArtifactReference {
+export interface ArtifactDescriptor extends FileArtifactReference {
   viewer: ArtifactViewerKind;
   directory: boolean;
   toolDescriptions: Partial<Record<ArtifactOperation, string>>;
 }
-interface ArtifactDefinition extends ArtifactReference {
+interface ArtifactDefinition extends FileArtifactReference {
   base: string;
   directory: boolean;
   viewer: ArtifactViewerKind;
@@ -230,6 +233,7 @@ export async function createArtifactViewer({ worktreePath, artifacts, artifactTy
   const definitions = new Map<string, ArtifactDefinition>();
   for (const artifact of artifacts) {
     signal?.throwIfAborted();
+    if (artifact.kind === 'generated') throw new Error('Generated Artifacts require registered data tools.');
     if (!/^[A-Za-z0-9_-]{1,64}$/.test(artifact.id ?? '') || definitions.has(artifact.id)) throw new Error('Invalid or duplicate artifact id');
     const declared = relativePath(artifact.path);
     const configuredType = artifactTypes[artifact.type];

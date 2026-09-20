@@ -1,5 +1,5 @@
 import type { ArtifactEntryDefinition, CriticProfile, RepoConfig, ReviewEnvelope, ReviewStatus } from '../contracts.js';
-import { isArtifactGroup, validateArtifactDefinitions } from '../artifacts/groups.js';
+import { isArtifactGroup, isGeneratedArtifact, validateArtifactDefinitions } from '../artifacts/groups.js';
 import type { ValidationStatus } from '../project/types.js';
 
 export interface GraphCriticDefinition { id: string; title: string; target: string; deps: string[]; kind: CriticProfile['kind'] }
@@ -11,7 +11,7 @@ interface GraphArtifactStateBase {
   criticIds: string[]; passed: number; total: number; included: number;
   validationStatus?: ValidationStatus;
 }
-export type GraphArtifactState = GraphArtifactStateBase & ({ kind?: 'artifact'; type: string; path: string } | { kind: 'group'; members: string[] });
+export type GraphArtifactState = GraphArtifactStateBase & ({ kind?: 'artifact'; type: string; path: string } | { kind: 'generated'; type: string; source: string; path?: never } | { kind: 'group'; members: string[] });
 export interface GraphCriticState extends GraphCriticDefinition { requestId: string | null; status: ReviewStatus | null; claimedBy: string | null; blockedReason: string | null; validationStatus?: ValidationStatus; validationReason?: string; reusedFrom?: { requestId: string; runId: string; completedAt: string } }
 export interface GraphProjection { artifacts: GraphArtifactState[]; critics: GraphCriticState[]; edges: { source: string; target: string; criticIds: string[] }[] }
 
@@ -52,7 +52,7 @@ export function createGraphDefinition(config: RepoConfig): GraphDefinition {
   validateArtifactDefinitions(config.artifacts);
   const graph: GraphDefinition = {
     version: 1,
-    artifacts: Object.fromEntries(Object.entries(config.artifacts).map(([id, artifact]) => [id, { ...(isArtifactGroup(artifact) ? { kind: 'group' as const, members: [...artifact.members] } : { type: artifact.type, path: artifact.path }), ...(artifact.basis === undefined ? {} : { basis: artifact.basis }), ...(artifact.stale ? { stale: structuredClone(artifact.stale) } : {}) }])),
+    artifacts: Object.fromEntries(Object.entries(config.artifacts).map(([id, artifact]) => [id, isGeneratedArtifact(artifact) ? structuredClone(artifact) : { ...(isArtifactGroup(artifact) ? { kind: 'group' as const, members: [...artifact.members] } : { type: artifact.type, path: artifact.path }), ...(artifact.basis === undefined ? {} : { basis: artifact.basis }), ...(artifact.stale ? { stale: structuredClone(artifact.stale) } : {}) }])),
     critics: config.critics.map(critic => ({ id: critic.id, title: critic.title, target: critic.target, deps: [...critic.deps], kind: critic.profile.kind })),
   };
   validateGraphDefinition(graph);
@@ -83,7 +83,7 @@ export function projectGraph(graph: GraphDefinition, requests: readonly GraphReq
       if (passed === own.length) status = 'GREEN';
       else status = (['ERROR', 'RED', 'RUNNING', 'WAITING_HUMAN', 'QUEUED', 'BLOCKED'] as const).find(candidate => own.some(critic => critic.status === candidate)) ?? 'UNREVIEWED';
     }
-    return { id, ...(isArtifactGroup(artifact) ? { kind: 'group' as const, members: [...artifact.members] } : { type: artifact.type, path: artifact.path }), basis: artifact.basis === true, status, criticIds: own.map(critic => critic.id), passed, total: own.length, included };
+    return { id, ...(isArtifactGroup(artifact) ? { kind: 'group' as const, members: [...artifact.members] } : isGeneratedArtifact(artifact) ? { kind: 'generated' as const, type: artifact.type, source: artifact.source } : { type: artifact.type, path: artifact.path }), basis: artifact.basis === true, status, criticIds: own.map(critic => critic.id), passed, total: own.length, included };
   });
   const edges = new Map<string, GraphProjection['edges'][number]>();
   for (const critic of critics) for (const source of critic.deps) {

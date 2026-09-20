@@ -3,7 +3,8 @@ import { createReadStream } from 'node:fs';
 import { lstat, readdir } from 'node:fs/promises';
 import path from 'node:path';
 import type { RepoConfig, WorkspaceIntegrity } from '../contracts.js';
-import { isArtifactGroup, resolveArtifactScope } from '../artifacts/groups.js';
+import { isArtifactGroup, isGeneratedArtifact, resolveArtifactScope } from '../artifacts/groups.js';
+import { preparedArtifact } from '../artifacts/sources.js';
 import { createGraphDefinition } from '../broker/graph.js';
 import { validateRelativePath } from '../broker/config.js';
 import { packageVersion } from '../runtime-paths.js';
@@ -57,6 +58,11 @@ export async function createProjectSnapshot(config: RepoConfig, root: string, sn
   const visit = async (id: string): Promise<string> => {
     if (artifactHashes[id]) return artifactHashes[id];
     const artifact = config.artifacts[id];
+    if (isGeneratedArtifact(artifact)) {
+      const input = preparedArtifact(config, id, artifact);
+      reusable[id] = artifact.stale?.kind !== 'always';
+      return artifactHashes[id] = inputHash({ definition: artifact, identity: input.identity });
+    }
     const extraPaths = artifact.stale?.kind === 'file-hash' ? artifact.stale.paths : undefined;
     const fingerprints = await Promise.all((extraPaths ?? (isArtifactGroup(artifact) ? [] : [artifact.path])).slice().sort().map(async name => ({ path: name, hash: await fingerprintPath(name) })));
     const members = isArtifactGroup(artifact) ? await Promise.all(artifact.members.map(async member => ({ id: member, hash: await visit(member) }))) : [];
