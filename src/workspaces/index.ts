@@ -73,7 +73,7 @@ function publicationMetadataHash(entries: string[][]): string {
 }
 
 /** Every entry participates: no Git, ignore rules, extension filters or implicit exclusions. */
-async function inspect(root: string, { signal, requireReadonly = false, contents = true, onProgress }: { signal?: AbortSignal; requireReadonly?: boolean; contents?: boolean; onProgress?: (progress: WorkspaceScanProgress) => void } = {}): Promise<Inspection> {
+async function inspect(root: string, { signal, requireReadonly = false, contents = true, publicationProof = false, onProgress }: { signal?: AbortSignal; requireReadonly?: boolean; contents?: boolean; publicationProof?: boolean; onProgress?: (progress: WorkspaceScanProgress) => void } = {}): Promise<Inspection> {
   const entries: WorkspaceEntry[] = [];
   const metadataEntries: string[][] = [];
   const rootNode: ScanNode = { relative: '' };
@@ -191,7 +191,7 @@ async function inspect(root: string, { signal, requireReadonly = false, contents
   const structureHash = contents ? digest(JSON.stringify(entries.map(entry => entry.type === 'file'
     ? { path: entry.path, type: entry.type, executable: entry.executable } : entry))) : hash;
   return { hash, metadataHash: digest(JSON.stringify(metadataEntries)), structureHash, entries,
-    ...(requireReadonly ? { publicationMetadataHash: publicationMetadataHash(metadataEntries) } : {}) };
+    ...(publicationProof ? { publicationMetadataHash: publicationMetadataHash(metadataEntries) } : {}) };
 }
 
 export async function fingerprintWorkspace(workspacePath: string) {
@@ -288,7 +288,8 @@ function observe(root: string, mode: WorkspaceMode, externalSignal?: AbortSignal
   return {
     signal: controller.signal,
     async initialize(expected?: Pick<Inspection, 'hash' | 'metadataHash'> & Partial<Pick<Inspection, 'structureHash'>>, publishedFrom?: Inspection) {
-      const before = await inspect(root, { signal: controller.signal, requireReadonly: mode === 'copy', contents: false, onProgress });
+      const before = await inspect(root, { signal: controller.signal, requireReadonly: mode === 'copy', contents: false,
+        publicationProof: integrity === 'metadata' && publishedFrom !== undefined, onProgress });
       // A staged full-content inspection may cross our own atomic rename under metadata
       // policy only when directory identity, structure and all other metadata still match.
       // Any unexpected difference falls back to actual bytes, as does content policy.
@@ -443,7 +444,7 @@ export async function prepareWorkspace({ repoPath, stateDir, mode = 'copy', inte
       stage = path.join(cacheRoot, `.capture-${randomUUID()}`);
       await mkdir(stage, { mode: 0o700 });
       await copyEntries(source, stage, initial.entries, observer.signal);
-      const copied = await inspect(stage, { signal: observer.signal, requireReadonly: true });
+      const copied = await inspect(stage, { signal: observer.signal, requireReadonly: true, publicationProof: integrity === 'metadata' });
       if (copied.hash !== initial.hash) throw changed('lock', 'source changed during copy');
       publishedFrom = copied;
       await observer.assertUnchanged();
