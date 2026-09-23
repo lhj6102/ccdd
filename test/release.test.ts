@@ -180,9 +180,16 @@ test('npm metadata errors and cancellation cannot masquerade as an unpublished v
 test('npm confirmation reads full metadata and waits for a newly published version', async () => {
   let calls = 0;
   const version = { name: coreName, version: '1.0.0', dist: { integrity: 'sha512-fixture' } };
-  const client = createNpmClient({}, async () => Response.json({ versions: ++calls === 1 ? {} : { '1.0.0': version } }));
+  const client = createNpmClient({ confirmationIntervalMs: 1 }, async () => Response.json({ versions: ++calls < 32 ? {} : { '1.0.0': version } }));
   assert.deepEqual(await client.confirm(coreName, '1.0.0'), version);
-  assert.equal(calls, 2);
+  assert.equal(calls, 32, 'Accepted publishes may remain unavailable beyond the former 30 attempts');
+  let unavailableCalls = 0;
+  const unavailable = createNpmClient({ confirmationIntervalMs: 1 }, async () => {
+    unavailableCalls++;
+    return Response.json({ versions: {} });
+  });
+  assert.equal(await unavailable.confirm(coreName, '1.0.0'), null);
+  assert.equal(unavailableCalls, 121, 'Confirmation remains bounded when a version never becomes available');
   const controller = new AbortController();
   const cancelled = createNpmClient({ signal: controller.signal }, async () => {
     controller.abort(new Error('Stop waiting for npm'));
