@@ -2,19 +2,21 @@
 
 CCDD packages are distributed through npm. GitHub Releases announce each version with an installation command, npm package links, and release notes. They do not host installation tarballs. GitHub still supplies automatic Source code archives; those contain source, not installable packages.
 
-See [getting started](getting-started.md) for setup and [v3.3.1 release notes](releases/v3.3.1.md) for the current changes.
+See [getting started](getting-started.md) for setup and [v4.0.0 release notes](releases/v4.0.0.md) for the current changes.
 
 ## Installing and upgrading
 
-CCDD 3.3.1 supports Node.js 22 LTS (22.19.0 or later). Install matching versions of the three packages:
+CCDD 4.0.0 supports Node.js 22 LTS (22.19.0 or later). Install matching versions of the three packages:
 
 ```sh
-npm install --ignore-scripts @ccdd/core@3.3.1 @ccdd/project@3.3.1 @ccdd/default-tools@3.3.1
+npm install --ignore-scripts @ccdd/core@4.0.0 @ccdd/project@4.0.0 @ccdd/default-tools@4.0.0
 npx ccdd-project config check
 npx ccdd-project tools check
 ```
 
-`@ccdd/core` supplies definitions. `@ccdd/project` supplies validation, the CLI, Broker, Executors, and monitor. `@ccdd/default-tools` is optional when all tools are custom. Project and default-tools 3.x target core `>=3.0.0 <4`.
+`@ccdd/core` supplies definitions. `@ccdd/project` supplies validation, the CLI, Broker, Executors, and monitor. `@ccdd/default-tools` is optional when all tools are custom. Project and default-tools 4.x target core `>=4.0.0 <5`.
+
+Version 4 replaces global configuration with folder-owned `ccdd.json` files. Follow the [v4 migration guide](migration-v4.md) before upgrading an existing project; previous input versions remain available only as stored results and cannot be reused or resumed.
 
 Finish or cancel active reviews before changing dependencies in the reviewed workspace, then restart an active monitor with the new CLI. New reviews use the supplied workspace directly. Historical copied reviews remain visible but cannot resume or accept Human actions; submit a new review against a user-provided workspace. Existing review state and old copies are not automatically deleted.
 
@@ -31,8 +33,8 @@ To publish, merge the version change and release notes, wait for that commit's
 CI to succeed, then push its version tag:
 
 ```sh
-git tag v3.3.1 COMMIT_SHA
-git push origin v3.3.1
+git tag v4.0.0 COMMIT_SHA
+git push origin v4.0.0
 ```
 
 `release.yml` runs one Node 22 LTS job. It installs npm 11.19.1 for Trusted
