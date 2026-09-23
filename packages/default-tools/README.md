@@ -66,7 +66,7 @@ Artifact groups are configured in the core as `{kind:'group',members:[ID,...]}`.
 
 ## Desktop opening
 
-Human tools launch a desktop program and return a launch receipt, never decoded file contents. A successful launcher exit does not prove the person read the file and does not complete a review. Input snapshots are managed and retained by CCDD. Launchers should return after opening the application; avoid a wait-for-editor-exit flag. Preparation checks executable availability without launching the application.
+Human tools launch a desktop program and return a launch receipt, never decoded file contents. A successful launcher exit does not prove the person read the file and does not complete a review. Keep the supplied workspace unchanged until review completion. Launchers should return after opening the application; avoid a wait-for-editor-exit flag. Preparation checks executable availability without launching the application.
 
 ```ts
 human.desktop.open({ app: 'TextEdit' }); // macOS
@@ -90,10 +90,10 @@ The actual application is launched with isolated writable home/config/cache
 directories in the review output. After successful process launch and the brief
 startup handoff, the reviewer owns the desktop session; it remains open after the
 tool host exits. A launch receipt does not prove rendered content or review
-completion. The immutable input copy remains available for the application.
+completion. The application reads the supplied workspace directly.
 
 Use project `envRequirements` for external prerequisites that cannot be bundled.
-See [remote Human review](../../docs/remote-human-review.md) for the full workflow.
+See [Human reviewers](../../docs/reviewers.md) for the local workflow.
 
 ## License
 

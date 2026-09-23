@@ -92,4 +92,4 @@ All six trial files include the per-call timings, separate inspection/setup time
 registration traffic and execution traffic. Tests exercise the real registry and
 host seam: repeated/concurrent observations, independent `readData()` results,
 caller-owned input/result edits, fresh snapshots under the same ID, corrupted or
-missing saved material, Broker restart, Agent, MCP and remote Human access.
+missing saved material, Broker restart, Agent, MCP and local Human access.

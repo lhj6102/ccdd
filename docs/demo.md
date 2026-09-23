@@ -25,21 +25,21 @@ Preparation installs dependencies once from the specified local tarballs, then p
 | fixed | 2 / 2 / 2 / 2 | Full reevaluation after correction |
 
 ```sh
-npx ccdd run --demo --demo-dir "$CCDD_DEMO_DIR" --scenario why-change --lock --critic spec-why --wait
-npx ccdd run --demo --demo-dir "$CCDD_DEMO_DIR" --scenario runtime-failure --copy --critic implementation-tests --wait
-npx ccdd run --demo --demo-dir "$CCDD_DEMO_DIR" --scenario fixed --copy --wait
+npx ccdd run --demo --demo-dir "$CCDD_DEMO_DIR" --scenario why-change --critic spec-why --wait
+npx ccdd run --demo --demo-dir "$CCDD_DEMO_DIR" --scenario runtime-failure --critic implementation-tests --wait
+npx ccdd run --demo --demo-dir "$CCDD_DEMO_DIR" --scenario fixed --wait
 ```
 
 Agent verdicts are actual Provider responses, not hardcoded expected outcomes from the table. Runtime executes actual Node tests. A standalone `--critic` verdict is distinct from a full-chain verdict.
 
-Two `run --copy` requests against the same fixed folder may return different Handles sharing the same `workspace.path` and `snapshotHash`. Each review has its own result and output directory.
+Two `run` requests against the same unchanged folder return different Handles sharing its `workspace.path` and `snapshotHash`. Each review has its own result and output directory.
 
 ```sh
 npx ccdd list --demo --demo-dir "$CCDD_DEMO_DIR" --scenario fixed
 npx ccdd status RUN_ID --demo --demo-dir "$CCDD_DEMO_DIR" --scenario fixed
 ```
 
-Editing the original during `--lock` causes an input-change ERROR. Editing the original after `--copy` preparation does not affect the active review, which continues against the copied content. Run `ccdd monitor --repo <scenario-folder>` separately to observe request state during the demo. Reviews continue after the monitor closes.
+Editing the supplied workspace during review causes an input-change ERROR. Keep it unchanged through Human waiting. To keep editing elsewhere, supply your own separate worktree. Run `ccdd monitor --repo <scenario-folder>` separately to observe request state during the demo. Reviews continue after the monitor closes.
 
 Agent Artifact tool names include `read_spec`, `list_tests`, and `read_tests`. Human tools `open_spec` and `open_tests` open files or folders in desktop applications instead of returning text. Default desktop integration targets macOS; specify an executable when using Human tools on other operating systems. The demo's markdown/code types contain per-operation description templates, with `{artifactName}` replaced by the actual ID. For example, `read_tests({path: "rank.test.mjs", startLine: 1, lineCount: 80})` reads a test file by line.
 

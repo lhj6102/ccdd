@@ -69,9 +69,5 @@ A confirmed commitment by one human reviewer, after preparing the review input a
 _Avoid_: Human Try Claim, completion, verdict
 
 **Review Workspace**:
-The complete workspace from which a review reads input. It either monitors the original for changes or uses an immutable copy.
-_Avoid_: Artifact observation scope, review output workspace
-
-**Copied Workspace**:
-Immutable review input captured from the original. Reviews of identical content can share it.
-_Avoid_: verdict cache, Builder workspace
+The complete user-supplied workspace observed in place throughout a review, including Human waiting. Inputs must remain unchanged; the user may supply a separate worktree.
+_Avoid_: Artifact observation scope, review output workspace, copied input cache

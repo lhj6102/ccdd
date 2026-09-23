@@ -5,10 +5,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { readWorkspaceConfig } from '../src/broker/config.js';
 import { prepareHumanReview, type HumanPreparationProgress } from '../src/executors/human-preparation.js';
-import { prepareWorkspace, removeOwnedWorkspaceTree, type WorkspaceMode } from '../src/workspaces/index.js';
+import { prepareWorkspace, removeOwnedWorkspaceTree } from '../src/workspaces/index.js';
 import type { ReviewEnvelope } from '../src/contracts.js';
 
-async function fixture(t: TestContext, mode: WorkspaceMode, mutateDuringPreflight = false) {
+async function fixture(t: TestContext, mutateDuringPreflight = false) {
   const directory = await realpath(await mkdtemp(join(tmpdir(), 'ccdd-human-boundary-')));
   const repoPath = join(directory, 'project'), marker = join(directory, 'config-imports');
   await mkdir(repoPath);
@@ -28,7 +28,7 @@ async function fixture(t: TestContext, mode: WorkspaceMode, mutateDuringPrefligh
       } } } },
       critics: [{ id: 'human', title: 'Inspect asset', target: 'asset', deps: [], profile: { kind: 'human' }, payload: { instruction: 'Inspect {asset}.' } }]
     };`);
-  const workspace = await prepareWorkspace({ repoPath, stateDir: join(directory, 'state'), mode });
+  const workspace = await prepareWorkspace({ repoPath, stateDir: join(directory, 'state') });
   const { config } = await readWorkspaceConfig(workspace.descriptor.path);
   const request: ReviewEnvelope = {
     repoId: 'fixture', snapshotHash: workspace.descriptor.hash, ...config.critics[0], criticId: config.critics[0].id,
@@ -42,36 +42,34 @@ async function fixture(t: TestContext, mode: WorkspaceMode, mutateDuringPrefligh
   return { directory, marker, workspace: workspace.descriptor, request, prepare };
 }
 
-for (const mode of ['lock', 'copy'] as const) {
-  test(`${mode} Human preparation validates acquisition and completion without an intervening duplicate scan`, async t => {
-    const data = await fixture(t, mode), completed: string[] = [];
-    const preparation = await data.prepare(undefined, event => {
-      if (event.progress?.kind === 'content' && event.progress.completed) completed.push(event.phase);
-    });
-    assert.deepEqual(completed, ['validating-input', 'final-validation']);
-    assert.equal(preparation.snapshotHash, data.workspace.hash);
-    assert.equal(preparation.tools.length, 1);
-    assert.equal(preparation.tools[0].ok, true);
-    assert.equal(Object.hasOwn(preparation, 'verdict'), false);
+test(`Human preparation validates acquisition and completion without an intervening duplicate scan`, async t => {
+  const data = await fixture(t), completed: string[] = [];
+  const preparation = await data.prepare(undefined, event => {
+    if (event.progress?.kind === 'content' && event.progress.completed) completed.push(event.phase);
   });
+  assert.deepEqual(completed, ['validating-input', 'final-validation']);
+  assert.equal(preparation.snapshotHash, data.workspace.hash);
+  assert.equal(preparation.tools.length, 1);
+  assert.equal(preparation.tools[0].ok, true);
+  assert.equal(Object.hasOwn(preparation, 'verdict'), false);
+});
 
-  test(`${mode} Human preparation rejects changed input before configuration can execute`, async t => {
-    const data = await fixture(t, mode), imports = await readFile(data.marker, 'utf8');
-    await chmod(join(data.workspace.path, 'asset.txt'), 0o600);
-    await writeFile(join(data.workspace.path, 'asset.txt'), 'changed before Claim');
-    await assert.rejects(data.prepare(), /workspace changed|readonly|read.only/i);
-    assert.equal(await readFile(data.marker, 'utf8'), imports);
-  });
+test(`Human preparation rejects changed input before configuration can execute`, async t => {
+  const data = await fixture(t), imports = await readFile(data.marker, 'utf8');
+  await chmod(join(data.workspace.path, 'asset.txt'), 0o600);
+  await writeFile(join(data.workspace.path, 'asset.txt'), 'changed before Claim');
+  await assert.rejects(data.prepare(), /workspace changed|readonly|read.only/i);
+  assert.equal(await readFile(data.marker, 'utf8'), imports);
+});
 
-  test(`${mode} Human preparation rejects a readiness check that mutates reviewed input`, async t => {
-    const data = await fixture(t, mode, true);
-    await assert.rejects(data.prepare(), /workspace changed|readonly|read.only/i);
-    assert.equal(await readFile(join(data.workspace.path, 'asset.txt'), 'utf8'), 'mutated during readiness');
-  });
-}
+test(`Human preparation rejects a readiness check that mutates reviewed input`, async t => {
+  const data = await fixture(t, true);
+  await assert.rejects(data.prepare(), /workspace changed|readonly|read.only/i);
+  assert.equal(await readFile(join(data.workspace.path, 'asset.txt'), 'utf8'), 'mutated during readiness');
+});
 
 test('cancellation after validated acquisition prevents configuration and readiness work', async t => {
-  const data = await fixture(t, 'lock'), imports = await readFile(data.marker, 'utf8');
+  const data = await fixture(t), imports = await readFile(data.marker, 'utf8');
   const controller = new AbortController();
   await assert.rejects(data.prepare(controller.signal, progress => {
     if (progress.phase === 'checking-manifest') controller.abort(new Error('Fixture Claim cancelled.'));

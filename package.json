@@ -28,7 +28,7 @@
     "release:npm": "node scripts/local-release.mjs --npm",
     "release:npm:check": "node scripts/check-npm.mjs",
     "demo:prepare": "npm run build && node dist/src/cli.js prepare-demo",
-    "demo": "npm run build && node dist/src/cli.js run --demo --copy --wait"
+    "demo": "npm run build && node dist/src/cli.js run --demo --wait"
   },
   "files": [
     "dist/src/sdk.*",

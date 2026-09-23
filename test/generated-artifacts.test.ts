@@ -1,3 +1,4 @@
+import { runUntilSettled } from './helpers/run.js';
 import test, { type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, readFile, writeFile, unlink, stat } from 'node:fs/promises';
@@ -86,7 +87,7 @@ export default {
 async function humanReview(broker: ReturnType<typeof createBroker>, artifactId: string, verdict: 'GREEN' | 'RED', force = false) {
   const run = await broker.submitProject({ selection: { kind: 'artifact', artifactId }, force });
   assert.equal(run.requests.length, 1);
-  await broker.run(run.id);
+  await runUntilSettled(broker, run.id);
   const request = broker.getRun(run.id)!.requests[0];
   assert.equal(request.status, 'WAITING_HUMAN');
   await broker.claimHuman(request.id, 'fixture-reviewer');
@@ -176,7 +177,7 @@ test('actual Human evidence survives A to B to A and a later RED supersedes earl
   assert.equal(latest.plan.critics.find(item => item.id === 'beta-review')?.status, 'PASS');
 });
 
-test('stored generated data reopens after source edits and Broker restart without regeneration, and damaged material fails explicitly', async t => {
+test('stored generated data reopens through a separate local Broker without regeneration, and damaged material fails explicitly', async t => {
   const f = await fixture(t), broker = f.open();
   const run = await broker.submitProject({ selection: { kind: 'artifact', artifactId: 'alpha' } });
   const request = run.requests[0];
@@ -186,11 +187,9 @@ test('stored generated data reopens after source edits and Broker restart withou
   if (reference.kind !== 'generated') throw new Error('Expected a generated Artifact reference.');
   assert.deepEqual(reference.input?.data, f.original);
   await writeFile(f.forbidPreparation, 'Reopening must never regenerate captured data.');
-  await f.saveData('alpha', { summary: 'Edited live source', details: {} });
-  await broker.run(run.id);
+  await runUntilSettled(broker, run.id);
   await broker.claimHuman(request.id, 'fixture-reviewer');
   assert.deepEqual((await broker.executeHumanTool(request.id, { reviewerId: 'fixture-reviewer', toolName: 'inspect_alpha' })).content[0].data, f.original);
-  await broker.close();
   const reopened = f.open();
   const stored = reopened.getRequest(request.id)!;
   const options = { worktreePath: stored.workspace.path, artifacts: stored.artifacts, artifactTypes: stored.artifactTypes, configManifest: stored.configManifest, criticId: stored.criticId, audience: 'human' as const, runDir: join(f.root, 'direct-tool-output') };
@@ -208,7 +207,7 @@ test('stored generated data reopens after source edits and Broker restart withou
   if (missing[0].kind !== 'generated') throw new Error('Expected a generated Artifact.');
   delete missing[0].input;
   await assert.rejects(createReviewTools({ ...options, artifacts: missing }), /snapshot|material/i);
-  await reopened.completeHuman(request.id, { reviewerId: 'fixture-reviewer', result: { verdict: 'GREEN', summary: 'Fixture Human accepted the captured material after restart.', evidence: ['inspect_alpha returned the original complete Scenario A.'] } });
+  await reopened.completeHuman(request.id, { reviewerId: 'fixture-reviewer', result: { verdict: 'GREEN', summary: 'Fixture Human accepted the captured material through a separate client.', evidence: ['inspect_alpha returned the original complete Scenario A.'] } });
   assert.equal(reopened.getRequest(request.id)?.result?.verdict, 'GREEN');
 });
 

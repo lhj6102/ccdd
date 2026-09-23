@@ -2,7 +2,7 @@ import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { localContext } from '../local.js';
 import { readWorkspaceConfig } from '../broker/config.js';
-import { prepareWorkspace, type WorkspaceHandle, type WorkspaceMode } from '../workspaces/index.js';
+import { prepareWorkspace, type WorkspaceHandle } from '../workspaces/index.js';
 import type { HumanToolResult } from './human.js';
 import { createReviewTools, type ReviewToolDefinition } from '../tools/runner.js';
 import type { ToolResult } from '../tools/contracts.js';
@@ -23,7 +23,6 @@ export interface ArtifactToolCheck {
 export interface ArtifactToolCheckReport {
   ok: boolean;
   status: 'READY' | 'NOT_READY';
-  mode: WorkspaceMode;
   checkedAt: string;
   snapshotHash?: string;
   workspacePath?: string;
@@ -35,7 +34,6 @@ export interface ArtifactToolCheckReport {
 export interface DiagnoseArtifactToolsOptions {
   repoPath: string;
   repoId?: string;
-  mode?: WorkspaceMode;
   stateDir?: string;
   artifactId?: string;
   audience?: ArtifactAudience;
@@ -46,8 +44,9 @@ export interface DiagnoseArtifactToolsOptions {
 }
 
 /** Diagnose registered tools without creating a Broker, Run, request, alarm, Agent session or verdict. */
-export async function diagnoseArtifactTools({ repoPath, mode = 'copy', stateDir, artifactId, audience, toolName, arguments: args, execute = false, signal }: DiagnoseArtifactToolsOptions): Promise<ArtifactToolCheckReport> {
-  const report: ArtifactToolCheckReport = { ok: false, status: 'NOT_READY', mode, checkedAt: new Date().toISOString(), checks: [], tools: [] };
+export async function diagnoseArtifactTools({ repoPath, stateDir, artifactId, audience, toolName, arguments: args, execute = false, signal, ...removed }: DiagnoseArtifactToolsOptions): Promise<ArtifactToolCheckReport> {
+  if ('mode' in removed) throw new Error('Workspace modes are no longer supported; supply an unchanged workspace.');
+  const report: ArtifactToolCheckReport = { ok: false, status: 'NOT_READY', checkedAt: new Date().toISOString(), checks: [], tools: [] };
   let workspace: WorkspaceHandle | undefined;
   let stage: ArtifactToolCheckStage = 'preflight';
   try {
@@ -55,10 +54,10 @@ export async function diagnoseArtifactTools({ repoPath, mode = 'copy', stateDir,
     signal?.throwIfAborted();
     stage = 'snapshot';
     const context = await localContext({ repoPath, stateDir });
-    workspace = await prepareWorkspace({ repoPath: context.repoPath, stateDir: context.stateDir, mode, signal });
+    workspace = await prepareWorkspace({ repoPath: context.repoPath, stateDir: context.stateDir, signal });
     const worktreePath = workspace.descriptor.path;
     report.snapshotHash = workspace.descriptor.hash;
-    // Cached copies are retained: a desktop viewer can continue reading after its launcher exits.
+    // A desktop viewer opens this supplied workspace; keep it unchanged while inspecting it.
     report.workspacePath = worktreePath;
     stage = 'preflight';
     const loaded = await readWorkspaceConfig(worktreePath);

@@ -1,3 +1,4 @@
+import { runUntilSettled } from './helpers/run.js';
 import test, { type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -54,7 +55,7 @@ test('metadata integrity evidence is isolated from strict validation while histo
     runtime: { node: process.versions.node, platform: process.platform, arch: process.arch } });
   assert.equal(implicit.snapshot.inputs['a-check'].criticHash, historicalCriticHash, 'Strict effective identity must retain its pre-policy shape.');
   const metadata = f.open('metadata');
-  const first = await metadata.submitProject({ mode: 'lock', selection });
+  const first = await metadata.submitProject({ selection });
   assert.equal(first.workspace.integrity, 'metadata');
   assert.equal(first.project!.snapshot.workspaceIntegrity, 'metadata');
   assert.equal(first.requests[0].validationInput!.workspaceIntegrity, 'metadata');
@@ -66,7 +67,7 @@ test('metadata integrity evidence is isolated from strict validation while histo
   assert.equal(relaxed.plan.satisfied, true);
   assert.equal(relaxed.plan.workspaceIntegrity, 'metadata');
   const strict = f.open();
-  const second = await strict.submitProject({ mode: 'lock', selection });
+  const second = await strict.submitProject({ selection });
   assert.equal(second.requests.length, 1, 'Strict verification must execute instead of reusing weaker evidence.');
   assert.equal(second.workspace.integrity, undefined);
   assert.equal(second.requests[0].validationInput!.key, implicit.snapshot.inputs['a-check'].key);
@@ -95,7 +96,7 @@ test('project CLI records opt-in integrity through detached workers and queries 
   assert.equal(await main(['help'], { stdout: { write: text => { help += text; } } }), 0);
   assert.match(help, /--integrity content\|metadata/);
   assert.match(help, /weaker than full content checks/);
-  const metadata = await call(['verify', 'a', '--integrity', 'metadata', '--lock', '--wait']);
+  const metadata = await call(['verify', 'a', '--integrity', 'metadata', '--wait']);
   assert.equal(metadata.code, 0, JSON.stringify(metadata));
   assert.equal(metadata.value.workspaceIntegrity, 'metadata');
   assert.equal(metadata.value.workspace.integrity, 'metadata');
@@ -107,7 +108,7 @@ test('project CLI records opt-in integrity through detached workers and queries 
   assert.equal(metadataStatus.code, 0); assert.equal(metadataStatus.value.workspaceIntegrity, 'metadata');
   const plan = await call(['plan', 'a', '--integrity', 'content']);
   assert.equal(plan.value.counts.execute, 1);
-  const strict = await call(['verify', 'a', '--lock', '--wait']);
+  const strict = await call(['verify', 'a', '--wait']);
   assert.equal(strict.code, 0, JSON.stringify(strict));
   assert.equal(strict.value.workspaceIntegrity, 'content');
   assert.equal(strict.value.requests.length, 1);
@@ -140,14 +141,14 @@ test('individual validation executes the independent Critic and reports the rest
   const f = await fixture(t), broker = f.open();
   const run = await broker.submitProject({ selection: { kind: 'artifact', artifactId: 'b' } });
   assert.deepEqual(run.requests.map(r => r.criticId), ['b-own']);
-  await broker.run(run.id);
+  await runUntilSettled(broker, run.id);
   const result = projectRun(f.stateDir, run.id)!;
   assert.equal(result.status, 'INCOMPLETE');
   assert.equal(result.validation?.satisfied, false);
   assert.equal(result.requests[0].result?.verdict, 'GREEN');
   assert.equal(projectHistory(f.stateDir).length, 1);
   const a = await broker.submitProject({ selection: { kind: 'artifact', artifactId: 'a' } });
-  await broker.run(a.id);
+  await runUntilSettled(broker, a.id);
   assert.equal(projectRun(f.stateDir, run.id)?.status, 'INCOMPLETE');
   assert.equal(projectRun(f.stateDir, run.id)?.validation?.satisfied, false, 'completed history must not borrow a later result');
 });
@@ -156,7 +157,7 @@ test('recursive validation runs real tests; unchanged intermediates stop downstr
   const f = await fixture(t), broker = f.open();
   const first = await broker.submitProject({ selection: { kind: 'artifact', artifactId: 'c' }, recursive: true });
   assert.deepEqual(first.requests.map(r => r.criticId), ['a-check', 'b-own']);
-  await broker.run(first.id);
+  await runUntilSettled(broker, first.id);
   const completed = projectRun(f.stateDir, first.id)!;
   assert.equal(completed.status, 'GREEN', JSON.stringify(completed));
   assert.equal(completed.requests.length, 4);
@@ -164,7 +165,7 @@ test('recursive validation runs real tests; unchanged intermediates stop downstr
   await fs.writeFile(path.join(f.repoPath, 'a/input.txt'), 'accepted additional reference');
   assert.equal((await f.inspect({ kind: 'artifact', artifactId: 'c' })).plan.satisfied, false);
   const second = await broker.submitProject({ selection: { kind: 'artifact', artifactId: 'c' }, recursive: true });
-  await broker.run(second.id);
+  await runUntilSettled(broker, second.id);
   const after = projectRun(f.stateDir, second.id)!;
   assert.equal(after.status, 'GREEN', JSON.stringify(after));
   assert.deepEqual(after.requests.map(r => r.criticId), ['a-check', 'b-a']);
@@ -181,9 +182,9 @@ test('recursive validation runs real tests; unchanged intermediates stop downstr
 
 test('a dependency that changed and already passed still changes its direct consumer input', async t => {
   const f = await fixture(t), broker = f.open();
-  const one = await broker.submitProject({ selection: { kind: 'all' } }); await broker.run(one.id);
+  const one = await broker.submitProject({ selection: { kind: 'all' } }); await runUntilSettled(broker, one.id);
   await fs.writeFile(path.join(f.repoPath, 'a/input.txt'), 'accepted new input');
-  const a = await broker.submitProject({ selection: { kind: 'artifact', artifactId: 'a' } }); await broker.run(a.id);
+  const a = await broker.submitProject({ selection: { kind: 'artifact', artifactId: 'a' } }); await runUntilSettled(broker, a.id);
   const q = await f.inspect({ kind: 'artifact', artifactId: 'b' });
   assert.equal(q.plan.critics.find(c => c.id === 'b-a')?.status, 'STALE');
   assert.equal(q.plan.critics.find(c => c.id === 'b-own')?.status, 'PASS');
@@ -192,15 +193,15 @@ test('a dependency that changed and already passed still changes its direct cons
 
 test('force reviews only the selected Critic; a later actual RED is not hidden by an old PASS', async t => {
   const f = await fixture(t), broker = f.open();
-  const one = await broker.submitProject({ selection: { kind: 'all' } }); await broker.run(one.id);
+  const one = await broker.submitProject({ selection: { kind: 'all' } }); await runUntilSettled(broker, one.id);
   const forced = await broker.submitProject({ selection: { kind: 'critic', criticId: 'b-own' }, force: true, recursive: true });
-  await broker.run(forced.id);
+  await runUntilSettled(broker, forced.id);
   assert.deepEqual(projectRun(f.stateDir, forced.id)?.requests.map(r => r.criticId), ['b-own']);
   // Exercise the real durable Human path for conflicting judgments on identical input.
   f.config.critics[2].profile = { kind: 'human' }; await f.saveConfig();
   for (const verdict of ['GREEN', 'RED'] as const) {
     const run = await broker.submitProject({ selection: { kind: 'critic', criticId: 'b-own' }, force: true });
-    await broker.run(run.id); const id = broker.getRun(run.id)!.requests[0].id;
+    await runUntilSettled(broker, run.id); const id = broker.getRun(run.id)!.requests[0].id;
     await broker.claimHuman(id, 'reviewer');
     await broker.completeHuman(id, { reviewerId: 'reviewer', result: { verdict, summary: `Human submitted ${verdict}`, evidence: ['Explicit test reviewer submission.'] } });
   }
@@ -213,7 +214,7 @@ test('always is scoped to one validation request and never loops inside a recurs
   const runs: string[] = [];
   for (let i = 0; i < 2; i++) {
     const run = await broker.submitProject({ selection: { kind: 'artifact', artifactId: 'c' }, recursive: true });
-    await broker.run(run.id);
+    await runUntilSettled(broker, run.id);
     const result = projectRun(f.stateDir, run.id)!;
     runs.push(run.id);
     assert.equal(result.status, 'GREEN');
@@ -307,7 +308,7 @@ test('groups track member content but do not inherit member validation gates', a
 test('an actual RED blocks only consumers and preserves independent successful reviews', async t => {
   const f = await fixture(t), broker = f.open();
   await fs.writeFile(path.join(f.repoPath, 'a/input.txt'), 'rejected input');
-  const run = await broker.submitProject({ selection: { kind: 'all' } }); await broker.run(run.id);
+  const run = await broker.submitProject({ selection: { kind: 'all' } }); await runUntilSettled(broker, run.id);
   const completed = projectRun(f.stateDir, run.id)!;
   assert.equal(completed.status, 'RED');
   assert.deepEqual(completed.requests.map(r => [r.criticId, r.status]), [['a-check', 'RED'], ['b-own', 'GREEN']]);

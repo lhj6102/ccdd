@@ -65,7 +65,7 @@ A completed review contains a **verdict, a summary, and concrete evidence**. GRE
 
 CCDD can reuse an actual passing review when its criteria, target, and direct reference materials still match and its dependencies are satisfied. An unchanged intermediate Artifact can therefore prevent unnecessary downstream reviews.
 
-Reviews use a fixed copy of the project by default. Records and generated output live outside the reviewed project. You can keep editing the original while a copied review runs. Reviewers inspect and judge; you or your coding tools make the changes.
+Reviews run directly in the workspace you supply. Keep it unchanged until the review finishes, including while waiting for a Human reviewer; detected changes invalidate the review. Records and generated output live outside the project. To keep working elsewhere, create a separate worktree yourself and pass its path with `--repo`. Reviewers inspect and judge; you or your coding tools make the changes.
 
 ## Choose your next step
 

@@ -16,7 +16,7 @@ ccdd-project run show RUN_ID
 
 No staleState is stored on Artifacts. SQLite records the target and direct dependency hashes and Critic conditions at verdict time; current validation is computed by recursively querying the DAG. `status` and `plan` create neither verdicts nor tickets. Temporary memoization exists only within a query.
 
-State defaults to `~/.local/state/ccdd/<repo-path-hash>` and can be configured with `--state-dir` or `CCDD_STATE_HOME`. SQLite, input copies, and review output must stay outside the reviewed repo. Validation defaults to copy; explicit `--lock` selects monitoring of the original input.
+State defaults to `~/.local/state/ccdd/<repo-path-hash>` and can be configured with `--state-dir` or `CCDD_STATE_HOME`. SQLite and review output must stay outside the reviewed repo. Reviews use the supplied workspace directly and require it to remain unchanged through completion, including Human waiting. Supply a separate user-managed worktree with `--repo` when needed.
 
 `--json` returns structured results. `verify --wait` exit codes are 0=scope satisfied, 1=RED, 2=ERROR, 3=wait timeout, and 4=incomplete. For asynchronous execution, 0 means successful acceptance; a wait timeout does not cancel execution.
 

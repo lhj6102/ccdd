@@ -1,3 +1,4 @@
+import { runUntilSettled } from './helpers/run.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
@@ -9,7 +10,7 @@ import { createExecutorRegistry } from '../src/executors/index.js';
 import { removeOwnedWorkspaceTree } from '../src/workspaces/index.js';
 import type { RepoConfig } from '../src/contracts.js';
 
-test('JSON Human group review resumes from its copied composition and reads leaf tools after restart', async t => {
+test('JSON Human group review uses its monitored composition through separate clients', async t => {
   const dir = await mkdtemp(join(tmpdir(), 'ccdd-group-legacy-'));
   const repoPath = join(dir, 'repo'), stateDir = join(dir, 'state');
   const brokers: ReturnType<typeof createBroker>[] = [];
@@ -38,23 +39,17 @@ test('JSON Human group review resumes from its copied composition and reads leaf
     const broker = createBroker({ repoPath, stateDir, executors });
     brokers.push(broker); return broker;
   };
-  const first = open(), submitted = await first.submit({ mode: 'copy', requesterId: 'builder' });
-  await first.run(submitted.id);
+  const first = open(), submitted = await first.submit({ requesterId: 'builder' });
+  await runUntilSettled(first, submitted.id);
   const waiting = first.getRun(submitted.id)!;
   assert.equal(waiting.status, 'WAITING_HUMAN');
-  assert.equal(waiting.owner, null);
+  assert.ok(waiting.owner);
   assert.equal(notifications, 1);
   const request = waiting.requests[0];
   const groups = [{ id: 'bundle', members: ['pair', 'spec'] }, { id: 'pair', members: ['spec', 'preview'] }];
   assert.equal(request.configManifest, undefined, 'This regression exercises the JSON Viewer compatibility path');
   assert.deepEqual(request.artifactGroups, groups);
   assert.deepEqual(request.artifacts.map(artifact => artifact.id), ['spec', 'preview', 'why']);
-  await first.close();
-
-  // A resumed copy review must retain the submitted grouping and file contents.
-  config.artifacts.bundle = { kind: 'group', members: ['outside'] };
-  await writeFile(configPath, JSON.stringify(config));
-  await writeFile(join(repoPath, 'spec.md'), 'Builder has a newer specification.');
   const resumed = open();
   assert.deepEqual(resumed.getRequest(request.id)?.artifactGroups, groups);
   await assert.rejects(resumed.executeHumanTool(request.id, { reviewerId: 'reviewer', toolName: 'read_spec' }), /reviewer who claimed/);

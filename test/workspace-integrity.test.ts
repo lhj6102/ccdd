@@ -32,7 +32,7 @@ test('metadata policy first hashes complete input, then reopens and checks every
   await fs.writeFile(join(data.repoPath, '.gitignore'), 'node_modules/');
   await fs.writeFile(join(data.repoPath, 'node_modules', 'ignored'), 'included');
   const opens = trackFileOpens(t);
-  const prepared = await prepareWorkspace({ ...data, mode: 'lock', integrity: 'metadata' });
+  const prepared = await prepareWorkspace({ ...data, integrity: 'metadata' });
   const descriptor = prepared.descriptor;
   assert.equal(descriptor.integrity, 'metadata');
   assert.match(descriptor.structureHash!, /^[a-f0-9]{64}$/);
@@ -55,20 +55,6 @@ test('metadata policy first hashes complete input, then reopens and checks every
   } finally { await strict.close(); }
 });
 
-test('metadata descriptors survive readonly copy capture and source removal', async t => {
-  const data = await fixture(t);
-  const handle = await prepareWorkspace({ ...data, mode: 'copy', integrity: 'metadata' });
-  const descriptor = handle.descriptor;
-  await handle.close();
-  await removeOwnedWorkspaceTree(data.repoPath);
-  const reopened = await reopenWorkspace(descriptor);
-  try {
-    await reopened.assertUnchanged();
-    assert.equal(await fs.readFile(join(reopened.descriptor.path, 'file'), 'utf8'), 'AAAA');
-    await fs.chmod(join(reopened.descriptor.path, 'file'), 0o644);
-    await assert.rejects(reopened.assertUnchanged(), { code: 'WORKSPACE_CACHE_TAMPERED' });
-  } finally { await reopened.close(); }
-});
 
 test('ordinary edits, restoration, additions, permissions and replacement invalidate metadata-policy input', async t => {
   const changes = [
@@ -84,7 +70,7 @@ test('ordinary edits, restoration, additions, permissions and replacement invali
     // Make writes differ from captured mtime even within one timestamp tick. The separate
     // spoofed-stat test covers metadata that cannot distinguish different bytes.
     await fs.utimes(join(data.repoPath, 'file'), new Date(0), new Date(0));
-    const handle = await prepareWorkspace({ ...data, mode: 'lock', integrity: 'metadata' });
+    const handle = await prepareWorkspace({ ...data, integrity: 'metadata' });
     const descriptor = handle.descriptor;
     try {
       await change(data.repoPath);
@@ -97,7 +83,7 @@ test('ordinary edits, restoration, additions, permissions and replacement invali
 test('metadata proofs reject malformed policies, missing structure, mismatches and silent downgrades', async t => {
   const data = await fixture(t);
   await assert.rejects(prepareWorkspace({ ...data, integrity: 'unknown' as 'metadata' }), /integrity must be/);
-  const handle = await prepareWorkspace({ ...data, mode: 'lock', integrity: 'metadata' });
+  const handle = await prepareWorkspace({ ...data, integrity: 'metadata' });
   const descriptor = handle.descriptor;
   await handle.close();
   for (const invalid of [
@@ -109,7 +95,7 @@ test('metadata proofs reject malformed policies, missing structure, mismatches a
   ]) await assert.rejects(reopenWorkspace(invalid as WorkspaceDescriptor), /Invalid persisted workspace descriptor/);
   await assert.rejects(reopenWorkspace({ ...descriptor, structureHash: '0'.repeat(64) }), { code: 'WORKSPACE_CHANGED' });
   await assert.rejects(reopenWorkspace(descriptor, { integrity: 'unknown' as 'metadata' }), /integrity must be/);
-  const strict = await prepareWorkspace({ ...data, mode: 'lock' });
+  const strict = await prepareWorkspace({ ...data });
   try {
     assert.equal(strict.descriptor.integrity, undefined);
     assert.equal(strict.descriptor.structureHash, undefined);
@@ -120,10 +106,10 @@ test('metadata proofs reject malformed policies, missing structure, mismatches a
 test('default strict hashing detects same-size bytes under spoofed metadata; opt-in metadata policy documents its weaker assumption', async t => {
   const data = await fixture(t);
   const filePath = resolve(data.repoPath, 'file');
-  const strict = await prepareWorkspace({ ...data, mode: 'lock' });
+  const strict = await prepareWorkspace({ ...data });
   const strictDescriptor = strict.descriptor;
   await strict.close();
-  const metadata = await prepareWorkspace({ ...data, mode: 'lock', integrity: 'metadata' });
+  const metadata = await prepareWorkspace({ ...data, integrity: 'metadata' });
   const metadataDescriptor = metadata.descriptor;
   await metadata.close();
   const originalStats = await fs.lstat(filePath, { bigint: true });
@@ -145,14 +131,14 @@ test('default strict hashing detects same-size bytes under spoofed metadata; opt
     assert.equal(await fs.readFile(filePath, 'utf8'), 'BBBB');
     assert.equal(weaker.descriptor.hash, metadataDescriptor.hash, 'unchanged metadata cannot prove unchanged bytes');
   } finally { await weaker.close(); }
-  const freshStrict = await prepareWorkspace({ ...data, mode: 'lock' });
+  const freshStrict = await prepareWorkspace({ ...data });
   try { assert.notEqual(freshStrict.descriptor.hash, strictDescriptor.hash, 'new strict captures always read actual bytes'); }
   finally { await freshStrict.close(); }
 });
 
 test('metadata acquisition honors cancellation and cannot return a changed structural proof', async t => {
   const data = await fixture(t);
-  const handle = await prepareWorkspace({ ...data, mode: 'lock', integrity: 'metadata' });
+  const handle = await prepareWorkspace({ ...data, integrity: 'metadata' });
   const descriptor = handle.descriptor;
   await handle.close();
   const controller = new AbortController();
@@ -207,7 +193,7 @@ test('explicit metadata boundaries start a fresh traversal after any earlier bac
   });
   syncBuiltinESMExports();
   t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
-  const handle = await prepareWorkspace({ ...data, mode: 'lock', integrity: 'metadata' });
+  const handle = await prepareWorkspace({ ...data, integrity: 'metadata' });
   try {
     pause = true;
     notify();
@@ -238,7 +224,7 @@ test('structure verification rejects changed symlink targets even when reported 
   t.mock.method(fs, 'realpath', async (...args: unknown[]) => String(args[0]) === linkPath ? join(data.repoPath, target) : Reflect.apply(realpath, fs, args));
   syncBuiltinESMExports();
   t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
-  const handle = await prepareWorkspace({ ...data, mode: 'lock', integrity: 'metadata' });
+  const handle = await prepareWorkspace({ ...data, integrity: 'metadata' });
   const descriptor = handle.descriptor;
   await handle.close();
   target = 'other';

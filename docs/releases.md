@@ -16,7 +16,7 @@ npx ccdd-project tools check
 
 `@ccdd/core` supplies definitions. `@ccdd/project` supplies validation, the CLI, Broker, Executors, and monitor. `@ccdd/default-tools` is optional when all tools are custom. Project and default-tools 3.x target core `>=3.0.0 <4`.
 
-Active reviews retain their original snapshots, implementations, and actual evidence. Install the new version in the original project for subsequent requests and restart an active monitor with the new CLI. Review state and copies are not deleted or converted.
+Finish or cancel active reviews before changing dependencies in the reviewed workspace, then restart an active monitor with the new CLI. New reviews use the supplied workspace directly. Historical copied reviews remain visible but cannot resume or accept Human actions; submit a new review against a user-provided workspace. Existing review state and old copies are not automatically deleted.
 
 For older projects, follow the [package and import migration](releases/v2.0.1.md#migration), [Project migration from v1](releases/v2.0.0.md#migrating-from-v1), and, when needed, [configuration migration from before v1](releases/v1.0.0.md#migrating-existing-configuration). Use `npx ccdd doctor` in the Agent environment to check actual authentication, Provider, and model access. It calls the Provider and consumes account usage. `tools check --execute` actually runs the selected tool.
 

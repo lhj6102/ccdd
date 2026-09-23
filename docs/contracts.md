@@ -18,7 +18,7 @@ A `ValidationInput` contains a version, effective Critic definition hash, target
 
 Only actual GREEN/RED results recorded with their ValidationInput are evidence. Query-time PASS means applicable actual GREEN evidence plus satisfied recursive dependency validation. For identical input the newest semantic verdict wins, so a later RED is not hidden by older GREEN. ERROR is an operational attempt outcome, not a semantic verdict. Historical requests without ValidationInput remain visible but cannot prove reuse. Basis is explicit acceptance, not a fabricated review; ordinary artifacts with no evaluator stay UNREVIEWED.
 
-`verify` captures copy input by default, persists the selected scope and prepared definitions, and issues tickets only for immediately executable Critics needing review. Individual validation runs ready selected Critics and reports the remaining scope INCOMPLETE. Recursive validation also includes required ancestors. After an actual result is recorded, a new pull decides which subsequent Critics need tickets. A → B → C therefore reruns A and B after A changes, but reuses C when B passes with unchanged content. A freshly revalidated but changed A still changes B's direct input key.
+`verify` observes the supplied workspace in place, persists the selected scope and prepared definitions, and issues tickets only for immediately executable Critics needing review. Individual validation runs ready selected Critics and reports the remaining scope INCOMPLETE. Recursive validation also includes required ancestors. After an actual result is recorded, a new pull decides which subsequent Critics need tickets. A → B → C therefore reruns A and B after A changes, but reuses C when B passes with unchanged content. A freshly revalidated but changed A still changes B's direct input key.
 
 Project and Broker share the external `broker.sqlite` without merging responsibilities: actual requests store verdicts and input hashes, Runs store frozen input definitions and real execution lifecycle. Completed Runs reference the evidence they consumed, so later reviews cannot rewrite their historical meaning. Run status adds INCOMPLETE; no blocked or reused Critic ticket is fabricated. Read-only `run show`/history does not access source files or reconcile owners. Resuming an already terminal INCOMPLETE request does not schedule omitted dependencies; submit a new verification after fixing them or use recursive.
 
@@ -28,53 +28,51 @@ Monitor GETs only observe stored definitions and actual evidence. The explicit, 
 
 ## Workspace contract
 
-`run` requires exactly one CLI flag: `--copy` (recommended) or `--lock`. `doctor` defaults to copy. Git and commits are not required. Every directory entry participates, including ignored/untracked files, `.git` and dependencies. No dependency manifest or implicit exclusion list is used.
+All reviews and diagnostics use the supplied workspace directly. There is no
+workspace mode option, input copy, publication cache, or remote snapshot transfer.
+Git and commits are not required. Users may create a worktree themselves and pass
+it with `--repo`. CCDD neither creates nor manages that worktree.
 
-- **Lock:** use the original source. Monitor filesystem events and metadata; by default verify the full content hash at boundaries. A detected change, including ordinary edit-and-restore or create-and-delete, invalidates the review with `ERROR`, never a semantic `RED`. Monitoring remains alive through Human waiting. A dead lock worker invalidates its unfinished Run when inspected.
-- **Copy:** capture all current files in private staging; verify stable source and copied content before atomic publication. An unstable capture fails explicitly and can be retried. Same-hash inputs share one immutable cache directory, including concurrent submissions. Original edits after capture do not invalidate the copied review. The workspace layer itself never decides verdict reuse; Project Validation applies the evidence contract above.
+Every directory entry participates, including ignored/untracked files, `.git`,
+dependencies, and empty directories. No implicit exclusion list is used. Keep the
+entire workspace unchanged from admission through completion, including Human
+waiting. Editors, build tools, and reviewers must write output outside that input.
 
-Snapshot hash is SHA-256 over sorted relative paths, entry types, file content hashes, executable permission bits, and relative symlink targets. Empty directories participate. Timestamps, inode numbers and write-permission bits are excluded from the content hash but metadata is separately tracked for mutation detection. Copies remove write permissions. Internal relative symlinks are supported; escaping, absolute, dangling symlinks and special files are rejected. Artifact definitions retain the stricter no-symlink policy.
+CCDD monitors filesystem events and metadata, and by default verifies the full
+content hash at action boundaries. Detected changes, including ordinary
+edit-and-restore or create-and-delete, invalidate the review with `ERROR`, never
+a semantic `RED`. Monitoring stays alive throughout Human waiting; a dead worker
+invalidates its unfinished Run when inspected. A result retains its input hash,
+but does not preserve old source after later edits.
 
-CCDD state must be outside the source workspace, including through symlinks. Inputs live at `stateDir/workspaces/<hash>`; review output lives at `stateDir/runs/<runId>/<requestId>/`. Only one process publishes a hash at a time. Cache entries are revalidated before reuse and retained after review completion. Automatic cache eviction is not implemented; do not delete a cache while its reviews or Human requests still need it.
+The snapshot hash is SHA-256 over sorted relative paths, entry types, file
+content hashes, executable permission bits, and relative symlink targets.
+Timestamps, inode numbers and write-permission bits are excluded from content
+identity but tracked separately for mutation detection. Internal relative
+symlinks are supported; escaping, absolute, dangling symlinks and special files
+are rejected. Artifact definitions retain the stricter no-symlink policy.
 
-This is cooperative local execution, not an OS sandbox against a hostile process running as the same user. Event/metadata checks are conservative and cannot prove the absence of every adversarial transient write on every filesystem. Unsupported monitoring fails closed. Copy permissions do not isolate environment, network, external services or test side effects. Runtime output must use per-review paths rather than modify shared inputs. Lock results retain the input hash but do not preserve the old source after later edits.
+CCDD state must be outside the workspace, including through symlinks. Review
+output lives at `stateDir/runs/<runId>/<requestId>/`. Concurrent reviews can share
+the unchanged supplied workspace and retain independent output directories.
+This is cooperative local execution, not an OS sandbox. Event/metadata checks
+cannot prove the absence of every adversarial transient write on every
+filesystem. Unsupported monitoring fails closed.
 
-`prepareWorkspace({repoPath,stateDir,mode,integrity?,signal?})` and `reopenWorkspace(descriptor,{integrity?,signal?,onProgress?})` return `{descriptor,signal,assertUnchanged(),close()}`. Preparation defaults to `integrity:'content'`; reopening uses the recorded policy unless explicitly overridden as described below. The serializable descriptor contains `{version:1,mode,sourcePath,path,hash,stateDir,baselineMetadataHash}`, with `integrity` and `structureHash` added for metadata-policy input. It is stored with the Run and every request. Copy source need not remain present after capture.
+`prepareWorkspace({repoPath,stateDir,integrity?,signal?})` returns
+`{descriptor,signal,assertUnchanged,close}` without writing to the input or
+creating a workspace cache. Version 2 descriptors have no `mode` and identify
+the canonical supplied path as both `sourcePath` and `path`. Reopening checks
+that same path and its recorded integrity proof. Historical version 1 in-place
+descriptors can reopen; historical copy descriptors remain readable as history
+but cannot execute or accept Human actions. Submit a new review against a
+user-supplied workspace to replace an unfinished copied review.
 
-Under the default content policy, `reopenWorkspace` completes full content and metadata validation against the
-recorded descriptor before returning its monitored handle. Human preparation,
-local Broker commands and remote Human actions use this acquisition as their
-entry integrity check without immediately repeating the same full scan. They
-retain cancellation, claim, status and lock-owner checks. A full
-`assertUnchanged()` still follows configuration loading, readiness checks or
-registered tool execution before accepting preparation or returning tool results.
-Resuming a prepared Claim or submitting its result runs no user code between
-acquisition and handoff. Broker completion commits directly after acquisition
-with authoritative transaction checks.
-
-Fresh copy capture compares staged content with the source capture and checks
-source stability before atomic publication. Source checks use content and metadata
-under the default policy, or metadata and structure under the explicit metadata
-policy. Capture consumes no further source bytes after that boundary;
-cache reuse still validates the source selecting that content hash. Acquisition
-checks the published copy's canonical path, readonly entries and metadata with
-its observer already active, then returns that same live observer. Content policy
-always hashes the published bytes. Cache hits also receive a full byte validation
-under either policy, without a duplicate scan before observer acquisition. The saved
-metadata baseline comes from the published directory, never the private staging
-directory. Public `reopenWorkspace` independently validates persisted descriptors
-as before.
-
-For a new metadata-policy copy, a full staged-content inspection can cross the
-controlled atomic rename without rehashing the published bytes. An in-memory
-publication proof compares every descendant's complete metadata, the full
-structure hash and the root's device, inode, mode, size, modification time and
-birth time. Only the root ctime change caused by publication is permitted. Any
-other difference falls back to a full content inspection and must still match
-the original captured hash. This accommodates platform-specific rename metadata
-without trusting an unmatched proof. The returned descriptor always records the
-actual published metadata baseline. No publication proof is persisted or accepted
-from configuration; ordinary reopening retains its existing policy checks.
+Acquisition validates input with its observer active. Human claims, registered
+tools and results use that observer; user code is followed by a fresh integrity
+boundary before accepting output. Resuming an already prepared Claim or
+submitting a result performs no user code between acquisition and handoff;
+Broker completion commits with authoritative transaction checks.
 
 One observer owns at most one integrity scan at a time. Explicit assertions share
 only a queued traversal that starts after their call; late callers wait for a fresh
@@ -95,8 +93,7 @@ retain strict content validation and their existing evidence identity.
 When reopening a metadata-policy descriptor, CCDD registers the watcher before
 inspecting every current path. Metadata tuples must match the full-capture
 `baselineMetadataHash`, and names, entry types, executable bits, empty directories,
-and symlink targets must match `structureHash`. Readonly checks for copied inputs
-and symlink containment still apply. Every subsequent boundary performs the same
+and symlink targets must match `structureHash`. Symlink containment checks still apply. Every subsequent boundary performs the same
 complete metadata and structure traversal. No entry is ignored and no extra
 certificate file is created. Ordinary edits, restoration, replacement, permission
 changes, or structural changes invalidate the review; malformed or missing policy
@@ -123,15 +120,6 @@ The Project CLI accepts `--integrity content|metadata` for `verify`, `status`, a
 Critic identity, so metadata-policy review evidence cannot satisfy a strict query,
 and strict evidence is not silently substituted for a metadata-policy request.
 Explicit content mode retains historical strict identity keys.
-
-Remote Human review transfers complete copy-mode snapshots with a file manifest.
-Clients cache verified file bytes by content hash and construct a new immutable
-snapshot using local paths and metadata. They never patch an earlier snapshot or
-copy the publisher's absolute workspace paths. Changed files transfer in full;
-unchanged cached content is reused across snapshots. Manifest paths, symlinks,
-file sizes, hashes, executable bits, and the assembled snapshot hash are checked.
-Mutable blob downloads and local output stay outside published input. A corrupted
-published snapshot fails explicitly. See [remote review](remote-human-review.md).
 
 ## Repository configuration
 
@@ -242,7 +230,7 @@ Reads preserve UTF-8, LF/CRLF, complete lines and final-newline semantics. They 
 
 `agent.image.view()` is explicitly registered as `agentTools: { view_image: agent.image.view() }`, producing `view_image_<artifactId>`. Its packaged CLI reuses Pi's `createReadTool()` through an adapter exposing only the bound image file. This makes no LLM call and starts no Agent session. File Artifacts accept `{}`; directory Artifacts require an internal file `path`. Only an actual PNG/JPEG/WebP image block up to 4MiB succeeds and produces a leaf content receipt. File contents determine the image type. Text-only Pi results, GIF, BMP and animated PNG fail; the tool does not resize, convert, or offer Pi's general file-reading interface. Preflight checks availability and shape without rendering the image. A model accepting image input is required for an Agent review using the result.
 
-Human defaults use `human.desktop.open()` to open a snapshot file/folder with a desktop application and return a launch receipt. It does not duplicate Agent read/list behavior. macOS defaults to `/usr/bin/open`; an `app` option selects an application, or `command`/fixed `args` connect another executable. Other platforms require an explicit command. Reviewers cannot choose the executable, argv, or environment. The launcher environment excludes Provider tokens and preload hooks. App launch success is separate from Human claim, observation and final submission, and the snapshot copy remains available after the launcher returns.
+Human defaults use `human.desktop.open()` to open a snapshot file/folder with a desktop application and return a launch receipt. It does not duplicate Agent read/list behavior. macOS defaults to `/usr/bin/open`; an `app` option selects an application, or `command`/fixed `args` connect another executable. Other platforms require an explicit command. Reviewers cannot choose the executable, argv, or environment. The launcher environment excludes Provider tokens and preload hooks. App launch success is separate from Human claim, observation and final submission, and the supplied workspace must remain unchanged while the reviewer uses the viewer.
 
 Factories accept description/timeout overrides. A launcher should return after opening the app, not wait for the user's editing session to end. `preflight` verifies shape/executable readiness without launching an app or rendering content. Custom tools may use functions, SDKs or commands under the same contract.
 
@@ -252,7 +240,7 @@ For legacy JSON requests only, CLI passive inspection remains `artifact REQUEST_
 
 `prepareReviewRequests({repoPath,repoId,snapshotHash,criticId?})` creates explicit envelopes containing `{repoId,snapshotHash,criticId,title,artifacts:[{id,type,path}],artifactGroups?:[{id,members}],artifactTypes,configManifest?,payload,profile,target,deps}`. Expanding `[target, ...deps]` through group members yields the deduplicated leaf `artifacts` and reachable `artifactGroups`. It never follows members' Critic dependencies to grant additional access. Leaf-only scopes omit `artifactGroups`, preserving their existing shape. The broker validates supplied envelopes against the prepared input; tool reconnection also verifies recorded leaf and group scope against the snapshot. `--critic` selects exactly one envelope and validates only its required executor.
 
-A generated leaf uses `{id,type,kind:'generated',source,input}` in a prepared envelope. `input` contains the versioned identity, canonical content hash and captured JSON data. It is persisted for exact reopening and transferred during remote Human preparation; metadata GET responses and initial Agent prompts omit it. Source preparation runs once per Artifact in an input capture, before tickets are created. Reconnecting tools validates the saved data without rerunning preparation. See [generated Artifacts](generated-artifacts.md).
+A generated leaf uses `{id,type,kind:'generated',source,input}` in a prepared envelope. `input` contains the versioned identity, canonical content hash and captured JSON data. It is persisted for exact reopening; metadata GET responses and initial Agent prompts omit it. Source preparation runs once per Artifact in an input capture, before tickets are created. Reconnecting tools validates the saved data without rerunning preparation. See [generated Artifacts](generated-artifacts.md).
 
 The Artifact Runner creates scoped Viewer entry-point tools such as `read_why`, `read_spec`, `list_tests`, and `read_tests`. Having the entire repo available as execution input does not grant an Agent visibility into every Artifact. Agent review requires validated content observations of every supplied Artifact, a real Provider response, and a valid structured result.
 
@@ -295,9 +283,9 @@ Credentials come from Pi's supported Provider environment variables or explicit 
 
 `createBroker({repoPath,stateDir,repoId,executors?})` provides `submit`, `run`, `getRun`, `listRuns`, `getRequest`, `claimHuman`, `executeHumanTool`, `completeHuman`, `cancel`, `failRun`, `reconcile`, and `close`.
 
-- `submit({mode,requesterId,criticId?,reviewRequests?})` captures input, validates requirements, persists the Run, and returns its Handle. It does not start execution.
+- `submit({requesterId,criticId?,reviewRequests?})` captures input, validates requirements, persists the Run, and returns its Handle. It does not start execution.
 - `run(runId,{signal?,onStarted?})` claims that Run transactionally. One live worker owns a Run; different Runs execute concurrently. Ownership stores PID, process identity and a token. Opening or closing another client never claims or cancels it.
-- CLI submission starts a detached worker with private IPC for startup only. It exposes no listening server. The worker exits after completion or a copy-mode Human wait once independent queued work and notifications have settled. `status --wait` polls stored state.
+- CLI submission starts a detached worker with private IPC for startup only. It exposes no listening server. The worker exits after completion and keeps monitoring during Human waiting. `status --wait` polls stored state.
 - Wait timeout returns exit 3 with the same Handle and leaves the worker running. `cancel` records ERROR and requests worker cancellation. Dead ownership is reconciled when records are inspected; there is no automatic retry or unseen background recovery service. `resume` can start persisted, unowned queued work.
 - Normal termination cancels the worker's subprocess groups. Forced process/host termination cannot guarantee cleanup of every external side effect or descendant; unfinished work is never inferred to have passed.
 
@@ -311,7 +299,7 @@ runs the project's environment scripts, and preflights its registered Human tool
 Only successful preparation confirms Claim. Local CLI and monitor actions use the
 same preparation contract. Preparation failure or cancellation releases only that
 attempt and returns a diagnostic to the reviewer; the request remains
-WAITING_HUMAN with no semantic verdict and no request ERROR. Cached bytes are kept.
+WAITING_HUMAN with no semantic verdict and no request ERROR.
 
 Try Claim stores an attempt ID, reviewer, and expiry (two minutes by default), and
 is renewed during preparation. Begin, renew, confirmation, and release compare
@@ -349,27 +337,22 @@ They use the reviewer's allowlisted environment and external output/tmp paths,
 with bounded diagnostics. Provider credentials and Node preload hooks are excluded.
 Checks diagnose external dependencies; CCDD does not automatically install them.
 
-The optional authenticated review server serves one existing project store and
-copy-mode TS snapshots. It does not execute reviewer tools. Its GET routes use
-read-only stored definitions and snapshot reads; POST routes delegate assignment
-and result actions to the Broker. Remote clients run actual checks and tools and
-return authenticated preparation/launch reports. These reports are cooperative
-reviewer assertions, never fabricated semantic evidence or proof of a hostile
-client's execution. Only the confirmed claimant can submit a Human verdict.
+The worker persists WAITING_HUMAN, invokes registered alarms, and records delivery. A local inbox writes to `stateDir/human-inbox.jsonl`; alarm failure causes ERROR.
 
-The worker persists WAITING_HUMAN, invokes registered alarms, and records confirmed delivery. A registered local inbox writes `stateDir/human-inbox.jsonl`. It is a local file alarm, not an email, push notification or delivery acknowledgement by a person. Alarm failure causes ERROR.
-
-Copy-mode waiting and owner release are coordinated transactionally. After the worker exits, another CLI process can inspect Artifacts, claim the request, and submit `{reviewerId,result:{verdict,summary,evidence}}`. Only the claimant may complete it and only once. Input integrity is revalidated at completion. A result recomputes dependency readiness and the CLI starts a new request worker, reusing the originally saved execution configuration.
+Human waiting retains the monitoring worker. Another local CLI process can
+inspect Artifacts, claim the request, and submit
+`{reviewerId,result:{verdict,summary,evidence}}`. Only the claimant may complete
+it and only once. Input integrity is revalidated at completion, and the existing
+worker continues newly ready reviews using its saved execution configuration.
 
 Human tool execution requires the active claimant and a WAITING_HUMAN request. The Broker reopens and validates the recorded workspace, matches stored Artifact definitions against its config, resolves registered tools, and validates workspace/claim again after execution. Only safe tool name, Artifact ID and operation metadata are persisted. Launch errors do not become RED or complete the review; input mutation invalidates the review with ERROR. Human result submission requires a nonempty summary and at least one nonblank evidence entry.
 
-Lock-mode waiting keeps its worker and input monitoring alive. Human completion requires a live owner. Changes or owner death invalidate the review. Result files and notification output must be outside the locked workspace.
+Human waiting keeps its worker and input monitoring alive. Human completion requires a live owner. Changes or owner death invalidate the review. Result files and notification output must be outside the reviewed workspace.
 
-An idle lock wait uses the live filesystem observer and periodic metadata checks;
+An idle Human wait uses the live filesystem observer and periodic metadata checks;
 it does not perform a full content scan on each Broker scheduling iteration.
 Under the default content policy, full content checks remain at acquisition,
-execution/notification boundaries, explicit Human actions, result submission and
-copy-mode pause before ownership release. Metadata-policy input uses complete
+execution/notification boundaries, explicit Human actions, and result submission. Metadata-policy input uses complete
 metadata and structure checks at these boundaries after its initial full capture.
 Human waiting time alone is not an execution boundary.
 
@@ -382,7 +365,7 @@ unchanged. Closing, cancellation, or invalidation stops fallback scheduling.
 
 ## Doctor
 
-`diagnoseProject({repoPath,repoId,mode='copy',stateDir?,criticId?,executors,signal?,onEvent?})` returns `{ok,status:'READY'|'NOT_READY',repoId,mode,snapshotHash,scope,checkedAt,checks}`. It reads current definitions and validates registered project tool preflight without calling their execute functions. Legacy JSON retains its original built-in Viewer readiness checks. Exact Agent profiles are deduplicated; runtime path checks remain per Critic.
+`diagnoseProject({repoPath,repoId,stateDir?,criticId?,executors,signal?,onEvent?})` returns `{ok,status:'READY'|'NOT_READY',repoId,snapshotHash,scope,checkedAt,checks}`. It reads current definitions and validates registered project tool preflight without calling their execute functions. Legacy JSON retains its original built-in Viewer readiness checks. Exact Agent profiles are deduplicated; runtime path checks remain per Critic.
 
 The Agent readiness probe uses the same Provider/model/reasoning and Pi Agent execution path with a random nonce Artifact in a private diagnostic workspace. It never writes into the original or shared review input. READY requires the correct nonce and audited tool read. This private diagnostic tool is not a project registration and does not require the default library. The report separately records diagnostic-only Artifact verification and `projectToolsExecuted: false`; use `tools check --execute` to exercise a project tool. Runtime diagnosis starts Node and checks paths, without executing project tests. Human diagnosis checks registration without sending notifications. No Run, semantic verdict or review history is created. READY describes the diagnostic moment, not future availability or Critic correctness.
 
@@ -399,15 +382,15 @@ v0.5.1 updates Pi to 0.85.1 and creates fresh demos in demo-v5.1 using openai-co
 
 ## Local monitor
 
-`ccdd monitor` starts an optional loopback web server. It discovers existing stores under CCDD_STATE_HOME (or the standard local state home) and accepts explicitly selected stores. Project identity is based on the canonical state directory, so separate histories and projects sharing a repo label do not collide. Missing sources do not hide copied review history.
+`ccdd monitor` starts an optional loopback web server. It discovers existing stores under CCDD_STATE_HOME (or the standard local state home) and accepts explicitly selected stores. Project identity is based on the canonical state directory, so separate histories and projects sharing a repo label do not collide. Missing sources do not hide recorded review history.
 
-The observation store opens SQLite read-only and never calls Broker getters that reconcile ownership. Stored status and process-liveness observations remain separate. A dead worker can be shown as missing without rewriting a request to ERROR. Human copy waiting without a worker is normal. No reviews, diagnoses, notifications, claims, Provider calls, user config imports or registered tool functions start when viewing the monitor. Human tool buttons and forms come from stored metadata.
+The observation store opens SQLite read-only and never calls Broker getters that reconcile ownership. Stored status and process-liveness observations remain separate. A dead worker can be shown as missing without rewriting a request to ERROR. Human waiting requires a live monitoring worker. No reviews, diagnoses, notifications, claims, Provider calls, user config imports or registered tool functions start when viewing the monitor. Human tool buttons and forms come from stored metadata.
 
 The Vue 3/TypeScript frontend is built with Vite and bundled in the npm package. A project picker scopes a four-column board: requested (QUEUED/BLOCKED/unclaimed Human), running (RUNNING/claimed Human), success (GREEN), failure (RED/ERROR). Blocked successors retain their own waiting state and a clear blocked-by-failure reason. Each column has independently bounded pagination and counts so recent completed requests cannot hide older active work. Card details show the instruction, result, existing lifecycle times, and scoped Artifact viewer.
 
 The overview returns bounded, paginated request summaries and project/filter counts. Request detail projects only the instruction, execution profile, result summary/evidence, safe lifecycle times, and Artifact references with validated optional group composition; it excludes credentials, worker ownership tokens, raw provider logs, and snapshot metadata dumps. The monitor derives this safe projection from persisted metadata without evaluating config. Graph group nodes show their own Critics and offer member navigation; membership is displayed separately from the dependency edges. Existing timestamps describe post-workspace-preparation acceptance; no missing timing is inferred.
 
-Artifact browsing reuses scoped Viewer tools and validates the recorded workspace before and after each read. Browser reads do not count as Agent or Human review observations. Changed lock inputs or missing copies fail explicitly instead of showing current source as the reviewed snapshot. File and directory pagination retain the Artifact contract.
+Artifact browsing reuses scoped Viewer tools and validates the recorded workspace before and after each read. Browser reads do not count as Agent or Human review observations. Changed or missing workspace inputs fail explicitly instead of showing current source as the reviewed snapshot. File and directory pagination retain the Artifact contract.
 
 The server listens on 127.0.0.1 and validates request Host/origin. It serves bundled local assets without CDN or CORS. Artifact and stored text are rendered as text. GET remains observational. Explicit JSON POST routes perform claim, registered Human tool calls, and GREEN/RED result submission through the Broker. Requests require the same origin, a browser-owned HttpOnly SameSite cookie, and a CSRF token. Reviewer identity is derived from that opaque cookie and cannot be supplied as a POST field; it survives server restarts. The same browser can continue its claim, while another browser cannot impersonate it. Clearing browser cookies loses that browser identity; this is a local workflow, not a multi-user login system.
 
@@ -415,11 +398,11 @@ Human completion shares the CLI's saved execution configuration and detached wor
 
 ## Artifact tool diagnostics
 
-`ccdd tools check [--repo PATH] [--artifact ID] [--for agent|human] [--tool NAME]` lists and checks registered capabilities without a Provider call, review history, verdict, notification, or program launch. `--execute` requires a selected Artifact, audience and tool; `--args JSON` supplies that tool's schema-validated arguments. Both preparation and actual execution use the same scoped registries as reviews. Copy is the default workspace mode; lock is explicit. Failed checks return NOT_READY and a nonzero exit code.
+`ccdd tools check [--repo PATH] [--artifact ID] [--for agent|human] [--tool NAME]` lists and checks registered capabilities without a Provider call, review history, verdict, notification, or program launch. `--execute` requires a selected Artifact, audience and tool; `--args JSON` supplies that tool's schema-validated arguments. Both preparation and actual execution use the same scoped registries as reviews. Diagnostics observe the supplied workspace in place. Failed checks return NOT_READY and a nonzero exit code.
 
 Selecting a group with `--artifact` lists and preflights its deduplicated leaf tools. Actual `--execute` requires a leaf Artifact ID so one bound tool is selected explicitly; a group itself is not executable.
 
-Preparation confirms declarations, paths and registered preflight results. A missing custom preflight is labeled as registration confirmed but execution unverified. Actual execution confirms a schema-validated tool result; a GUI app's rendered content and a person's reading are not inferred. A launcher copy is retained so an asynchronously opened desktop viewer keeps its input after the command exits. Copies are revalidated and normal immutable cache lifetime rules apply. `doctor` remains the whole-project readiness command, including Human tool preflight without launching applications.
+Preparation confirms declarations, paths and registered preflight results. A missing custom preflight is labeled as registration confirmed but execution unverified. Actual execution confirms a schema-validated tool result; a GUI app's rendered content and a person's reading are not inferred. An asynchronously opened desktop viewer reads the supplied workspace. Keep it unchanged while inspecting it; diagnostic monitoring ends when the command returns. `doctor` remains the whole-project readiness command, including Human tool preflight without launching applications.
 
 Every diagnostic check identifies its stage: `snapshot` captures input, `preflight` loads configuration and checks registration and arguments, `execute` invokes the tool, `normalize-result` validates the returned content, and `input-integrity` confirms that reviewed input remained unchanged. Failures include a safe code and message by default, including in `--json` output. Runner-owned validation messages identify rejected image paths and malformed results. Recognized filesystem and timeout codes use fixed explanations; custom exception text, failed custom preflight messages, subprocess output, credentials, and environment values are not copied into failure diagnostics.
 

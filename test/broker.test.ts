@@ -1,3 +1,4 @@
+import { runUntilSettled } from './helpers/run.js';
 import test, { type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -35,12 +36,11 @@ test('Human tools require the active claimant, read the snapshot, and never subm
   const { repoPath, open } = await fixture(t, config);
   const broker = open(createExecutorRegistry({ alarmMethods: [async () => {}] }));
   const run = await broker.submit({ requesterId: 'builder', criticId: 'spec-why' });
-  await broker.run(run.id);
+  await runUntilSettled(broker, run.id);
   const requestId = run.requests[0].id;
   await assert.rejects(broker.executeHumanTool(requestId, { reviewerId: 'alice', toolName: 'read_why' }), /reviewer who claimed/);
   await broker.claimHuman(requestId, 'alice');
   await assert.rejects(broker.executeHumanTool(requestId, { reviewerId: 'bob', toolName: 'read_why' }), /reviewer who claimed/);
-  await fs.writeFile(path.join(repoPath, 'why.md'), 'Builder has a newer version.');
   const result = await broker.executeHumanTool(requestId, { reviewerId: 'alice', toolName: 'read_why' });
   assert.ok('content' in result);
   assert.equal(result.content, 'Current workspace purpose.');
@@ -54,13 +54,13 @@ test('Human tools require the active claimant, read the snapshot, and never subm
   await assert.rejects(broker.executeHumanTool(requestId, { reviewerId: 'alice', toolName: 'read_why' }), /not waiting/);
 });
 
-test('Human tools reject a changed copy without executing and preserve ERROR separately from a verdict', async t => {
+test('Human tools reject a changed workspace without executing and preserve ERROR separately from a verdict', async t => {
   const config = defaults();
   config.critics[0].profile = { kind: 'human' };
   const { open } = await fixture(t, config);
   const broker = open(createExecutorRegistry({ alarmMethods: [async () => {}] }));
   const run = await broker.submit({ requesterId: 'builder', criticId: 'spec-why' });
-  await broker.run(run.id);
+  await runUntilSettled(broker, run.id);
   const requestId = run.requests[0].id;
   await broker.claimHuman(requestId, 'alice');
   const target = path.join(run.workspace.path, 'why.md');
@@ -77,7 +77,7 @@ test('Human commands validate acquisition once and retain a separate full check 
   const { open } = await fixture(t, config);
   const broker = open(createExecutorRegistry({ alarmMethods: [async () => {}] }));
   const run = await broker.submit({ requesterId: 'builder', criticId: 'spec-why' });
-  await broker.run(run.id);
+  await runUntilSettled(broker, run.id);
   const requestId = run.requests[0].id;
   await broker.claimHuman(requestId, 'alice');
   let scans = 0;
@@ -107,7 +107,7 @@ test('Human completion rejects changed input during acquisition without storing 
   const { open } = await fixture(t, config);
   const broker = open(createExecutorRegistry({ alarmMethods: [async () => {}] }));
   const run = await broker.submit({ requesterId: 'builder', criticId: 'spec-why' });
-  await broker.run(run.id);
+  await runUntilSettled(broker, run.id);
   const requestId = run.requests[0].id;
   await broker.claimHuman(requestId, 'alice');
   const target = path.join(run.workspace.path, 'why.md');
@@ -123,7 +123,7 @@ test('Human completion rechecks authoritative status after asynchronous acquisit
   const { open } = await fixture(t, config);
   const broker = open(createExecutorRegistry({ alarmMethods: [async () => {}] }));
   const run = await broker.submit({ requesterId: 'builder', criticId: 'spec-why' });
-  await broker.run(run.id);
+  await runUntilSettled(broker, run.id);
   const requestId = run.requests[0].id;
   await broker.claimHuman(requestId, 'alice');
   const reviewer = open(undefined, { workspaceAdapter: {
@@ -160,7 +160,7 @@ export default {
 `);
   const broker = open(createExecutorRegistry({ alarmMethods: [async () => {}] }));
   const run = await broker.submit({ requesterId: 'builder', criticId: 'custom-human' });
-  await broker.run(run.id);
+  await runUntilSettled(broker, run.id);
   const requestId = run.requests[0].id;
   await broker.claimHuman(requestId, 'alice');
   await assert.rejects(broker.executeHumanTool(requestId, { reviewerId: 'alice', toolName: 'mutate_spec' }));
@@ -179,7 +179,7 @@ test('a Human program that mutates its reviewed Artifact invalidates the review 
   const { open } = await fixture(t, config);
   const broker = open(createExecutorRegistry({ alarmMethods: [async () => {}] }));
   const run = await broker.submit({ requesterId: 'builder', criticId: 'spec-why' });
-  await broker.run(run.id);
+  await runUntilSettled(broker, run.id);
   const requestId = run.requests[0].id;
   await broker.claimHuman(requestId, 'alice');
   await assert.rejects(broker.executeHumanTool(requestId, { reviewerId: 'alice', toolName: 'open_why' }));
@@ -228,7 +228,7 @@ function abortableGate(signal: AbortSignal) {
   });
 }
 
-test('submission persists a handle without executing; a separate broker runs the copied current workspace sequentially', async t => {
+test('submission persists a handle without executing; a separate broker runs the supplied workspace sequentially', async t => {
   const { repoPath, open } = await fixture(t);
   await fs.writeFile(path.join(repoPath, 'untracked.txt'), 'New input without any Git repository or commit.');
   const calls: ExecutionCall[] = [];
@@ -240,17 +240,16 @@ test('submission persists a handle without executing; a separate broker runs the
     return green;
   });
   const submitter = open(executors);
-  const record = await submitter.submit({ requesterId: 'builder', mode: 'copy' });
+  const record = await submitter.submit({ requesterId: 'builder' });
   assert.equal(record.status, 'QUEUED');
   assert.deepEqual(record.scope, { kind: 'graph' });
   assert.deepEqual(record.requests.map(request => request.status), ['QUEUED', 'BLOCKED', 'BLOCKED']);
   assert.equal(calls.length, 0);
   await submitter.close();
-  await fs.writeFile(path.join(repoPath, 'why.md'), 'Builder can immediately continue editing the original.');
   const reader = open();
   assert.equal(reader.getRun(record.id).status, 'QUEUED');
   const worker = open(executors);
-  await worker.run(record.id);
+  await runUntilSettled(worker, record.id);
   const completed = reader.getRun(record.id);
   assert.equal(completed.status, 'GREEN', JSON.stringify(completed));
   assert.deepEqual(calls.map(call => call.request.criticId), ['spec-why', 'tests-spec', 'implementation-tests']);
@@ -264,7 +263,7 @@ test('submission persists a handle without executing; a separate broker runs the
   assert.equal(reader.listRuns()[0].id, completed.id);
 });
 
-test('same content shares one copied workspace across concurrent reviews while requests and output directories remain independent', async t => {
+test('concurrent reviews share the supplied workspace across concurrent reviews while requests and output directories remain independent', async t => {
   const { open } = await fixture(t);
   const entered: ExecutionCall[] = [];
   let release!: () => void;
@@ -297,7 +296,7 @@ test('selected Runtime Critic works without unrelated Agent availability and exe
   assert.deepEqual(broker.listRuns(), []);
   checks.length = 0;
   const initial = await broker.submit({ requesterId: 'builder', criticId: 'implementation-tests' });
-  await broker.run(initial.id);
+  await runUntilSettled(broker, initial.id);
   const completed = broker.getRun(initial.id);
   assert.equal(completed.status, 'GREEN', JSON.stringify(completed));
   assert.deepEqual(completed.scope, { kind: 'critic', criticId: 'implementation-tests' });
@@ -310,7 +309,7 @@ test('selected Runtime Critic works without unrelated Agent availability and exe
   assert.deepEqual(checks, ['implementation-tests']);
   await fs.writeFile(path.join(repoPath, 'implementation/example.mjs'), 'export const answer = 41;');
   const broken = await broker.submit({ requesterId: 'builder', criticId: 'implementation-tests' });
-  await broker.run(broken.id);
+  await runUntilSettled(broker, broken.id);
   assert.equal(broker.getRun(broken.id).status, 'RED');
   assert.notEqual(initial.snapshotHash, broken.snapshotHash);
   assert.equal(broker.getRun(initial.id).status, 'GREEN');
@@ -333,7 +332,7 @@ test('unknown selectors and changed explicit envelopes are rejected before capab
   assert.deepEqual(checks, []);
   assert.deepEqual(broker.listRuns(), []);
   const accepted = await broker.submit({ requesterId: 'builder', criticId: 'tests-spec', reviewRequests: selected });
-  await broker.run(accepted.id);
+  await runUntilSettled(broker, accepted.id);
   assert.equal(broker.getRun(accepted.id).status, 'GREEN');
 });
 
@@ -342,7 +341,7 @@ test('RED blocks the remaining chain and executor errors stay distinct from a ve
   const calls: string[] = [];
   const broker = open(registry(async request => { calls.push(request.criticId); return red; }));
   const record = await broker.submit({ requesterId: 'builder' });
-  await broker.run(record.id);
+  await runUntilSettled(broker, record.id);
   const completed = broker.getRun(record.id);
   assert.equal(completed.status, 'RED');
   assert.deepEqual(calls, ['spec-why']);
@@ -350,7 +349,7 @@ test('RED blocks the remaining chain and executor errors stay distinct from a ve
   assert.match(present(completed.requests[2].blockedReason), /spec-why returned RED/);
   const failed = open(registry(async () => { throw new Error('Provider unavailable.'); }));
   const next = await failed.submit({ requesterId: 'builder' });
-  await failed.run(next.id);
+  await runUntilSettled(failed, next.id);
   assert.equal(failed.getRun(next.id).status, 'ERROR');
   assert.equal(failed.getRun(next.id).requests[0].result, null);
   assert.match(present(failed.getRun(next.id).requests[0].error), /Provider unavailable/);
@@ -365,7 +364,7 @@ test('a lock workspace change anywhere aborts execution and rejects GREEN, inclu
     await abortableGate(signal);
     return green;
   }));
-  const record = await broker.submit({ mode: 'lock', requesterId: 'builder' });
+  const record = await broker.submit({ requesterId: 'builder' });
   const running = broker.run(record.id);
   await until(() => entered, Boolean);
   const outsideArtifacts = path.join(repoPath, 'new-file.txt');
@@ -381,15 +380,15 @@ test('a changed lock workspace between submission and worker start fails before 
   const { repoPath, open } = await fixture(t);
   let calls = 0;
   const broker = open(registry(async () => { calls += 1; return green; }));
-  const record = await broker.submit({ mode: 'lock', requesterId: 'builder' });
+  const record = await broker.submit({ requesterId: 'builder' });
   const file = path.join(repoPath, 'why.md');
   await fs.writeFile(file, 'changed'); await fs.writeFile(file, 'Current workspace purpose.');
-  await broker.run(record.id);
+  await runUntilSettled(broker, record.id);
   assert.equal(broker.getRun(record.id).status, 'ERROR');
   assert.equal(calls, 0);
 });
 
-test('tampering with shared copied inputs invalidates all active reviews instead of caching verdicts', async t => {
+test('tampering with shared workspace inputs invalidates all active reviews instead of caching verdicts', async t => {
   const { open } = await fixture(t);
   let started = 0;
   const executors = registry(async (_request, { signal }) => { started += 1; await abortableGate(signal); return green; });
@@ -402,7 +401,7 @@ test('tampering with shared copied inputs invalidates all active reviews instead
   await Promise.all(running);
   for (const record of [one.getRun(first.id), two.getRun(second.id)]) {
     assert.equal(record.status, 'ERROR');
-    assert.equal(record.requests[0].errorCode, 'WORKSPACE_CACHE_TAMPERED');
+    assert.equal(record.requests[0].errorCode, 'WORKSPACE_CHANGED');
   }
 });
 
@@ -426,19 +425,18 @@ test('opening or closing a read-only broker leaves active work intact and a dupl
   assert.equal(reader.getRun(record.id).status, 'GREEN');
 });
 
-test('Human copy wait persists without a worker and separate clients claim, complete and resume the chain', async t => {
+test('Human waiting retains its worker while separate clients claim and complete the chain', async t => {
   const config = defaults(); config.critics[0].profile = { kind: 'human' };
   const { open } = await fixture(t, config);
   const notifications: string[] = []; const executed: string[] = [];
   const executors = { ...registry(async request => { executed.push(request.criticId); return green; }), notifyHuman: async (request: ReviewRequest) => notifications.push(request.id) };
   const worker = open(executors);
   const record = await worker.submit({ requesterId: 'builder' });
-  await worker.run(record.id);
+  await runUntilSettled(worker, record.id);
   const waiting = worker.getRun(record.id);
   assert.equal(waiting.status, 'WAITING_HUMAN');
-  assert.equal(waiting.owner, null);
+  assert.ok(waiting.owner);
   assert.deepEqual(notifications, [waiting.requests[0].id]);
-  await worker.close();
   const alice = open(); const bob = open();
   const requestId = waiting.requests[0].id;
   await assert.rejects(alice.completeHuman(requestId, { reviewerId: 'alice', result: green }), /claimed/);
@@ -452,8 +450,7 @@ test('Human copy wait persists without a worker and separate clients claim, comp
   assert.equal(completions.filter(value => value.status === 'fulfilled').length, 1);
   const winner = alice.getRequest(requestId);
   if (winner.status === 'GREEN') {
-    assert.equal(alice.getRun(record.id).status, 'QUEUED');
-    const resume = open(executors); await resume.run(record.id);
+    await until(() => alice.getRun(record.id), value => value.status === 'GREEN' && !value.owner);
     assert.equal(alice.getRun(record.id).status, 'GREEN');
     assert.deepEqual(executed, ['tests-spec', 'implementation-tests']);
   } else {
@@ -467,7 +464,7 @@ test('Human lock wait keeps its monitoring worker and rejects changes during the
   const config = defaults(); config.critics[0].profile = { kind: 'human' };
   const { repoPath, open } = await fixture(t, config);
   const worker = open({ ...registry(async () => green), notifyHuman: async () => {} });
-  const record = await worker.submit({ mode: 'lock', requesterId: 'builder' });
+  const record = await worker.submit({ requesterId: 'builder' });
   const running = worker.run(record.id);
   const waiting = await until(() => worker.getRun(record.id), value => value.requests[0].notifiedAt);
   assert.equal(waiting.status, 'WAITING_HUMAN');
@@ -490,7 +487,7 @@ test('idle Human lock waiting keeps monitoring active without repeating full con
       return { ...workspace, async assertUnchanged() { fullChecks++; return workspace.assertUnchanged(); } };
     },
   } });
-  const record = await worker.submit({ mode: 'lock', requesterId: 'idle-fixture', criticId: 'spec-why' });
+  const record = await worker.submit({ requesterId: 'idle-fixture', criticId: 'spec-why' });
   const running = worker.run(record.id);
   try {
     await until(() => worker.getRun(record.id), value => value.requests[0].notifiedAt);
@@ -509,7 +506,7 @@ for (const mutation of ['edit-and-restore', 'create-and-delete'] as const) {
     const config = defaults(); config.critics[0].profile = { kind: 'human' };
     const { repoPath, open } = await fixture(t, config);
     const worker = open({ ...registry(async () => { throw new Error('No Artifact execution in this fixture.'); }), notifyHuman: async () => {} });
-    const record = await worker.submit({ mode: 'lock', requesterId: 'mutation-fixture', criticId: 'spec-why' });
+    const record = await worker.submit({ requesterId: 'mutation-fixture', criticId: 'spec-why' });
     const running = worker.run(record.id);
     try {
       const waiting = await until(() => worker.getRun(record.id), value => value.requests[0].notifiedAt);
@@ -536,7 +533,7 @@ test('Human lock completion can arrive through another broker while the original
   const config = defaults(); config.critics[0].profile = { kind: 'human' };
   const { open } = await fixture(t, config);
   const worker = open({ ...registry(async () => green), notifyHuman: async () => {} });
-  const record = await worker.submit({ mode: 'lock', requesterId: 'builder' });
+  const record = await worker.submit({ requesterId: 'builder' });
   const running = worker.run(record.id);
   const waiting = await until(() => worker.getRun(record.id), value => value.requests[0].notifiedAt);
   const reviewer = open(); await reviewer.claimHuman(waiting.requests[0].id, 'alice');
@@ -552,7 +549,7 @@ test('Human alarm registration and actual delivery are required and failed deliv
   await assert.rejects(noAlarm.submit({ requesterId: 'builder' }), /alarm method/);
   const worker = open({ ...registry(async () => green), notifyHuman: async () => { throw new Error('Alarm delivery failed.'); } });
   const record = await worker.submit({ requesterId: 'builder' });
-  await worker.run(record.id);
+  await runUntilSettled(worker, record.id);
   const failed = worker.getRun(record.id);
   assert.equal(failed.status, 'ERROR');
   assert.match(present(failed.requests[0].error), /Alarm delivery failed/);
@@ -595,7 +592,7 @@ test('a crashed separate worker is reconciled as ERROR while another client rema
   const moduleUrl = new URL('../src/broker/index.js', import.meta.url).href;
   const script = `import {createBroker} from ${JSON.stringify(moduleUrl)};
     const broker=createBroker({repoPath:${JSON.stringify(repoPath)},stateDir:${JSON.stringify(stateDir)},executors:{canExecute:()=>({ok:true}),execute:async(_request,{signal})=>{process.stdout.write('EXECUTING\\n');await new Promise((resolve,reject)=>signal.addEventListener('abort',()=>reject(signal.reason),{once:true}));}}});
-    const record=await broker.submit({mode:'lock',requesterId:'crash-test'});
+    const record=await broker.submit({requesterId:'crash-test'});
     process.stdout.write(record.id+'\\n');await broker.run(record.id);`;
   const child = spawn(process.execPath, ['--input-type=module', '-e', script], { stdio: ['ignore', 'pipe', 'pipe'] });
   let output = ''; let errors = '';
@@ -618,7 +615,7 @@ test('a crashed separate worker is reconciled as ERROR while another client rema
 test('completed legacy scope-less records are readable without replay and nested state is rejected without creating it', async t => {
   const { repoPath, stateDir, open } = await fixture(t);
   const broker = open(registry(async () => green));
-  const record = await broker.submit({ requesterId: 'builder' }); await broker.run(record.id); await broker.close();
+  const record = await broker.submit({ requesterId: 'builder' }); await runUntilSettled(broker, record.id); await broker.close();
   const db = new DatabaseSync(path.join(stateDir, 'broker.sqlite'));
   const stored = JSON.parse(String(present(db.prepare('SELECT data FROM runs WHERE id = ?').get(record.id)).data)) as Record<string, unknown>;
   delete stored.scope; delete stored.workspace; delete stored.graph;
@@ -632,97 +629,6 @@ test('completed legacy scope-less records are readable without replay and nested
 });
 
 
-test('Human completion during copied-input validation keeps the original owner executing its newly queued successor', async t => {
-  const config = defaults(); config.critics[0].profile = { kind: 'human' };
-  const { open } = await fixture(t, config);
-  const reviewer = open();
-  let record!: RunView;
-  let paused = false;
-  let entered!: () => void;
-  const atValidation = new Promise<void>(resolve => { entered = resolve; });
-  let release!: () => void;
-  const gate = new Promise<void>(resolve => { release = resolve; });
-  const executors = { ...registry(async () => green), notifyHuman: async () => {} };
-  const worker = open(executors, { workspaceAdapter: {
-    prepareWorkspace,
-    async reopenWorkspace(...args: Parameters<typeof reopenWorkspace>) {
-      const workspace = await reopenWorkspace(...args);
-      return { ...workspace, async assertUnchanged() {
-        const state = record && reviewer.getRun(record.id);
-        if (!paused && state?.status === 'WAITING_HUMAN' && state.requests[0].notifiedAt) {
-          paused = true; entered(); await gate;
-        }
-        return workspace.assertUnchanged();
-      } };
-    },
-  } });
-  record = await worker.submit({ requesterId: 'builder' });
-  let startCalls = 0;
-  const running = worker.run(record.id, { onStarted: ({ runId, pid }) => {
-    assert.equal(runId, record.id); assert.equal(pid, process.pid); startCalls += 1;
-  } });
-  await atValidation;
-  await reviewer.claimHuman(record.requests[0].id, 'alice');
-  await reviewer.completeHuman(record.requests[0].id, { reviewerId: 'alice', result: green });
-  const competing = open(executors);
-  await assert.rejects(competing.run(record.id, { onStarted: () => { startCalls += 1; } }), { code: 'RUN_ALREADY_OWNED' });
-  release(); await running;
-  assert.equal(reviewer.getRun(record.id).status, 'GREEN');
-  assert.equal(startCalls, 1);
-});
-
-test('copy wait releases ownership before asynchronous cleanup, so an immediate Human response can start a new worker', async t => {
-  const config = defaults(); config.critics[0].profile = { kind: 'human' };
-  const { open } = await fixture(t, config);
-  const reviewer = open();
-  let record!: RunView;
-  let held = false;
-  let entered!: () => void;
-  const atCleanup = new Promise<void>(resolve => { entered = resolve; });
-  let release!: () => void;
-  const gate = new Promise<void>(resolve => { release = resolve; });
-  const executors = { ...registry(async () => green), notifyHuman: async () => {} };
-  const worker = open(executors, { workspaceAdapter: {
-    prepareWorkspace,
-    async reopenWorkspace(...args: Parameters<typeof reopenWorkspace>) {
-      const workspace = await reopenWorkspace(...args);
-      return { ...workspace, async close() {
-        if (!held && reviewer.getRun(record.id).status === 'WAITING_HUMAN') { held = true; entered(); await gate; }
-        await workspace.close();
-      } };
-    },
-  } });
-  record = await worker.submit({ requesterId: 'builder' });
-  const waitingWorker = worker.run(record.id);
-  await atCleanup;
-  assert.equal(reviewer.getRun(record.id).owner, null);
-  await reviewer.claimHuman(record.requests[0].id, 'alice');
-  await reviewer.completeHuman(record.requests[0].id, { reviewerId: 'alice', result: green });
-  const resumed = worker.run(record.id);
-  release(); await Promise.all([waitingWorker, resumed]);
-  assert.equal(reviewer.getRun(record.id).status, 'GREEN');
-  assert.equal(reviewer.getRun(record.id).owner, null);
-});
-
-test('copied Human review and its successor remain usable after the original builder workspace is deleted', async t => {
-  const config = defaults(); config.critics[0].profile = { kind: 'human' };
-  const { repoPath, stateDir, open } = await fixture(t, config);
-  const executors = { ...registry(async () => green), notifyHuman: async () => {} };
-  const initial = open(executors);
-  const record = await initial.submit({ requesterId: 'temporary-builder' });
-  await initial.run(record.id); await initial.close();
-  const identity = readStateContext(stateDir);
-  assert.equal(identity.repoPath, await fs.realpath(repoPath));
-  assert.equal(identity.repoId, 'demo');
-  await fs.rm(repoPath, { recursive: true });
-  const reviewer = open();
-  assert.equal(reviewer.getRun(record.id).status, 'WAITING_HUMAN');
-  await reviewer.claimHuman(record.requests[0].id, 'alice');
-  await reviewer.completeHuman(record.requests[0].id, { reviewerId: 'alice', result: green });
-  const worker = open(executors); await worker.run(record.id);
-  assert.equal(reviewer.getRun(record.id).status, 'GREEN');
-  await assert.rejects(worker.submit({ requesterId: 'missing-source' }), { code: 'ENOENT' });
-});
 
 
 test('executor workspace validation rejects credentials in source before any snapshot is created', async t => {
@@ -857,7 +763,7 @@ test('RED and local ERROR block only dependent branches while independent runnin
   }
 });
 
-test('multiple Human copy reviews pause together and each completion can resume its own ready branch before the final join', async t => {
+test('multiple Human reviews retain monitoring and each completion advances its own ready branch before the final join', async t => {
   const config = branchConfig();
   config.critics[1].profile = { kind: 'human' }; config.critics[2].profile = { kind: 'human' };
   config.artifacts.leaf = { type: 'markdown', path: 'spec.md' };
@@ -867,9 +773,9 @@ test('multiple Human copy reviews pause together and each completion can resume 
   const executors = { ...registry(async request => { executions.push(request.criticId); return green; }), notifyHuman: async (request: ReviewRequest) => { notifications.push(request.criticId); } };
   const initial = open(executors);
   const submitted = await initial.submit({ requesterId: 'human-dag' });
-  await initial.run(submitted.id);
+  await runUntilSettled(initial, submitted.id);
   const waiting = initial.getRun(submitted.id);
-  assert.equal(waiting.owner, null);
+  assert.ok(waiting.owner);
   assert.deepEqual(new Set(notifications), new Set(['left', 'right']));
   assert.equal(waiting.requests.filter(request => request.status === 'WAITING_HUMAN').length, 2);
   const left = present(waiting.requests.find(request => request.criticId === 'left'));
@@ -877,13 +783,13 @@ test('multiple Human copy reviews pause together and each completion can resume 
   const reviewer = open(); await reviewer.claimHuman(left.id, 'alice'); await reviewer.claimHuman(right.id, 'bob');
   await reviewer.completeHuman(left.id, { reviewerId: 'alice', result: green });
   assert.equal(reviewer.getRun(submitted.id).status, 'QUEUED');
-  const firstResume = open(executors); await firstResume.run(submitted.id);
+  const firstResume = open(executors); await runUntilSettled(firstResume, submitted.id);
   const partial = reviewer.getRun(submitted.id);
-  assert.equal(partial.status, 'WAITING_HUMAN'); assert.equal(partial.owner, null);
+  assert.equal(partial.status, 'WAITING_HUMAN'); assert.ok(partial.owner);
   assert.deepEqual(executions, ['left-child']);
   assert.equal(partial.requests[0].status, 'BLOCKED');
   await reviewer.completeHuman(right.id, { reviewerId: 'bob', result: green });
-  const finalResume = open(executors); await finalResume.run(submitted.id);
+  const finalResume = open(executors); await runUntilSettled(finalResume, submitted.id);
   assert.equal(reviewer.getRun(submitted.id).status, 'GREEN');
   assert.deepEqual(executions, ['left-child', 'join']);
   assert.equal(notifications.length, 2);
@@ -902,9 +808,11 @@ test('a slow Human alarm does not serialize independent execution or another Hum
   await until(() => broker.getRun(submitted.id), run => run.requests.find(request => request.criticId === 'independent')?.status === 'GREEN' && run.requests.find(request => request.criticId === 'right')?.notifiedAt);
   assert.ok(broker.getRun(submitted.id).owner);
   assert.equal(broker.getRun(submitted.id).requests.find(request => request.criticId === 'left')?.notifiedAt, null);
-  alarm.resolve(); await running;
-  assert.equal(broker.getRun(submitted.id).owner, null);
+  alarm.resolve();
+  await until(() => broker.getRun(submitted.id), value => value.requests.filter(request => request.notifiedAt).length === 2);
+  assert.ok(broker.getRun(submitted.id).owner);
   assert.equal(broker.getRun(submitted.id).requests.filter(request => request.status === 'WAITING_HUMAN' && request.notifiedAt).length, 2);
+  broker.cancel(submitted.id); await running;
 });
 
 test('cancel aborts all running sibling tasks and invalidates every unfinished dependency', async t => {
@@ -929,7 +837,7 @@ test('lock integrity failure invalidates pending Human branches while preserving
   const config = branchConfig(); config.critics[1].profile = { kind: 'human' }; config.critics[2].profile = { kind: 'human' };
   const { repoPath, open } = await fixture(t, config);
   const worker = open({ ...registry(async () => green), notifyHuman: async () => {} });
-  const run = await worker.submit({ requesterId: 'lock-dag', mode: 'lock' });
+  const run = await worker.submit({ requesterId: 'lock-dag', });
   const running = worker.run(run.id);
   const waiting = await until(() => worker.getRun(run.id), value => value.requests.filter(request => request.notifiedAt).length === 2);
   const reviewer = open(), left = present(waiting.requests.find(request => request.criticId === 'left'));
@@ -947,9 +855,9 @@ test('failed Human alarm leaves an unrelated delivered Human review claimable an
   const { open } = await fixture(t, config);
   const broker = open({ ...registry(async () => green), notifyHuman: async request => { if (request.criticId === 'left') throw new Error('Left alarm failed.'); } });
   const submitted = await broker.submit({ requesterId: 'alarm-branches' });
-  await broker.run(submitted.id);
+  await runUntilSettled(broker, submitted.id);
   const waiting = broker.getRun(submitted.id);
-  assert.equal(waiting.status, 'WAITING_HUMAN'); assert.equal(waiting.owner, null);
+  assert.equal(waiting.status, 'WAITING_HUMAN'); assert.ok(waiting.owner);
   assert.equal(waiting.requests.find(request => request.criticId === 'left')?.status, 'ERROR');
   const right = present(waiting.requests.find(request => request.criticId === 'right'));
   assert.equal(right.status, 'WAITING_HUMAN'); assert.ok(right.notifiedAt);
@@ -961,7 +869,7 @@ test('failed Human alarm leaves an unrelated delivered Human review claimable an
   assert.equal(result.requests[0].status, 'BLOCKED');
 });
 
-test('a dead copy worker with a notified Human and an executing sibling invalidates all unfinished work', async t => {
+test('a dead worker with a notified Human and an executing sibling invalidates all unfinished work', async t => {
   const config = branchConfig(); config.critics[2].profile = { kind: 'human' };
   const { repoPath, stateDir, open } = await fixture(t, config);
   const moduleUrl = new URL('../src/broker/index.js', import.meta.url).href;
@@ -969,7 +877,7 @@ test('a dead copy worker with a notified Human and an executing sibling invalida
     const broker=createBroker({repoPath:${JSON.stringify(repoPath)},stateDir:${JSON.stringify(stateDir)},executors:{
       canExecute:()=>({ok:true}),notifyHuman:async()=>{process.stdout.write('NOTIFIED\\n');},
       execute:async(_request,{signal})=>{process.stdout.write('EXECUTING\\n');await new Promise((resolve,reject)=>signal.addEventListener('abort',()=>reject(signal.reason),{once:true}));}}});
-    const run=await broker.submit({mode:'copy',requesterId:'copy-crash'});process.stdout.write(run.id+'\\n');await broker.run(run.id);`;
+    const run=await broker.submit({requesterId:'worker-crash'});process.stdout.write(run.id+'\\n');await broker.run(run.id);`;
   const child = spawn(process.execPath, ['--input-type=module', '-e', script], { stdio: ['ignore', 'pipe', 'pipe'] });
   let output = '', errors = '';
   child.stdout.on('data', value => { output += value; }); child.stderr.on('data', value => { errors += value; });
@@ -995,7 +903,7 @@ test('pending historical chains resume through explicit predecessor links and ol
     artifacts: [critic.target, ...critic.deps], profile: critic.profile, payload: critic.payload,
   })) };
   await fs.writeFile(path.join(repoPath, 'ccdd.config.json'), JSON.stringify(legacyConfig));
-  const captured = await prepareWorkspace({ repoPath, stateDir, mode: 'copy' });
+  const captured = await prepareWorkspace({ repoPath, stateDir, });
   const descriptor = captured.descriptor;
   const db = new DatabaseSync(path.join(stateDir, 'broker.sqlite'));
   try {
@@ -1009,7 +917,7 @@ test('pending historical chains resume through explicit predecessor links and ol
       db.prepare('UPDATE requests SET data=? WHERE id=?').run(JSON.stringify(historical), request.id);
     }
   } finally { db.close(); await captured.close(); }
-  const worker = open(executors); await worker.run(run.id);
+  const worker = open(executors); await runUntilSettled(worker, run.id);
   const waiting = worker.getRun(run.id);
   assert.deepEqual(waiting.scope, { kind: 'chain' }); assert.equal(waiting.graph, undefined);
   assert.equal(waiting.status, 'WAITING_HUMAN');
@@ -1017,7 +925,7 @@ test('pending historical chains resume through explicit predecessor links and ol
   const read = await worker.executeHumanTool(waiting.requests[0].id, { reviewerId: 'legacy-reviewer', toolName: 'read_spec' });
   assert.ok('content' in read); assert.equal(read.content, 'Current workspace specification.');
   await worker.completeHuman(waiting.requests[0].id, { reviewerId: 'legacy-reviewer', result: green });
-  await worker.run(run.id);
+  await runUntilSettled(worker, run.id);
   const finished = worker.getRun(run.id);
   assert.equal(finished.status, 'GREEN');
   assert.deepEqual(executions, ['tests-spec', 'implementation-tests']);

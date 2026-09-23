@@ -180,13 +180,13 @@ export async function verifyInstallation({ scratch, outputDirectory, packages, v
   assert.match((await command('npm', ['exec', '--offline', '--', 'ccdd-project', 'help'], { cwd: project, env: environment })).stdout, /CCDD Project/);
   assert.match((await command(cli, ['help'], { cwd: project, env: environment })).stdout, new RegExp(`^CCDD ${version.replaceAll('.', '\\.')} —`, 'm'));
   const toolName = withDefaults ? 'read_spec' : 'inspect_spec';
-  const report = await jsonCommand(cli, ['tools', 'check', '--repo', input, '--state-dir', state, '--artifact', 'spec', '--for', 'agent', '--tool', toolName, '--execute', '--copy', '--args', withDefaults ? '{"startLine":2,"lineCount":1}' : '{}', '--json'], { cwd: project, env: environment });
+  const report = await jsonCommand(cli, ['tools', 'check', '--repo', input, '--state-dir', state, '--artifact', 'spec', '--for', 'agent', '--tool', toolName, '--execute', '--args', withDefaults ? '{"startLine":2,"lineCount":1}' : '{}', '--json'], { cwd: project, env: environment });
   assert.equal(report.ok, true, JSON.stringify(report.checks));
   assert.equal(report.status, 'READY');
-  assert.equal(report.mode, 'copy');
+  assert.equal(Object.hasOwn(report, 'mode'), false);
   assert.equal(report.tools.length, 1);
   assert.equal(report.tools[0].name, toolName);
-  assert.ok(within(state, report.workspacePath) && !within(project, report.workspacePath), 'Tool execution must use an independent copied workspace');
+  assert.equal(report.workspacePath, await realpath(input), 'Tool execution must use the supplied workspace');
   assert.equal(await readFile(join(report.workspacePath, 'spec.md'), 'utf8'), sample);
   assert.equal(await readFile(join(input, 'spec.md'), 'utf8'), sample);
   const content = report.result?.content;
@@ -205,7 +205,7 @@ export async function verifyInstallation({ scratch, outputDirectory, packages, v
   assert.equal(reviewed.status, 'GREEN'); assert.equal(reviewed.requests.length, 1);
   const reused = await jsonCommand(projectCli, validationArgs, { cwd: project, env: environment });
   assert.equal(reused.status, 'GREEN'); assert.equal(reused.requests.length, 0); assert.equal(reused.validation.counts.reuse, 1);
-  return { name, productionInstall: true, installScripts: false, cliHelpVersion: version, defaultToolsInstalled: withDefaults, tool: toolName, actualToolExecution: true, workspaceMode: 'copy', projectValidation: true, runtime: 'GREEN' };
+  return { name, productionInstall: true, installScripts: false, cliHelpVersion: version, defaultToolsInstalled: withDefaults, tool: toolName, actualToolExecution: true, workspace: 'in-place', projectValidation: true, runtime: 'GREEN' };
 }
 
 async function removeScratch(directory) {

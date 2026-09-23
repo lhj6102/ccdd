@@ -16,7 +16,7 @@ Build and run from the repository root. The authentication option below bridges 
 
 ```sh
 npm run build
-node dist/src/cli.js run --repo test/fixtures/monitor-graph --copy --human-inbox --codex-auth-file "$HOME/.codex/auth.json"
+node dist/src/cli.js run --repo test/fixtures/monitor-graph --human-inbox --codex-auth-file "$HOME/.codex/auth.json"
 node dist/src/cli.js monitor --repo test/fixtures/monitor-graph
 ```
 

@@ -1,3 +1,4 @@
+import { runUntilSettled } from './helpers/run.js';
 import test, { type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, writeFile, readFile, readdir, open, realpath, access } from 'node:fs/promises';
@@ -9,12 +10,13 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
 import { createBroker } from '../src/broker/index.js';
+import { createExecutorRegistry } from '../src/executors/index.js';
 import { removeOwnedWorkspaceTree } from '../src/workspaces/index.js';
 import { startMonitor } from '../src/monitor/server.js';
 import type { MonitorArtifactPage, MonitorDetail, MonitorOverview, MonitorSession, MonitorGraph, MonitorRunOverview, MonitorValidation } from '../src/monitor/types.js';
-import type { RepoConfig, ReviewRequest, WorkspaceMode } from '../src/contracts.js';
+import type { RepoConfig, ReviewRequest } from '../src/contracts.js';
 
-async function fixture(t: TestContext, mode: WorkspaceMode = 'copy', options: { waiting?: boolean; chain?: boolean; command?: boolean; longTool?: boolean; custom?: boolean; instruction?: string } = {}) {
+async function fixture(t: TestContext, options: { waiting?: boolean; chain?: boolean; command?: boolean; longTool?: boolean; custom?: boolean; instruction?: string } = {}) {
   const dir = await realpath(await mkdtemp(join(tmpdir(), 'ccdd-monitor-test-')));
   const cleanup: Array<() => Promise<void>> = [];
   t.after(async () => { for (const close of cleanup.reverse()) await close(); await removeOwnedWorkspaceTree(dir); });
@@ -55,11 +57,11 @@ const preview = {
 export default () => ({ ...${JSON.stringify({ artifacts: config.artifacts, critics: config.critics })}, artifactTypes: { markdown: { humanTools: { preview } }, code: { humanTools: { preview } } } });
 `);
   } else await writeFile(join(repoPath, 'ccdd.config.json'), JSON.stringify(config));
-  const broker = createBroker({ repoPath, stateDir, executors: { canExecute: () => ({ ok: true }), execute: async () => { throw new Error('Monitor must not execute reviews'); }, notifyHuman: async () => { if (!options.waiting) throw new Error('Monitor must not send notifications'); } } });
+  const broker = createBroker({ repoPath, stateDir, executors: { canExecute: () => ({ ok: true }), execute: createExecutorRegistry().execute, notifyHuman: async () => { if (!options.waiting) throw new Error('Monitor must not send notifications'); } } });
   cleanup.push(() => broker.close());
-  const run = await broker.submit({ mode, requesterId: 'monitor-test' });
-  if (options.waiting) { await broker.run(run.id); await mkdir(join(stateDir, 'runs', run.id), { recursive: true }); await writeFile(join(stateDir, 'runs', run.id, 'worker.json'), JSON.stringify({ humanInbox: true, piOptions: {} })); }
-  await broker.close();
+  const run = await broker.submit({ requesterId: 'monitor-test' });
+  if (options.waiting) { await runUntilSettled(broker, run.id); await mkdir(join(stateDir, 'runs', run.id), { recursive: true }); await writeFile(join(stateDir, 'runs', run.id, 'worker.json'), JSON.stringify({ humanInbox: true, piOptions: {} })); }
+  if (!options.waiting) await broker.close();
   await writeFile(join(stateDir, 'worker.json'), JSON.stringify({ piOptions: { authFile: 'DO_NOT_EXPOSE_AUTH_METADATA' }, secret: 'DO_NOT_EXPOSE_AUTH_SECRET' }));
   const monitor = await startMonitor({ stateDirs: [stateDir], stateHome, port: 0 });
   cleanup.push(() => monitor.close());
@@ -121,7 +123,7 @@ test('monitor serves existing database state and scoped artifacts without execut
 
 test('instruction references preserve the stored payload and HTTP detail string without executing config or tools', async t => {
   const instruction = String.raw`Compare {why} with {tests}. {unrelated} {missing} {{why}} \{why} {"example":"{why}"}`;
-  const data = await fixture(t, 'copy', { custom: true, instruction });
+  const data = await fixture(t, { custom: true, instruction });
   const marker = join(data.dir, 'config-code-executions.txt');
   const beforeCode = await readFile(marker, 'utf8');
   const beforeDb = await readFile(join(data.stateDir, 'broker.sqlite'));
@@ -189,18 +191,18 @@ test('monitor rejects tampered stored artifact scope and workspace identity', as
   assert.doesNotMatch(await identity.text(), /UNDECLARED_PRIVATE_CONTENT|DO_NOT_EXPOSE_AUTH/);
 });
 
-test('copied artifact remains readable after source removal, while modified lock input fails integrity', async t => {
+test('missing or modified workspace input cannot be read', async t => {
   const copied = await fixture(t);
   await removeOwnedWorkspaceTree(copied.repoPath);
-  assert.equal((await fetch(`${copied.route}/artifacts/why`)).status, 200);
-  const locked = await fixture(t, 'lock');
+  assert.equal((await fetch(`${copied.route}/artifacts/why`)).status, 409);
+  const locked = await fixture(t);
   await writeFile(join(locked.repoPath, 'why.md'), 'Changed after capture');
   const response = await fetch(`${locked.route}/artifacts/why`);
   assert.equal(response.status, 409);
   assert.match((await response.json() as { error: string }).error, /input has changed/);
 });
 
-test('missing copied input is reported without leaking internal paths', async t => {
+test('missing input is reported without leaking internal paths', async t => {
   const data = await fixture(t);
   await removeOwnedWorkspaceTree(data.run.workspace.path);
   const response = await fetch(`${data.route}/artifacts/why`);
@@ -211,7 +213,7 @@ test('missing copied input is reported without leaking internal paths', async t 
 });
 
 test('artifact concurrency is bounded and client disconnect stops in-flight hash verification', async t => {
-  const data = await fixture(t, 'lock');
+  const data = await fixture(t);
   const file = await open(join(data.repoPath, 'large.bin'), 'w');
   try { await file.truncate(2 * 1024 ** 3); } finally { await file.close(); }
   const first = new AbortController(), second = new AbortController();
@@ -249,7 +251,7 @@ test('monitor CLI starts without a repository or authentication and stops cleanl
 
 test('monitor CLI rejects unrelated or conflicting flags before starting', async () => {
   const { main } = await import('../src/cli.js');
-  for (const args of [['monitor', '--copy'], ['monitor', '--pi-auth-file', '/tmp/auth'], ['monitor', '--repo', '/tmp', '--state-dir', '/tmp/state'], ['monitor', '--port', '65536'], ['monitor', '--wait'], ['monitor', 'unexpected']]) {
+  for (const args of [['monitor', '--copy'], ['monitor', '--lock'], ['monitor', '--pi-auth-file', '/tmp/auth'], ['monitor', '--repo', '/tmp', '--state-dir', '/tmp/state'], ['monitor', '--port', '65536'], ['monitor', '--wait'], ['monitor', 'unexpected']]) {
     let output = '';
     const sink = { write: (text: string) => { output += text; } };
     assert.equal(await main(args, { stdout: sink, stderr: sink }), 2, args.join(' '));
@@ -271,7 +273,7 @@ async function post(url: string, session: { cookie: string; csrfToken: string },
 }
 
 test('current validation requires an explicit authenticated observation and never creates review state', async t => {
-  const data = await fixture(t, 'copy', { custom: true });
+  const data = await fixture(t, { custom: true });
   const marker = join(data.dir, 'config-code-executions.txt');
   const loaded = await readFile(marker, 'utf8'), database = await readFile(join(data.stateDir, 'broker.sqlite'));
   const route = `${data.monitor.url}/api/projects/${data.request.projectId}/validation`;
@@ -290,7 +292,7 @@ test('current validation requires an explicit authenticated observation and neve
 });
 
 test('Human actions require the browser claimant, valid CSRF and strict bounded JSON', async t => {
-  const data = await fixture(t, 'copy', { waiting: true, command: true });
+  const data = await fixture(t, { waiting: true, command: true });
   const first = await browserSession(data.monitor.url), second = await browserSession(data.monitor.url);
   assert.notEqual(first.reviewerId, second.reviewerId);
   const detail = await (await fetch(data.route, { headers: { cookie: first.cookie } })).json() as MonitorDetail;
@@ -339,7 +341,7 @@ test('Human actions require the browser claimant, valid CSRF and strict bounded 
 });
 
 test('browser reviewer identity survives monitor restart and requires the renewed CSRF token', async t => {
-  const data = await fixture(t, 'copy', { waiting: true });
+  const data = await fixture(t, { waiting: true });
   const initial = await browserSession(data.monitor.url);
   assert.equal((await post(`${data.route}/claim`, initial)).status, 200);
   await data.monitor.close();
@@ -355,8 +357,8 @@ test('browser reviewer identity survives monitor restart and requires the renewe
   assert.equal(result.status, 200, await result.clone().text());
 });
 
-test('Human completion starts a detached successor that finishes after the monitor closes', async t => {
-  const data = await fixture(t, 'copy', { waiting: true, chain: true });
+test('Human completion lets the monitoring worker finish its successor after the monitor closes', async t => {
+  const data = await fixture(t, { waiting: true, chain: true });
   const session = await browserSession(data.monitor.url);
   assert.equal((await post(`${data.route}/claim`, session)).status, 200);
   const result = await post(`${data.route}/complete`, session, { verdict: 'GREEN', summary: 'Review complete', evidence: ['Purpose checked'] });
@@ -373,7 +375,7 @@ test('Human completion starts a detached successor that finishes after the monit
 });
 
 test('Human completion rejects changed input and leaves an operational ERROR', async t => {
-  const data = await fixture(t, 'copy', { waiting: true });
+  const data = await fixture(t, { waiting: true });
   const session = await browserSession(data.monitor.url);
   assert.equal((await post(`${data.route}/claim`, session)).status, 200);
   await removeOwnedWorkspaceTree(data.run.workspace.path);
@@ -387,7 +389,7 @@ test('Human completion rejects changed input and leaves an operational ERROR', a
 
 
 test('Human tools reject a tampered stored Artifact scope without launching a program', async t => {
-  const data = await fixture(t, 'copy', { waiting: true, command: true });
+  const data = await fixture(t, { waiting: true, command: true });
   const session = await browserSession(data.monitor.url);
   assert.equal((await post(`${data.route}/claim`, session)).status, 200);
   editStoredRequest(data.stateDir, data.request.id, request => { request.artifacts[0].path = 'private.md'; });
@@ -400,7 +402,7 @@ test('Human tools reject a tampered stored Artifact scope without launching a pr
 
 
 test('a maximum-length registered Human tool name remains callable without relaxing request identifiers', async t => {
-  const data = await fixture(t, 'copy', { waiting: true, command: true, longTool: true });
+  const data = await fixture(t, { waiting: true, command: true, longTool: true });
   const session = await browserSession(data.monitor.url);
   const toolName = `${'o'.repeat(64)}_${'a'.repeat(64)}`;
   assert.equal(toolName.length, 129);
@@ -416,7 +418,7 @@ test('a maximum-length registered Human tool name remains callable without relax
 });
 
 test('run and graph HTTP views are read-only and share one project/run scope with Kanban', async t => {
-  const data = await fixture(t, 'copy', { chain: true });
+  const data = await fixture(t, { chain: true });
   const before = await readFile(join(data.stateDir, 'broker.sqlite'));
   await removeOwnedWorkspaceTree(data.repoPath);
   const runsResponse = await fetch(`${data.monitor.url}/api/runs?project=${data.request.projectId}&limit=1`);
@@ -447,7 +449,7 @@ test('run and graph HTTP views are read-only and share one project/run scope wit
 });
 
 test('TS Human detail and graph GET use stored tool manifests without importing project code or implicit text viewers', async t => {
-  const data = await fixture(t, 'copy', { custom: true, waiting: true });
+  const data = await fixture(t, { custom: true, waiting: true });
   const marker = join(data.dir, 'config-code-executions.txt');
   const executions = await readFile(marker, 'utf8');
   const database = await readFile(join(data.stateDir, 'broker.sqlite'));
@@ -475,8 +477,8 @@ test('TS Human detail and graph GET use stored tool manifests without importing 
   assert.equal(await readFile(marker, 'utf8'), executions);
 });
 
-test('custom Human POST validates schema, returns generic content, retries tool failure and resumes from the copied snapshot', async t => {
-  const data = await fixture(t, 'copy', { custom: true, waiting: true });
+test('custom Human POST validates schema, returns generic content, retries tool failure and resumes against the unchanged workspace', async t => {
+  const data = await fixture(t, { custom: true, waiting: true });
   const session = await browserSession(data.monitor.url);
   const input = { frame: 0.5, overlay: false, channels: ['color', 'alpha'] };
   assert.equal((await post(`${data.route}/tools/preview_why`, session, { arguments: input })).status, 403);
@@ -487,7 +489,6 @@ test('custom Human POST validates schema, returns generic content, retries tool 
   assert.equal(failed.status, 409, await failed.clone().text());
   assert.equal((await (await fetch(data.route)).json() as MonitorDetail).request.status, 'WAITING_HUMAN');
   await data.monitor.close();
-  await removeOwnedWorkspaceTree(data.repoPath);
   const resumed = await startMonitor({ stateDirs: [data.stateDir], stateHome: data.stateHome, port: 0 });
   t.after(() => resumed.close());
   const renewed = await (await fetch(`${resumed.url}/api/session`, { headers: { cookie: session.cookie } })).json() as MonitorSession;
@@ -519,7 +520,7 @@ test('Human execution marks mismatched or corrupt captured TS tool manifests ERR
     (request: ReviewRequest) => { request.artifacts.push({ id: 'unrelated', type: 'markdown', path: 'private.md' }); },
     (request: ReviewRequest) => { request.artifacts = request.artifacts.filter(artifact => artifact.id === 'why'); },
   ]) {
-    const data = await fixture(t, 'copy', { custom: true, waiting: true });
+    const data = await fixture(t, { custom: true, waiting: true });
     const session = await browserSession(data.monitor.url);
     assert.equal((await post(`${data.route}/claim`, session)).status, 200);
     editStoredRequest(data.stateDir, data.request.id, edit);

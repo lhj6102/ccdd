@@ -1,3 +1,4 @@
+import { runUntilSettled } from './helpers/run.js';
 import test, { type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
@@ -119,30 +120,30 @@ test('group tools check and doctor preflight leaf tools without launching; execu
   assert.equal(await readFile(data.launched,'utf8'),join(leaf.workspacePath!,'preview.md'));
 });
 
-test('copy Human group claim and tools survive restart; group verdict gates only explicit downstream deps', async t => {
+test('Human group claim and tools support a separate local client; group verdict gates only explicit downstream deps', async t => {
   const data = await fixture(t);
   const executors = createExecutorRegistry({streamFn:artifactStream(),alarmMethods:[{id:'test',notify(){}}]});
   let broker = createBroker({...data,executors});
   t.after(()=>broker.close());
-  const submitted = await broker.submit({mode:'copy',requesterId:'group-test'});
-  const first = await broker.run(submitted.id);
+  const submitted = await broker.submit({requesterId:'group-test'});
+  const first = await runUntilSettled(broker, submitted.id);
   assert.equal(first!.requests.find(r=>r.criticId==='preview-review')?.status,'WAITING_HUMAN');
   assert.equal(first!.requests.find(r=>r.criticId==='group-review')?.status,'BLOCKED');
   const preview = first!.requests.find(r=>r.criticId==='preview-review')!;
   await broker.claimHuman(preview.id,'reviewer');
   await broker.completeHuman(preview.id,{reviewerId:'reviewer',result:{verdict:'GREEN',summary:'Preview reviewed',evidence:['Preview matches brief.']}});
-  const next = await broker.run(submitted.id);
+  const next = await runUntilSettled(broker, submitted.id);
   const group = next!.requests.find(r=>r.criticId==='group-review')!;
   assert.equal(group.status,'WAITING_HUMAN');
   assert.equal(next!.requests.find(r=>r.criticId==='agent-review')?.status,'GREEN');
   assert.equal(next!.requests.find(r=>r.criticId==='delivery-review')?.status,'BLOCKED');
-  await broker.close();
+  const worker = broker; t.after(() => worker.close());
   broker = createBroker({...data,executors});
   await broker.claimHuman(group.id,'reviewer');
   await broker.executeHumanTool(group.id,{reviewerId:'reviewer',toolName:'open_effect'});
   assert.equal(await readFile(data.launched,'utf8'),join(group.workspace.path,'effect.md'));
   await broker.completeHuman(group.id,{reviewerId:'reviewer',result:{verdict:'GREEN',summary:'Group reviewed',evidence:['Effect and preview agree.']}});
-  const last = await broker.run(submitted.id);
+  const last = await runUntilSettled(broker, submitted.id);
   assert.equal(last!.requests.find(r=>r.criticId==='delivery-review')?.status,'WAITING_HUMAN');
   const graph = projectGraph(last!.graph!,last!.requests);
   assert.equal(graph.artifacts.find(a=>a.id==='explosion')?.status,'GREEN');

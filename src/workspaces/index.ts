@@ -1,13 +1,11 @@
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import { constants, watch, type BigIntStats, type FSWatcher } from 'node:fs';
-import { chmod, copyFile, lstat, mkdir, open, readFile, readdir, readlink, realpath, rename, rm, symlink, unlink } from 'node:fs/promises';
-import { setTimeout as delay } from 'node:timers/promises';
+import { chmod, lstat, open, readdir, readlink, realpath, rm } from 'node:fs/promises';
 import path from 'node:path';
 
-export type WorkspaceMode = 'copy' | 'lock';
 export type WorkspaceIntegrity = 'content' | 'metadata';
 export interface WorkspaceDescriptor {
-  version: 1; mode: WorkspaceMode; sourcePath: string; path: string;
+  version: 2; sourcePath: string; path: string;
   hash: string; stateDir: string; baselineMetadataHash: string;
   integrity?: WorkspaceIntegrity; structureHash?: string;
 }
@@ -19,7 +17,7 @@ export interface WorkspaceScanProgress { kind: 'metadata' | 'content'; files: nu
 type WorkspaceEntry = { path: string; type: 'directory'; executable: number }
   | { path: string; type: 'file'; executable: number; content?: string }
   | { path: string; type: 'symlink'; target: string };
-interface Inspection { hash: string; metadataHash: string; structureHash: string; entries: WorkspaceEntry[]; publicationMetadataHash?: string }
+interface Inspection { hash: string; metadataHash: string; structureHash: string; entries: WorkspaceEntry[] }
 interface ScanNode {
   relative: string; parent?: ScanNode; entry?: WorkspaceEntry;
   metadata?: string[]; children?: ScanNode[]; remaining?: number;
@@ -37,7 +35,7 @@ const contained = (root: string, candidate: string) => {
   return relative === '' || (!path.isAbsolute(relative) && relative !== '..' && !relative.startsWith(`..${path.sep}`));
 };
 const failure = (message: string, code = 'WORKSPACE_UNSAFE') => Object.assign(new Error(message), { code });
-const changed = (mode: WorkspaceMode, detail = '') => failure(`Review workspace changed${detail ? `: ${detail}` : '.'}`, mode === 'copy' ? 'WORKSPACE_CACHE_TAMPERED' : 'WORKSPACE_CHANGED');
+const changed = (detail = '') => failure(`Review workspace changed${detail ? `: ${detail}` : '.'}`, 'WORKSPACE_CHANGED');
 
 async function canonicalFuturePath(value: string): Promise<string> {
   const resolved = path.resolve(value);
@@ -66,15 +64,8 @@ function metadata(info: BigIntStats) {
   return [info.dev, info.ino, info.mode, info.size, info.mtimeNs, info.ctimeNs, info.birthtimeNs].map(String);
 }
 
-/** Permit the root ctime change from publication; retain every child tuple and root identity. */
-function publicationMetadataHash(entries: string[][]): string {
-  const [rootPath, dev, ino, mode, size, mtime, , birthtime] = entries[0];
-  return digest(JSON.stringify([[rootPath, dev, ino, mode, size, mtime, birthtime], ...entries.slice(1)]));
-}
-
 /** Every entry participates: no Git, ignore rules, extension filters or implicit exclusions. */
-async function inspect(root: string, { signal, requireReadonly = false, contents = true, publicationProof = false, onProgress }: { signal?: AbortSignal; requireReadonly?: boolean; contents?: boolean; publicationProof?: boolean; onProgress?: (progress: WorkspaceScanProgress) => void } = {}): Promise<Inspection> {
-  const mode = requireReadonly ? 'copy' : 'lock';
+async function inspect(root: string, { signal, contents = true, onProgress }: { signal?: AbortSignal; contents?: boolean; onProgress?: (progress: WorkspaceScanProgress) => void } = {}): Promise<Inspection> {
   const entries: WorkspaceEntry[] = [];
   const metadataEntries: string[][] = [];
   const rootNode: ScanNode = { relative: '' };
@@ -101,7 +92,7 @@ async function inspect(root: string, { signal, requireReadonly = false, contents
     const finishDirectory = async (node: ScanNode) => {
       check();
       const after = await lstat(node.relative ? path.join(root, node.relative) : root, { bigint: true });
-      if (JSON.stringify(node.metadata) !== JSON.stringify(metadata(after))) throw changed(mode, node.relative || '.');
+      if (JSON.stringify(node.metadata) !== JSON.stringify(metadata(after))) throw changed(node.relative || '.');
       complete(node);
     };
     const walk = async (node: ScanNode): Promise<void> => {
@@ -110,7 +101,6 @@ async function inspect(root: string, { signal, requireReadonly = false, contents
       const absolute = relative ? path.join(root, relative) : root;
       const before = await lstat(absolute, { bigint: true });
       node.metadata = metadata(before);
-      if (requireReadonly && !before.isSymbolicLink() && (before.mode & 0o222n)) throw changed('copy', `writable cache entry ${relative || '.'}`);
       if (before.isDirectory()) {
         if (relative) node.entry = { path: relative, type: 'directory', executable: Number(before.mode & 0o111n) };
         const names = (await readdir(absolute)).sort();
@@ -124,7 +114,7 @@ async function inspect(root: string, { signal, requireReadonly = false, contents
         let content;
         try {
           const opened = await file.stat({ bigint: true });
-          if (JSON.stringify(metadata(before)) !== JSON.stringify(metadata(opened))) throw changed(mode, relative);
+          if (JSON.stringify(metadata(before)) !== JSON.stringify(metadata(opened))) throw changed(relative);
           const hash = createHash('sha256');
           const buffer = Buffer.allocUnsafe(128 * 1024);
           let position = 0;
@@ -158,7 +148,7 @@ async function inspect(root: string, { signal, requireReadonly = false, contents
         throw failure(`Unsupported workspace entry (only directories, regular files and internal symlinks are supported): ${relative}`);
       }
       const after = await lstat(absolute, { bigint: true });
-      if (JSON.stringify(metadata(before)) !== JSON.stringify(metadata(after))) throw changed(mode, relative || '.');
+      if (JSON.stringify(metadata(before)) !== JSON.stringify(metadata(after))) throw changed(relative || '.');
       complete(node);
     };
     const pump = () => {
@@ -191,15 +181,14 @@ async function inspect(root: string, { signal, requireReadonly = false, contents
   const hash = digest(JSON.stringify(entries));
   const structureHash = contents ? digest(JSON.stringify(entries.map(entry => entry.type === 'file'
     ? { path: entry.path, type: entry.type, executable: entry.executable } : entry))) : hash;
-  return { hash, metadataHash: digest(JSON.stringify(metadataEntries)), structureHash, entries,
-    ...(publicationProof ? { publicationMetadataHash: publicationMetadataHash(metadataEntries) } : {}) };
+  return { hash, metadataHash: digest(JSON.stringify(metadataEntries)), structureHash, entries };
 }
 
 export async function fingerprintWorkspace(workspacePath: string) {
   return (await inspect(await realpath(workspacePath))).hash;
 }
 
-function observe(root: string, mode: WorkspaceMode, externalSignal?: AbortSignal, onProgress?: (progress: WorkspaceScanProgress) => void, integrity: WorkspaceIntegrity = 'content') {
+function observe(root: string, externalSignal?: AbortSignal, onProgress?: (progress: WorkspaceScanProgress) => void, integrity: WorkspaceIntegrity = 'content') {
   const controller = new AbortController();
   let closed = false;
   let watcher: FSWatcher;
@@ -251,9 +240,9 @@ function observe(root: string, mode: WorkspaceMode, externalSignal?: AbortSignal
         let current;
         do {
           eventPending = false;
-          current = await inspect(root, { signal: controller.signal, requireReadonly: mode === 'copy', contents, ...(contents ? { onProgress } : {}) });
+          current = await inspect(root, { signal: controller.signal, contents, ...(contents ? { onProgress } : {}) });
           if (baseline && ((contents && current.hash !== baseline.hash) || current.metadataHash !== baseline.metadataHash ||
-              (integrity === 'metadata' && current.structureHash !== baseline.structureHash))) throw changed(mode);
+              (integrity === 'metadata' && current.structureHash !== baseline.structureHash))) throw changed();
           controller.signal.throwIfAborted();
         } while (eventPending);
         return current;
@@ -263,8 +252,7 @@ function observe(root: string, mode: WorkspaceMode, externalSignal?: AbortSignal
         if (controller.signal.aborted) throw controller.signal.reason;
         // An entry can disappear or stop being a directory between lstat and readdir.
         // Once a baseline exists, these races are input mutations, not unrelated IO failures.
-        if (baseline && (errorCode(error) === 'ENOENT' || errorCode(error) === 'ENOTDIR')) error = changed(mode, errorMessage(error));
-        if (mode === 'copy' && errorCode(error) === 'WORKSPACE_CHANGED') error = changed(mode, errorMessage(error));
+        if (baseline && (errorCode(error) === 'ENOENT' || errorCode(error) === 'ENOTDIR')) error = changed(errorMessage(error));
         abort(error);
         throw error;
       }).finally(() => { if (scanning === operation) scanning = undefined; });
@@ -288,21 +276,15 @@ function observe(root: string, mode: WorkspaceMode, externalSignal?: AbortSignal
   };
   return {
     signal: controller.signal,
-    async initialize(expected?: Pick<Inspection, 'hash' | 'metadataHash'> & Partial<Pick<Inspection, 'structureHash'>>, publishedFrom?: Inspection) {
-      const before = await inspect(root, { signal: controller.signal, requireReadonly: mode === 'copy', contents: false,
-        publicationProof: integrity === 'metadata' && publishedFrom !== undefined, onProgress });
-      // A staged full-content inspection may cross our own atomic rename under metadata
-      // policy only when directory identity, structure and all other metadata still match.
-      // Any unexpected difference falls back to actual bytes, as does content policy.
-      const publicationMatches = publishedFrom?.publicationMetadataHash !== undefined &&
-        publishedFrom.publicationMetadataHash === before.publicationMetadataHash && publishedFrom.structureHash === before.structureHash;
-      const current = integrity === 'metadata' && (expected || publicationMatches) ? { ...before, hash: expected?.hash ?? publishedFrom!.hash }
-        : await inspect(root, { signal: controller.signal, requireReadonly: mode === 'copy', onProgress });
-      if (before.metadataHash !== current.metadataHash) throw changed(mode, 'input changed while acquiring the workspace');
+    async initialize(expected?: Pick<Inspection, 'hash' | 'metadataHash'> & Partial<Pick<Inspection, 'structureHash'>>) {
+      const before = await inspect(root, { signal: controller.signal, contents: false, onProgress });
+      const current = integrity === 'metadata' && expected ? { ...before, hash: expected.hash }
+        : await inspect(root, { signal: controller.signal, onProgress });
+      if (before.metadataHash !== current.metadataHash) throw changed('input changed while acquiring the workspace');
       baseline = current;
       if (expected && (expected.hash !== baseline.hash || expected.metadataHash !== baseline.metadataHash ||
           (expected.structureHash !== undefined && expected.structureHash !== baseline.structureHash))) {
-        abort(changed(mode, 'input changed since the request was prepared'));
+        abort(changed('input changed since the request was prepared'));
         controller.signal.throwIfAborted();
       }
       initialized = true;
@@ -328,82 +310,9 @@ function observe(root: string, mode: WorkspaceMode, externalSignal?: AbortSignal
   };
 }
 
-async function copyEntries(source: string, destination: string, entries: WorkspaceEntry[], signal?: AbortSignal) {
-  // Parents must exist before copying children. Keep staging writable until every
-  // in-flight operation has settled, including when another operation fails.
-  for (const entry of entries) {
-    if (entry.type !== 'directory') continue;
-    signal?.throwIfAborted();
-    await mkdir(path.join(destination, entry.path), { mode: 0o700 });
-  }
-  const leaves = entries.filter(entry => entry.type !== 'directory');
-  let next = 0, failed = false;
-  let failure: unknown;
-  const copyNext = async () => {
-    while (!failed && next < leaves.length) {
-      const entry = leaves[next++];
-      try {
-        signal?.throwIfAborted();
-        const target = path.join(destination, entry.path);
-        if (entry.type === 'symlink') await symlink(entry.target, target);
-        else {
-          await copyFile(path.join(source, entry.path), target, constants.COPYFILE_EXCL);
-          await chmod(target, 0o444 | entry.executable);
-        }
-      } catch (error) {
-        if (!failed) { failed = true; failure = error; }
-      }
-    }
-  };
-  // Bound filesystem pressure independently of the number of input files.
-  await Promise.all(Array.from({ length: Math.min(8, leaves.length) }, copyNext));
-  if (failed) throw failure;
-  signal?.throwIfAborted();
-  for (const entry of [...entries].reverse()) {
-    signal?.throwIfAborted();
-    if (entry.type === 'directory') await chmod(path.join(destination, entry.path), 0o444 | entry.executable);
-  }
-  await chmod(destination, 0o555);
-}
-
-async function acquirePublication(cacheRoot: string, hash: string, signal?: AbortSignal) {
-  const lockPath = path.join(cacheRoot, `.publish-${hash}`);
-  const deadline = Date.now() + 30_000;
-  while (true) {
-    signal?.throwIfAborted();
-    try {
-      const lock = await open(lockPath, 'wx', 0o600);
-      const identity = await lock.stat();
-      try { await lock.writeFile(JSON.stringify({ pid: process.pid })); }
-      catch (error) { await lock.close(); await unlink(lockPath).catch(() => {}); throw error; }
-      return async () => {
-        await lock.close();
-        const current = await lstat(lockPath).catch(() => null);
-        if (current?.ino === identity.ino && current?.dev === identity.dev) await unlink(lockPath);
-      };
-    } catch (error) {
-      if (errorCode(error) !== 'EEXIST') throw error;
-      const identity = await lstat(lockPath).catch(() => null);
-      if (identity?.isSymbolicLink()) throw failure('Cache publication lock must not be a symlink.');
-      const owner = await readFile(lockPath, 'utf8').then(value => JSON.parse(value) as { pid?: unknown }).catch(() => null);
-      if (typeof owner?.pid === 'number' && Number.isInteger(owner.pid) && owner.pid > 0) {
-        let dead = false;
-        try { process.kill(owner.pid, 0); } catch (probeError) { dead = errorCode(probeError) === 'ESRCH'; }
-        const current = await lstat(lockPath).catch(() => null);
-        if (dead && current?.ino === identity?.ino && current?.dev === identity?.dev) {
-          await unlink(lockPath).catch(error => { if (errorCode(error) !== 'ENOENT') throw error; });
-          continue;
-        }
-      }
-      if (Date.now() >= deadline) throw failure('Workspace cache publication is busy; retry this request.');
-      await delay(20, undefined, { signal });
-    }
-  }
-}
-
-/** Delete only caller-owned private scratch, never a shared cache or a source workspace. */
+/** Delete only caller-owned private scratch, never a source workspace. */
 export async function removeOwnedWorkspaceTree(directory: string) {
-  // Only unpublished private staging is made writable; shared cache inputs are never mutated.
+  // The caller must own this scratch directory; reviewed inputs are never modified.
   const makeWritable = async (current: string): Promise<void> => {
     const info = await lstat(current);
     if (!info.isDirectory()) return;
@@ -414,79 +323,25 @@ export async function removeOwnedWorkspaceTree(directory: string) {
   catch (error) { if (errorCode(error) !== 'ENOENT') throw error; }
 }
 
-export async function prepareWorkspace({ repoPath, stateDir, mode = 'copy', integrity = 'content', signal }: { repoPath?: string; stateDir?: string; mode?: WorkspaceMode; integrity?: WorkspaceIntegrity; signal?: AbortSignal } = {}): Promise<WorkspaceHandle> {
-  if (!['copy', 'lock'].includes(mode)) throw failure('Workspace mode must be copy or lock.');
+export async function prepareWorkspace({ repoPath, stateDir, integrity = 'content', signal, ...removed }: { repoPath?: string; stateDir?: string; integrity?: WorkspaceIntegrity; signal?: AbortSignal } = {}): Promise<WorkspaceHandle> {
+  if ('mode' in removed) throw failure('Workspace modes are no longer supported; supply an unchanged workspace.');
   if (!['content', 'metadata'].includes(integrity)) throw failure('Workspace integrity must be content or metadata.');
   const canonical = await validateStateLocation(repoPath, stateDir);
   const source = canonical.repoPath;
-  const observer = observe(source, 'lock', signal, undefined, integrity);
-  let stage: string | undefined;
-  let releasePublication: (() => Promise<void>) | undefined;
+  const observer = observe(source, signal, undefined, integrity);
   try {
     const initial = await observer.initialize();
-    if (mode === 'lock') {
-      const descriptor = Object.freeze({ version: 1 as const, mode, sourcePath: source, path: source, hash: initial.hash, stateDir: canonical.stateDir, baselineMetadataHash: initial.metadataHash,
-        ...(integrity === 'metadata' ? { integrity, structureHash: initial.structureHash } : {}) });
-      return { descriptor, signal: observer.signal, assertUnchanged: observer.assertUnchanged, close: observer.close };
-    }
-    const cacheRoot = path.join(canonical.stateDir, 'workspaces');
-    await mkdir(cacheRoot, { recursive: true, mode: 0o700 });
-    if (await realpath(cacheRoot) !== cacheRoot) throw failure('Workspace cache directory must not be a symlink.');
-    const destination = path.join(cacheRoot, initial.hash);
-    releasePublication = await acquirePublication(cacheRoot, initial.hash, observer.signal);
-    let cached = false;
-    let publishedFrom: Inspection | undefined;
-    try {
-      if (!(await lstat(destination)).isDirectory()) throw changed('copy', 'cache root must be a regular directory');
-      cached = true;
-    }
-    catch (error) { if (errorCode(error) !== 'ENOENT') throw error; }
-    if (!cached) {
-      stage = path.join(cacheRoot, `.capture-${randomUUID()}`);
-      await mkdir(stage, { mode: 0o700 });
-      await copyEntries(source, stage, initial.entries, observer.signal);
-      const copied = await inspect(stage, { signal: observer.signal, requireReadonly: true, publicationProof: integrity === 'metadata' });
-      if (copied.hash !== initial.hash) throw changed('lock', 'source changed during copy');
-      publishedFrom = copied;
-      await observer.assertUnchanged();
-      await rename(stage, destination);
-      stage = undefined;
-    } else {
-      // Cache reuse still validates the source whose identity selected this copy.
-      await observer.assertUnchanged();
-    }
-    // A new copy was already checked against stable source immediately before
-    // publication. No source bytes are consumed after that capture boundary.
-    observer.signal.throwIfAborted();
-    await observer.close();
-    observer.signal.throwIfAborted();
-    if (stage) { await removeOwnedWorkspaceTree(stage); stage = undefined; }
-    await releasePublication();
-    releasePublication = undefined;
-    // Cache hits have no staged proof and receive a full byte validation here under
-    // either policy. This same live observer owns every subsequent boundary.
-    if (await realpath(destination) !== destination || !(await lstat(destination)).isDirectory()) {
-      throw failure('Persisted workspace descriptor has an invalid input path.');
-    }
-    const copyObserver = observe(destination, 'copy', signal, undefined, integrity);
-    try {
-      const verified = await copyObserver.initialize(undefined, publishedFrom);
-      if (verified.hash !== initial.hash) throw changed('copy', 'cached content does not match its hash');
-      copyObserver.signal.throwIfAborted();
-      const descriptor = Object.freeze({ version: 1 as const, mode, sourcePath: source, path: destination, hash: initial.hash, stateDir: canonical.stateDir, baselineMetadataHash: verified.metadataHash,
-        ...(integrity === 'metadata' ? { integrity, structureHash: verified.structureHash } : {}) });
-      return { descriptor, signal: copyObserver.signal, assertUnchanged: copyObserver.assertUnchanged, close: copyObserver.close };
-    } catch (error) { await copyObserver.close(); throw error; }
-  } catch (error) {
-    await observer.close();
-    if (stage) await removeOwnedWorkspaceTree(stage);
-    await releasePublication?.();
-    throw error;
-  }
+    const descriptor = Object.freeze({ version: 2 as const, sourcePath: source, path: source, hash: initial.hash,
+      stateDir: canonical.stateDir, baselineMetadataHash: initial.metadataHash,
+      ...(integrity === 'metadata' ? { integrity, structureHash: initial.structureHash } : {}) });
+    return { descriptor, signal: observer.signal, assertUnchanged: observer.assertUnchanged, close: observer.close };
+  } catch (error) { await observer.close(); throw error; }
 }
 
 export async function reopenWorkspace(descriptor: WorkspaceDescriptor, { signal, onProgress, integrity }: { signal?: AbortSignal; onProgress?: (progress: WorkspaceScanProgress) => void; integrity?: WorkspaceIntegrity } = {}): Promise<WorkspaceHandle> {
-  if (!descriptor || descriptor.version !== 1 || !['copy', 'lock'].includes(descriptor.mode) ||
+  // Historical in-place inputs can reopen; copied inputs remain history only.
+  const legacy = descriptor as unknown as { version?: number; mode?: unknown };
+  if (!descriptor || !(descriptor.version === 2 && !('mode' in descriptor) || legacy.version === 1 && legacy.mode === 'lock') ||
       !validHash(descriptor.hash) || !validHash(descriptor.baselineMetadataHash) ||
       (descriptor.integrity !== undefined && !['content', 'metadata'].includes(descriptor.integrity)) ||
       (descriptor.structureHash !== undefined && !validHash(descriptor.structureHash)) ||
@@ -497,18 +352,18 @@ export async function reopenWorkspace(descriptor: WorkspaceDescriptor, { signal,
   if (integrity !== undefined && !['content', 'metadata'].includes(integrity)) throw failure('Workspace integrity must be content or metadata.');
   if (integrity === 'metadata' && descriptor.integrity !== 'metadata') throw failure('Metadata integrity requires an explicitly captured metadata-policy descriptor.');
   const effectiveIntegrity = integrity ?? descriptor.integrity ?? 'content';
-  const { mode, sourcePath, stateDir } = descriptor;
+  const { sourcePath, stateDir } = descriptor;
   if (contained(sourcePath, stateDir)) throw failure('Persisted stateDir must be outside the source workspace.');
-  const expectedPath = mode === 'lock' ? sourcePath : path.join(stateDir, 'workspaces', descriptor.hash);
+  const expectedPath = sourcePath;
   if (descriptor.path !== expectedPath || await realpath(descriptor.path) !== expectedPath || !(await lstat(expectedPath)).isDirectory()) {
     throw failure('Persisted workspace descriptor has an invalid input path.');
   }
-  const observer = observe(expectedPath, mode, signal, onProgress, effectiveIntegrity);
+  const observer = observe(expectedPath, signal, onProgress, effectiveIntegrity);
   try {
     await observer.initialize({ hash: descriptor.hash, metadataHash: descriptor.baselineMetadataHash, structureHash: descriptor.structureHash });
-    return { descriptor: Object.freeze({ ...descriptor, ...(integrity !== undefined ? { integrity } : {}) }), signal: observer.signal, assertUnchanged: observer.assertUnchanged, close: observer.close };
+    const { mode: _legacyMode, ...current } = descriptor as WorkspaceDescriptor & { mode?: unknown };
+    return { descriptor: Object.freeze({ ...current, version: 2 as const, ...(integrity !== undefined ? { integrity } : {}) }), signal: observer.signal, assertUnchanged: observer.assertUnchanged, close: observer.close };
   } catch (error) { await observer.close(); throw error; }
 }
 
-// Transfer reuses the snapshot identity and publication boundary used by local copies.
-export { inspect as inspectWorkspace, acquirePublication as acquireWorkspacePublication };
+export { inspect as inspectWorkspace };

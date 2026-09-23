@@ -65,7 +65,7 @@ test('submission evaluates the config once for both graph and request manifests'
   await writeFile(data.configPath, `import { appendFileSync } from 'node:fs'; appendFileSync(${JSON.stringify(marker)}, 'load\\n');\n${data.source}`);
   const broker = createBroker({ repoPath: data.repoPath, stateDir: join(data.dir, 'state'), executors: { canExecute: () => ({ ok: true }), notifyHuman: async () => {}, execute: async () => { throw new Error('Not executed during admission'); } } });
   t.after(() => broker.close());
-  const run = await broker.submit({ mode: 'copy', requesterId: 'unit-test' });
+  const run = await broker.submit({ requesterId: 'unit-test' });
   assert.equal(await readFile(marker, 'utf8'), 'load\n');
   assert.ok(run.requests[0].configManifest);
   assert.deepEqual(Object.keys(run.graph!.artifacts), ['spec']);

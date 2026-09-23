@@ -12,13 +12,10 @@ export { queryProject, planProject } from './query.js';
 export { projectHistory, projectRun, projectRuns, projectRequests } from './store.js';
 export { createBroker } from '../broker/index.js';
 export { createExecutorRegistry } from '../executors/index.js';
-export { startReviewServer } from '../review/server.js';
-export { claimRemoteReview, executeRemoteHumanTool, submitRemoteHumanReview, listRemoteReviews, showRemoteReview } from '../review/client.js';
-export type { RemoteReviewOptions, PreparedRemoteReview } from '../review/client.js';
 
 /** Explicit CLI query: briefly observe the current workspace without creating a store. */
 export async function inspectProject({ repoPath, stateDir, selection, recursive = false, force = false, signal, workspaceIntegrity = 'content' }: { repoPath: string; stateDir: string; selection?: ProjectSelection; recursive?: boolean; force?: boolean; signal?: AbortSignal; workspaceIntegrity?: WorkspaceIntegrity }) {
-  const workspace = await prepareWorkspace({ repoPath, stateDir, mode: 'lock', signal, integrity: workspaceIntegrity });
+  const workspace = await prepareWorkspace({ repoPath, stateDir, signal, integrity: workspaceIntegrity });
   try {
     const { config } = await readWorkspaceConfig(workspace.descriptor.path, workspace.signal);
     const prepared = await prepareArtifactInputs(config, workspace.descriptor.path, 'inspect', workspace.signal);

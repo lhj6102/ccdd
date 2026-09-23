@@ -182,7 +182,7 @@ test('the default project opener executes the bundled launcher through the snaps
   await writeFile(join(data.root, 'ccdd.config.ts'), `import { human } from './tool-library/index.js';\n${data.source.replace(`humanTools: { inspect: ${tool} }`, `humanTools: { inspect: human.project.open({ runtime: 'runtime', executable: 'alias' }) }`)}`);
   const config = await data.config();
   assert.deepEqual(config.configManifest?.types.text.humanTools.inspect.executionPaths, ['runtime']);
-  const workspace = await prepareWorkspace({ repoPath: data.root, stateDir: join(data.dir, 'state'), mode: 'copy' });
+  const workspace = await prepareWorkspace({ repoPath: data.root, stateDir: join(data.dir, 'state'), });
   const snapshotRoot = workspace.descriptor.path;
   t.after(() => workspace.close());
   const registry = await createReviewTools({ worktreePath: snapshotRoot, artifacts: [{ id: 'spec', type: 'text', path: 'spec.txt' }], artifactTypes: config.artifactTypes, configManifest: config.configManifest, audience: 'human', runDir: join(data.dir, 'launch') });
@@ -200,8 +200,8 @@ test('the default project opener executes the bundled launcher through the snaps
   assert.ok(pid && pid > 0);
   process.kill(pid, 0);
   await workspace.assertUnchanged(); await workspace.close();
-  await rm(data.root, { recursive: true });
-  assert.equal(await readFile(join(snapshotRoot, 'spec.txt'), 'utf8'), 'Review input', 'The desktop application retains its immutable input after the original source is removed.');
+  assert.equal(snapshotRoot, data.root);
+  assert.equal(await readFile(join(snapshotRoot, 'spec.txt'), 'utf8'), 'Review input', 'The desktop application uses the unchanged supplied workspace.');
 });
 
 test('bundled viewers retain reviewer desktop connections with a private writable home', async t => {

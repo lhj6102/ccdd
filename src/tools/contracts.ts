@@ -49,7 +49,7 @@ export interface ArtifactSourceContext {
   artifactId: string;
   params: JsonValue;
   signal: AbortSignal;
-  /** Resolve captured project files, never the mutable original copy source. */
+  /** Resolve registered files in the unchanged supplied workspace. */
   resolvePath(path: string): Promise<string>;
 }
 export interface ArtifactSourceResult { data: JsonValue; revision?: string }

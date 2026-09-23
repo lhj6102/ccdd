@@ -10,7 +10,7 @@
 
 - **CCDD definitions → Project Validation**: Supplies Artifact, Critic, and DAG relationships, stale strategies, and registered source/identity contracts. The definition package does not own project state or prepare material.
 - **Project Validation ↔ Broker**: Reads actual verdicts and input identities and requests only the reviews needed. The Broker owns tickets, assignment, and execution lifecycles.
-- **Requester → Broker**: Specifies the Repo and workspace policy and constructs requests from the prepared input's Artifact references and review payloads.
+- **Requester → Broker**: Supplies the unchanged review workspace and constructs requests from the prepared input's Artifact references and review payloads.
 - **Broker ↔ Executors**: The Broker assigns reviews; Executors return verdicts and evidence.
 - **Artifact Runner → Executors**: Connects the registered tool definitions for Artifacts referenced in a payload, providing the observation entry points available to the reviewer. Generated data tools read only the saved material for their bound Artifact.
 - **Tool libraries → Project configuration**: Supplies default or custom observation tool definitions. Only definitions explicitly registered by the project reach reviewers. A library does not own request or execution state.
@@ -24,9 +24,7 @@ The local monitor is an optional interface. It displays stored review state acro
 
 The monitor delegates current-input inspection to Project Validation through an explicit POST. The computed result is displayed in the browser and is not stored as per-Artifact stale state. See the [command and query contracts](docs/project-validation.md).
 
-The optional review server transports copied input and forwards authenticated Human
-assignment and result actions to the same Broker. The reviewer client prepares the
-snapshot and performs environment checks and registered tool execution on the
-reviewer's computer. Try Claim reserves the request while preparation is in progress;
-only successful preparation confirms assignment. Neither client nor transport owns
-a second copy of the Broker's review state. See [remote Human review](docs/remote-human-review.md).
+Human preparation and tools run locally against the supplied workspace. The
+worker stays alive throughout Human waiting and invalidates unfinished reviews
+on input changes or owner death. Users may manage a separate worktree themselves;
+CCDD does not create or transfer workspace copies.

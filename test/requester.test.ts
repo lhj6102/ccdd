@@ -49,17 +49,18 @@ test('requester sends explicit artifact metadata, workspace hash, payload and pr
   assert.equal(requests[1].artifactTypes.markdown.viewer, 'text');
 });
 
-test('requester reads current definitions including edits, and copied definitions remain fixed', async t => {
+test('requester reads edited definitions while the active workspace becomes invalid', async t => {
   const data = await fixture(t);
-  const copied = await prepareWorkspace({ ...data, mode: 'copy' });
-  t.after(() => copied.close());
-  const original = await prepareReviewRequests({ ...data, repoPath: copied.descriptor.path, snapshotHash: copied.descriptor.hash });
+  const workspace = await prepareWorkspace({ ...data });
+  t.after(() => workspace.close());
+  const original = await prepareReviewRequests({ ...data, repoPath: workspace.descriptor.path, snapshotHash: workspace.descriptor.hash });
   data.config.critics[0].payload.instruction = 'Changed current definition';
   await writeFile(join(data.repoPath, 'ccdd.config.json'), JSON.stringify(data.config));
   const current = await prepareReviewRequests({ ...data, snapshotHash: await fingerprintWorkspace(data.repoPath) });
   assert.equal(current[0].payload.instruction, 'Changed current definition');
   assert.notEqual(current[0].snapshotHash, original[0].snapshotHash);
-  assert.deepEqual(await prepareReviewRequests({ ...data, repoPath: copied.descriptor.path, snapshotHash: copied.descriptor.hash }), original);
+  await assert.rejects(workspace.assertUnchanged(), { code: 'WORKSPACE_CHANGED' });
+  assert.equal(original[0].payload.instruction, 'Basis: {why}. Target: {spec}');
   await writeFile(join(data.repoPath, 'ccdd.config.json'), '{"invalid":true}');
   await assert.rejects(prepareReviewRequests(data), /Config requires/);
   assert.equal(await readFile(join(data.repoPath, 'ccdd.config.json'), 'utf8'), '{"invalid":true}');
@@ -190,7 +191,7 @@ test('malformed type tool definitions are rejected before Provider checks or req
   for (const definition of invalid) {
     Reflect.set(data.config.artifactTypes, 'markdown', definition);
     await writeFile(join(data.repoPath, 'ccdd.config.json'), JSON.stringify(data.config));
-    await assert.rejects(broker.submit({ requesterId: 'builder', mode: 'copy' }), /artifact (type|.*tool)/i);
+    await assert.rejects(broker.submit({ requesterId: 'builder' }), /artifact (type|.*tool)/i);
   }
   assert.deepEqual(calls, []);
   assert.deepEqual(broker.listRuns(), []);

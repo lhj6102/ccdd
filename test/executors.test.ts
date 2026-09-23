@@ -102,7 +102,7 @@ test('code runner evaluates actual Node tests and distinguishes pass from assert
 test('Human uses registered notification and broker completion, independent of Pi auth', async t => {
   const data=await fixture(t);
   const request:ReviewRequest = { ...data.request, profile:{kind:'human'}, id:'human-1',runId:'run',status:'WAITING_HUMAN',createdAt:new Date().toISOString(),predecessorId:null,worktreePath:data.worktreePath,
-    workspace:{version:1,mode:'copy',sourcePath:data.worktreePath,path:data.worktreePath,hash:data.request.snapshotHash,stateDir:join(data.dir,'state'),baselineMetadataHash:'b'.repeat(64)} };
+    workspace:{version:2,sourcePath:data.worktreePath,path:data.worktreePath,hash:data.request.snapshotHash,stateDir:join(data.dir,'state'),baselineMetadataHash:'b'.repeat(64)} };
   assert.equal((await createExecutorRegistry().canExecute(request)).ok, false);
   const received:string[] = [];
   const registry = createExecutorRegistry({ alarmMethods: [{ id: 'inbox', notify: async request => {received.push(request.id);} }] });

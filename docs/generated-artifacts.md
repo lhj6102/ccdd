@@ -41,7 +41,7 @@ The fragment above illustrates the source contract; the complete example include
 
 A generated definition has `kind: 'generated'`, `type`, and the registered `source` ID. Optional `params` is a JSON value and defaults to `null` in the callback. `basis: true` and `stale: { kind: 'always' }` are supported. Generated definitions have no `path` and do not accept `file-hash` overrides. Existing file/directory definitions and groups retain their interfaces. A group may combine generated and file Artifacts; ordered member identities compose its identity, and membership still adds no dependency gate.
 
-`prepare(context)` receives `{ artifactId, params, signal, resolvePath }`. Use `resolvePath` to read safe project-relative paths from the captured workspace. In copy mode these are the captured files, even if the original project subsequently changes. The callback returns `{ data }` or `{ data, revision }`, never a temporary-file handle. A source timeout may be declared as `metadata.timeoutMs` from 1 to 900000 milliseconds; the default is 120000.
+`prepare(context)` receives `{ artifactId, params, signal, resolvePath }`. Use `resolvePath` to read safe project-relative paths from the captured workspace. Keep the workspace unchanged until review completion. The callback returns `{ data }` or `{ data, revision }`, never a temporary-file handle. A source timeout may be declared as `metadata.timeoutMs` from 1 to 900000 milliseconds; the default is 120000.
 
 ## Preparation and reopening
 
@@ -60,7 +60,6 @@ CCDD canonicalizes and copies the returned data once, binds its identity to that
 
 Reopening verifies the recorded snapshot and reconnects source/tool definitions from the recorded workspace and serializable manifests. It does not call `prepare` or a custom fingerprint callback, fetch a current external revision, or regenerate missing material. Missing data, corrupted data, or incompatible strategy metadata fails explicitly. Worker restart and later Human tool calls therefore observe the recorded data. State and outputs remain outside the reviewed workspace.
 
-Remote Human preparation transfers this recorded JSON with the reserved review and downloads the configuration workspace through the existing snapshot transfer. Tools on the reviewer's machine receive the same captured value. Remote metadata GET responses omit generated data; the explicit Try Claim response supplies it for preparation.
 
 The snapshot is an inline, bounded data contract. It is not an arbitrary blob store, streaming source, or caller-managed path adapter. Agent and Human review scopes support generated Artifacts. Runtime Critics containing generated Artifacts, including through a group or dependency, are rejected explicitly; their existing Node filesystem execution contract remains separate.
 

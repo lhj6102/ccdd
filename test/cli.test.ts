@@ -7,6 +7,7 @@ import {fileURLToPath} from 'node:url';
 import {execFile,fork} from 'node:child_process';
 import {promisify} from 'node:util';
 import {setTimeout as delay} from 'node:timers/promises';
+import { main as projectMain } from '../src/project/cli.js';
 import {main} from '../src/cli.js';
 import {packageVersion} from '../src/runtime-paths.js';
 import {createBroker,type RunView} from '../src/broker/index.js';
@@ -66,35 +67,45 @@ test('npm bin symlink invokes CLI without starting a server',async t=>{
   assert.ok(stdout.includes(`CCDD ${packageVersion}`));assert.match(stdout,/No daemon/);assert.doesNotMatch(stdout,/ccdd serve/);
 });
 
-test('CLI requires explicit exclusive workspace modes and rejects removed options',async()=>{
-  for(const args of [['run'],['run','--lock','--copy'],['run','--copy','--commit','HEAD'],['serve'],['run','--copy','--timeout-ms','NaN']]){
+test('CLI rejects removed workspace flags and legacy options',async()=>{
+  for(const args of [['run','--copy'],['run','--lock'],['doctor','--copy'],['tools','check','--lock'],['run','--commit','HEAD'],['serve'],['run','--timeout-ms','NaN']]){
     const result=await invoke<{error:string}>([...args,'--json']);assert.equal(result.code,2);assert.ok(result.data.error);
+  }
+});
+
+test('Project CLI rejects removed workspace flags and remote review commands',async()=>{
+  for(const args of [['verify','--all','--copy'],['verify','--all','--lock'],['review','serve']]){
+    let output='';
+    const code=await projectMain([...args,'--json'],{stdout:{write:text=>{output+=text;}}});
+    assert.equal(code,2);
+    assert.match(JSON.parse(output).error,/Unknown (option|command)/);
   }
 });
 
 test('real runtime succeeds or fails without Git, commit or HTTP server',async t=>{
   for(const red of [false,true]){
     const f=await fixture(t,{red});
-    const result=await invoke(['run','--copy','--critic','runtime','--wait',...f.args]);
+    const result=await invoke(['run','--critic','runtime','--wait',...f.args]);
     assert.equal(result.code,red?1:0,result.output+result.errors);
     assert.equal(result.data.requests.length,1);assert.equal(result.data.requests[0].predecessorId,undefined);
-    assert.equal(result.data.snapshotHash.length,64);assert.equal(result.data.workspace.mode,'copy');
+    assert.equal(result.data.snapshotHash.length,64);assert.equal(result.data.workspace.path,f.repo);
     assert.equal(present(result.data.requests[0].result).exitCode,red?1:0);
   }
 });
 
-test('review continues after submitting CLI exits and original changes cannot alter its copy',async t=>{
+test('review continues after submitting CLI exits and rejects subsequent input changes',async t=>{
   const f=await fixture(t,{slow:500});
-  const first=await separate(['run','--copy',...f.args]);assert.equal(first.code,0,JSON.stringify(first));
+  const first=await separate(['run',...f.args]);assert.equal(first.code,0,JSON.stringify(first));
   await writeFile(join(f.repo,'why.md'),'Changed after capture.');
   const final=await until(()=>f.status(first.data.id),run=>['GREEN','RED','ERROR'].includes(run.status));
-  assert.equal(final.status,'GREEN',JSON.stringify(final));
-  assert.equal(await readFile(join(final.workspace.path,'why.md'),'utf8'),'Review basis.');
+  assert.equal(final.status,'ERROR',JSON.stringify(final));
+  assert.equal(final.requests[0].errorCode,'WORKSPACE_CHANGED');
+  assert.equal(final.requests[0].result,null);
 });
 
-test('simultaneous CLI reviews reuse one immutable copy and keep independent runtime output',async t=>{
+test('simultaneous CLI reviews use the supplied workspace and keep independent runtime output',async t=>{
   const f=await fixture(t,{slow:300});
-  const runs=await Promise.all([invoke(['run','--copy','--wait',...f.args]),invoke(['run','--copy','--wait',...f.args])]);
+  const runs=await Promise.all([invoke(['run','--wait',...f.args]),invoke(['run','--wait',...f.args])]);
   for(const run of runs)assert.equal(run.code,0,run.output+run.errors);
   assert.notEqual(runs[0].data.id,runs[1].data.id);
   assert.equal(runs[0].data.workspace.path,runs[1].data.workspace.path);
@@ -104,9 +115,9 @@ test('simultaneous CLI reviews reuse one immutable copy and keep independent run
   }
 });
 
-test('lock detects changed-and-restored content and invalidates review with ERROR',async t=>{
+test('in-place review detects changed-and-restored content and invalidates review with ERROR',async t=>{
   const f=await fixture(t,{slow:1500});
-  const first=await invoke(['run','--lock',...f.args]);assert.equal(first.code,0,first.output);
+  const first=await invoke(['run',...f.args]);assert.equal(first.code,0,first.output);
   await until(()=>f.status(first.data.id),run=>run.status==='RUNNING');
   await writeFile(join(f.repo,'why.md'),'Temporary change.');await writeFile(join(f.repo,'why.md'),'Review basis.');
   const final=await until(()=>f.status(first.data.id),run=>run.status==='ERROR');
@@ -116,16 +127,16 @@ test('lock detects changed-and-restored content and invalidates review with ERRO
 
 test('wait timeout preserves handle and independent worker; status can wait later',async t=>{
   const f=await fixture(t,{slow:500});
-  const first=await invoke(['run','--copy','--wait','--timeout-ms','1',...f.args]);
+  const first=await invoke(['run','--wait','--timeout-ms','1',...f.args]);
   assert.equal(first.code,3,first.output);assert.equal(present(first.data.wait).completed,false);
   const final=await invoke(['status',first.data.id,'--wait',...f.args]);
   assert.equal(final.code,0,final.output);assert.equal(final.data.status,'GREEN');
 });
 
-test('Human copy waits with no worker and accepts result through fresh CLI processes',async t=>{
+test('Human waiting retains its worker and accepts result through fresh CLI processes',async t=>{
   const f=await fixture(t,{human:true});
-  const first=await separate(['run','--copy','--human-inbox',...f.args]);assert.equal(first.code,0,JSON.stringify(first));
-  const waiting=await until(()=>f.status(first.data.id),run=>run.status==='WAITING_HUMAN'&&!run.owner);
+  const first=await separate(['run','--human-inbox',...f.args]);assert.equal(first.code,0,JSON.stringify(first));
+  const waiting=await until(()=>f.status(first.data.id),run=>run.status==='WAITING_HUMAN'&&run.owner&&run.requests[0].notifiedAt);
   const request=waiting.requests[0];
   assert.match(await readFile(join(f.state,'human-inbox.jsonl'),'utf8'),new RegExp(request.id));
   const artifact=await separate<ArtifactReadResult>(['artifact',request.id,'why',...f.args]);assert.equal(artifact.code,0);assert.equal(artifact.data.content,'Review basis.');
@@ -138,7 +149,7 @@ test('Human copy waits with no worker and accepts result through fresh CLI proce
 
 test('Human completion automatically starts the next chain request without a daemon',async t=>{
   const f=await fixture(t,{chain:true});
-  const first=await invoke(['run','--copy','--human-inbox',...f.args]);assert.equal(first.code,0,first.output);
+  const first=await invoke(['run','--human-inbox',...f.args]);assert.equal(first.code,0,first.output);
   const waiting=await until(()=>f.status(first.data.id),run=>run.status==='WAITING_HUMAN'&&run.requests[0].notifiedAt);
   const id=waiting.requests[0].id;
   await invoke(['human-claim',id,'--reviewer','reviewer-a',...f.args]);
@@ -149,7 +160,7 @@ test('Human completion automatically starts the next chain request without a dae
 
 test('cancel stops an owned review and reports operational failure',async t=>{
   const f=await fixture(t,{slow:4000});
-  const first=await invoke(['run','--lock',...f.args]);assert.equal(first.code,0,first.output);
+  const first=await invoke(['run',...f.args]);assert.equal(first.code,0,first.output);
   const canceled=await invoke(['cancel',first.data.id,...f.args]);assert.equal(canceled.code,0,canceled.output);
   assert.equal(canceled.data.status,'ERROR');assert.equal(canceled.data.requests[0].errorCode,'REVIEW_CANCELED');
   await until(()=>f.status(first.data.id),run=>!run.owner);
@@ -160,7 +171,7 @@ test('worker completes even if startup IPC client disappears before ready',async
   const f=await fixture(t,{slow:100});
   const broker=createBroker({repoPath:f.repo,stateDir:f.state,repoId:'local',executors:createExecutorRegistry()});
   try{
-    const run=await broker.submit({mode:'copy',requesterId:'ipc-regression'});
+    const run=await broker.submit({requesterId:'ipc-regression'});
     const child=fork(fileURLToPath(new URL('../src/worker.js',import.meta.url)),[JSON.stringify({repoPath:f.repo,stateDir:f.state,repoId:'local',runId:run.id})],{stdio:['ignore','ignore','pipe','ipc'],execArgv:[]});
     let errors='';present(child.stderr).on('data',chunk=>{errors+=chunk;});
     const exit=new Promise<{code:number|null;signal:NodeJS.Signals|null}>((ok,no)=>{child.once('error',no);child.once('exit',(code,signal)=>ok({code,signal}));});
@@ -170,23 +181,23 @@ test('worker completes even if startup IPC client disappears before ready',async
   }finally{await broker.close();}
 });
 
-test('copy history and Human completion work from state alone after source deletion',async t=>{
+test('history stays readable after workspace deletion but Human completion is rejected',async t=>{
   const f=await fixture(t,{human:true});
-  const first=await invoke(['run','--copy','--human-inbox',...f.args]);assert.equal(first.code,0,first.output);
-  const waiting=await until(()=>f.status(first.data.id),run=>run.status==='WAITING_HUMAN'&&!run.owner);
+  const first=await invoke(['run','--human-inbox',...f.args]);assert.equal(first.code,0,first.output);
+  const waiting=await until(()=>f.status(first.data.id),run=>run.status==='WAITING_HUMAN'&&run.requests[0].notifiedAt);
+  const id=waiting.requests[0].id;
+  assert.equal((await separate(['human-claim',id,'--reviewer','reviewer-a',...f.args])).code,0);
   await removeOwnedWorkspaceTree(f.repo);
   const args=['--state-dir',f.state,'--json'];
-  assert.equal((await separate(['status',first.data.id,...args])).data.status,'WAITING_HUMAN');
-  assert.equal((await separate<ArtifactReadResult>(['artifact',waiting.requests[0].id,'why',...args])).data.content,'Review basis.');
-  assert.equal((await separate(['human-claim',waiting.requests[0].id,'--reviewer','reviewer-a',...args])).code,0);
-  const file=join(f.root,'result.json');await writeFile(file,JSON.stringify({verdict:'GREEN',summary:'Checked.',evidence:['copied why.md reviewed.']}));
-  const final=await separate(['human-result',waiting.requests[0].id,'--reviewer','reviewer-a','--result-file',file,...args]);
-  assert.equal(final.code,0,JSON.stringify(final));assert.equal(final.data.status,'GREEN');
+  const final=await until(()=>separate(['status',first.data.id,...args]).then(r=>r.data),run=>run.status==='ERROR');
+  assert.equal(final.requests[0].result,null);
+  const file=join(f.root,'result.json');await writeFile(file,JSON.stringify({verdict:'GREEN',summary:'Invalid input.',evidence:['Must not be accepted.']}));
+  assert.equal((await separate(['human-result',id,'--reviewer','reviewer-a','--result-file',file,...args])).code,2);
 });
 
 test('resume of a live worker preserves single ownership and execution',async t=>{
   const f=await fixture(t,{slow:400});
-  const first=await invoke(['run','--copy',...f.args]);assert.equal(first.code,0,first.output);
+  const first=await invoke(['run',...f.args]);assert.equal(first.code,0,first.output);
   const second=await invoke(['resume',first.data.id,'--wait',...f.args]);assert.equal(second.code,0,second.output);
   assert.equal(second.data.events.filter(event=>event.type==='request.started').length,1);
 });
@@ -195,8 +206,8 @@ test('resume of a live worker preserves single ownership and execution',async t=
 test('CLI Artifact partial reads use line arguments and reject listing pagination on reads',async t=>{
   const f=await fixture(t,{human:true});
   await writeFile(join(f.repo,'why.md'),'\uccab \uc904\r\n\ub458\uc9f8 \uc904\r\n\uc14b\uc9f8 \uc904\n');
-  const first=await invoke(['run','--copy','--human-inbox',...f.args]);assert.equal(first.code,0,first.output);
-  const waiting=await until(()=>f.status(first.data.id),run=>run.status==='WAITING_HUMAN'&&!run.owner);
+  const first=await invoke(['run','--human-inbox',...f.args]);assert.equal(first.code,0,first.output);
+  const waiting=await until(()=>f.status(first.data.id),run=>run.status==='WAITING_HUMAN'&&run.owner&&run.requests[0].notifiedAt);
   const id=waiting.requests[0].id;
   const partial=await separate<ArtifactReadResult>(['artifact',id,'why','--start-line','2','--line-count','1',...f.args]);
   assert.equal(partial.code,0,JSON.stringify(partial));assert.equal(partial.data.content,'\ub458\uc9f8 \uc904\r\n');
@@ -214,9 +225,9 @@ test('worker settings persist credential paths across Human resume without copyi
   const secret='test-credential-must-remain-outside-worker-settings';
   await writeFile(authFile,JSON.stringify({openai:{type:'api_key',key:secret}}));
   await writeFile(codexAuthFile,JSON.stringify({tokens:{access_token:secret}}));
-  const first=await invoke(['run','--copy','--human-inbox','--pi-auth-file',authFile,'--codex-auth-file',codexAuthFile,...f.args]);
+  const first=await invoke(['run','--human-inbox','--pi-auth-file',authFile,'--codex-auth-file',codexAuthFile,...f.args]);
   assert.equal(first.code,0,first.output);
-  const waiting=await until(()=>f.status(first.data.id),run=>run.status==='WAITING_HUMAN'&&!run.owner);
+  const waiting=await until(()=>f.status(first.data.id),run=>run.status==='WAITING_HUMAN'&&run.owner&&run.requests[0].notifiedAt);
   const settingsFile=join(f.state,'runs',first.data.id,'worker.json');
   const saved=await readFile(settingsFile,'utf8');
   assert.deepEqual(JSON.parse(saved),{piOptions:{authFile,codexAuthFile},humanInbox:true});

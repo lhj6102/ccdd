@@ -7,7 +7,7 @@ import { createArtifactViewer, createArtifactTools, type ArtifactListResult } fr
 import { createHumanArtifactTools } from '../artifacts/human.js';
 import { createReviewTools } from '../tools/runner.js';
 import { errorCode, errorMessage } from '../executors/errors.js';
-import type { ReviewEnvelope, ExecutorRegistry, ExecutionEvent, WorkspaceHandle, WorkspaceMode } from '../contracts.js';
+import type { ReviewEnvelope, ExecutorRegistry, ExecutionEvent, WorkspaceHandle } from '../contracts.js';
 
 
 export type DiagnosticScope = { kind: 'graph' } | { kind: 'critic'; criticId: string };
@@ -27,7 +27,6 @@ export interface DiagnosticReport {
   ok: boolean;
   status: 'READY' | 'NOT_READY';
   repoId: string;
-  mode: WorkspaceMode;
   snapshotHash?: string;
   scope: DiagnosticScope;
   checkedAt: string;
@@ -36,7 +35,6 @@ export interface DiagnosticReport {
 export interface DiagnoseProjectOptions {
   repoPath: string;
   repoId?: string;
-  mode?: WorkspaceMode;
   stateDir?: string;
   criticId?: string;
   executors: Pick<ExecutorRegistry, 'probe' | 'validateWorkspace'>;
@@ -99,8 +97,9 @@ async function inspectViewers(request: ReviewEnvelope, worktreePath: string, sig
 }
 
 /** Ephemeral diagnostics: no broker, review history, verdict, test or notification. */
-export async function diagnoseProject({ repoPath, repoId = 'demo', mode = 'copy', stateDir, criticId, executors, signal, onEvent = () => {} }: DiagnoseProjectOptions): Promise<DiagnosticReport> {
-  const report: DiagnosticReport = { ok: false, status: 'NOT_READY', repoId, mode, scope: scopeFor(criticId), checkedAt: new Date().toISOString(), checks: [] };
+export async function diagnoseProject({ repoPath, repoId = 'demo', stateDir, criticId, executors, signal, onEvent = () => {}, ...removed }: DiagnoseProjectOptions): Promise<DiagnosticReport> {
+  if ('mode' in removed) throw new Error('Workspace modes are no longer supported; supply an unchanged workspace.');
+  const report: DiagnosticReport = { ok: false, status: 'NOT_READY', repoId, scope: scopeFor(criticId), checkedAt: new Date().toISOString(), checks: [] };
   const add = async (check: DiagnosticCheck): Promise<void> => { report.checks.push(check); await onEvent({ type: 'doctor.check', check }); };
   let scratch: string | undefined, workspace: WorkspaceHandle | undefined;
   try {
@@ -112,11 +111,11 @@ export async function diagnoseProject({ repoPath, repoId = 'demo', mode = 'copy'
     }
     scratch = await realpath(await mkdtemp(join(tmpdir(), 'ccdd-doctor-')));
     try {
-      workspace = await prepareWorkspace({ repoPath, stateDir: stateDir ?? join(scratch, 'state'), mode, signal });
+      workspace = await prepareWorkspace({ repoPath, stateDir: stateDir ?? join(scratch, 'state'), signal });
       report.snapshotHash = workspace.descriptor.hash;
-      await add({ id: 'workspace-input', status: 'PASS', kind: 'workspace', message: mode === 'copy' ? 'Prepared an immutable copy of the entire current repository as diagnostic input.' : 'Started monitoring the entire current workspace for changes.', details: { mode, snapshotHash: report.snapshotHash } });
+      await add({ id: 'workspace-input', status: 'PASS', kind: 'workspace', message: 'Started monitoring the entire current workspace for changes.', details: { snapshotHash: report.snapshotHash } });
     } catch (error) {
-      await add({ id: 'workspace-input', status: 'FAIL', kind: 'workspace', message: bounded(errorMessage(error)), remedy: 'Check repository read permissions and the external CCDD state path. Keep inputs unchanged while copying.', details: { code: signal?.aborted ? 'ABORTED' : errorCode(error) ?? 'WORKSPACE_UNAVAILABLE' } });
+      await add({ id: 'workspace-input', status: 'FAIL', kind: 'workspace', message: bounded(errorMessage(error)), remedy: 'Check repository read permissions and the external CCDD state path. Keep inputs unchanged during diagnosis.', details: { code: signal?.aborted ? 'ABORTED' : errorCode(error) ?? 'WORKSPACE_UNAVAILABLE' } });
       return report;
     }
     const worktreePath = workspace.descriptor.path;
@@ -175,7 +174,7 @@ export async function diagnoseProject({ repoPath, repoId = 'demo', mode = 'copy'
     await workspace.assertUnchanged();
   } catch (error) {
     const code = errorCode(error) ?? (signal?.aborted ? 'ABORTED' : 'DIAGNOSTIC_FAILED');
-    const changed = ['WORKSPACE_CHANGED', 'WORKSPACE_CACHE_TAMPERED'].includes(code);
+    const changed = code === 'WORKSPACE_CHANGED';
     await add({ id: changed ? 'workspace-unchanged' : 'diagnostic', status: 'FAIL', kind: 'workspace', message: changed ? 'Review inputs changed during the diagnostic.' : code === 'ABORTED' ? 'The diagnostic was cancelled.' : 'Could not complete the diagnostic.', remedy: changed ? 'Rerun doctor while keeping diagnostic inputs unchanged.' : 'Check the local execution environment and permissions, then rerun the diagnostic.', details: { code } });
   } finally {
     if (workspace) {

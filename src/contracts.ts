@@ -7,7 +7,7 @@ import type { HumanTryClaim, HumanPreparationAttempt } from './broker/human-clai
 export type * from './definitions.js';
 
 export type { ArtifactReference, ArtifactTypeDefinition, ArtifactToolCall } from './artifacts/index.js';
-export type { WorkspaceDescriptor, WorkspaceHandle, WorkspaceMode, WorkspaceIntegrity } from './workspaces/index.js';
+export type { WorkspaceDescriptor, WorkspaceHandle, WorkspaceIntegrity } from './workspaces/index.js';
 
 export interface ReviewEnvelope {
   repoId: string; snapshotHash: string; criticId: string; title: string;

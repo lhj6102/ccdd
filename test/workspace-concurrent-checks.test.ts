@@ -5,9 +5,9 @@ import { syncBuiltinESMExports } from 'node:module';
 import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { prepareWorkspace, reopenWorkspace, removeOwnedWorkspaceTree, type WorkspaceHandle, type WorkspaceMode, type WorkspaceScanProgress } from '../src/workspaces/index.js';
+import { prepareWorkspace, reopenWorkspace, removeOwnedWorkspaceTree, type WorkspaceHandle, type WorkspaceScanProgress } from '../src/workspaces/index.js';
 
-async function fixture(t: TestContext, options: { mode?: WorkspaceMode; signal?: AbortSignal; progress?: (progress: WorkspaceScanProgress) => void } = {}) {
+async function fixture(t: TestContext, options: { signal?: AbortSignal; progress?: (progress: WorkspaceScanProgress) => void } = {}) {
   const root = await mkdtemp(join(tmpdir(), 'ccdd-concurrent-checks-'));
   const repoPath = join(root, 'input'), stateDir = join(root, 'state');
   const handles: WorkspaceHandle[] = [];
@@ -15,7 +15,7 @@ async function fixture(t: TestContext, options: { mode?: WorkspaceMode; signal?:
   await mkdir(repoPath);
   await writeFile(join(repoPath, 'artifact.txt'), 'Fixed input.');
   await writeFile(join(repoPath, 'payload.bin'), Buffer.alloc(1024 * 1024, 42));
-  const prepared = await prepareWorkspace({ repoPath, stateDir, mode: options.mode ?? 'lock' });
+  const prepared = await prepareWorkspace({ repoPath, stateDir });
   handles.push(prepared);
   await prepared.close();
   const scans = { started: 0, completed: 0 };
@@ -32,14 +32,12 @@ async function fixture(t: TestContext, options: { mode?: WorkspaceMode; signal?:
   return { handle, scans, repoPath };
 }
 
-test('concurrent content boundaries share one full validation for lock and copy inputs', async t => {
-  for (const mode of ['lock', 'copy'] as const) await t.test(mode, async t => {
-    const { handle, scans } = await fixture(t, { mode });
-    await Promise.all(Array.from({ length: 8 }, () => handle.assertUnchanged()));
-    assert.deepEqual(scans, { started: 1, completed: 1 });
-    await handle.assertUnchanged();
-    assert.deepEqual(scans, { started: 2, completed: 2 }, 'A later boundary still performs a fresh full scan.');
-  });
+test('concurrent content boundaries share one full validation of the supplied workspace', async t => {
+  const { handle, scans } = await fixture(t);
+  await Promise.all(Array.from({ length: 8 }, () => handle.assertUnchanged()));
+  assert.deepEqual(scans, { started: 1, completed: 1 });
+  await handle.assertUnchanged();
+  assert.deepEqual(scans, { started: 2, completed: 2 }, 'A later boundary still performs a fresh full scan.');
 });
 
 test('content boundaries arriving during a metadata poll perform one shared full scan afterward', async t => {

@@ -26,7 +26,7 @@ type Output = { write(text: string): unknown };
 type Options = Record<string, string | boolean>;
 
 const terminal=new Set(['GREEN','RED','ERROR','INCOMPLETE']);
-const booleanFlags=new Set(['--demo','--human-inbox','--wait','--json','--help','--lock','--copy','--execute']);
+const booleanFlags=new Set(['--demo','--human-inbox','--wait','--json','--help','--execute']);
 const valueFlags=new Set(['--repo','--state-dir','--pi-auth-file','--codex-auth-file','--requester','--critic','--timeout-ms','--scenario','--demo-dir','--reviewer','--result-file','--file','--start-line','--line-count','--offset','--limit','--port','--artifact','--for','--tool','--args']);
 function parse(argv: string[]){
   const options: Options={},positional: string[]=[];
@@ -75,13 +75,13 @@ export async function main(argv: string[]=process.argv.slice(2),{stdout=process.
     if(command==='help'||command==='--help'||options['--help']){
       print(`CCDD ${packageVersion} — critic broker & artifact runner
 
-  ccdd run (--copy | --lock) [--repo PATH] [--critic ID] [--wait]
-  ccdd doctor [--repo PATH] [--critic ID] [--copy | --lock] [--json]
+  ccdd run [--repo PATH] [--critic ID] [--wait]
+  ccdd doctor [--repo PATH] [--critic ID] [--json]
   ccdd status RUN_ID [--wait]
   ccdd list
   ccdd monitor [--repo PATH | --state-dir PATH] [--port 4318]
   ccdd tools check [--repo PATH] [--artifact ID] [--for agent|human] [--tool NAME]
-    [--execute --args JSON] [--copy | --lock] [--json]
+    [--execute --args JSON] [--json]
   ccdd request REQUEST_ID
   ccdd artifact REQUEST_ID ARTIFACT_ID [--file RELATIVE_PATH] [--start-line 1] [--line-count 80]
   ccdd human-claim REQUEST_ID --reviewer ID
@@ -89,13 +89,14 @@ export async function main(argv: string[]=process.argv.slice(2),{stdout=process.
   ccdd resume RUN_ID [--wait]
   ccdd cancel RUN_ID
   ccdd prepare-demo [--demo-dir PATH]
-  ccdd run --demo [--scenario baseline|why-change|runtime-failure|fixed] --copy --wait
+  ccdd run --demo [--scenario baseline|why-change|runtime-failure|fixed] --wait
 
 All review commands accept --repo PATH and --state-dir PATH (outside the repo).
-run requires exactly one workspace mode. --copy is recommended; doctor defaults to copy.
+Reviews and diagnostics use the supplied workspace directly.
+Keep it unchanged until review completion, including while waiting for a Human.
 No daemon, HTTP server, Git repository, or commit is required for reviews.
 monitor is an optional local view with explicit Human claim, tool and result actions.
-Viewing the monitor does not start or own reviews; completion resumes a detached worker.
+Viewing the monitor does not start or own reviews; completion lets the existing worker continue.
 --critic runs only that Critic; omission evaluates the full Artifact dependency graph.
 Commands return JSON. --wait: 0=GREEN, 1=RED, 2=ERROR, 3=wait timed out.
 Without --wait, run returns 0 for acceptance; the independent review worker continues.
@@ -129,23 +130,20 @@ Only credential paths are saved for worker/resume; credentials are never copied 
       return 0;
     }
     if(command==='tools'){
-      const permitted=new Set(['--repo','--state-dir','--artifact','--for','--tool','--args','--execute','--copy','--lock','--json']);
-      if(positional.length!==1||positional[0]!=='check'||Object.keys(options).some(key=>!permitted.has(key)))throw new Error('Use tools check with --repo, --state-dir, --artifact, --for, --tool, --execute, --args, --copy, --lock or --json.');
-      if(options['--copy']&&options['--lock'])throw new Error('--lock and --copy are mutually exclusive.');
+      const permitted=new Set(['--repo','--state-dir','--artifact','--for','--tool','--args','--execute','--json']);
+      if(positional.length!==1||positional[0]!=='check'||Object.keys(options).some(key=>!permitted.has(key)))throw new Error('Use tools check with --repo, --state-dir, --artifact, --for, --tool, --execute, --args or --json.');
       const audience=get('--for');
       if(audience!==undefined&&audience!=='agent'&&audience!=='human')throw new Error('--for must be agent or human.');
       if(options['--args']&&!options['--execute'])throw new Error('--args requires --execute.');
       const args=get('--args');
-      const report=await diagnoseArtifactTools({repoPath:resolve(get('--repo',process.cwd())!),...(get('--state-dir')?{stateDir:resolve(get('--state-dir')!)}:{}),mode:options['--lock']?'lock':'copy',artifactId:get('--artifact'),audience,toolName:get('--tool'),execute:Boolean(options['--execute']),...(args===undefined?{}:{arguments:JSON.parse(args)})});
+      const report=await diagnoseArtifactTools({repoPath:resolve(get('--repo',process.cwd())!),...(get('--state-dir')?{stateDir:resolve(get('--state-dir')!)}:{}),artifactId:get('--artifact'),audience,toolName:get('--tool'),execute:Boolean(options['--execute']),...(args===undefined?{}:{arguments:JSON.parse(args)})});
       print(report);return report.ok?0:1;
     }
     if(['--artifact','--for','--tool','--args','--execute'].some(flag=>options[flag]!==undefined))throw new Error('Tool check options require tools check.');
     if(options['--port']!==undefined)throw new Error('--port requires the monitor command.');
-    if(options['--lock']&&options['--copy'])throw new Error('--lock and --copy are mutually exclusive.');
-    if(command==='run'&&!options['--lock']&&!options['--copy'])throw new Error('run requires exactly one of --copy (recommended) or --lock.');
     if(command!=='artifact'&&['--start-line','--line-count','--offset','--limit'].some(key=>options[key]!==undefined))throw new Error('Artifact read/list options require the artifact command.');
     const allowed=new Set(['run','doctor','status','list','request','artifact','human-claim','human-result','resume','cancel','prepare-demo']);
-    if(!allowed.has(command))throw new Error(`Unknown command: ${command}. No server is needed; use run --copy or run --lock.`);
+    if(!allowed.has(command))throw new Error(`Unknown command: ${command}. No server is needed; use run.`);
     if(command==='prepare-demo'){print(await prepareDemo({...(get('--demo-dir')?{root:resolve(get('--demo-dir')!)}:{})}));return 0;}
     const timeoutMs=timeoutValue(get('--timeout-ms'),command==='doctor'?900000:600000);
     let repoPath=resolve(get('--repo',process.cwd())!);
@@ -173,9 +171,8 @@ Only credential paths are saved for worker/resume; credentials are never copied 
     if(codexAuthFile)piOptions.codexAuthFile=resolve(codexAuthFile);
     const humanInbox=Boolean(options['--human-inbox']);
     const executors=createExecutorRegistry({piOptions,alarmMethods:createLocalAlarmMethods({...context,humanInbox})});
-    const mode=options['--lock']?'lock':'copy';
     if(command==='doctor'){
-      const report=await diagnoseProject({...context,mode,criticId:get('--critic'),executors,signal:AbortSignal.timeout(timeoutMs)});
+      const report=await diagnoseProject({...context,criticId:get('--critic'),executors,signal:AbortSignal.timeout(timeoutMs)});
       if(options['--json'])print(report);
       else{
         print(`CCDD doctor · ${report.status}\nSnapshot: ${report.snapshotHash ?? '(unavailable)'}\nScope: ${report.scope?.kind==='critic'?report.scope.criticId:'all project requirements'}`);
@@ -189,7 +186,7 @@ Only credential paths are saved for worker/resume; credentials are never copied 
     const launch=(run:Run)=>ensureRunWorker({broker:activeBroker,context,run,initialConfig:{piOptions,humanInbox}});
     let result:Run|null;
     if(command==='run'){
-      result=await activeBroker.submit({mode,requesterId:get('--requester','cli'),criticId:get('--critic')});
+      result=await activeBroker.submit({requesterId:get('--requester','cli'),criticId:get('--critic')});
       stderr.write(`Review handle: ${result.id}\nState: ${context.stateDir}\n`);
       result=await launch(result);
     }else if(command==='list'){print(await activeBroker.listRuns());return 0;}

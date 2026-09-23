@@ -44,8 +44,8 @@ function safeError(value: unknown): HttpError {
   if (value instanceof MonitorActionError) return value;
   const code = errorCode(value);
   if (code === 'HUMAN_PREPARATION_FAILED' && value instanceof Error) return new HttpError(409, value.message.slice(0, 8000));
-  if (['WORKSPACE_CHANGED', 'WORKSPACE_CACHE_TAMPERED', 'WORKSPACE_ARTIFACT_MISMATCH'].includes(code ?? '')) return new HttpError(409, 'The review input has changed; this Artifact cannot be inspected.');
-  if (code === 'ENOENT' || code === 'ENOTDIR') return new HttpError(409, 'The stored review input could not be found. The original or copy may have been moved or deleted.');
+  if (['WORKSPACE_CHANGED', 'WORKSPACE_ARTIFACT_MISMATCH'].includes(code ?? '')) return new HttpError(409, 'The review input has changed; this Artifact cannot be inspected.');
+  if (code === 'ENOENT' || code === 'ENOTDIR') return new HttpError(409, 'The stored review input could not be found. The supplied workspace may have been moved or deleted.');
   if (code === 'HUMAN_TOOL_UNAVAILABLE') return new HttpError(409, 'Unable to start the registered program. Check its installation and tool settings.');
   if (code === 'HUMAN_TOOL_FAILED') return new HttpError(409, 'The registered program did not finish successfully. Check the program and tool settings.');
   if (code === 'HUMAN_TOOL_TIMEOUT') return new HttpError(504, 'The registered program timed out.');
@@ -56,7 +56,7 @@ function safeError(value: unknown): HttpError {
   if (code === 'EACCES' || code === 'EPERM') return new HttpError(409, 'Permission denied when reading the review input.');
   const message = value instanceof Error ? value.message : '';
   if (/claimed|reviewer who/i.test(message)) return new HttpError(403, 'You can only act on reviews claimed in this browser.');
-  if (/waiting for a human|already completed|alarm delivery|lock review requires/i.test(message)) return new HttpError(409, 'The review status has changed or the review is not ready yet. Refresh the list.');
+  if (/waiting for a human|already completed|alarm delivery|in-place review requires/i.test(message)) return new HttpError(409, 'The review status has changed or the review is not ready yet. Refresh the list.');
   if (/worker|saved.*configuration|saved.*settings/i.test(message)) return new HttpError(503, 'Unable to start the worker for the next review. Check the saved execution settings and resume the Run.');
   return new HttpError(400, 'Unable to read the requested Artifact range. Check the file path and read range.');
 }

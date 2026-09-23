@@ -90,13 +90,7 @@ Artifact references in the instruction are buttons that take you to the relevant
 
 For a terminal-only workflow, use `request claim`, `request tool`, and `request submit`. See [Human actions and review history](project-validation.md#execution-history-and-human-actions).
 
-For teammates on another computer, use [remote Human review](remote-human-review.md)
-to download the fixed project, check their environment, run the same tools
-locally, and submit the result to the original Broker. Cached files are reused
-across reviews. Projects can include their own portable viewer executables.
-
-## Combine reviewers
-
-Add separate Critics when one Artifact needs multiple checks, such as an Agent comparison and a Human design review. All required Critics for a dependency must pass before a dependent check can proceed. Choose `verify ARTIFACT --recursive` to include the needed earlier checks.
-
-Use a Runtime Critic for actual Node test execution, as shown in [Your first review](getting-started.md). Runtime uses its configured test command and fixed input; it does not use the Agent or Human observation-tool maps.
+Human reviews use the supplied local workspace. Keep the worker running and all
+inputs unchanged until completion. If isolation is needed, the user creates a
+separate worktree and supplies its path when submitting the review. Remote
+workspace transfer and remote review clients are no longer supported.

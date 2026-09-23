@@ -25,23 +25,23 @@ async function fixture(t: TestContext, script = "import {writeFileSync} from 'no
   return { dir, repoPath, stateDir, program, output, type, writeConfig };
 }
 
-test('tool diagnosis defaults to a reusable copy and preflights without launching, Provider calls, or review records', async t => {
+test('tool diagnosis uses the supplied workspace and preflights without launching, Provider calls, or review records', async t => {
   const data = await fixture(t);
   await writeFile(join(data.repoPath, 'why.md'), Buffer.from([0, 1, 255]));
   await data.writeConfig({ viewer: 'files', humanTools: data.type.humanTools });
   const report = await diagnoseArtifactTools(data);
   assert.equal(report.status, 'READY', JSON.stringify(report));
-  assert.equal(report.mode, 'copy');
+  assert.equal(Object.hasOwn(report, 'mode'), false);
   assert.ok(report.snapshotHash);
-  assert.notEqual(report.workspacePath, data.repoPath);
+  assert.equal(report.workspacePath, data.repoPath);
   assert.equal(report.result, undefined);
   await assert.rejects(readFile(data.output), { code: 'ENOENT' });
-  assert.deepEqual(await readdir(data.stateDir), ['workspaces']);
+  await assert.rejects(readdir(join(data.stateDir, 'workspaces')), { code: 'ENOENT' });
   assert.deepEqual(await readFile(join(report.workspacePath!, 'why.md')), Buffer.from([0, 1, 255]));
   assert.equal(JSON.stringify(report).includes(data.program), false);
 });
 
-test('explicit Human tool diagnosis uses the same registered command and retains the copied input for the launched viewer', async t => {
+test('explicit Human tool diagnosis uses the same registered command and uses the supplied input for the launched viewer', async t => {
   const data = await fixture(t);
   const report = await diagnoseArtifactTools({ ...data, artifactId: 'why', audience: 'human', toolName: 'open_why', execute: true });
   assert.equal(report.status, 'READY', JSON.stringify(report));
@@ -49,7 +49,7 @@ test('explicit Human tool diagnosis uses the same registered command and retains
   assert.equal(await readFile(data.output, 'utf8'), join(report.workspacePath!, 'why.md'));
   assert.equal(await readFile(join(report.workspacePath!, 'why.md'), 'utf8'), 'First line.\nSecond line.\n');
   assert.equal(await readFile(join(data.repoPath, 'why.md'), 'utf8'), 'First line.\nSecond line.\n');
-  assert.deepEqual(await readdir(data.stateDir), ['workspaces']);
+  await assert.rejects(readdir(join(data.stateDir, 'workspaces')), { code: 'ENOENT' });
 });
 
 test('explicit Agent tool diagnosis uses strict scoped registry arguments without running an Agent review', async t => {
@@ -63,7 +63,7 @@ test('explicit Agent tool diagnosis uses strict scoped registry arguments withou
     assert.equal(invalid.ok, false);
     assert.equal(invalid.result, undefined);
   }
-  assert.deepEqual(await readdir(data.stateDir), ['workspaces']);
+  await assert.rejects(readdir(join(data.stateDir, 'workspaces')), { code: 'ENOENT' });
 });
 
 test('actual tool diagnosis never accepts a mutated snapshot as a successful launch', async t => {
@@ -73,7 +73,7 @@ test('actual tool diagnosis never accepts a mutated snapshot as a successful lau
   assert.equal(report.result, undefined);
   assert.ok(report.checks.some(check => /workspace changed/i.test(check.message)), JSON.stringify(report));
   assert.equal(report.checks.at(-1)?.stage, 'input-integrity');
-  assert.equal(await readFile(join(data.repoPath, 'why.md'), 'utf8'), 'First line.\nSecond line.\n');
+  assert.equal(await readFile(join(data.repoPath, 'why.md'), 'utf8'), 'changed');
 });
 
 test('tool diagnosis rejects empty and legacy-only Critic audiences including ineffective file-list registrations', async t => {

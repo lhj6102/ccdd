@@ -17,7 +17,7 @@ interface Identity { repoId: string; repoPath: string }
 interface Header {
   id: string; runId: string; title: string; criticId: string; status: ReviewStatus; kind: CriticProfile['kind'];
   predecessorId: string | null; target: string | null; deps: string[] | null; snapshotHash: string | null; blockedReason: string | null; createdAt: string; startedAt: string | null; completedAt: string | null;
-  claimedAt: string | null; claimedBy: string | null; notifiedAt: string | null; mode: 'copy' | 'lock' | null;
+  claimedAt: string | null; claimedBy: string | null; notifiedAt: string | null;
   preparingBy: string | null; preparationExpiresAt: string | null;
 }
 interface Owner { pid: number; identity: string | null }
@@ -77,7 +77,6 @@ function readHeader(row: Record<string, unknown>): Header {
     createdAt: date(row.created_at), startedAt: nullableDate(row.started_at), completedAt: nullableDate(row.completed_at),
     claimedAt: nullableDate(row.claimed_at), claimedBy: nullableString(row.claimed_by), notifiedAt: nullableDate(row.notified_at),
     preparingBy: nullableString(row.preparing_by), preparationExpiresAt: nullableDate(row.preparation_expires_at),
-    mode: row.workspace_mode === 'copy' || row.workspace_mode === 'lock' ? row.workspace_mode : null,
   };
 }
 
@@ -90,7 +89,7 @@ const headerSql = `SELECT id,run_id,status,
   json_extract(data,'$.predecessorId') AS predecessor_id,json_extract(data,'$.createdAt') AS created_at,
   json_extract(data,'$.startedAt') AS started_at,json_extract(data,'$.completedAt') AS completed_at,
   json_extract(data,'$.claimedAt') AS claimed_at,json_extract(data,'$.claimedBy') AS claimed_by,
-  json_extract(data,'$.notifiedAt') AS notified_at,json_extract(data,'$.workspace.mode') AS workspace_mode
+  json_extract(data,'$.notifiedAt') AS notified_at
   FROM requests`;
 
 const runSql = `SELECT id,status,created_at,
@@ -220,7 +219,7 @@ async function workerState(request: Header, snapshot: Snapshot, checks: ProcessC
   const owner = snapshot.owners.get(request.runId);
   if (!owner) {
     if (request.status === 'RUNNING') return 'missing';
-    if (request.status === 'WAITING_HUMAN') return request.mode === 'copy' && request.notifiedAt ? 'idle' : request.mode === null ? 'unknown' : 'missing';
+    if (request.status === 'WAITING_HUMAN') return 'missing';
     return 'idle';
   }
   let checked = checks.get(owner.pid);

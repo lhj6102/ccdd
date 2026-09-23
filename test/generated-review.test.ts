@@ -1,3 +1,4 @@
+import { runUntilSettled } from './helpers/run.js';
 import test, { type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
@@ -9,8 +10,6 @@ import { createBroker } from '../src/broker/index.js';
 import { createExecutorRegistry } from '../src/executors/index.js';
 import { serveArtifactMcp } from '../src/artifacts/mcp-server.js';
 import { createMonitorStore } from '../src/monitor/store.js';
-import { startReviewServer } from '../src/review/server.js';
-import { claimRemoteReview, executeRemoteHumanTool, submitRemoteHumanReview } from '../src/review/client.js';
 import { removeOwnedWorkspaceTree } from '../src/workspaces/index.js';
 import type { CriticProfile } from '../src/contracts.js';
 import type { StreamFn } from '../src/executors/pi.js';
@@ -60,7 +59,7 @@ test('generated data reaches the actual Agent loop only through scoped tools and
     return transport.provider.streamSimple(model, context, options);
   };
   const f = await fixture(t, agent, streamFn);
-  await f.broker.run(f.run.id);
+  await runUntilSettled(f.broker, f.run.id);
   const completed = f.broker.getRun(f.run.id)!;
   assert.equal(completed.status, 'GREEN', JSON.stringify(completed.requests.map(request => request.error)));
   assert.equal(completed.requests[0].result?.toolCalls?.[0].observation?.artifactId, 'scenario');
@@ -75,14 +74,10 @@ test('generated data reaches the actual Agent loop only through scoped tools and
   assert.notEqual(changed.requests[0].validationInput?.key, completed.requests[0].validationInput?.key);
 });
 
-test('remote Human review reopens captured generated data while metadata GETs remain observational', async t => {
+test('local Human review reopens captured generated data while metadata GETs remain observational', async t => {
   const f = await fixture(t, { kind: 'human' });
-  await f.broker.run(f.run.id);
+  await runUntilSettled(f.broker, f.run.id);
   const request = f.broker.getRun(f.run.id)!.requests[0];
-  const token = 'g'.repeat(48);
-  const server = await startReviewServer({ stateDir: f.stateDir, reviewers: { reviewer: token }, port: 0 });
-  t.after(() => server.close());
-  const options = { server: server.url, token, stateDir: join(f.root, 'remote') };
   const monitor = createMonitorStore({ stateDirs: [f.stateDir] });
   const sourceCalls = await readFile(f.calls, 'utf8'), configCalls = await readFile(f.configCalls, 'utf8');
   const database = await readFile(join(f.stateDir, 'broker.sqlite'));
@@ -90,18 +85,14 @@ test('remote Human review reopens captured generated data while metadata GETs re
   const detail = await monitor.detail(overview.projects[0].id, request.id);
   assert.ok(detail);
   assert.deepEqual(detail.artifacts, [{ id: 'scenario', type: 'scenario', kind: 'generated', source: 'simulation' }]);
-  const response = await fetch(`${server.url}/requests/${request.id}`, { headers: { authorization: `Bearer ${token}` } });
-  assert.equal(response.status, 200);
-  assert.doesNotMatch(await response.text(), /DEFERRED_EVIDENCE_28|Captured overview/);
-  assert.equal(await readFile(f.calls, 'utf8'), sourceCalls);
   assert.equal(await readFile(f.configCalls, 'utf8'), configCalls);
   assert.deepEqual(await readFile(join(f.stateDir, 'broker.sqlite')), database);
   await writeFile(f.liveData, JSON.stringify({ summary: 'New live revision', detail: 'Changed source' }));
-  await claimRemoteReview(request.id, options);
-  const result = await executeRemoteHumanTool(request.id, 'overview_scenario', {}, options);
+  await f.broker.claimHuman(request.id, 'reviewer');
+  const result = await f.broker.executeHumanTool(request.id, { reviewerId: 'reviewer', toolName: 'overview_scenario' });
   assert.deepEqual(result, { content: [{ type: 'text', text: 'Captured overview' }], observation: { kind: 'content' } });
   assert.equal(await readFile(f.calls, 'utf8'), sourceCalls, 'Reopening must never rerun source preparation.');
-  await submitRemoteHumanReview(request.id, verdict, options);
+  await f.broker.completeHuman(request.id, { reviewerId: 'reviewer', result: verdict });
   assert.equal(f.broker.getRequest(request.id)?.status, 'GREEN');
 });
 

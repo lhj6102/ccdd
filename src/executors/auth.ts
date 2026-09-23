@@ -17,7 +17,7 @@ const unavailable = () => new PiAuthError('AUTHENTICATION_UNAVAILABLE', 'Cannot 
 const invalid = () => new PiAuthError('AUTHENTICATION_INVALID', 'The specified authentication file has an invalid format.', 'Specify a Pi authentication file with provider-specific api_key or oauth credentials.');
 const expired = () => new PiAuthError('AUTHENTICATION_EXPIRED', 'The authentication token has expired or will expire soon.', 'Renew authentication with the login tool that issued it, then retry. CCDD does not refresh authentication files or shared Codex tokens.');
 const readonly = () => new PiAuthError('AUTHENTICATION_READ_ONLY', 'CCDD authentication file adapters are read-only.', 'Renew authentication with the login tool that issued it, then retry.');
-const inWorkspace = () => new PiAuthError('AUTHENTICATION_IN_WORKSPACE', 'Authentication files cannot be inside the review workspace.', 'Move authentication files outside the source repository and copied workspace, then update their paths.');
+const inWorkspace = () => new PiAuthError('AUTHENTICATION_IN_WORKSPACE', 'Authentication files cannot be inside the review workspace.', 'Move authentication files outside the reviewed workspace, then update their paths.');
 
 function object(value: unknown): value is Record<string, unknown> { return !!value && typeof value === 'object' && !Array.isArray(value); }
 
@@ -47,7 +47,7 @@ async function canonicalPath(path: string): Promise<string> {
   }
 }
 
-/** Call before snapshot creation as well as at execution: credentials must never be copied as review input. */
+/** Call before snapshot creation as well as at execution: credentials must never become review input. */
 export async function assertPiAuthFilesOutsideWorkspace(options: PiOptions, workspacePath: string): Promise<void> {
   validatePiOptions(options);
   if (!options.authFile && !options.codexAuthFile) return;

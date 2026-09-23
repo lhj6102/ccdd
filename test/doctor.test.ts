@@ -142,7 +142,7 @@ test('Human readiness is explicitly registration-only and never sends a notifica
   assert.equal(notified, false);
 });
 
-test('copy doctor diagnoses current files without Git, deduplicates profiles and leaves no review state', async t => {
+test('doctor diagnoses current files without Git, deduplicates profiles and leaves no review state', async t => {
   const data = await fixture(t);
   await writeFile(join(data.repoPath, 'why.md'), 'Current edited why.');
   await writeFile(join(data.repoPath, 'new-file.txt'), 'A new untracked file.');
@@ -152,26 +152,24 @@ test('copy doctor diagnoses current files without Git, deduplicates profiles and
     probes.push(request);
     paths.push(options.worktreePath);
     assert.equal(request.snapshotHash, expectedHash);
-    assert.notEqual(options.worktreePath, data.repoPath);
+    assert.equal(options.worktreePath, data.repoPath);
     assert.equal(await readFile(join(options.worktreePath, 'why.md'), 'utf8'), 'Current edited why.');
     assert.equal(await readFile(join(options.worktreePath, 'new-file.txt'), 'utf8'), 'A new untracked file.');
-    // Builders may edit the original after capture; the doctor sees one stable copy.
-    await writeFile(join(data.repoPath, 'why.md'), 'Builder continues.');
     return { ok: true, message: 'unit probe', details: { operation: 'unit-test-probe' } };
   } };
   const report = await diagnoseProject({ ...data, executors, onEvent: event => { events.push(event); } });
   assert.equal(report.status, 'READY', JSON.stringify(report));
   assert.deepEqual(report.scope, { kind: 'graph' });
-  assert.equal(report.mode, 'copy');
+  assert.equal(Object.hasOwn(report, 'mode'), false);
   assert.equal(report.snapshotHash, expectedHash);
   assert.equal(probes.length, 3);
   assert.equal(report.checks.find(check => check.kind === 'artifacts')?.details?.readLimitLinesPerFile, 80);
   assert.equal(new Set(paths).size, 1);
   assert.deepEqual(report.checks.find(check => check.kind === 'agent')?.criticIds, ['first', 'second']);
   assert.equal(events.filter(event => event.type === 'doctor.check').length, report.checks.length);
-  assert.equal(await readFile(join(data.repoPath, 'why.md'), 'utf8'), 'Builder continues.');
+  assert.equal(await readFile(join(data.repoPath, 'why.md'), 'utf8'), 'Current edited why.');
   assert.equal((await readdir(data.repoPath)).includes('.ccdd'), false);
-  assert.equal((await readdir(data.stateDir)).some(name => /sqlite|run|history/.test(name)), false);
+  assert.equal((await readdir(data.stateDir).catch(() => [])).some(name => /sqlite|run|history/.test(name)), false);
   assert.equal(JSON.stringify(report).includes('verdict'), false);
 });
 
@@ -213,14 +211,14 @@ test('identical runtime commands are checked for each Critic artifact scope', as
   assert.equal(runtimeChecks[1].details?.code, 'RUNTIME_TEST_PATH_OUTSIDE_ARTIFACTS');
 });
 
-test('lock doctor checks full Agent profiles and rejects workspace changes outside Artifact scope', async t => {
+test('doctor checks full Agent profiles and rejects workspace changes outside Artifact scope', async t => {
   const data = await fixture(t);
   const secondProfile = data.config.critics[1].profile;
   assert.ok(secondProfile.kind === 'agent');
   secondProfile.timeoutMs = 2_500;
   await writeFile(join(data.repoPath, 'ccdd.config.json'), JSON.stringify(data.config));
   const probes: string[] = [];
-  const report = await diagnoseProject({ ...data, mode: 'lock', executors: { probe: async (request: ReviewEnvelope, options: ExecutionContext): Promise<ProbeResult> => {
+  const report = await diagnoseProject({ ...data, executors: { probe: async (request: ReviewEnvelope, options: ExecutionContext): Promise<ProbeResult> => {
     probes.push(request.criticId);
     assert.equal(await readFile(join(options.worktreePath, 'why.md'), 'utf8'), 'Current why.');
     if (request.criticId === 'human') await writeFile(join(options.worktreePath, 'unrelated-new-file.txt'), 'Changed during diagnosis.');
@@ -255,7 +253,7 @@ test('doctor nonce lives in private scratch and does not alter a readonly input'
   await assert.rejects(access(diagnosticPath));
 });
 
-test('doctor cleans ephemeral copy and diagnostic outputs when no state directory is supplied', async t => {
+test('doctor retains the supplied input and cleans diagnostic outputs when no state directory is supplied', async t => {
   const data = await fixture(t);
   let input: string | undefined, output: string | undefined;
   const report = await diagnoseProject({ repoPath: data.repoPath, criticId: 'first', executors: { probe: async (_request: ReviewEnvelope, options: ExecutionContext): Promise<ProbeResult> => {
@@ -265,11 +263,12 @@ test('doctor cleans ephemeral copy and diagnostic outputs when no state director
   } } });
   assert.equal(report.status, 'READY', JSON.stringify(report));
   assert.ok(input); assert.ok(output);
-  await assert.rejects(access(input));
+  assert.equal(input, data.repoPath);
+  await access(input);
   await assert.rejects(access(output));
 });
 
-test('doctor validates executor workspace prerequisites before publishing any copied input', async t => {
+test('doctor validates executor workspace prerequisites before observing input', async t => {
   const data = await fixture(t);
   let checked = '', probed = false;
   const report = await diagnoseProject({ ...data, executors: {

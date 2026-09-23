@@ -94,7 +94,7 @@ Run `verify implementation --wait` again without changing any input. CCDD should
 
 Now change `return a + b` to `return a - b` and verify again. The changed implementation needs a new review, and the real test should fail with RED. Restore the correct implementation and request verification again. These are expected outcomes for you to observe, not pre-recorded review results.
 
-Records live outside your project, by default under `~/.local/state/ccdd/`. `--state-dir` chooses another external location. Verification captures a copy of the entire project, including installed dependencies, so preparing a large project can take time. CCDD does not add exclusions to that input on your behalf.
+Records live outside your project, by default under `~/.local/state/ccdd/`. `--state-dir` chooses another external location. Verification uses the supplied workspace directly and checks the entire project, including installed dependencies. Keep it unchanged until completion, including while waiting for a Human reviewer. To keep working elsewhere, create a separate worktree and pass its path with `--repo`. CCDD does not add exclusions to the reviewed input.
 
 ## 5. Add reviewers and tools
 

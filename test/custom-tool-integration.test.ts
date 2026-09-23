@@ -192,7 +192,7 @@ test('Broker persists custom operation and observation kind through completion a
   const data = await fixture(t);
   const broker = createBroker({ repoPath: data.repoPath, stateDir: data.stateDir, executors: createExecutorRegistry({ streamFn: frameStream() }) });
   t.after(() => broker.close());
-  const submitted = await broker.submit({ mode: 'copy', criticId: 'frame-review', requesterId: 'integration-test' });
+  const submitted = await broker.submit({ criticId: 'frame-review', requesterId: 'integration-test' });
   const completed = await broker.run(submitted.id);
   assert.ok(completed);
   assert.equal(completed.status, 'GREEN');

@@ -27,7 +27,7 @@ async function fixture(t: TestContext) {
       payload: { instruction: 'Read the criterion and review.', privatePayload: 'payload-secret' },
       artifacts: [{ id: 'spec', path: 'spec.md', type: 'markdown' }], artifactTypes: { markdown: { viewer: 'text' } },
       worktreePath: path.join(root, 'workspace'), workspace: {
-        version: 1, mode: 'copy', sourcePath: path.join(root, 'repo'), path: path.join(root, 'workspace'),
+        version: 2, sourcePath: path.join(root, 'repo'), path: path.join(root, 'workspace'),
         hash: 'snapshot-secret', stateDir: path.join(root, 'state'), baselineMetadataHash: 'metadata-secret',
       },
       ...overrides,
@@ -149,18 +149,18 @@ test('a dead owner is a read-only overlay and never reconciles the persisted req
   assert.deepEqual(await fs.readdir(source.stateDir), filesBefore);
 });
 
-test('Human copy waits are valid without a worker, and claimed/unclaimed waiting messages differ', async t => {
+test('Human waits require a worker and claimed/unclaimed waiting messages differ', async t => {
   const f = await fixture(t);
   const waiting = { status: 'WAITING_HUMAN', profile: { kind: 'human' }, startedAt: at(1), notifiedAt: at(2) } as const;
   const unclaimed = f.request('unclaimed', waiting);
   const claimed = f.request('claimed', { ...waiting, claimedBy: 'Reviewer', claimedAt: at(3) });
-  const locked = f.request('locked', { ...waiting, workspace: { ...unclaimed.workspace, mode: 'lock' } });
-  await f.state('human', [unclaimed, claimed, locked]);
+  const locked = f.request('locked', { ...waiting, workspace: { ...unclaimed.workspace, } });
+  await f.state('human', [unclaimed, claimed, locked], { owners: [unclaimed, claimed].map(request => ({ runId: request.runId, pid: process.pid, identity: null })) });
   const result = await createMonitorStore({ stateHome: f.stateHome }).overview();
   const byId = new Map(result.requests.map(request => [request.id, request]));
-  assert.equal(present(byId.get('unclaimed')).workerState, 'idle');
+  assert.equal(present(byId.get('unclaimed')).workerState, 'unknown');
   assert.match(present(present(byId.get('unclaimed')).waitingReason), /reviewer to claim/);
-  assert.equal(present(byId.get('claimed')).workerState, 'idle');
+  assert.equal(present(byId.get('claimed')).workerState, 'unknown');
   assert.match(present(present(byId.get('claimed')).waitingReason), /Reviewer to submit a review result/);
   assert.equal(present(byId.get('locked')).workerState, 'missing');
 });

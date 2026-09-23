@@ -2,6 +2,8 @@
 
 CCDD configuration defines Artifacts, Critics, relationships, and input identity rules. The `ccdd-project` command in `@ccdd/project` handles current validation queries, actual validation requests, and history. The existing `ccdd` executable remains a compatibility interface in the same Project package.
 
+Reviews use the supplied workspace directly. Keep it unchanged until completion, including Human waiting. To keep editing elsewhere, create a separate worktree yourself and pass its path with `--repo`.
+
 ## Agreed behavior
 
 - Current validation requirements are checked recursively through the DAG. No per-Artifact staleState is stored, and no invalidation is propagated to downstream Artifacts.
@@ -38,7 +40,6 @@ Artifact validation covers every required Critic targeting that Artifact. Critic
 | `--force` | Reviews the selected target Critics again without reusing their past verdicts. Preserves prerequisites; predecessors included recursively run only when needed. |
 | `--wait` | Waits for the accepted validation's result. A wait timeout does not cancel validation. |
 | `--timeout-ms N` | Sets the client's wait timeout. |
-| `--copy`, `--lock` | Chooses how review input is fixed. New `verify` requests default to copy; lock requires an explicit choice. The mandatory-option contract of legacy `ccdd run` is separate. |
 | `--integrity POLICY` | Selects `content` (default) or explicitly weaker `metadata` integrity for `verify`, `status`, and `plan`. Evidence reuse requires the same policy. |
 | `--json` | Returns structured output for automation. |
 | `--repo PATH`, `--state-dir PATH` | Specifies the project and external validation history location. |
@@ -53,7 +54,7 @@ or forged metadata can escape detection. See the [integrity contract](contracts.
 Use the same explicit option when querying metadata-policy reviews:
 
 ```sh
-ccdd-project verify B --lock --integrity metadata
+ccdd-project verify B --integrity metadata
 ccdd-project status B --integrity metadata
 ```
 
@@ -149,7 +150,7 @@ The separate Project package stores data outside the repo, by default at `~/.loc
 | Actual verdict | Critic ID, GREEN/RED, evidence, completion time, and actual request ID |
 | Verdict's validation input | Target hash, direct dependency hashes, and effective Critic definition hash at the time |
 | Execution and ticket history | Fixed input, selected scope, assignment and execution state, and verdict references consumed by completed executions |
-| Input and output files | Input copies at `workspaces/<hash>` and review output at `runs/<runId>/<requestId>` |
+| Input references and output files | Supplied workspace path and integrity proof; review output at `runs/<runId>/<requestId>` |
 
 Current Artifact staleState and query results are not stored. Memoization that compares the latest verdict's input with current input exists only within one query. On a project with no history, `status` and `plan` do not even create a database. Historical reviews without validation input hashes remain readable but are not assumed to establish reuse.
 

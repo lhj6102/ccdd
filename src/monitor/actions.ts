@@ -1,5 +1,5 @@
 import { realpath } from 'node:fs/promises';
-import { isAbsolute, join, resolve } from 'node:path';
+import { isAbsolute, resolve } from 'node:path';
 import { createBroker } from '../broker/index.js';
 import { ensureRunWorker } from '../worker-client.js';
 import type { ReviewResult } from '../contracts.js';
@@ -16,10 +16,10 @@ export async function authorizeWorkspace(record: MonitorStoredRequest): Promise<
   if (!descriptor || request.repoId !== repoId || request.snapshotHash !== descriptor.hash || !/^[a-f0-9]{64}$/.test(request.snapshotHash) ||
       !isAbsolute(repoPath) || resolve(repoPath) !== repoPath || !isAbsolute(stateDir) || resolve(stateDir) !== stateDir ||
       descriptor.sourcePath !== repoPath || descriptor.stateDir !== stateDir || await realpath(stateDir) !== stateDir ||
-      descriptor.path !== (descriptor.mode === 'copy' ? join(stateDir, 'workspaces', descriptor.hash) : repoPath)) {
+      descriptor.path !== repoPath) {
     throw new MonitorActionError(409, 'The review input does not match the stored project information.');
   }
-  if (descriptor.mode === 'lock' && await realpath(repoPath) !== repoPath) throw new MonitorActionError(409, 'The original workspace path has changed.');
+  if (await realpath(repoPath) !== repoPath) throw new MonitorActionError(409, 'The original workspace path has changed.');
 }
 
 function available(record: MonitorStoredRequest, reviewerId: string, requireClaim: boolean): void {
