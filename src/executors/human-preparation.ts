@@ -1,10 +1,8 @@
 import { join } from 'node:path';
-import { isDeepStrictEqual } from 'node:util';
 import type { ReviewEnvelope, WorkspaceDescriptor } from '../contracts.js';
 import { reopenWorkspace, type WorkspaceScanProgress } from '../workspaces/index.js';
 import { createReviewTools } from '../tools/runner.js';
 import { checkEnvironmentRequirements } from '../tools/environment.js';
-import { readStoredArtifactScope } from '../requester/index.js';
 
 export interface HumanPreparation {
   snapshotHash: string;
@@ -27,19 +25,13 @@ export async function prepareHumanReview(request: ReviewEnvelope, workspace: Wor
     // Keep the next integrity check after configuration and readiness code run.
     handle.signal.throwIfAborted();
     report('checking-manifest');
-    if (!request.configManifest) {
-      const expected = await readStoredArtifactScope({ repoPath: workspace.path, criticId: request.criticId });
-      if (!expected || !isDeepStrictEqual(expected.artifacts, request.artifacts) || !isDeepStrictEqual(expected.artifactTypes, request.artifactTypes) || !isDeepStrictEqual(expected.artifactGroups ?? [], request.artifactGroups ?? [])) {
-        throw new Error('Stored Human tools do not match this snapshot.');
-      }
-    }
     // Opening the registry verifies the recorded manifest before any check script runs.
     const registry = await createReviewTools({ worktreePath: workspace.path, artifacts: request.artifacts,
-      artifactGroups: request.artifactGroups, artifactTypes: request.artifactTypes, configManifest: request.configManifest,
+      configManifest: request.configManifest,
       criticId: request.criticId, audience: 'human', runDir: join(outputDir, 'tools'), signal: handle.signal });
     try {
       report('checking-environment');
-      const environment = await checkEnvironmentRequirements({ workspacePath: workspace.path, configManifest: request.configManifest, outputDir: join(outputDir, 'environment'), signal: handle.signal });
+      const environment = await checkEnvironmentRequirements({ workspacePath: workspace.path, configManifest: request.configManifest, artifactIds: request.artifacts.map(artifact => artifact.id), outputDir: join(outputDir, 'environment'), signal: handle.signal });
       if (!environment.ok) throw Object.assign(new Error(environment.checks.filter(check => !check.ok).map(check => `${check.id}: ${check.message}`).join('\n').slice(0, 8000)), { code: 'HUMAN_PREPARATION_FAILED' });
       report('preflighting-tools');
       const tools = await registry.preflight();

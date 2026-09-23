@@ -12,11 +12,10 @@ import { DatabaseSync } from 'node:sqlite';
 const [baselineRoot, candidateRoot] = process.argv.slice(2).map(value => resolve(value));
 if (!baselineRoot || !candidateRoot) throw new Error('Usage: node scripts/benchmark-cli-review.mjs BASELINE_ROOT CANDIDATE_ROOT');
 const files = Number(process.env.BENCH_FILES ?? 4000), rounds = Number(process.env.BENCH_ROUNDS ?? 3);
-const mode = process.env.BENCH_MODE ?? 'lock';
 const integrity = process.env.BENCH_INTEGRITY ?? 'content';
 const baselineIntegrity = process.env.BENCH_BASELINE_INTEGRITY ?? 'content';
 assert.ok(Number.isSafeInteger(files) && files > 0 && Number.isSafeInteger(rounds) && rounds > 0);
-assert.ok(['copy', 'lock'].includes(mode) && [integrity, baselineIntegrity].every(value => ['content', 'metadata'].includes(value)));
+assert.ok([integrity, baselineIntegrity].every(value => ['content', 'metadata'].includes(value)));
 const defaultTimeoutMs = Number(process.env.BENCH_TIMEOUT_MS ?? 600000);
 assert.ok(Number.isSafeInteger(defaultTimeoutMs) && defaultTimeoutMs > 0 && defaultTimeoutMs <= 3600000);
 const timeouts = Object.fromEntries(['admission', 'ready', 'claim', 'tool', 'result', 'settlement', 'cleanup'].map(stage => {
@@ -144,7 +143,7 @@ async function cleanup(attempt) {
 }
 
 function assertPolicy(workspace, expected) {
-  assert.ok(workspace && workspace.mode === mode && /^[a-f0-9]{64}$/.test(workspace.hash) && /^[a-f0-9]{64}$/.test(workspace.baselineMetadataHash));
+  assert.ok(workspace && workspace.path === workspace.sourcePath && /^[a-f0-9]{64}$/.test(workspace.hash) && /^[a-f0-9]{64}$/.test(workspace.baselineMetadataHash));
   assert.equal(workspace.integrity ?? 'content', expected, 'Persisted integrity policy differs from requested policy.');
   if (expected === 'metadata') assert.match(workspace.structureHash, /^[a-f0-9]{64}$/);
 }
@@ -155,21 +154,22 @@ try {
   for (let i = 0; i < files; i++) await writeFile(join(repoPath, `dependency-${Math.floor(i / 100)}`, `${i}.js`), Buffer.alloc(1024, i % 251));
   await writeFile(join(repoPath, 'runtime.bin'), Buffer.alloc(64 * 1024 * 1024, 51));
   await writeFile(join(repoPath, 'artifact.txt'), 'Synthetic CLI benchmark Artifact.\n');
-  await writeFile(join(repoPath, 'ccdd.config.ts'), `
+  await writeFile(join(repoPath, 'ccdd.json'), JSON.stringify({
+    name: 'sample',
+    views: { humanTools: { inspect: {
+      metadata: { description: 'Read the synthetic {artifactName}.', inputSchema: { type: 'object', properties: {}, additionalProperties: false }, resultKinds: ['json'], observation: 'content' },
+      script: { command: 'node', args: ['view.mjs'] },
+    } } },
+    critics: [{ id: 'inspect', title: 'Synthetic CLI benchmark request', profile: { kind: 'human' }, payload: { instruction: 'Inspect {sample}, the controlled benchmark fixture.' } }],
+  }));
+  await writeFile(join(repoPath, 'view.mjs'), `
     import { readFile } from 'node:fs/promises';
-    export default {
-      artifacts: { sample: { type: 'custom', path: 'artifact.txt' } },
-      artifactTypes: { custom: { humanTools: { inspect: {
-        metadata: { description: 'Read the synthetic {artifactName}.', inputSchema: { type: 'object', properties: {}, additionalProperties: false }, resultKinds: ['json'], observation: 'content', artifactKind: 'file' },
-        async execute(context) {
-          const started = performance.now();
-          const text = await readFile(context.artifactPath, 'utf8');
-          const executionMs = performance.now() - started;
-          return { content: [{ type: 'json', data: { text, executionMs } }], observation: { kind: 'content' } };
-        }
-      } } } },
-      critics: [{ id: 'inspect-sample', title: 'Synthetic CLI benchmark request', target: 'sample', deps: [], profile: { kind: 'human' }, payload: { instruction: 'Inspect the controlled benchmark fixture.' } }]
-    };
+    let input='';for await (const chunk of process.stdin) input+=chunk;
+    const {version,context}=JSON.parse(input);if(version!==1)throw new Error('Unsupported request');
+    const started = performance.now();
+    const text = await readFile(context.artifactPath+'/artifact.txt', 'utf8');
+    const executionMs = performance.now() - started;
+    process.stdout.write(JSON.stringify({ content: [{ type: 'json', data: { text, executionMs } }], observation: { kind: 'content' } }));
   `);
   const verdictPath = join(root, 'fixture-verdict.json');
   await writeFile(verdictPath, JSON.stringify({ verdict: 'GREEN', summary: 'Controlled synthetic benchmark only; not an actual Human review.', evidence: ['A test caller returned this fixture verdict.'] }));
@@ -190,7 +190,7 @@ try {
       try {
         const started = performance.now();
         const expectedIntegrity = index ? integrity : baselineIntegrity;
-        const accepted = await invoke(['verify', 'sample', `--${mode}`, '--force', '--human-inbox', ...(expectedIntegrity === 'metadata' ? ['--integrity', 'metadata'] : [])], 'admission');
+        const accepted = await invoke(['verify', 'sample', '--force', '--human-inbox', ...(expectedIntegrity === 'metadata' ? ['--integrity', 'metadata'] : [])], 'admission');
         attempt.admissionReturned = true;
         const runId = accepted.id;
         assert.ok(runId);
@@ -222,7 +222,7 @@ try {
         const settlement = await awaitSettlement(attempt, Date.now() + timeouts.settlement);
         const stopped = settlement.stoppedAt;
         attempt.settled = true;
-        const row = { label, round, mode, integrity: expectedIntegrity, admissionMs: submitted - started,
+        const row = { label, round, integrity: expectedIntegrity, admissionMs: submitted - started,
           readyMs: ready - submitted, claimMs: claimed - ready, toolOverheadMs: toolReturned - claimed - payload.executionMs,
           resultReturnMs: returned - toolReturned, ownershipReleaseMs: Math.max(0, settlement.ownershipReleasedAt - returned),
           workerStopMs: stopped - returned, customReadMs: payload.executionMs,
@@ -238,7 +238,7 @@ try {
   const metrics = ['admissionMs', 'readyMs', 'claimMs', 'toolOverheadMs', 'resultReturnMs', 'ownershipReleaseMs', 'workerStopMs', 'frameworkMs'];
   const summary = Object.fromEntries(['baseline', 'candidate'].map(label => [label, Object.fromEntries(metrics.map(metric => [metric, median(samples.filter(row => row.label === label).map(row => row[metric]))]))]));
   const pairedRatios = Array.from({ length: rounds }, (_, round) => samples.find(row => row.round === round && row.label === 'candidate').frameworkMs / samples.find(row => row.round === round && row.label === 'baseline').frameworkMs);
-  report = { node: process.version, platform: process.platform, implementations, files, binaryBytes: 64 * 1024 * 1024, rounds, mode, baselineIntegrity, candidateIntegrity: integrity, timeouts, sqliteTimeoutMs,
+  report = { node: process.version, platform: process.platform, implementations, files, binaryBytes: 64 * 1024 * 1024, rounds, baselineIntegrity, candidateIntegrity: integrity, timeouts, sqliteTimeoutMs,
     policyComparison: { baseline: baselineIntegrity, candidate: integrity, identicalGuarantees: integrity === baselineIntegrity,
       description: integrity === baselineIntegrity ? integrity === 'content' ? 'Both implementations rehash content at integrity boundaries.' : 'Both implementations use metadata integrity after full initial content capture.' : `Baseline uses ${baselineIntegrity} integrity; candidate uses ${integrity} integrity. This compares different integrity guarantees.` },
     scope: 'Actual project CLI invocations, separate Node processes, detached worker startup, acquisition, claim, tool response, result return and worker settlement. Only the instrumented custom read body is subtracted; trivial custom result construction remains. Fixture setup, npm install and Human think time excluded. No HTTP/UI-rendering claim. Synthetic fixtures only.',

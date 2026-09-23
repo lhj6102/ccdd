@@ -54,5 +54,5 @@ rejection, idle-download cancellation, credential containment, desktop connectio
 variables, local CLI signal cleanup, locale-dependent module sorting, historical
 manifest reconnection, and stalled renewal cleanup.
 
-See [usage and supported scope](remote-human-review.md) and the
+See [current local workspace contract](contracts.md#workspace-contract) and the
 [implementation requirements](plans/remote-human-review.md).

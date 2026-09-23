@@ -18,4 +18,6 @@ export interface ArtifactNodeData {
 export interface ArtifactEdgeData {
   route: GraphEdgePosition;
   connected: boolean;
+  cyclic: boolean;
+  kinds: string[];
 }

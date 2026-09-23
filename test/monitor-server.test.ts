@@ -1,533 +1,99 @@
-import test, { type TestContext } from 'node:test';
+import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, writeFile, readFile, readdir, open, realpath, access } from 'node:fs/promises';
+import { readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { tmpdir } from 'node:os';
-import { spawn } from 'node:child_process';
-import { request as httpRequest } from 'node:http';
-import { setTimeout as delay } from 'node:timers/promises';
-import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
+import { artifactFixture, fixtureViews } from './helpers/artifacts.js';
 import { createBroker } from '../src/broker/index.js';
-import { removeOwnedWorkspaceTree } from '../src/workspaces/index.js';
+import { createExecutorRegistry } from '../src/executors/index.js';
 import { startMonitor } from '../src/monitor/server.js';
-import type { MonitorArtifactPage, MonitorDetail, MonitorOverview, MonitorSession, MonitorGraph, MonitorRunOverview, MonitorValidation } from '../src/monitor/types.js';
-import type { RepoConfig, ReviewRequest, WorkspaceMode } from '../src/contracts.js';
+import { runUntilSettled } from './helpers/run.js';
+import type { MonitorDetail, MonitorOverview, MonitorGraph, MonitorSession } from '../src/monitor/types.js';
 
-async function fixture(t: TestContext, mode: WorkspaceMode = 'copy', options: { waiting?: boolean; chain?: boolean; command?: boolean; longTool?: boolean; custom?: boolean; instruction?: string } = {}) {
-  const dir = await realpath(await mkdtemp(join(tmpdir(), 'ccdd-monitor-test-')));
-  const cleanup: Array<() => Promise<void>> = [];
-  t.after(async () => { for (const close of cleanup.reverse()) await close(); await removeOwnedWorkspaceTree(dir); });
-  const repoPath = join(dir, 'project'), stateDir = join(dir, 'state'), stateHome = join(dir, 'empty-state-home');
-  await mkdir(join(repoPath, 'tests'), { recursive: true });
-  await writeFile(join(repoPath, 'why.md'), '# Purpose\nChoose two items\n');
-  await writeFile(join(repoPath, 'tests/example.test.mjs'), `${options.chain ? "await new Promise(resolve => setTimeout(resolve, 350));" : ''}export const count = 2;\n`);
-  await writeFile(join(repoPath, 'private.md'), 'UNDECLARED_PRIVATE_CONTENT');
-  const config: RepoConfig = {
-    artifacts: { why: { type: 'markdown', path: 'why.md' }, tests: { type: 'code', path: 'tests', basis: true } },
-    artifactTypes: { markdown: { viewer: 'text', agentTools: { read: {} }, humanTools: { read: { description: 'Read lines from {artifactName}.' } } }, code: { viewer: 'files', agentTools: { read: {}, list: {} }, humanTools: { list: { description: 'List files in {artifactName}.' }, read: { description: 'Read a file within {artifactName}.' } } } },
-    critics: [{ id: 'human-check', title: '<script>unsafe title</script>', target: 'why', deps: ['tests'], profile: { kind: 'human' }, payload: { instruction: options.instruction ?? 'Check the two-item requirement.', authFile: 'DO_NOT_EXPOSE_AUTH_METADATA' } }],
-  };
-  if (options.command) config.artifactTypes.markdown.humanTools = { ...config.artifactTypes.markdown.humanTools, [options.longTool ? 'o'.repeat(64) : 'open']: { description: 'Inspect the input using the configured program.', command: process.execPath, args: ['-e', `require('node:fs').writeFileSync(${JSON.stringify(join(dir, 'command-output.txt'))}, require('node:fs').readFileSync(process.argv[1], 'utf8'))`, '{artifactPath}'] } };
-  if (options.longTool) {
-    config.artifacts['a'.repeat(64)] = config.artifacts.why; delete config.artifacts.why;
-    config.critics[0].target = 'a'.repeat(64);
-  }
-  if (options.chain) { config.artifacts.implementation = { type: 'code', path: 'tests/example.test.mjs' }; config.critics.push({ id: 'runtime', title: 'Downstream Runtime', target: 'implementation', deps: ['why', 'tests'], profile: { kind: 'runtime', command: 'node', args: ['--test', 'tests/example.test.mjs'] }, payload: { instruction: 'Run the actual tests' } }); }
-  if (options.custom) {
-    config.artifacts.unrelated = { type: 'markdown', path: 'private.md', basis: true };
-    const marker = join(dir, 'config-code-executions.txt');
-    const metadata = { description: 'Inspect frames from {artifactName}.', inputSchema: { type: 'object', properties: { frame: { type: 'number', minimum: 0 }, overlay: { type: 'boolean' }, channels: { type: 'array', items: { type: 'string' } } }, required: ['frame', 'overlay', 'channels'], additionalProperties: false }, resultKinds: ['text', 'json', 'image'], observation: 'none' };
-    await writeFile(join(repoPath, 'ccdd.config.ts'), `
-import { appendFileSync, readFileSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
-appendFileSync(${JSON.stringify(marker)}, 'load\\n');
-const preview = {
-  metadata: ${JSON.stringify(metadata)},
-  execute(context, args) {
-    appendFileSync(${JSON.stringify(marker)}, 'execute\\n');
-    if (args.frame === 13) throw new Error('program unavailable');
-    const imagePath = join(context.outputDir, 'frame.png');
-    writeFileSync(imagePath, Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aL1sAAAAASUVORK5CYII=', 'base64'));
-    return { content: [{ type: 'text', text: readFileSync(context.artifactPath, 'utf8') }, { type: 'json', data: args }, { type: 'image', path: imagePath, mimeType: 'image/png' }] };
-  },
-};
-export default () => ({ ...${JSON.stringify({ artifacts: config.artifacts, critics: config.critics })}, artifactTypes: { markdown: { humanTools: { preview } }, code: { humanTools: { preview } } } });
-`);
-  } else await writeFile(join(repoPath, 'ccdd.config.json'), JSON.stringify(config));
-  const broker = createBroker({ repoPath, stateDir, executors: { canExecute: () => ({ ok: true }), execute: async () => { throw new Error('Monitor must not execute reviews'); }, notifyHuman: async () => { if (!options.waiting) throw new Error('Monitor must not send notifications'); } } });
-  cleanup.push(() => broker.close());
-  const run = await broker.submit({ mode, requesterId: 'monitor-test' });
-  if (options.waiting) { await broker.run(run.id); await mkdir(join(stateDir, 'runs', run.id), { recursive: true }); await writeFile(join(stateDir, 'runs', run.id, 'worker.json'), JSON.stringify({ humanInbox: true, piOptions: {} })); }
-  await broker.close();
-  await writeFile(join(stateDir, 'worker.json'), JSON.stringify({ piOptions: { authFile: 'DO_NOT_EXPOSE_AUTH_METADATA' }, secret: 'DO_NOT_EXPOSE_AUTH_SECRET' }));
-  const monitor = await startMonitor({ stateDirs: [stateDir], stateHome, port: 0 });
-  cleanup.push(() => monitor.close());
-  const overview = await (await fetch(`${monitor.url}/api/requests`)).json() as MonitorOverview;
-  const request = overview.requests.find(item => item.id === run.requests[0].id);
-  assert.ok(request, JSON.stringify(overview));
-  const route = `${monitor.url}/api/requests/${request.projectId}/${request.id}`;
-  return { dir, repoPath, stateDir, stateHome, monitor, run, request, route };
+async function fixture(t: Parameters<typeof artifactFixture>[0], waiting = false, cycle = false) {
+  const data = await artifactFixture(t), marker = join(data.root, 'executed');
+  await data.write('a', { name: 'a', views: fixtureViews(), ...(cycle ? { mounts: { peer: 'b' } } : {}), critics: [{ id: 'human', title: 'Human review', profile: { kind: 'human' }, payload: { instruction: cycle ? 'Inspect {a} and {peer}.' : 'Inspect {a}.', authFile: 'DO_NOT_EXPOSE_AUTH' } }] });
+  if (cycle) await data.write('b', { name: 'b', basis: true, views: fixtureViews(), mounts: { peer: 'a' } });
+  await writeFile(join(data.repoPath, 'ccdd.config.ts'), `import {writeFileSync} from 'node:fs';writeFileSync(${JSON.stringify(marker)},'executed');`);
+  const broker = createBroker({ ...data, executors: createExecutorRegistry({ alarmMethods: [async () => {}] }) }); data.cleanup(() => broker.close());
+  const run = await broker.submitProject({ selection: { kind: 'all' } }); if (waiting) await runUntilSettled(broker, run.id);
+  const monitor = await startMonitor({ stateDirs: [data.stateDir], port: 0 }); data.cleanup(() => monitor.close());
+  const overview = await (await fetch(`${monitor.url}/api/requests`)).json() as MonitorOverview, request = overview.requests[0];
+  return { ...data, broker, run, monitor, request, marker, route: `${monitor.url}/api/requests/${request.projectId}/${request.id}` };
+}
+async function session(url: string, cookie?: string) {
+  const response = await fetch(`${url}/api/session`, { headers: cookie ? { cookie } : {} }); const value = await response.json() as MonitorSession;
+  return { ...value, cookie: response.headers.get('set-cookie')!.split(';')[0] };
+}
+function post(url: string, browser: Awaited<ReturnType<typeof session>>, value: unknown = {}, extra: Record<string, string> = {}) {
+  return fetch(url, { method: 'POST', headers: { cookie: browser.cookie, 'x-ccdd-csrf': browser.csrfToken, origin: new URL(url).origin, 'content-type': 'application/json', ...extra }, body: JSON.stringify(value) });
 }
 
-function editStoredRequest(stateDir: string, requestId: string, edit: (request: ReviewRequest) => void): void {
-  const db = new DatabaseSync(join(stateDir, 'broker.sqlite'));
-  try {
-    const row = db.prepare('SELECT data FROM requests WHERE id=?').get(requestId);
-    assert.ok(row);
-    assert.equal(typeof row.data, 'string');
-    const record = JSON.parse(row.data as string) as ReviewRequest;
-    edit(record);
-    db.prepare('UPDATE requests SET data=? WHERE id=?').run(JSON.stringify(record), requestId);
-  } finally { db.close(); }
-}
-
-async function raw(url: string, options: { method?: string; headers?: Record<string, string> } = {}): Promise<{ status: number; body: string }> {
-  return new Promise((ok, no) => {
-    const request = httpRequest(url, options, response => {
-      let body = ''; response.setEncoding('utf8'); response.on('data', chunk => { body += chunk; });
-      response.on('end', () => ok({ status: response.statusCode ?? 0, body }));
-    });
-    request.on('error', no); request.end();
-  });
-}
-
-test('monitor serves existing database state and scoped artifacts without executing or writing review observations', async t => {
-  const data = await fixture(t);
-  const before = await readFile(join(data.stateDir, 'broker.sqlite'));
-  const overview = await (await fetch(`${data.monitor.url}/api/requests?filter=all&limit=1&offset=0`)).json() as MonitorOverview;
-  assert.equal(overview.requests.length, 1);
-  assert.equal(overview.requests[0].status, 'QUEUED');
+test('monitor GET projects folders, qualified Critics, mounts and cycles entirely from saved data', async t => {
+  const data = await fixture(t, false, true), before = await readFile(join(data.stateDir, 'broker.sqlite'));
   const detail = await (await fetch(data.route)).json() as MonitorDetail;
-  assert.equal(detail.instruction, 'Check the two-item requirement.');
-  assert.equal(detail.result, null);
-  assert.doesNotMatch(JSON.stringify({ overview, detail }), /DO_NOT_EXPOSE_AUTH|piOptions|authFile|snapshotHash|workspace/);
-  const read = await (await fetch(`${data.route}/artifacts/why?startLine=2&lineCount=1`)).json() as MonitorArtifactPage;
-  assert.equal(read.artifact.description, 'Read text from why using 1-based line ranges.');
-  assert.equal(detail.tools?.find(tool => tool.name === 'read_why')?.description, 'Read lines from why.');
-  assert.ok('content' in read.result);
-  assert.equal(read.result.content, 'Choose two items\n');
-  const listing = await (await fetch(`${data.route}/artifacts/tests`)).json() as MonitorArtifactPage;
-  assert.equal(listing.artifact.description, 'List files within tests.');
-  assert.ok('entries' in listing.result);
-  assert.equal(listing.result.entries[0].path, 'example.test.mjs');
-  const source = await (await fetch(`${data.route}/artifacts/tests?operation=read&path=example.test.mjs`)).json() as MonitorArtifactPage;
-  assert.equal(source.artifact.description, 'Read text from tests using 1-based line ranges.');
-  assert.ok('content' in source.result);
-  assert.match(source.result.content, /count = 2/);
-  assert.deepEqual(await readFile(join(data.stateDir, 'broker.sqlite')), before);
-  assert.equal((await readdir(data.stateDir)).some(name => /owner|inbox/.test(name)), false);
+  assert.equal(detail.request.criticId, 'a/human'); assert.deepEqual(detail.references, { a: 'a', peer: 'b' }); assert.ok(detail.tools!.some(tool => tool.name === 'read_b'));
+  const graph = await (await fetch(`${data.monitor.url}/api/graphs/${data.request.projectId}/${data.run.id}`)).json() as MonitorGraph;
+  assert.equal(graph.available, true, graph.unavailableReason ?? ''); assert.ok(graph.graph!.edges.every(edge => edge.cyclic)); assert.ok(graph.graph!.edges.some(edge => edge.relations.some(relation => relation.kind === 'mount')));
+  assert.deepEqual(graph.graph!.artifacts.map(a => a.path), ['a', 'b']);
+  assert.equal((await fetch(`${data.route}/artifacts/a`)).status, 404);
+  assert.deepEqual(await readFile(join(data.stateDir, 'broker.sqlite')), before); await assert.rejects(readFile(data.marker), { code: 'ENOENT' });
+  assert.doesNotMatch(JSON.stringify(detail), /DO_NOT_EXPOSE_AUTH|configManifest|execute\(/);
 });
 
-test('instruction references preserve the stored payload and HTTP detail string without executing config or tools', async t => {
-  const instruction = String.raw`Compare {why} with {tests}. {unrelated} {missing} {{why}} \{why} {"example":"{why}"}`;
-  const data = await fixture(t, 'copy', { custom: true, instruction });
-  const marker = join(data.dir, 'config-code-executions.txt');
-  const beforeCode = await readFile(marker, 'utf8');
-  const beforeDb = await readFile(join(data.stateDir, 'broker.sqlite'));
-  const detail = await (await fetch(data.route)).json() as MonitorDetail;
-  assert.equal(detail.instruction, instruction);
-  assert.deepEqual(detail.artifacts.map(artifact => artifact.id), ['why', 'tests']);
-  assert.deepEqual(detail.tools?.map(tool => [tool.artifactId, tool.name]), [['why', 'preview_why'], ['tests', 'preview_tests']]);
-  assert.equal('instructionParts' in detail, false);
-  assert.equal('resolvedInstruction' in detail, false);
-  const db = new DatabaseSync(join(data.stateDir, 'broker.sqlite'), { readOnly: true });
-  try {
-    const row = db.prepare('SELECT data FROM requests WHERE id=?').get(data.request.id);
-    assert.ok(row);
-    assert.equal((JSON.parse(row.data as string) as ReviewRequest).payload.instruction, instruction);
-  } finally { db.close(); }
-  assert.deepEqual(await readFile(join(data.stateDir, 'broker.sqlite')), beforeDb);
-  assert.equal(await readFile(marker, 'utf8'), beforeCode);
+test('current validation is an explicit authenticated POST and neither GET nor POST executes user scripts', async t => {
+  const data = await fixture(t), route = `${data.monitor.url}/api/projects/${data.request.projectId}/validation`, browser = await session(data.monitor.url), before = await readFile(join(data.stateDir, 'broker.sqlite'));
+  assert.equal((await fetch(route)).status, 404); assert.equal((await post(route, browser, {}, { 'x-ccdd-csrf': '' })).status, 403);
+  const response = await post(route, browser); assert.equal(response.status, 200, await response.clone().text()); assert.equal((await response.json() as any).plan.satisfied, false);
+  await assert.rejects(readFile(data.marker), { code: 'ENOENT' }); assert.deepEqual(await readFile(join(data.stateDir, 'broker.sqlite')), before);
 });
 
-test('monitor blocks foreign browser access and all mutations; static resources use restrictive headers', async t => {
-  const data = await fixture(t);
-  const home = await fetch(data.monitor.url);
-  assert.equal(home.status, 200);
-  assert.match(home.headers.get('content-security-policy') ?? '', /script-src 'self'/);
-  assert.equal(home.headers.get('access-control-allow-origin'), null);
-  assert.equal(home.headers.get('x-content-type-options'), 'nosniff');
-  const html = await home.text();
-  const scripts = [...html.matchAll(/(?:src|href)="([^"]+\.(?:js|css))"/g)].map(match => match[1]);
-  assert.ok(scripts.length >= 2, html);
-  for (const asset of scripts) assert.equal((await fetch(new URL(asset, data.monitor.url))).status, 200);
-  const foreignHeaders: Record<string, string>[] = [{ host: 'attacker.example' }, { origin: 'https://attacker.example' }, { origin: 'null' }, { 'sec-fetch-site': 'cross-site' }, { 'sec-fetch-site': 'same-site' }];
-  for (const headers of foreignHeaders) {
-    assert.equal((await raw(`${data.monitor.url}/api/requests`, { headers })).status, 403);
-  }
-  for (const method of ['PUT', 'PATCH', 'DELETE', 'OPTIONS', 'HEAD']) assert.equal((await raw(data.route, { method })).status, 405);
-  assert.equal((await raw(data.route, { method: 'POST', headers: { origin: data.monitor.url } })).status, 405);
-  assert.equal((await raw(data.route, { headers: { origin: data.monitor.url, 'sec-fetch-site': 'same-origin' } })).status, 200);
-});
-
-test('monitor rejects unknown IDs, extra arguments, coercion, traversal and out-of-scope reads', async t => {
-  const data = await fixture(t);
-  for (const suffix of [
-    '/artifacts/why?path=', '/artifacts/why?operation=list', '/artifacts/why?offset=0', '/artifacts/why?lineCount=501',
-    '/artifacts/why?lineCount=null', '/artifacts/why?startLine=1e2', '/artifacts/why?startLine=1&startLine=2',
-    '/artifacts/why?unexpected=1', '/artifacts/tests?operation=read', '/artifacts/tests?operation=read&path=../private.md',
-    '/artifacts/tests?operation=read&path=%2Fetc%2Fpasswd', '/artifacts/tests?startLine=1', '/artifacts/why?operation=execute',
-  ]) assert.equal((await fetch(data.route + suffix)).status, 400, suffix);
-  assert.equal((await fetch(`${data.route}/artifacts/private`)).status, 404);
-  assert.equal((await fetch(`${data.monitor.url}/api/requests/missing/missing`)).status, 404);
-  assert.equal((await fetch(`${data.monitor.url}/api/requests?filter=invalid`)).status, 400);
-  assert.equal((await fetch(`${data.monitor.url}/api/requests?limit=101`)).status, 400);
-  assert.equal((await fetch(`${data.monitor.url}/api/requests?project=../private`)).status, 400);
-  assert.equal((await fetch(`${data.monitor.url}/api/requests?limit=1&limit=2`)).status, 400);
-});
-
-test('monitor rejects tampered stored artifact scope and workspace identity', async t => {
-  const data = await fixture(t);
-  editStoredRequest(data.stateDir, data.request.id, request => { request.artifacts[0].path = 'private.md'; });
-  const scope = await fetch(`${data.route}/artifacts/why`);
-  assert.equal(scope.status, 409);
-  assert.doesNotMatch(await scope.text(), /UNDECLARED_PRIVATE_CONTENT/);
-  editStoredRequest(data.stateDir, data.request.id, request => { request.workspace.sourcePath = data.dir; });
-  const identity = await fetch(`${data.route}/artifacts/why`);
-  assert.equal(identity.status, 409);
-  assert.doesNotMatch(await identity.text(), /UNDECLARED_PRIVATE_CONTENT|DO_NOT_EXPOSE_AUTH/);
-});
-
-test('copied artifact remains readable after source removal, while modified lock input fails integrity', async t => {
-  const copied = await fixture(t);
-  await removeOwnedWorkspaceTree(copied.repoPath);
-  assert.equal((await fetch(`${copied.route}/artifacts/why`)).status, 200);
-  const locked = await fixture(t, 'lock');
-  await writeFile(join(locked.repoPath, 'why.md'), 'Changed after capture');
-  const response = await fetch(`${locked.route}/artifacts/why`);
-  assert.equal(response.status, 409);
-  assert.match((await response.json() as { error: string }).error, /input has changed/);
-});
-
-test('missing copied input is reported without leaking internal paths', async t => {
-  const data = await fixture(t);
-  await removeOwnedWorkspaceTree(data.run.workspace.path);
-  const response = await fetch(`${data.route}/artifacts/why`);
-  assert.equal(response.status, 409);
-  const body = await response.text();
-  assert.match(body, /could not be found/);
-  assert.equal(body.includes(data.stateDir), false);
-});
-
-test('artifact concurrency is bounded and client disconnect stops in-flight hash verification', async t => {
-  const data = await fixture(t, 'lock');
-  const file = await open(join(data.repoPath, 'large.bin'), 'w');
-  try { await file.truncate(2 * 1024 ** 3); } finally { await file.close(); }
-  const first = new AbortController(), second = new AbortController();
-  const pending = [first, second].map(controller => fetch(`${data.route}/artifacts/why`, { signal: controller.signal }).catch(() => undefined));
-  await delay(40);
-  const crowded = await fetch(`${data.route}/artifacts/why`);
-  assert.equal(crowded.status, 429);
-  const started = performance.now();
-  first.abort(); second.abort();
-  await Promise.all(pending);
-  await data.monitor.close();
-  assert.ok(performance.now() - started < 1000, 'Disconnected Artifact hash verification did not stop promptly');
-});
-
-test('monitor CLI starts without a repository or authentication and stops cleanly', async t => {
-  const dir = await realpath(await mkdtemp(join(tmpdir(), 'ccdd-monitor-cli-')));
-  t.after(() => removeOwnedWorkspaceTree(dir));
-  const stateHome = join(dir, 'no-state');
-  const child = spawn(process.execPath, [fileURLToPath(new URL('../src/cli.js', import.meta.url)), 'monitor', '--port', '0'], { cwd: dir, env: { ...process.env, CCDD_STATE_HOME: stateHome, CCDD_PI_AUTH_FILE: '/unavailable/auth.json' }, stdio: ['ignore', 'pipe', 'pipe'] });
-  t.after(() => { if (child.exitCode === null) child.kill('SIGKILL'); });
-  let output = '', errors = '';
-  child.stdout.setEncoding('utf8'); child.stderr.setEncoding('utf8');
-  child.stdout.on('data', text => { output += text; }); child.stderr.on('data', text => { errors += text; });
-  const deadline = Date.now() + 5000;
-  while (!/http:\/\/127\.0\.0\.1:\d+/.test(output) && child.exitCode === null && Date.now() < deadline) await delay(20);
-  const url = /http:\/\/127\.0\.0\.1:\d+/.exec(output)?.[0];
-  assert.ok(url, errors || output);
-  const overview = await (await fetch(`${url}/api/requests`)).json() as MonitorOverview;
-  assert.equal(overview.requests.length, 0);
-  const stopped = new Promise<number | null>(resolve => child.once('exit', code => resolve(code)));
-  child.kill('SIGTERM');
-  assert.equal(await stopped, 0, errors);
-  await assert.rejects(access(stateHome));
-});
-
-test('monitor CLI rejects unrelated or conflicting flags before starting', async () => {
-  const { main } = await import('../src/cli.js');
-  for (const args of [['monitor', '--copy'], ['monitor', '--pi-auth-file', '/tmp/auth'], ['monitor', '--repo', '/tmp', '--state-dir', '/tmp/state'], ['monitor', '--port', '65536'], ['monitor', '--wait'], ['monitor', 'unexpected']]) {
-    let output = '';
-    const sink = { write: (text: string) => { output += text; } };
-    assert.equal(await main(args, { stdout: sink, stderr: sink }), 2, args.join(' '));
-    assert.ok(output.length > 0);
-  }
-});
-
-async function browserSession(url: string) {
-  const response = await fetch(`${url}/api/session`);
-  const cookie = response.headers.get('set-cookie')?.split(';')[0];
-  assert.ok(cookie);
-  assert.match(response.headers.get('set-cookie') ?? '', /HttpOnly; SameSite=Strict/);
-  const data = await response.json() as MonitorSession;
-  assert.match(data.reviewerId, /^browser-[a-f0-9]{24}$/);
-  return { cookie, ...data };
-}
-async function post(url: string, session: { cookie: string; csrfToken: string }, value: unknown = {}, extras: Record<string, string> = {}) {
-  return fetch(url, { method: 'POST', headers: { origin: new URL(url).origin, cookie: session.cookie, 'content-type': 'application/json', 'x-ccdd-csrf': session.csrfToken, ...extras }, body: JSON.stringify(value) });
-}
-
-test('current validation requires an explicit authenticated observation and never creates review state', async t => {
-  const data = await fixture(t, 'copy', { custom: true });
-  const marker = join(data.dir, 'config-code-executions.txt');
-  const loaded = await readFile(marker, 'utf8'), database = await readFile(join(data.stateDir, 'broker.sqlite'));
-  const route = `${data.monitor.url}/api/projects/${data.request.projectId}/validation`;
-  assert.equal((await fetch(route)).status, 404);
-  const session = await browserSession(data.monitor.url);
-  assert.equal((await post(route, session, {}, { 'x-ccdd-csrf': '' })).status, 403);
-  assert.equal(await readFile(marker, 'utf8'), loaded);
-  const response = await post(route, session);
-  assert.equal(response.status, 200, await response.clone().text());
-  const value = await response.json() as MonitorValidation;
-  assert.equal(value.plan.satisfied, false);
-  assert.equal(value.plan.critics.find(c => c.id === 'human-check')?.status, 'UNREVIEWED', 'legacy verdicts have no matching validation identity');
-  assert.equal(await readFile(marker, 'utf8'), loaded + 'load\n');
-  assert.deepEqual(await readFile(join(data.stateDir, 'broker.sqlite')), database);
-  assert.doesNotMatch(JSON.stringify(value), /DO_NOT_EXPOSE_AUTH|configManifest|execute\(/);
-});
-
-test('Human actions require the browser claimant, valid CSRF and strict bounded JSON', async t => {
-  const data = await fixture(t, 'copy', { waiting: true, command: true });
-  const first = await browserSession(data.monitor.url), second = await browserSession(data.monitor.url);
-  assert.notEqual(first.reviewerId, second.reviewerId);
-  const detail = await (await fetch(data.route, { headers: { cookie: first.cookie } })).json() as MonitorDetail;
-  assert.equal(detail.human?.canClaim, true);
-  assert.ok(detail.tools?.some(tool => tool.name === 'open_why' && tool.operation === 'command'));
-  assert.equal((await post(`${data.route}/tools/open_why`, first, { arguments: {} })).status, 403);
-  await assert.rejects(access(join(data.dir, 'command-output.txt')));
+test('Human actions require the claimant, same-origin CSRF and schema-valid arguments', async t => {
+  const data = await fixture(t, true), first = await session(data.monitor.url), second = await session(data.monitor.url);
   assert.equal((await post(`${data.route}/claim`, first, {}, { 'x-ccdd-csrf': second.csrfToken })).status, 403);
   assert.equal((await post(`${data.route}/claim`, first, {}, { origin: 'http://attacker.invalid' })).status, 403);
   assert.equal((await post(`${data.route}/claim`, first, {}, { 'content-type': 'text/plain' })).status, 415);
   assert.equal((await post(`${data.route}/claim`, first, { reviewerId: second.reviewerId })).status, 400);
-  assert.equal((await post(`${data.route}/claim`, first, { long: 'x'.repeat(33_000) })).status, 413);
-  const claimedResponse = await post(`${data.route}/claim`, first);
-  assert.equal(claimedResponse.status, 200, await claimedResponse.clone().text());
-  const claimed = await claimedResponse.json() as MonitorDetail;
-  assert.equal(claimed.request.claimedBy, first.reviewerId);
-  assert.equal(claimed.human?.claimedByMe, true);
-  assert.equal(claimed.human?.canComplete, true);
-  assert.equal((await post(`${data.route}/claim`, second)).status, 403);
-  assert.equal((await post(`${data.route}/tools/read_why`, second, { arguments: {} })).status, 403);
-  assert.equal((await post(`${data.route}/complete`, second, { verdict: 'GREEN', summary: 'Result from another reviewer', evidence: ['Inspected the input.'] })).status, 403);
-  assert.equal((await post(`${data.route}/complete`, first, { verdict: 'GREEN', summary: 'Checked', evidence: ['Inspected the input.'], reviewerId: second.reviewerId })).status, 400);
-  assert.equal((await post(`${data.route}/complete`, first, { verdict: 'GREEN', summary: 'Review', evidence: [] })).status, 400);
-  assert.equal((await post(`${data.route}/complete`, first, { verdict: 'GREEN', summary: 'Review', evidence: ['   '] })).status, 400);
-  assert.equal((await post(`${data.route}/tools/open_why`, first, { arguments: { command: '/unregistered' } })).status, 400);
-  await assert.rejects(access(join(data.dir, 'command-output.txt')));
-  const read = await post(`${data.route}/tools/read_why`, first, { arguments: { startLine: 1, lineCount: 1 } });
-  assert.equal(read.status, 200, await read.clone().text());
-  assert.match(JSON.stringify(await read.json()), /Purpose/);
-  const launch = await post(`${data.route}/tools/open_why`, first, { arguments: {} });
-  assert.equal(launch.status, 200, await launch.clone().text());
-  assert.equal((await launch.json() as { result: { launched: boolean } }).result.launched, true);
-  const deadline = Date.now() + 3000;
-  while (Date.now() < deadline) {
-    try { await access(join(data.dir, 'command-output.txt')); break; } catch { await delay(20); }
-  }
-  assert.equal(await readFile(join(data.dir, 'command-output.txt'), 'utf8'), '# Purpose\nChoose two items\n');
-  const afterTool = await (await fetch(data.route)).json() as MonitorDetail;
-  assert.equal(afterTool.request.status, 'WAITING_HUMAN');
-  assert.equal(afterTool.result, null);
-  const completed = await post(`${data.route}/complete`, first, { verdict: 'RED', summary: 'The criteria are not met.', evidence: ['Checked the two-item requirement.'] });
-  assert.equal(completed.status, 200, await completed.clone().text());
-  assert.equal((await completed.json() as MonitorDetail).request.status, 'RED');
-  assert.equal((await post(`${data.route}/complete`, first, { verdict: 'GREEN', summary: 'Duplicate', evidence: ['Inspected the input.'] })).status, 409);
-  assert.equal((await post(`${data.route}/tools/read_why`, first, { arguments: {} })).status, 409);
+  assert.equal((await post(`${data.route}/claim`, first, { extra: 'x'.repeat(33000) })).status, 413);
+  assert.equal((await post(`${data.route}/tools/read_a`, first, { arguments: {} })).status, 403);
+  const claimed = await post(`${data.route}/claim`, first); assert.equal(claimed.status, 200, await claimed.clone().text());
+  assert.equal((await post(`${data.route}/tools/read_a`, second, { arguments: {} })).status, 403);
+  assert.equal((await post(`${data.route}/tools/read_a`, first, { arguments: { lineCount: '1' } })).status, 400);
+  const result = await post(`${data.route}/tools/read_a`, first, { arguments: { lineCount: 1 } }); assert.equal(result.status, 200); assert.match(JSON.stringify(await result.json()), /Content of a/);
+  assert.equal(data.broker.getRequest(data.request.id)!.status, 'WAITING_HUMAN');
+  assert.equal((await post(`${data.route}/complete`, first, { verdict: 'GREEN', summary: 'Controlled Human result', evidence: [] })).status, 400);
+  const completed = await post(`${data.route}/complete`, first, { verdict: 'GREEN', summary: 'Controlled Human fixture submission', evidence: ['Read the actual fixture using its registered tool.'] });
+  assert.equal(completed.status, 200, await completed.clone().text()); assert.equal((await completed.json() as MonitorDetail).request.status, 'GREEN');
+  assert.equal((await post(`${data.route}/complete`, first, { verdict: 'RED', summary: 'Duplicate', evidence: ['Fixture'] })).status, 409);
 });
 
-test('browser reviewer identity survives monitor restart and requires the renewed CSRF token', async t => {
-  const data = await fixture(t, 'copy', { waiting: true });
-  const initial = await browserSession(data.monitor.url);
-  assert.equal((await post(`${data.route}/claim`, initial)).status, 200);
-  await data.monitor.close();
-  const next = await startMonitor({ stateDirs: [data.stateDir], port: 0 });
-  t.after(() => next.close());
-  const response = await fetch(`${next.url}/api/session`, { headers: { cookie: initial.cookie } });
-  const renewed = await response.json() as MonitorSession;
-  assert.equal(renewed.reviewerId, initial.reviewerId);
-  assert.notEqual(renewed.csrfToken, initial.csrfToken);
-  const route = `${next.url}/api/requests/${data.request.projectId}/${data.request.id}`;
-  assert.equal((await post(`${route}/complete`, initial, { verdict: 'GREEN', summary: 'Checked.', evidence: ['Inspected the input.'] })).status, 403);
-  const result = await post(`${route}/complete`, { cookie: initial.cookie, ...renewed }, { verdict: 'GREEN', summary: 'Checked.', evidence: ['Inspected the input.'] });
-  assert.equal(result.status, 200, await result.clone().text());
+test('browser identity survives monitor restart while CSRF requires a fresh session token', async t => {
+  const data = await fixture(t, true), before = await session(data.monitor.url); await data.monitor.close();
+  const monitor = await startMonitor({ stateDirs: [data.stateDir], port: 0 }); data.cleanup(() => monitor.close());
+  const after = await session(monitor.url, before.cookie); assert.equal(after.reviewerId, before.reviewerId); assert.notEqual(after.csrfToken, before.csrfToken);
+  const route = `${monitor.url}/api/requests/${data.request.projectId}/${data.request.id}/claim`; assert.equal((await post(route, before)).status, 403); assert.equal((await post(route, after)).status, 200);
 });
 
-test('Human completion starts a detached successor that finishes after the monitor closes', async t => {
-  const data = await fixture(t, 'copy', { waiting: true, chain: true });
-  const session = await browserSession(data.monitor.url);
-  assert.equal((await post(`${data.route}/claim`, session)).status, 200);
-  const result = await post(`${data.route}/complete`, session, { verdict: 'GREEN', summary: 'Review complete', evidence: ['Purpose checked'] });
-  assert.equal(result.status, 200, await result.clone().text());
-  await data.monitor.close();
-  const broker = createBroker({ repoPath: data.repoPath, stateDir: data.stateDir });
-  try {
-    const deadline = Date.now() + 5000;
-    let run = broker.getRun(data.run.id);
-    while (run && !['GREEN', 'RED', 'ERROR'].includes(run.status) && Date.now() < deadline) { await delay(30); run = broker.getRun(data.run.id); }
-    assert.equal(run?.status, 'GREEN', JSON.stringify(run));
-    assert.equal(run.requests[1].result?.exitCode, 0);
-  } finally { await broker.close(); }
+test('changed Human input is an operational failure and cannot accept a semantic verdict', async t => {
+  const data = await fixture(t, true), browser = await session(data.monitor.url); assert.equal((await post(`${data.route}/claim`, browser)).status, 200);
+  await writeFile(join(data.repoPath, 'a/content.txt'), 'changed');
+  assert.equal((await post(`${data.route}/complete`, browser, { verdict: 'GREEN', summary: 'Must not persist', evidence: ['Fixture'] })).status, 409);
+  assert.equal(data.broker.getRequest(data.request.id)!.result, null);
 });
 
-test('Human completion rejects changed input and leaves an operational ERROR', async t => {
-  const data = await fixture(t, 'copy', { waiting: true });
-  const session = await browserSession(data.monitor.url);
-  assert.equal((await post(`${data.route}/claim`, session)).status, 200);
-  await removeOwnedWorkspaceTree(data.run.workspace.path);
-  const response = await post(`${data.route}/complete`, session, { verdict: 'GREEN', summary: 'Passed', evidence: ['Inspected the input.'] });
-  assert.equal(response.status, 409);
-  const detail = await (await fetch(data.route)).json() as MonitorDetail;
-  assert.equal(detail.request.status, 'ERROR');
-  assert.equal(detail.result, null);
-  assert.ok(detail.toolIssue);
+test('GET of historical results neither evaluates obsolete config nor enables resume or Human tools', async t => {
+  const data = await fixture(t); const db = new DatabaseSync(join(data.stateDir, 'broker.sqlite'));
+  const record = JSON.parse(String(db.prepare('SELECT data FROM requests WHERE id=?').get(data.request.id)!.data)); record.configManifest.version = 1;
+  db.prepare('UPDATE requests SET data=? WHERE id=?').run(JSON.stringify(record), data.request.id); db.close();
+  const before = await readFile(join(data.stateDir, 'broker.sqlite')), detail = await (await fetch(data.route)).json() as MonitorDetail;
+  assert.equal(detail.artifactPreview, 'historical'); assert.deepEqual(detail.tools, []); assert.equal(detail.human!.canClaim, false);
+  assert.deepEqual(await readFile(join(data.stateDir, 'broker.sqlite')), before); await assert.rejects(readFile(data.marker), { code: 'ENOENT' });
 });
 
-
-test('Human tools reject a tampered stored Artifact scope without launching a program', async t => {
-  const data = await fixture(t, 'copy', { waiting: true, command: true });
-  const session = await browserSession(data.monitor.url);
-  assert.equal((await post(`${data.route}/claim`, session)).status, 200);
-  editStoredRequest(data.stateDir, data.request.id, request => { request.artifacts[0].path = 'private.md'; });
-  const response = await post(`${data.route}/tools/open_why`, session, { arguments: {} });
-  assert.equal(response.status, 409);
-  await assert.rejects(access(join(data.dir, 'command-output.txt')));
-  const detail = await (await fetch(data.route)).json() as MonitorDetail;
-  assert.equal(detail.request.status, 'ERROR');
-});
-
-
-test('a maximum-length registered Human tool name remains callable without relaxing request identifiers', async t => {
-  const data = await fixture(t, 'copy', { waiting: true, command: true, longTool: true });
-  const session = await browserSession(data.monitor.url);
-  const toolName = `${'o'.repeat(64)}_${'a'.repeat(64)}`;
-  assert.equal(toolName.length, 129);
-  const detail = await (await fetch(data.route)).json() as MonitorDetail;
-  assert.ok(detail.tools?.some(tool => tool.name === toolName));
-  assert.equal((await post(`${data.route}/claim`, session)).status, 200);
-  const executed = await post(`${data.route}/tools/${toolName}`, session, { arguments: {} });
-  assert.equal(executed.status, 200, await executed.clone().text());
-  assert.equal((await executed.json() as { result: { launched: boolean } }).result.launched, true);
-  assert.equal(await readFile(join(data.dir, 'command-output.txt'), 'utf8'), '# Purpose\nChoose two items\n');
-  assert.equal((await post(`${data.route}/tools/${toolName}x`, session, { arguments: {} })).status, 400);
-  assert.equal((await fetch(`${data.monitor.url}/api/requests/${'p'.repeat(129)}/${data.request.id}`)).status, 400);
-});
-
-test('run and graph HTTP views are read-only and share one project/run scope with Kanban', async t => {
-  const data = await fixture(t, 'copy', { chain: true });
-  const before = await readFile(join(data.stateDir, 'broker.sqlite'));
-  await removeOwnedWorkspaceTree(data.repoPath);
-  const runsResponse = await fetch(`${data.monitor.url}/api/runs?project=${data.request.projectId}&limit=1`);
-  assert.equal(runsResponse.status, 200);
-  const runs = await runsResponse.json() as MonitorRunOverview;
-  assert.equal(runs.runs.length, 1); assert.equal(runs.runs[0].id, data.run.id);
-  assert.equal(runs.runs[0].snapshotHash, data.run.snapshotHash);
-  const graphRoute = `${data.monitor.url}/api/graphs/${data.request.projectId}/${data.run.id}`;
-  const response = await fetch(graphRoute);
-  assert.equal(response.status, 200);
-  const graph = await response.json() as MonitorGraph;
-  assert.equal(graph.available, true, graph.unavailableReason ?? '');
-  assert.equal(graph.run.id, data.run.id); assert.equal(graph.run.snapshotHash, data.run.snapshotHash);
-  assert.equal(graph.graph?.critics.length, 2);
-  assert.equal(graph.graph?.artifacts.find(artifact => artifact.id === 'tests')?.status, 'BASIS');
-  assert.ok(graph.graph?.critics.every(critic => graph.requests.some(request => request.id === critic.requestId)));
-  const board = await (await fetch(`${data.monitor.url}/api/requests?project=${data.request.projectId}&run=${data.run.id}`)).json() as MonitorOverview;
-  assert.deepEqual(new Set(board.requests.map(request => request.id)), new Set(graph.requests.map(request => request.id)));
-  assert.equal((await fetch(`${data.monitor.url}/api/requests?run=${data.run.id}`)).status, 400);
-  assert.equal((await fetch(`${data.monitor.url}/api/runs?limit=101`)).status, 400);
-  assert.equal((await fetch(`${graphRoute}?snapshot=live`)).status, 400);
-  assert.equal((await fetch(`${data.monitor.url}/api/graphs/missing/${data.run.id}`)).status, 404);
-  assert.equal((await fetch(`${data.monitor.url}/api/graphs/${data.request.projectId}/missing`)).status, 404);
-  assert.equal((await raw(graphRoute, { headers: { origin: 'https://outside.invalid' } })).status, 403);
-  assert.equal((await raw(graphRoute, { method: 'POST', headers: { origin: data.monitor.url } })).status, 405);
-  assert.doesNotMatch(JSON.stringify({ graph, runs }), /DO_NOT_EXPOSE_AUTH|privatePayload|authFile|piOptions|workspace|owner|instruction/);
-  assert.deepEqual(await readFile(join(data.stateDir, 'broker.sqlite')), before);
-});
-
-test('TS Human detail and graph GET use stored tool manifests without importing project code or implicit text viewers', async t => {
-  const data = await fixture(t, 'copy', { custom: true, waiting: true });
-  const marker = join(data.dir, 'config-code-executions.txt');
-  const executions = await readFile(marker, 'utf8');
-  const database = await readFile(join(data.stateDir, 'broker.sqlite'));
-  for (let index = 0; index < 3; index++) {
-    const detail = await (await fetch(data.route)).json() as MonitorDetail;
-    assert.equal(detail.artifactPreview, 'tools');
-    assert.equal(detail.toolIssue, undefined);
-    const tool = detail.tools?.find(item => item.name === 'preview_why');
-    assert.ok(tool);
-    assert.equal(tool.operation, 'preview');
-    assert.equal(tool.description, 'Inspect frames from why.');
-    assert.deepEqual(tool.inputSchema.required, ['frame', 'overlay', 'channels']);
-    assert.equal((await fetch(`${data.monitor.url}/api/graphs/${data.request.projectId}/${data.run.id}`)).status, 200);
-    const artifact = await fetch(`${data.route}/artifacts/why`);
-    assert.equal(artifact.status, 409);
-    assert.match(await artifact.text(), /registered tools/);
-  }
-  assert.equal(await readFile(marker, 'utf8'), executions);
-  assert.deepEqual(await readFile(join(data.stateDir, 'broker.sqlite')), database);
-  // The inspector can still describe the captured tools after their executable files are unavailable.
-  await removeOwnedWorkspaceTree(data.run.workspace.path);
-  const unavailable = await (await fetch(data.route)).json() as MonitorDetail;
-  assert.ok(unavailable.tools?.some(tool => tool.name === 'preview_why'));
-  assert.equal(unavailable.toolIssue, undefined);
-  assert.equal(await readFile(marker, 'utf8'), executions);
-});
-
-test('custom Human POST validates schema, returns generic content, retries tool failure and resumes from the copied snapshot', async t => {
-  const data = await fixture(t, 'copy', { custom: true, waiting: true });
-  const session = await browserSession(data.monitor.url);
-  const input = { frame: 0.5, overlay: false, channels: ['color', 'alpha'] };
-  assert.equal((await post(`${data.route}/tools/preview_why`, session, { arguments: input })).status, 403);
-  assert.equal((await post(`${data.route}/claim`, session)).status, 200);
-  const malformed = await post(`${data.route}/tools/preview_why`, session, { arguments: { ...input, frame: '0.5' } });
-  assert.equal(malformed.status, 400, await malformed.clone().text());
-  const failed = await post(`${data.route}/tools/preview_why`, session, { arguments: { ...input, frame: 13 } });
-  assert.equal(failed.status, 409, await failed.clone().text());
-  assert.equal((await (await fetch(data.route)).json() as MonitorDetail).request.status, 'WAITING_HUMAN');
-  await data.monitor.close();
-  await removeOwnedWorkspaceTree(data.repoPath);
-  const resumed = await startMonitor({ stateDirs: [data.stateDir], stateHome: data.stateHome, port: 0 });
-  t.after(() => resumed.close());
-  const renewed = await (await fetch(`${resumed.url}/api/session`, { headers: { cookie: session.cookie } })).json() as MonitorSession;
-  const sameReviewer = { cookie: session.cookie, ...renewed };
-  assert.equal(renewed.reviewerId, session.reviewerId);
-  const route = `${resumed.url}/api/requests/${data.request.projectId}/${data.request.id}`;
-  const response = await post(`${route}/tools/preview_why`, sameReviewer, { arguments: input });
-  assert.equal(response.status, 200, await response.clone().text());
-  const result = await response.json() as { result: { content: Array<Record<string, unknown>> } };
-  assert.deepEqual(result.result.content[0], { type: 'text', text: '# Purpose\nChoose two items\n' });
-  assert.deepEqual(result.result.content[1], { type: 'json', data: input });
-  assert.equal(result.result.content[2].type, 'image');
-  assert.equal(result.result.content[2].mimeType, 'image/png');
-  assert.equal(typeof result.result.content[2].data, 'string');
-  assert.equal('path' in result.result.content[2], false);
-  assert.doesNotMatch(JSON.stringify(result), /workspaces|outputDir|tmpDir/);
-  const afterTool = await (await fetch(route)).json() as MonitorDetail;
-  assert.equal(afterTool.request.status, 'WAITING_HUMAN');
-  assert.equal(afterTool.result, null, 'A successful program/tool invocation does not submit a verdict');
-  const completed = await post(`${route}/complete`, sameReviewer, { verdict: 'GREEN', summary: 'Inspected the frame.', evidence: ['Inspected the provided frame and input.'] });
-  assert.equal(completed.status, 200, await completed.clone().text());
-  assert.equal((await completed.json() as MonitorDetail).request.status, 'GREEN');
-});
-
-test('Human execution marks mismatched or corrupt captured TS tool manifests ERROR before user tool code runs', async t => {
-  for (const edit of [
-    (request: ReviewRequest) => { request.configManifest!.configHash = '0'.repeat(64); },
-    (request: ReviewRequest) => { request.configManifest!.types.markdown.humanTools.preview.inputSchema = { type: 'not-a-type' }; },
-    (request: ReviewRequest) => { request.artifacts.push({ id: 'unrelated', type: 'markdown', path: 'private.md' }); },
-    (request: ReviewRequest) => { request.artifacts = request.artifacts.filter(artifact => artifact.id === 'why'); },
-  ]) {
-    const data = await fixture(t, 'copy', { custom: true, waiting: true });
-    const session = await browserSession(data.monitor.url);
-    assert.equal((await post(`${data.route}/claim`, session)).status, 200);
-    editStoredRequest(data.stateDir, data.request.id, edit);
-    const response = await post(`${data.route}/tools/preview_why`, session, { arguments: { frame: 0.5, overlay: false, channels: [] } });
-    assert.equal(response.status, 409, await response.clone().text());
-    const detail = await (await fetch(data.route)).json() as MonitorDetail;
-    assert.equal(detail.request.status, 'ERROR');
-    assert.doesNotMatch(await readFile(join(data.dir, 'config-code-executions.txt'), 'utf8'), /execute/);
-    assert.equal((await post(`${data.route}/complete`, session, { verdict: 'GREEN', summary: 'Passed', evidence: ['Input checked'] })).status, 409);
-  }
+test('unknown routes, duplicate parameters and foreign origins fail with restrictive response headers', async t => {
+  const data = await fixture(t);
+  assert.equal((await fetch(data.route, { headers: { origin: 'http://attacker.invalid' } })).status, 403);
+  assert.equal((await fetch(`${data.monitor.url}/api/requests?limit=1&limit=2`)).status, 400);
+  assert.equal((await fetch(`${data.route}/missing`)).status, 404);
+  const response = await fetch(data.monitor.url); assert.equal(response.status, 200); assert.match(response.headers.get('content-security-policy')!, /default-src/);
 });

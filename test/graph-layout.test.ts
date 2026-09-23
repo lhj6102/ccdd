@@ -70,8 +70,10 @@ test('ELK lays out multiple parents and shared Critic relations without node or 
 test('invalid graphs and cancelled layout fail explicitly, while empty graphs remain valid', async () => {
   await assert.rejects(layoutGraph({ artifacts: [{ id: 'a' }], edges: [{ source: 'a', target: 'missing', criticIds: [] }] }), /unknown/);
   await assert.rejects(layoutGraph({ artifacts: [{ id: 'a' }, { id: 'a' }], edges: [] }), /Duplicate/);
-  await assert.rejects(layoutGraph({ artifacts: [{ id: 'a' }], edges: [{ source: 'a', target: 'a', criticIds: [] }] }), /cycle/);
-  await assert.rejects(layoutGraph({ artifacts: [{ id: 'a' }, { id: 'b' }], edges: [{ source: 'a', target: 'b', criticIds: [] }, { source: 'b', target: 'a', criticIds: [] }] }), /cycle/);
+  const self = await layoutGraph({ artifacts: [{ id: 'a' }], edges: [{ source: 'a', target: 'a', criticIds: [] }] });
+  assert.equal(self.edges.length, 1);
+  assert.ok(self.edges[0].points.every(point => Number.isFinite(point.x) && Number.isFinite(point.y)));
+  assert.equal((await layoutGraph({ artifacts: [{ id: 'a' }, { id: 'b' }], edges: [{ source: 'a', target: 'b', criticIds: [] }, { source: 'b', target: 'a', criticIds: [] }] })).edges.length, 2);
   await assert.rejects(layoutGraph(input, false, AbortSignal.abort()), { name: 'AbortError' });
   assert.deepEqual((await layoutGraph({ artifacts: [], edges: [] })).nodes, []);
 });

@@ -1,0 +1,46 @@
+{
+  "name": "why",
+  "views": {
+    "agentTools": {
+      "read": {
+        "metadata": {
+          "description": "Inspect {artifactName} with read.",
+          "inputSchema": {
+            "type": "object",
+            "properties": {
+              "startLine": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "lineCount": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 80
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "startLine",
+              "lineCount"
+            ]
+          },
+          "resultKinds": [
+            "json"
+          ],
+          "observation": "content",
+          "executionPaths": [
+            "view.mjs"
+          ]
+        },
+        "script": {
+          "command": "node",
+          "args": [
+            "../view.mjs",
+            "why.md"
+          ]
+        }
+      }
+    }
+  },
+  "basis": true
+}

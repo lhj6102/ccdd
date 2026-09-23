@@ -60,8 +60,8 @@ export function packageFileAllowed(packageName, path) {
   if (path.split('/').some(part => /^(?:node_modules|output|worktrees?|snapshots?|state|sources|\.git|\.ccdd|\.codex|\.ssh|\.aws|\.npmrc)$/i.test(part))) return false;
   if (/(?:^|\/)(?:\.env(?:\..*)?|auth\.json|credentials(?:\.[^/]*)?)$/i.test(path) || /\.(?:db|sqlite(?:3)?|pem|key|tgz|zip)$/i.test(path)) return false;
   if (/^(?:package\.json|README\.md|LICENSE(?:\.[A-Za-z]+)?)$/.test(path)) return true;
-  if (packageName === toolsName) return /^dist\/.+\.(?:js|js\.map|d\.ts)$/.test(path);
-  if (packageName === coreName) return /^dist\/src\/(?:sdk|definitions|tools\/contracts)\.(?:js|js\.map|d\.ts)$/.test(path) || /^examples\/.+\.(?:md|ts|mjs|json|png|jpg|jpeg|webp)$/.test(path);
+  if (packageName === toolsName) return /^dist\/.+\.(?:js|js\.map|d\.ts)$/.test(path) || /^examples\/.+\.(?:md|json)$/.test(path);
+  if (packageName === coreName) return /^dist\/src\/(?:sdk|definitions|artifact-scope|tools\/contracts)\.(?:js|js\.map|d\.ts)$/.test(path) || /^examples\/.+\.(?:md|ts|mjs|json|png|jpg|jpeg|webp)$/.test(path);
   return /^dist\/(?:src|scripts)\/.+\.(?:js|js\.map|d\.ts)$/.test(path)
     || /^dist\/monitor-ui\/.+\.(?:html|js|css|svg|png|woff2?)$/.test(path)
     || /^docs\/.+\.md$/.test(path)
@@ -114,9 +114,9 @@ export async function packPackage(cwd, expectedName, version, outputDirectory, e
   assert.equal(manifest.private, sourceManifest.private, 'Packing must preserve npm publication policy');
   assert.deepEqual(manifest.publishConfig, sourceManifest.publishConfig, 'Packing must preserve npm registry and access settings');
   const required = expectedName === coreName
-    ? ['dist/src/sdk.js', 'dist/src/sdk.d.ts', 'dist/src/definitions.d.ts', 'dist/src/tools/contracts.d.ts', 'examples/custom-text-reader/ccdd.config.ts']
+    ? ['dist/src/sdk.js', 'dist/src/sdk.d.ts', 'dist/src/definitions.d.ts', 'dist/src/tools/contracts.d.ts', 'examples/custom-text-reader/spec/ccdd.json']
     : expectedName === projectName ? ['dist/src/cli.js', 'dist/src/project/cli.js', 'dist/src/project/index.js', 'dist/src/worker.js', 'dist/scripts/prepare-demo.js', 'dist/monitor-ui/index.html']
-    : ['dist/index.js', 'dist/index.d.ts', 'dist/cli.js', 'dist/reader.js', 'dist/process.js'];
+    : ['dist/index.js', 'dist/index.d.ts', 'dist/cli.js', 'dist/script.js', 'dist/reader.js', 'dist/process.js'];
   if (expectedName === coreName) { assert.equal(manifest.bin, undefined); assert.equal(Object.keys(manifest.dependencies ?? {}).length, 0); }
   for (const path of required) assert.ok(paths.includes(path), `Missing packaged runtime file: ${path}`);
   const bytes = await readFile(tarball);
@@ -124,27 +124,24 @@ export async function packPackage(cwd, expectedName, version, outputDirectory, e
 }
 
 function fixtureConfig(withDefaults) {
-  const imports = withDefaults
-    ? "import { defineConfig } from '@ccdd/core';\nimport { agent } from '@ccdd/default-tools';"
-    : "import { defineConfig, defineTool } from '@ccdd/core';\nimport { readFile } from 'node:fs/promises';";
-  const reader = withDefaults ? 'agent.text.read()' : `defineTool({
-    metadata: { description: 'Read {artifactName} with a custom tool.',
-      inputSchema: { type: 'object', properties: {}, additionalProperties: false },
-      resultKinds: ['text'], observation: 'content', artifactKind: 'file' },
-    async execute(context) {
-      const text = await readFile(await context.resolvePath(), { encoding: 'utf8', signal: context.signal });
-      return { content: [{ type: 'text', text }], observation: { kind: 'content' } };
-    },
-  })`;
-  return `${imports}
-export default defineConfig(() => ({
-  artifactTypes: { document: { agentTools: { ${withDefaults ? 'read' : 'inspect'}: ${reader} } } },
-  artifacts: { spec: { type: 'document', path: 'spec.md', stale: { kind: 'file-hash', paths: ['spec.md', 'checks'] } } },
-  critics: [{ id: 'package-runtime', title: 'Packaged runtime verification', target: 'spec', deps: [],
-    profile: { kind: 'runtime', command: 'node', args: ['--test', 'checks/release.test.mjs'] },
-    payload: { instruction: 'Run the synthetic package test for {spec}.' } }],
-}));
-`;
+  const tool = withDefaults ? 'read' : 'inspect';
+  return JSON.stringify({
+    name: 'spec',
+    views: { agentTools: { [tool]: {
+      metadata: {
+        description: 'Read the supplied Artifact document.',
+        inputSchema: { type: 'object', properties: withDefaults ? {
+          path: { type: 'string' }, startLine: { type: 'integer', minimum: 1 }, lineCount: { type: 'integer', minimum: 1 },
+        } : {}, ...(withDefaults ? { required: ['path'] } : {}), additionalProperties: false },
+        resultKinds: [withDefaults ? 'json' : 'text'], observation: 'content',
+        ...(withDefaults ? { executionPaths: ['node_modules/@ccdd/default-tools/dist', 'node_modules/@ccdd/core/dist'] } : {}),
+      },
+      script: { command: 'node', args: withDefaults ? ['node_modules/@ccdd/default-tools/dist/script.js', 'read'] : ['view.mjs'] },
+    } } },
+    critics: [{ id: 'package-runtime', title: 'Packaged runtime verification',
+      profile: { kind: 'runtime', command: 'node', args: ['--test', 'checks/release.test.mjs'] },
+      payload: { instruction: 'Run the synthetic package test for {spec}.' } }],
+  }, null, 2);
 }
 
 export async function verifyInstallation({ scratch, outputDirectory, packages, version, withDefaults, environment }) {
@@ -158,8 +155,14 @@ export async function verifyInstallation({ scratch, outputDirectory, packages, v
   const sample = `CCDD ${version} package verification.\nSecond line.\n`;
   await writeFile(join(input, 'package.json'), JSON.stringify({ name: 'ccdd-review-input', private: true, type: 'module' }));
   await writeFile(join(input, 'spec.md'), sample);
-  await writeFile(join(input, 'ccdd.config.ts'), fixtureConfig(withDefaults));
-  await writeFile(join(input, 'checks/release.test.mjs'), `import test from 'node:test';\nimport assert from 'node:assert/strict';\nimport { readFile } from 'node:fs/promises';\ntest('read the copied synthetic Artifact', async () => assert.equal(await readFile(new URL('../spec.md', import.meta.url), 'utf8'), ${JSON.stringify(sample)}));\n`);
+  await writeFile(join(input, 'ccdd.json'), fixtureConfig(withDefaults));
+  if (!withDefaults) await writeFile(join(input, 'view.mjs'), `import {readFile} from 'node:fs/promises';
+let input='';for await(const chunk of process.stdin) input+=chunk;
+const request=JSON.parse(input);if(request.version!==1)throw new Error('Unsupported request');
+const text=await readFile(new URL('./spec.md',import.meta.url),'utf8');
+process.stdout.write(JSON.stringify({content:[{type:'text',text}],observation:{kind:'content'}}));
+`);
+  await writeFile(join(input, 'checks/release.test.mjs'), `import test from 'node:test';\nimport assert from 'node:assert/strict';\nimport { readFile } from 'node:fs/promises';\ntest('read the supplied fixture Artifact', async () => assert.equal(await readFile(new URL('../spec.md', import.meta.url), 'utf8'), ${JSON.stringify(sample)}));\n`);
   await command('npm', ['install', '--omit=dev', '--ignore-scripts', '--no-audit', '--no-fund', '--package-lock=true'], { cwd: project, env: environment });
   const dependencyTree = await jsonCommand('npm', ['ls', '--omit=dev', '--depth=0', '--json'], { cwd: project, env: environment });
   assert.deepEqual(Object.keys(dependencyTree.dependencies).sort(), Object.keys(dependencies).sort());
@@ -172,21 +175,21 @@ export async function verifyInstallation({ scratch, outputDirectory, packages, v
   if (!withDefaults) await assert.rejects(lstat(join(project, 'node_modules', toolsName)), { code: 'ENOENT' });
   for (const devPackage of ['typescript', 'typescript-ui', 'vite', 'vue-tsc']) await assert.rejects(lstat(join(project, 'node_modules', devPackage)), { code: 'ENOENT' });
   // The application install is outside the reviewed input, like a global CLI install.
-  // Include exact installed SDK/tool files used by this text-only config inside the input.
-  // Nothing inside the reviewed input is excluded from snapshot capture or hashing.
+  // Include exact installed SDK/tool files used by these folder declarations inside the input.
+  // Nothing inside the reviewed input is excluded from whole-workspace integrity checks.
   for (const name of [coreName, ...(withDefaults ? [toolsName] : [])]) await cp(join(project, 'node_modules', name), join(input, 'node_modules', name), { recursive: true });
   const cli = join(project, 'node_modules', projectName, 'dist/src/cli.js');
   const projectCli = join(project, 'node_modules', projectName, 'dist/src/project/cli.js');
   assert.match((await command('npm', ['exec', '--offline', '--', 'ccdd-project', 'help'], { cwd: project, env: environment })).stdout, /CCDD Project/);
-  assert.match((await command(cli, ['help'], { cwd: project, env: environment })).stdout, new RegExp(`^CCDD ${version.replaceAll('.', '\\.')} —`, 'm'));
+  assert.match((await command(cli, ['help'], { cwd: project, env: environment })).stdout, /CCDD Project/);
   const toolName = withDefaults ? 'read_spec' : 'inspect_spec';
-  const report = await jsonCommand(cli, ['tools', 'check', '--repo', input, '--state-dir', state, '--artifact', 'spec', '--for', 'agent', '--tool', toolName, '--execute', '--copy', '--args', withDefaults ? '{"startLine":2,"lineCount":1}' : '{}', '--json'], { cwd: project, env: environment });
+  const report = await jsonCommand(cli, ['tools', 'check', '--repo', input, '--state-dir', state, '--artifact', 'spec', '--for', 'agent', '--tool', toolName, '--execute', '--args', withDefaults ? '{"path":"spec.md","startLine":2,"lineCount":1}' : '{}', '--json'], { cwd: project, env: environment });
   assert.equal(report.ok, true, JSON.stringify(report.checks));
   assert.equal(report.status, 'READY');
-  assert.equal(report.mode, 'copy');
+  assert.equal(Object.hasOwn(report, 'mode'), false);
   assert.equal(report.tools.length, 1);
   assert.equal(report.tools[0].name, toolName);
-  assert.ok(within(state, report.workspacePath) && !within(project, report.workspacePath), 'Tool execution must use an independent copied workspace');
+  assert.equal(report.workspacePath, await realpath(input), 'Tool execution must use the supplied workspace');
   assert.equal(await readFile(join(report.workspacePath, 'spec.md'), 'utf8'), sample);
   assert.equal(await readFile(join(input, 'spec.md'), 'utf8'), sample);
   const content = report.result?.content;
@@ -200,16 +203,43 @@ export async function verifyInstallation({ scratch, outputDirectory, packages, v
     assert.equal(content[0].type, 'text');
     assert.equal(content[0].text, sample);
   }
-  const validationArgs = ['verify', '--critic', 'package-runtime', '--repo', input, '--state-dir', state, '--wait', '--timeout-ms', '120000', '--json'];
+  const validationArgs = ['verify', '--critic', 'spec/package-runtime', '--repo', input, '--state-dir', state, '--wait', '--timeout-ms', '120000', '--json'];
   const reviewed = await jsonCommand(projectCli, validationArgs, { cwd: project, env: environment });
   assert.equal(reviewed.status, 'GREEN'); assert.equal(reviewed.requests.length, 1);
   const reused = await jsonCommand(projectCli, validationArgs, { cwd: project, env: environment });
   assert.equal(reused.status, 'GREEN'); assert.equal(reused.requests.length, 0); assert.equal(reused.validation.counts.reuse, 1);
-  return { name, productionInstall: true, installScripts: false, cliHelpVersion: version, defaultToolsInstalled: withDefaults, tool: toolName, actualToolExecution: true, workspaceMode: 'copy', projectValidation: true, runtime: 'GREEN' };
+  const examples = [];
+  for (const [example, artifact, tool, args] of [
+    ['custom-text-reader', 'spec', 'read', { startLine: 1, lineCount: 20 }],
+    ['computed-views', 'checkout', 'overview', {}],
+    ...(withDefaults ? [['artifact-folders', 'explosion', 'blind_pair', {}]] : []),
+  ]) {
+    const examplePath = join(project, `example-${example}`), exampleState = join(scratch, `${name}-${example}-state`);
+    await cp(join(project, 'node_modules', coreName, 'examples', example), examplePath, { recursive: true });
+    if (example === 'artifact-folders') {
+      for (const packageName of [coreName, toolsName]) await cp(join(project, 'node_modules', packageName), join(examplePath, 'node_modules', packageName), { recursive: true });
+      await mkdir(join(examplePath, 'node_modules/.bin'), { recursive: true });
+      await cp(join(project, 'node_modules/.bin/ccdd-view'), join(examplePath, 'node_modules/.bin/ccdd-view'), { verbatimSymlinks: true });
+    }
+    const common = ['--repo', examplePath, '--state-dir', exampleState, '--json'];
+    assert.equal((await jsonCommand(cli, ['config', 'check', ...common], { cwd: project, env: environment })).ok, true);
+    const observed = await jsonCommand(cli, ['tools', 'check', '--artifact', artifact, '--for', 'agent', '--tool', tool, '--execute', '--args', JSON.stringify(args), ...common], { cwd: project, env: environment });
+    assert.equal(observed.ok, true, JSON.stringify(observed.checks));
+    assert.ok(observed.result.content.length > 0);
+    if (example === 'artifact-folders') {
+      assert.equal(observed.result.content.filter(block => block.type === 'image').length, 2);
+      assert.doesNotMatch(JSON.stringify(observed.result), /theme\.png|preview\.png|pair-map/);
+      const read = await jsonCommand(cli, ['tools', 'check', '--artifact', 'effect', '--for', 'agent', '--tool', 'read', '--execute', '--args', '{"path":"effect.md"}', ...common], { cwd: project, env: environment });
+      assert.equal(read.ok, true, JSON.stringify(read.checks));
+      assert.equal(read.result.content[0].type, 'json');
+    }
+    examples.push(example);
+  }
+  return { name, productionInstall: true, installScripts: false, cliHelpVersion: version, defaultToolsInstalled: withDefaults, tool: toolName, actualToolExecution: true, workspace: 'in-place', projectValidation: true, runtime: 'GREEN', examples };
 }
 
 async function removeScratch(directory) {
-  // The copied test workspaces are deliberately readonly. This is only our own mkdtemp tree.
+  // Clean only the temporary installation and test workspace owned by this verifier.
   async function writable(path) {
     const info = await lstat(path);
     if (!info.isDirectory() || info.isSymbolicLink()) return;

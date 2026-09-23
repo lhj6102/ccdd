@@ -4,13 +4,12 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { matchesToolManifest } from './manifest.js';
 import type { ConfigManifest, EnvironmentRequirement } from './contracts.js';
-import { openToolHost } from './host.js';
-import { environmentRequirements } from './schema.js';
+import { readWorkspaceConfig } from '../broker/config.js';
 import { scopedPath, within } from './paths.js';
 
 export interface EnvironmentCheck { id: string; ok: boolean; message: string }
 export interface EnvironmentCheckResult { ok: boolean; checks: EnvironmentCheck[] }
-export interface EnvironmentCheckOptions { workspacePath: string; configManifest?: ConfigManifest; outputDir: string; signal?: AbortSignal }
+export interface EnvironmentCheckOptions { workspacePath: string; configManifest?: ConfigManifest; outputDir: string; signal?: AbortSignal; artifactIds?: readonly string[] }
 
 async function outputDirectory(root: string, directory: string): Promise<string> {
   const target = resolve(directory);
@@ -80,15 +79,14 @@ function runCheck(root: string, script: string, requirement: EnvironmentRequirem
 export async function checkEnvironmentRequirements(options: EnvironmentCheckOptions): Promise<EnvironmentCheckResult> {
   options.signal?.throwIfAborted();
   if (options.configManifest?.envRequirements === undefined) return { ok: true, checks: [] };
-  const requirements = environmentRequirements(options.configManifest.envRequirements);
+  const requirements = options.configManifest.envRequirements;
   const root = await realpath(options.workspacePath);
   // Reconnect declarations from this exact snapshot before executing any stored script path.
-  const host = await openToolHost(root, options.signal).catch(error => { options.signal?.throwIfAborted(); throw error; });
-  try {
-    if (!matchesToolManifest(host.config, options.configManifest)) throw Object.assign(new Error('Recorded environment requirements do not match this snapshot configuration.'), { code: 'WORKSPACE_ARTIFACT_MISMATCH' });
-  } finally { await host.close(); }
+  const { config } = await readWorkspaceConfig(root, options.signal);
+  if (!matchesToolManifest(config, options.configManifest)) throw Object.assign(new Error('Recorded environment requirements do not match this snapshot configuration.'), { code: 'WORKSPACE_ARTIFACT_MISMATCH' });
   const base = await outputDirectory(root, options.outputDir), checks: EnvironmentCheck[] = [];
   for (const [id, requirement] of Object.entries(requirements)) {
+    if (options.artifactIds && !options.artifactIds.includes(id.split('/')[0])) continue;
     options.signal?.throwIfAborted();
     const outputDir = await outputDirectory(root, join(base, id)), tmpDir = await outputDirectory(root, join(outputDir, '.tmp'));
     const result = await runCheck(root, await scopedPath(root, requirement.script), requirement, outputDir, tmpDir, options.signal);

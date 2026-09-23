@@ -1,77 +1,15 @@
 # Broker
 
-The Broker connects a Requester's review requests with reviewers' verdicts. Its language describes who is evaluating which snapshot and which results can be returned to the requester.
+The Broker owns review requests, process ownership, Human assignment and results. It receives a frozen Project validation scope and issues executable selected tickets. Project Validation owns current-input identities and final satisfaction.
 
-## Language
+- **Requester** supplies a workspace and receives progress and evidence.
+- **Run** groups selected evaluations against one coherent input and captures the required validation scope.
+- **Review Request** assigns one qualified, Artifact-owned Critic with fixed input, criteria and execution conditions.
+- **Snapshot** identifies the complete supplied workspace. The workspace remains unchanged while its worker monitors it.
+- **Target Artifact** is the Critic's owner. Referenced Artifacts and composition connections extend allowed input, without imposing execution ordering.
+- **Verdict** is an actual GREEN/RED judgment. Execution failure is ERROR; missing required evidence is INCOMPLETE.
+- **Human Try Claim** reserves a request while checking fixed input and the admitted Artifacts' environment requirements.
+- **Human Claim** confirms a reviewer's responsibility after preparation. Only that claimant may execute Human tools or submit a result.
+- **Review Workspace** is the user-supplied folder, optionally a user-managed worktree. Output and state are external.
 
-**Requester**:
-The party that requests a review and receives its progress and result.
-_Avoid_: Reviewer, Executor
-
-**Run**:
-A collection of review requests for one snapshot and a defined evaluation scope.
-_Avoid_: Task, project
-
-**Critic Run**:
-A Run that evaluates only one selected Critic. GREEN means that Critic is satisfied, not that referenced Artifacts or other Critics are satisfied.
-_Avoid_: Graph Run, complete validation
-
-**Graph Run**:
-A Run that evaluates all defined Critics according to Artifact dependencies. Complete validation is satisfied when every required review is GREEN.
-_Avoid_: Critic Run, individual evaluation
-
-**Review Request**:
-One review assignment with defined target Artifacts, evaluation criteria, snapshot, and execution conditions.
-_Avoid_: Critic definition, task list
-
-**Snapshot**:
-The complete input state, including the review's Artifact and Critic definitions. It is identified by a content hash and must remain unchanged during review.
-_Avoid_: Git commit, latest source
-
-**Artifact Group**:
-A review unit that references independently defined Artifacts. Member identifiers remain independent of group membership and can be referenced individually.
-_Avoid_: Artifact copy, directory, predecessor Critic list
-
-**Group Membership**:
-The relationship of an Artifact belonging to a group. Group composition is distinct from validation dependencies; membership alone does not require prior validation.
-_Avoid_: Dependency Artifact, validation order, automatic verdict propagation
-
-**Target Artifact**:
-The Artifact judged by one Critic. Multiple Critics may evaluate the same Artifact against different criteria.
-_Avoid_: referenced Artifact, generated output
-
-**Dependency Artifact**:
-Another Artifact that a Critic references as the basis for judging its target. In a full validation, this Artifact's required evaluations must pass before the Critic can start.
-_Avoid_: predecessor Critic, target Artifact
-
-**Basis Artifact**:
-An explicitly accepted starting point for validation that requires no separate Critic verdict.
-_Avoid_: automatic pass, completed review
-
-**Artifact Validation**:
-The aggregate status of all required Critics targeting one Artifact within the same snapshot and evaluation scope. One successful verdict or an unexecuted review does not establish a complete pass.
-_Avoid_: permanent file state, single Critic verdict
-
-**Verdict**:
-A reviewer's GREEN or RED judgment of whether the evaluation criteria are satisfied.
-_Avoid_: execution error, progress status
-
-**Blocked Review**:
-A review request that cannot start yet because required reviews of referenced Artifacts are not satisfied.
-_Avoid_: failed review, RED verdict
-
-**Human Try Claim**:
-An exclusive temporary reservation while a human reviewer prepares the fixed review input and checks the required environment. Successful preparation confirms a Human Claim; unsuccessful preparation leaves the request available for another attempt.
-_Avoid_: Human Claim, review failure, verdict
-
-**Human Claim**:
-A confirmed commitment by one human reviewer, after preparing the review input and environment, to submit the result of a waiting review.
-_Avoid_: Human Try Claim, completion, verdict
-
-**Review Workspace**:
-The complete workspace from which a review reads input. It either monitors the original for changes or uses an immutable copy.
-_Avoid_: Artifact observation scope, review output workspace
-
-**Copied Workspace**:
-Immutable review input captured from the original. Reviews of identical content can share it.
-_Avoid_: verdict cache, Builder workspace
+A request-scoped worker executes ready Critics concurrently within the limit, including cycles. It stays alive during Human waiting. Input mutation or owner death invalidates unfinished execution. It never creates workspace copies, symlinks for mounts, fabricated dependency results or persistent stale state. Historical review records are readable but cannot execute under the new model.

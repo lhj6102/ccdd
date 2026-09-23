@@ -1,5 +1,12 @@
 # Review overhead benchmark
 
+These measurements describe earlier versions with separate lock/copy policies.
+Current reviews use only the supplied workspace in place; copy publication and
+remote transfer are removed. The archived copy reports below are historical
+evidence, not supported workflows. The benchmark script now measures in-place
+review only with version 4 folder declarations; both compared revisions must support that contract. Omit the former `BENCH_MODE` setting. Historical comparisons require their original harness.
+
+
 The CLI benchmark measures CCDD preparation and result handling separately from
 the instrumented custom Artifact operation. It runs actual CLI commands and
 detached workers against a synthetic Human-review fixture. Fixture verdicts are
@@ -102,7 +109,7 @@ The harness verifies persisted integrity policy and worker identities. It retain
 private fixtures if cleanup cannot be proven. All recorded runs completed all
 attempts and removed their private fixtures successfully.
 
-## Reproduce
+## Historical reproduction
 
 Use Node 22 LTS and build the baseline and this checkout separately. From this
 checkout, in PowerShell:
@@ -133,8 +140,8 @@ the baseline already supports that policy and both sides should use it.
 Smaller `BENCH_FILES` and `BENCH_ROUNDS` values can check functionality, but their
 timings are not directly comparable to the recorded fixture.
 
-To reproduce the additional Linux metadata comparison, build the integrated
-baseline separately and run the current harness from this built checkout:
+The commands below record the historical Linux copy comparison. Reproducing it
+requires the matching historical copy-capable checkout and harness:
 
 ```sh
 git worktree add --detach ../ccdd-integrated-baseline 7eb9d636c314d4aae080193d87820c98d4a00d74
@@ -149,28 +156,3 @@ Set both integrity variables to `content` and `BENCH_ROUNDS=1` for the recorded
 content sanity check. Use more alternating pairs for conclusions about a small
 timing difference. The committed candidate revision above reproduces the
 measured implementation; subsequent documentation changes do not alter it.
-
-## Remaining copy work
-
-The measured copy target is below 22.57 s, requiring about 41.12% less time than
-the original candidate median. Admission alone takes 28.74 s, so optimizing only
-the later CLI phases cannot meet that target.
-
-The original fresh metadata-mode copying performed three
-full content traversals: source capture, staged-copy validation and published-copy
-observer initialization, in addition to the copy itself. Metadata traversals and
-read-only sealing also remain. The benchmark does not attribute separate timings
-to these internal operations.
-
-The integrated implementation can carry the staged proof across publication in
-metadata mode, eliminating the third content traversal when directory identity,
-structure and entry metadata still match. It allows only the root ctime change
-from rename; unexpected changes trigger full byte validation. Content mode keeps
-its full published-byte check. Cache hits under either policy now validate bytes
-once with the retained observer. See the [publication contract](contracts.md#workspace-contract).
-
-The current optimization stays within existing workspace acquisition and
-observation. Combining source hashing with copying is deferred because it would
-require broader changes to cache selection, source-change detection, publication
-locking and cancellation. The original Windows target remains open until the
-updated implementation is measured on that fixture.

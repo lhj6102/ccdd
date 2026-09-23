@@ -4,11 +4,10 @@ import { readFile } from 'node:fs/promises';
 import { resolve, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
-import { main as legacyMain } from '../cli.js';
+import { diagnosticsMain } from '../diagnostics-cli.js';
 import { createBroker, readStateContext } from '../broker/index.js';
 import { createGraphDefinition } from '../broker/graph.js';
-import { includedCritics } from './query.js';
-import { isArtifactGroup } from '../artifacts/groups.js';
+import { includedCritics, requiredArtifacts } from './query.js';
 import { localContext, createLocalAlarmMethods } from '../local.js';
 import { createExecutorRegistry } from '../executors/index.js';
 import { ensureRunWorker } from '../worker-client.js';
@@ -16,12 +15,11 @@ import { inspectProject } from './index.js';
 import { projectHistory, projectRun, projectRuns, projectRequests, type ProjectRunView } from './store.js';
 import type { ProjectPlan, ProjectSelection } from './types.js';
 import type { PiOptions } from '../executors/pi.js';
-import { reviewMain } from '../review/cli.js';
 import { claimHumanFromCli } from '../review/local-claim.js';
 
 type Output = { write(value: string): unknown };
 const terminal = new Set(['GREEN', 'RED', 'ERROR', 'INCOMPLETE']);
-const flags = new Set(['--all', '--recursive', '--force', '--wait', '--json', '--help', '--copy', '--lock', '--human-inbox']);
+const flags = new Set(['--all', '--recursive', '--force', '--wait', '--json', '--help', '--human-inbox']);
 const values = new Set(['--repo', '--state-dir', '--critic', '--timeout-ms', '--requester', '--reviewer', '--result-file', '--tool', '--args', '--run', '--pi-auth-file', '--codex-auth-file', '--integrity']);
 const help = `CCDD Project — pull validation and explicit review execution
 
@@ -40,14 +38,14 @@ const help = `CCDD Project — pull validation and explicit review execution
   ccdd-project request claim REQUEST_ID --reviewer ID
   ccdd-project request tool REQUEST_ID --reviewer ID --tool NAME --args JSON
   ccdd-project request submit REQUEST_ID --reviewer ID --result-file PATH
-  ccdd-project review serve | list | show | claim | tool | submit   (remote Human review)
-  ccdd-project doctor | tools check | monitor   (existing diagnostics and UI)
+  ccdd-project doctor | tools check | monitor   (explicit diagnostics and UI)
 
-Individual verification runs ready selected Critics and reports blocked Critics as incomplete.
---recursive includes required ancestors; direct Critic selection never bypasses dependencies.
---force reviews selected Critics again, keeping dependency gates and ancestor reuse.
+Individual verification runs selected Critics immediately; missing required evidence makes the request INCOMPLETE.
+--recursive includes Critics throughout the required dependency scope, including cycles.
+--force reviews selected Critics again while reusing matching dependency evidence.
 Queries never create review tickets, send alarms or execute review tools or Providers.
-verify defaults to --copy; --lock is explicit. State must be outside the repository.
+Reviews run in the supplied workspace. Keep it unchanged until completion.
+State and review output must stay outside the repository.
 verify/status/plan accept --integrity content|metadata (default: content).
 metadata trusts unchanged filesystem metadata to reuse captured content identity;
 it is opt-in, weaker than full content checks, and its evidence cannot satisfy content verification.
@@ -86,8 +84,7 @@ export async function main(argv = process.argv.slice(2), { stdout = process.stdo
   const print = (value: unknown, plain?: string) => stdout.write((!json && plain !== undefined ? plain : JSON.stringify(value, null, 2)) + '\n');
   try {
     const command = argv[0] ?? 'help';
-    if (command === 'review') return await reviewMain(argv.slice(1), { stdout, stderr });
-    if (['doctor', 'tools', 'monitor'].includes(command)) return await legacyMain(argv, { stdout, stderr });
+    if (['doctor', 'tools', 'monitor', 'prepare-demo'].includes(command)) return await diagnosticsMain(argv, { stdout, stderr });
     const { options, positional } = parse(argv.slice(1)); json = Boolean(options['--json']);
     const get = (key: string) => typeof options[key] === 'string' ? options[key] as string : undefined;
     if (['help', '--help'].includes(command) || options['--help']) { stdout.write(help); return 0; }
@@ -96,13 +93,12 @@ export async function main(argv = process.argv.slice(2), { stdout = process.stdo
     const permitted = new Set([...common, ...(['status', 'plan', 'verify', 'history'].includes(command) ? ['--critic', '--all'] : []),
       ...(['status', 'plan', 'verify'].includes(command) ? ['--integrity'] : []),
       ...(['plan', 'verify'].includes(command) ? ['--recursive', '--force'] : []),
-      ...(command === 'verify' ? ['--wait', '--timeout-ms', '--requester', '--human-inbox', '--pi-auth-file', '--codex-auth-file', '--copy', '--lock'] : []),
+      ...(command === 'verify' ? ['--wait', '--timeout-ms', '--requester', '--human-inbox', '--pi-auth-file', '--codex-auth-file'] : []),
       ...(command === 'run' ? ['--wait', '--timeout-ms'] : []),
       ...(command === 'request' ? ['--run', '--reviewer', '--result-file', '--tool', '--args'] : [])]);
     for (const key of Object.keys(options)) if (!permitted.has(key)) throw new Error(`${key} is not supported by ${command}.`);
     const workspaceIntegrity = get('--integrity') ?? 'content';
     if (workspaceIntegrity !== 'content' && workspaceIntegrity !== 'metadata') throw new Error('--integrity must be content or metadata.');
-    if (options['--copy'] && options['--lock']) throw new Error('--copy and --lock are mutually exclusive.');
     const timeoutMs = Number(get('--timeout-ms') ?? 600000);
     if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 86400000) throw new Error('--timeout-ms must be between 1 and 86400000.');
     let context;
@@ -141,17 +137,15 @@ export async function main(argv = process.argv.slice(2), { stdout = process.stdo
       if (command === 'config' && (positional.length !== 1 || positional[0] !== 'check')) throw new Error('Use config check.');
       const selection = command === 'config' ? { kind: 'all' } as const : select(command === 'plan');
       const { snapshot, plan } = await inspectProject({ ...context, selection, recursive: Boolean(options['--recursive']), force: Boolean(options['--force']), workspaceIntegrity });
-      if (command === 'config') { print({ ok: true, artifacts: Object.keys(snapshot.config.artifacts).length, critics: snapshot.config.critics.length, snapshotHash: snapshot.snapshotHash }, 'Configuration and Artifact DAG are valid.'); return 0; }
+      if (command === 'config') { print({ ok: true, artifacts: Object.keys(snapshot.config.artifacts).length, critics: snapshot.config.critics.length, snapshotHash: snapshot.snapshotHash }, 'Folder configuration and Artifact references are valid.'); return 0; }
       if (command === 'graph') {
         const graph = createGraphDefinition(snapshot.config);
         if (selection.kind !== 'all') {
           const ids = new Set(includedCritics(snapshot, selection, true));
           graph.critics = graph.critics.filter(c => ids.has(c.id));
-          const artifacts = new Set(selection.kind === 'artifact' ? [selection.artifactId] : []);
-          const include = (id: string): void => { artifacts.add(id); const entry = graph.artifacts[id]; if (isArtifactGroup(entry)) for (const member of entry.members) if (!artifacts.has(member)) include(member); };
-          for (const c of graph.critics) for (const id of [c.target, ...c.deps]) include(id);
-          for (const id of [...artifacts]) include(id);
+          const artifacts = new Set(requiredArtifacts(snapshot, selection));
           graph.artifacts = Object.fromEntries(Object.entries(graph.artifacts).filter(([id]) => artifacts.has(id)));
+          graph.relations = graph.relations.filter(edge => artifacts.has(edge.source) && artifacts.has(edge.target));
         }
         print(graph, graph.critics.map(c => `${c.id}: ${c.deps.join(', ') || '(no deps)'} -> ${c.target}`).join('\n') || Object.keys(graph.artifacts).join('\n')); return 0;
       }
@@ -183,7 +177,7 @@ export async function main(argv = process.argv.slice(2), { stdout = process.stdo
     const executors = createExecutorRegistry({ piOptions, alarmMethods: createLocalAlarmMethods({ ...context, humanInbox }) });
     broker = createBroker({ ...context, executors, workspaceIntegrity });
     if (command === 'verify') {
-      const run = await broker.submitProject({ selection: verifySelection!, recursive: Boolean(options['--recursive']), force: Boolean(options['--force']), requesterId: get('--requester') ?? 'cli', mode: options['--lock'] ? 'lock' : 'copy' });
+      const run = await broker.submitProject({ selection: verifySelection!, recursive: Boolean(options['--recursive']), force: Boolean(options['--force']), requesterId: get('--requester') ?? 'cli' });
       if (!terminal.has(run.status)) await ensureRunWorker({ broker, context, run, initialConfig: { piOptions, humanInbox } });
       if (options['--wait']) return await wait(run.id);
       const view = projectRun(context.stateDir, run.id)!; printRun(view);
@@ -192,6 +186,7 @@ export async function main(argv = process.argv.slice(2), { stdout = process.stdo
     const [action, id] = positional;
     if (command === 'run') {
       let run = broker.getRun(id); if (!run) throw new Error('Review handle not found.');
+      if (action === 'resume' && run.project?.version !== 2) throw new Error('Historical Runs cannot be resumed; submit a new validation request.');
       if (action === 'cancel') run = broker.cancel(id);
       else if (action === 'resume' && !terminal.has(run.status)) run = await ensureRunWorker({ broker, context, run });
       if (options['--wait']) return await wait(id);

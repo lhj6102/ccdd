@@ -1,0 +1,128 @@
+{
+  "name": "theme-image",
+  "views": {
+    "agentTools": {
+      "read": {
+        "metadata": {
+          "description": "Inspect {artifactName} with read.",
+          "inputSchema": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "path"
+            ]
+          },
+          "resultKinds": [
+            "json"
+          ],
+          "observation": "content",
+          "executionPaths": [
+            "node_modules/@ccdd/core/dist",
+            "node_modules/@ccdd/default-tools/dist"
+          ]
+        },
+        "script": {
+          "command": "ccdd-view",
+          "args": [
+            "read"
+          ]
+        }
+      },
+      "list": {
+        "metadata": {
+          "description": "Inspect {artifactName} with list.",
+          "inputSchema": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": false
+          },
+          "resultKinds": [
+            "json"
+          ],
+          "observation": "none",
+          "executionPaths": [
+            "node_modules/@ccdd/core/dist",
+            "node_modules/@ccdd/default-tools/dist"
+          ]
+        },
+        "script": {
+          "command": "ccdd-view",
+          "args": [
+            "list"
+          ]
+        }
+      },
+      "image": {
+        "metadata": {
+          "description": "Inspect {artifactName} with image.",
+          "inputSchema": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "path"
+            ]
+          },
+          "resultKinds": [
+            "image"
+          ],
+          "observation": "content",
+          "executionPaths": [
+            "node_modules/@ccdd/core/dist",
+            "node_modules/@ccdd/default-tools/dist"
+          ]
+        },
+        "script": {
+          "command": "ccdd-view",
+          "args": [
+            "image"
+          ]
+        }
+      }
+    },
+    "humanTools": {
+      "open": {
+        "metadata": {
+          "description": "Inspect {artifactName} with open.",
+          "inputSchema": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": false
+          },
+          "resultKinds": [
+            "launch"
+          ],
+          "observation": "none",
+          "executionPaths": [
+            "node_modules/@ccdd/core/dist",
+            "node_modules/@ccdd/default-tools/dist"
+          ]
+        },
+        "script": {
+          "command": "ccdd-view",
+          "args": [
+            "open"
+          ]
+        }
+      }
+    }
+  },
+  "basis": true
+}

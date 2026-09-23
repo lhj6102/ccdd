@@ -1,330 +1,151 @@
 import test, { type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
-import fs from 'node:fs/promises';
-import os from 'node:os';
-import path from 'node:path';
-import { DatabaseSync } from 'node:sqlite';
+import { readFile, writeFile, readdir, rm } from 'node:fs/promises';
+import { join } from 'node:path';
+import { artifactFixture, runtimeCritic, fixtureViews } from './helpers/artifacts.js';
+import { inspectProject, createProjectSnapshot, queryProject, planProject } from '../src/project/index.js';
 import { createBroker } from '../src/broker/index.js';
 import { createExecutorRegistry } from '../src/executors/index.js';
-import { removeOwnedWorkspaceTree } from '../src/workspaces/index.js';
-import { inspectProject, projectHistory, projectRun, projectRequests, queryProject } from '../src/project/index.js';
+import { projectHistory, projectRun } from '../src/project/store.js';
+import { DatabaseSync } from 'node:sqlite';
 import { main } from '../src/project/cli.js';
-import { setTimeout as delay } from 'node:timers/promises';
-import { createMonitorStore } from '../src/monitor/store.js';
-import type { RepoConfig, CriticDefinition, WorkspaceIntegrity } from '../src/contracts.js';
-import { inputHash } from '../src/project/identity.js';
-import { packageVersion } from '../src/runtime-paths.js';
 
-async function fixture(t: TestContext, configure?: (config: RepoConfig) => void) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'ccdd-project-test-'));
-  const repoPath = path.join(root, 'repo'), stateDir = path.join(root, 'state');
-  const critic = (id: string, target: string, deps: string[]): CriticDefinition => ({ id, title: id, target, deps,
-    profile: { kind: 'runtime', command: 'node', args: ['--test', `${target}/${id}.test.mjs`] }, payload: { instruction: 'Run the actual project test.' } });
-  const config: RepoConfig = { artifacts: { a: { type: 'code', path: 'a' }, b: { type: 'code', path: 'b' }, c: { type: 'code', path: 'c' } },
-    artifactTypes: { code: { viewer: 'files', agentTools: { list: {}, read: {} }, humanTools: { list: {}, read: {} } } },
-    critics: [critic('a-check', 'a', []), critic('b-a', 'b', ['a']), critic('b-own', 'b', []), critic('c-b', 'c', ['b'])] };
-  for (const id of ['a', 'b', 'c']) { await fs.mkdir(path.join(repoPath, id), { recursive: true }); await fs.writeFile(path.join(repoPath, id, 'input.txt'), 'accepted input'); }
-  for (const c of config.critics) await fs.writeFile(path.join(repoPath, c.target, `${c.id}.test.mjs`), `import test from 'node:test'; import assert from 'node:assert/strict'; import { readFileSync } from 'node:fs'; test('accepted input', () => assert.match(readFileSync(${JSON.stringify(c.target + '/input.txt')}, 'utf8'), /^accepted/));`);
-  configure?.(config);
-  const saveConfig = () => fs.writeFile(path.join(repoPath, 'ccdd.config.json'), JSON.stringify(config));
-  await saveConfig();
-  const brokers: ReturnType<typeof createBroker>[] = [];
-  const open = (workspaceIntegrity?: WorkspaceIntegrity) => { const broker = createBroker({ repoPath, stateDir, repoId: 'local', workspaceIntegrity, executors: createExecutorRegistry({ alarmMethods: [async () => {}] }) }); brokers.push(broker); return broker; };
-  t.after(async () => { for (const broker of brokers) await broker.close(); await removeOwnedWorkspaceTree(root); });
-  return { root, repoPath, stateDir, config, saveConfig, open, inspect: (selection?: Parameters<typeof inspectProject>[0]['selection']) => inspectProject({ repoPath, stateDir, selection }) };
+async function fixture(t: TestContext, cycle = false) {
+  const data = await artifactFixture(t);
+  await data.write('a', { name: 'a', critics: [runtimeCritic('check', 'Check {b}.')] });
+  await data.write('b', { name: 'b', critics: [runtimeCritic('check', cycle ? 'Check {a}.' : 'Check this Artifact.')] });
+  await data.write('independent', { name: 'independent', critics: [runtimeCritic()] });
+  const broker = createBroker({ ...data, executors: createExecutorRegistry() }); data.cleanup(() => broker.close());
+  const verify = async (options: Parameters<typeof broker.submitProject>[0]) => { const run = await broker.submitProject(options); if (!['GREEN', 'INCOMPLETE'].includes(run.status)) await broker.run(run.id); return projectRun(data.stateDir, run.id)!; };
+  return { ...data, broker, verify };
 }
 
-test('pull queries do not create a database, tickets, or persistent stale states', async t => {
-  const f = await fixture(t);
-  const q = await f.inspect({ kind: 'artifact', artifactId: 'b' });
-  assert.equal(q.plan.satisfied, false);
-  assert.equal(q.plan.items.find(c => c.id === 'b-own')?.action, 'EXECUTE');
-  assert.equal(q.plan.items.find(c => c.id === 'b-a')?.action, 'WAIT');
-  assert.equal(await fs.stat(f.stateDir).then(() => true, () => false), false);
+test('current queries read only JSON and material and never create a store or execute scripts', async t => {
+  const data = await artifactFixture(t), marker = join(data.root, 'executed');
+  await data.write('', { name: 'root', views: fixtureViews(), critics: [runtimeCritic()] }, { 'view.mjs': `import {writeFileSync} from 'node:fs';writeFileSync(${JSON.stringify(marker)},'x');` });
+  const before = await readdir(data.root);
+  const { plan } = await inspectProject(data);
+  assert.equal(plan.satisfied, false); assert.equal(plan.items[0].action, 'EXECUTE');
+  assert.deepEqual(await readdir(data.root), before); await assert.rejects(readFile(marker), { code: 'ENOENT' });
 });
 
-test('metadata integrity evidence is isolated from strict validation while historical strict identity stays unchanged', async t => {
-  const f = await fixture(t), selection = { kind: 'artifact', artifactId: 'a' } as const;
-  const implicit = await f.inspect(selection);
-  const explicit = await inspectProject({ repoPath: f.repoPath, stateDir: f.stateDir, selection, workspaceIntegrity: 'content' });
-  assert.deepEqual(explicit.snapshot, implicit.snapshot);
-  assert.equal(Object.hasOwn(implicit.snapshot, 'workspaceIntegrity'), false);
-  const historicalCriticHash = inputHash({ version: 1, executorVersion: packageVersion, critic: f.config.critics[0],
-    tools: { code: f.config.artifactTypes.code }, modules: undefined,
-    runtime: { node: process.versions.node, platform: process.platform, arch: process.arch } });
-  assert.equal(implicit.snapshot.inputs['a-check'].criticHash, historicalCriticHash, 'Strict effective identity must retain its pre-policy shape.');
-  const metadata = f.open('metadata');
-  const first = await metadata.submitProject({ mode: 'lock', selection });
-  assert.equal(first.workspace.integrity, 'metadata');
-  assert.equal(first.project!.snapshot.workspaceIntegrity, 'metadata');
-  assert.equal(first.requests[0].validationInput!.workspaceIntegrity, 'metadata');
-  assert.notEqual(first.requests[0].validationInput!.key, implicit.snapshot.inputs['a-check'].key);
-  await metadata.run(first.id); // Executes the real deterministic Runtime fixture.
-  assert.equal(projectRun(f.stateDir, first.id)!.status, 'GREEN');
-  assert.equal((await f.inspect(selection)).plan.satisfied, false, 'Metadata evidence cannot satisfy the strict default.');
-  const relaxed = await inspectProject({ repoPath: f.repoPath, stateDir: f.stateDir, selection, workspaceIntegrity: 'metadata' });
-  assert.equal(relaxed.plan.satisfied, true);
-  assert.equal(relaxed.plan.workspaceIntegrity, 'metadata');
-  const strict = f.open();
-  const second = await strict.submitProject({ mode: 'lock', selection });
-  assert.equal(second.requests.length, 1, 'Strict verification must execute instead of reusing weaker evidence.');
-  assert.equal(second.workspace.integrity, undefined);
-  assert.equal(second.requests[0].validationInput!.key, implicit.snapshot.inputs['a-check'].key);
-  await strict.run(second.id);
-  assert.equal((await f.inspect(selection)).plan.satisfied, true);
+test('individual verification executes selected inputs immediately and preserves PASS when other evidence is missing', async t => {
+  const data = await fixture(t, true);
+  const first = await data.verify({ selection: { kind: 'critic', criticId: 'a/check' } });
+  assert.equal(first.status, 'INCOMPLETE'); assert.equal(first.requests.length, 1); assert.equal(first.requests[0].status, 'GREEN');
+  assert.equal(first.validation!.critics.find(c => c.id === 'a/check')!.status, 'PASS');
+  const second = await data.verify({ selection: { kind: 'artifact', artifactId: 'b' } });
+  assert.equal(second.status, 'GREEN'); assert.equal(second.requests.length, 1);
+  const current = await inspectProject({ ...data, selection: { kind: 'artifact', artifactId: 'a' } });
+  assert.equal(current.plan.satisfied, true);
+  assert.equal(current.plan.critics.find(c => c.id === 'independent/check')!.status, 'UNREVIEWED');
 });
 
-test('invalid integrity policy is rejected before creating Broker state or CLI review work', async t => {
-  const f = await fixture(t);
-  assert.throws(() => createBroker({ repoPath: f.repoPath, stateDir: f.stateDir, workspaceIntegrity: 'unknown' as WorkspaceIntegrity }), /integrity must be content or metadata/);
-  let output = '';
-  const code = await main(['verify', 'a', '--integrity', 'unknown', '--repo', f.repoPath, '--state-dir', f.stateDir, '--json'], { stdout: { write: text => { output += text; } } });
-  assert.equal(code, 2);
-  assert.match(JSON.parse(output).error, /--integrity must be content or metadata/);
-  assert.equal(await fs.stat(f.stateDir).then(() => true, () => false), false);
+test('recursive verification of a cycle runs real processes without PASS gates and reuses the same actual evidence', async t => {
+  const data = await fixture(t, true);
+  const run = await data.verify({ selection: { kind: 'artifact', artifactId: 'a' }, recursive: true });
+  assert.equal(run.status, 'GREEN'); assert.deepEqual(run.requests.map(r => r.criticId).sort(), ['a/check', 'b/check']);
+  assert.ok(run.requests.every(r => r.result?.exitCode === 0 && r.validationInput?.version === 2));
+  const again = await data.verify({ selection: { kind: 'artifact', artifactId: 'b' }, recursive: true });
+  assert.equal(again.status, 'GREEN'); assert.equal(again.requests.length, 0);
+  assert.deepEqual(again.validation!.items.map(c => c.action), ['REUSE', 'REUSE']);
 });
 
-test('project CLI records opt-in integrity through detached workers and queries keep the strict default', { timeout: 120_000 }, async t => {
-  const f = await fixture(t);
-  const call = async (args: string[]) => {
-    let output = '';
-    const code = await main([...args, '--repo', f.repoPath, '--state-dir', f.stateDir, '--json'], { stdout: { write: text => { output += text; } } });
-    return { code, value: JSON.parse(output) };
-  };
-  let help = '';
-  assert.equal(await main(['help'], { stdout: { write: text => { help += text; } } }), 0);
-  assert.match(help, /--integrity content\|metadata/);
-  assert.match(help, /weaker than full content checks/);
-  const metadata = await call(['verify', 'a', '--integrity', 'metadata', '--lock', '--wait']);
-  assert.equal(metadata.code, 0, JSON.stringify(metadata));
-  assert.equal(metadata.value.workspaceIntegrity, 'metadata');
-  assert.equal(metadata.value.workspace.integrity, 'metadata');
-  assert.equal(metadata.value.validation.workspaceIntegrity, 'metadata');
-  assert.equal(metadata.value.requests[0].validationInput.workspaceIntegrity, 'metadata');
-  const defaultStatus = await call(['status', 'a']);
-  assert.equal(defaultStatus.code, 1); assert.equal(defaultStatus.value.workspaceIntegrity, 'content');
-  const metadataStatus = await call(['status', 'a', '--integrity', 'metadata']);
-  assert.equal(metadataStatus.code, 0); assert.equal(metadataStatus.value.workspaceIntegrity, 'metadata');
-  const plan = await call(['plan', 'a', '--integrity', 'content']);
-  assert.equal(plan.value.counts.execute, 1);
-  const strict = await call(['verify', 'a', '--lock', '--wait']);
-  assert.equal(strict.code, 0, JSON.stringify(strict));
-  assert.equal(strict.value.workspaceIntegrity, 'content');
-  assert.equal(strict.value.requests.length, 1);
-  assert.equal(strict.value.requests[0].validationInput.workspaceIntegrity, undefined);
-});
-
-test('request list orders stored creation times and preserves run filtering and ordinal order', async t => {
-  const f = await fixture(t), broker = f.open();
-  const timestamp = Date.UTC(2026, 0, 2);
-  t.mock.timers.enable({ apis: ['Date'], now: timestamp });
-  const newer = await broker.submitProject({ selection: { kind: 'all' } });
-  // A backward clock change distinguishes creation-time ordering from insertion ordering.
-  t.mock.timers.setTime(timestamp - 1000);
-  const older = await broker.submitProject({ selection: { kind: 'all' } });
-  t.mock.timers.reset();
-  assert.equal(newer.requests.length, 2); assert.equal(older.requests.length, 2);
-  assert.equal(newer.requests[0].createdAt, newer.requests[1].createdAt);
-  const call = async (args: string[]) => {
-    let output = '';
-    const code = await main(['request', 'list', ...args, '--repo', f.repoPath, '--state-dir', f.stateDir, '--json'], { stdout: { write: text => { output += text; } } });
-    assert.equal(code, 0, output);
-    return JSON.parse(output) as Array<{ id: string }>;
-  };
-  assert.deepEqual((await call([])).map(r => r.id), [...newer.requests].reverse().concat([...older.requests].reverse()).map(r => r.id));
-  assert.deepEqual((await call(['--run', older.id])).map(r => r.id), older.requests.map(r => r.id));
-  assert.deepEqual((await call(['--run', 'missing-run'])), []);
-});
-
-test('individual validation executes the independent Critic and reports the rest incomplete', async t => {
-  const f = await fixture(t), broker = f.open();
-  const run = await broker.submitProject({ selection: { kind: 'artifact', artifactId: 'b' } });
-  assert.deepEqual(run.requests.map(r => r.criticId), ['b-own']);
-  await broker.run(run.id);
-  const result = projectRun(f.stateDir, run.id)!;
-  assert.equal(result.status, 'INCOMPLETE');
-  assert.equal(result.validation?.satisfied, false);
-  assert.equal(result.requests[0].result?.verdict, 'GREEN');
-  assert.equal(projectHistory(f.stateDir).length, 1);
-  const a = await broker.submitProject({ selection: { kind: 'artifact', artifactId: 'a' } });
-  await broker.run(a.id);
-  assert.equal(projectRun(f.stateDir, run.id)?.status, 'INCOMPLETE');
-  assert.equal(projectRun(f.stateDir, run.id)?.validation?.satisfied, false, 'completed history must not borrow a later result');
-});
-
-test('recursive validation runs real tests; unchanged intermediates stop downstream re-execution', async t => {
-  const f = await fixture(t), broker = f.open();
-  const first = await broker.submitProject({ selection: { kind: 'artifact', artifactId: 'c' }, recursive: true });
-  assert.deepEqual(first.requests.map(r => r.criticId), ['a-check', 'b-own']);
-  await broker.run(first.id);
-  const completed = projectRun(f.stateDir, first.id)!;
-  assert.equal(completed.status, 'GREEN', JSON.stringify(completed));
-  assert.equal(completed.requests.length, 4);
-  assert.ok(completed.requests.every(r => r.result?.verdict === 'GREEN' && r.validationInput));
-  await fs.writeFile(path.join(f.repoPath, 'a/input.txt'), 'accepted additional reference');
-  assert.equal((await f.inspect({ kind: 'artifact', artifactId: 'c' })).plan.satisfied, false);
-  const second = await broker.submitProject({ selection: { kind: 'artifact', artifactId: 'c' }, recursive: true });
-  await broker.run(second.id);
-  const after = projectRun(f.stateDir, second.id)!;
-  assert.equal(after.status, 'GREEN', JSON.stringify(after));
-  assert.deepEqual(after.requests.map(r => r.criticId), ['a-check', 'b-a']);
-  assert.equal(after.validation?.critics.find(c => c.id === 'c-b')?.result?.runId, first.id);
-  assert.equal((await f.inspect({ kind: 'artifact', artifactId: 'c' })).plan.satisfied, true);
-  const third = await broker.submitProject({ selection: { kind: 'artifact', artifactId: 'c' }, recursive: true });
-  assert.equal(third.status, 'GREEN'); assert.equal(third.requests.length, 0);
-  const db = new DatabaseSync(path.join(f.stateDir, 'broker.sqlite'), { readOnly: true });
-  try {
-    const data = db.prepare('SELECT data FROM runs UNION ALL SELECT data FROM requests').all().map(r => String(r.data)).join('\n');
-    assert.doesNotMatch(data, /staleState|"isStale"/);
-  } finally { db.close(); }
-});
-
-test('a dependency that changed and already passed still changes its direct consumer input', async t => {
-  const f = await fixture(t), broker = f.open();
-  const one = await broker.submitProject({ selection: { kind: 'all' } }); await broker.run(one.id);
-  await fs.writeFile(path.join(f.repoPath, 'a/input.txt'), 'accepted new input');
-  const a = await broker.submitProject({ selection: { kind: 'artifact', artifactId: 'a' } }); await broker.run(a.id);
-  const q = await f.inspect({ kind: 'artifact', artifactId: 'b' });
-  assert.equal(q.plan.critics.find(c => c.id === 'b-a')?.status, 'STALE');
-  assert.equal(q.plan.critics.find(c => c.id === 'b-own')?.status, 'PASS');
-  assert.equal(q.plan.critics.find(c => c.id === 'c-b')?.status, 'BLOCKED');
-});
-
-test('force reviews only the selected Critic; a later actual RED is not hidden by an old PASS', async t => {
-  const f = await fixture(t), broker = f.open();
-  const one = await broker.submitProject({ selection: { kind: 'all' } }); await broker.run(one.id);
-  const forced = await broker.submitProject({ selection: { kind: 'critic', criticId: 'b-own' }, force: true, recursive: true });
-  await broker.run(forced.id);
-  assert.deepEqual(projectRun(f.stateDir, forced.id)?.requests.map(r => r.criticId), ['b-own']);
-  // Exercise the real durable Human path for conflicting judgments on identical input.
-  f.config.critics[2].profile = { kind: 'human' }; await f.saveConfig();
-  for (const verdict of ['GREEN', 'RED'] as const) {
-    const run = await broker.submitProject({ selection: { kind: 'critic', criticId: 'b-own' }, force: true });
-    await broker.run(run.id); const id = broker.getRun(run.id)!.requests[0].id;
-    await broker.claimHuman(id, 'reviewer');
-    await broker.completeHuman(id, { reviewerId: 'reviewer', result: { verdict, summary: `Human submitted ${verdict}`, evidence: ['Explicit test reviewer submission.'] } });
+test('folder, mount and instruction inputs invalidate consumers while unrelated material preserves reuse', async t => {
+  const data = await fixture(t);
+  await data.write('a/child', { name: 'child', basis: true });
+  await data.write('reference', { name: 'reference', basis: true });
+  await data.edit('a', m => { m.mounts = { mounted: 'reference', alias: 'reference' }; });
+  await data.verify({ selection: { kind: 'all' }, recursive: true });
+  const before = (await inspectProject(data)).snapshot;
+  await writeFile(join(data.repoPath, 'independent/content.txt'), 'unrelated change');
+  let current = (await inspectProject(data)).snapshot;
+  assert.equal(current.inputs['a/check'].key, before.inputs['a/check'].key);
+  for (const path of ['a/child/content.txt', 'reference/content.txt', 'b/content.txt']) {
+    const old = current;
+    await writeFile(join(data.repoPath, path), `change ${path}`);
+    current = (await inspectProject(data)).snapshot;
+    assert.notEqual(current.inputs['a/check'].key, old.inputs['a/check'].key);
   }
-  const q = await f.inspect({ kind: 'critic', criticId: 'b-own' });
-  assert.equal(q.plan.satisfied, false); assert.equal(q.plan.critics.find(c => c.id === 'b-own')?.status, 'RED');
+  assert.equal(queryProject(current, projectHistory(data.stateDir)).critics.find(c => c.id === 'a/check')!.status, 'STALE');
 });
 
-test('always is scoped to one validation request and never loops inside a recursive execution', async t => {
-  const f = await fixture(t, config => { config.artifacts.a.stale = { kind: 'always' }; }), broker = f.open();
-  const runs: string[] = [];
+test('SCC identity is finite and independent of evidence IDs, completion times and definition discovery order', async t => {
+  const data = await fixture(t, true), config = await data.config();
+  const before = await createProjectSnapshot(config, data.repoPath, 'a'.repeat(64));
+  const reversed = structuredClone(config); reversed.artifacts = Object.fromEntries(Object.entries(reversed.artifacts).reverse()); reversed.relations.reverse();
+  const after = await createProjectSnapshot(reversed, data.repoPath, 'b'.repeat(64));
+  assert.deepEqual(before.inputs, after.inputs);
+  await data.verify({ selection: { kind: 'artifact', artifactId: 'a' }, recursive: true });
+  const completed = await createProjectSnapshot(config, data.repoPath, 'c'.repeat(64));
+  assert.deepEqual(completed.inputs, before.inputs);
+  await writeFile(join(data.repoPath, 'b/content.txt'), 'cycle changed');
+  const changed = await createProjectSnapshot(config, data.repoPath, 'd'.repeat(64));
+  assert.notEqual(changed.artifactHashes.a, before.artifactHashes.a); assert.notEqual(changed.artifactHashes.b, before.artifactHashes.b);
+  assert.equal(changed.artifactHashes.independent, before.artifactHashes.independent);
+});
+
+test('no-Critic Artifacts remain UNREVIEWED except explicit basis, including recursive scope', async t => {
+  const data = await artifactFixture(t);
+  await data.write('empty', { name: 'empty' }); await data.write('basis', { name: 'basis', basis: true });
+  await data.write('parent', { name: 'parent', basis: true, mounts: { input: 'empty' } });
+  const { plan } = await inspectProject(data);
+  assert.equal(plan.satisfied, false);
+  assert.deepEqual(Object.fromEntries(plan.artifacts.map(a => [a.id, a.status])), { basis: 'BASIS', empty: 'UNREVIEWED', parent: 'INCOMPLETE' });
+  assert.equal((await inspectProject({ ...data, selection: { kind: 'artifact', artifactId: 'basis' } })).plan.satisfied, true);
+});
+
+test('narrow material selection still fingerprints the manifest and script entry implementation', async t => {
+  const data = await artifactFixture(t);
+  await data.write('a', { name: 'a', stale: { kind: 'file-hash', paths: ['content.txt'] }, views: fixtureViews(), critics: [runtimeCritic()] });
+  const before = (await inspectProject(data)).snapshot;
+  await writeFile(join(data.repoPath, 'a/view.mjs'), '// changed implementation');
+  const changed = (await inspectProject(data)).snapshot;
+  assert.notEqual(changed.inputs['a/check'].key, before.inputs['a/check'].key);
+  await writeFile(join(data.repoPath, 'a/unrelated.txt'), 'not declared');
+  assert.equal((await inspectProject(data)).snapshot.inputs['a/check'].key, changed.inputs['a/check'].key);
+  await writeFile(join(data.repoPath, 'a/check.test.mjs'), '// changed runtime entry');
+  assert.notEqual((await inspectProject(data)).snapshot.inputs['a/check'].key, changed.inputs['a/check'].key);
+});
+
+test('force replaces evidence only for selected Critics and a later actual RED supersedes old PASS', async t => {
+  const data = await fixture(t);
+  await data.verify({ selection: { kind: 'all' } });
+  const forced = await data.verify({ selection: { kind: 'critic', criticId: 'a/check' }, recursive: true, force: true });
+  assert.equal(forced.status, 'GREEN'); assert.deepEqual(forced.requests.map(r => r.criticId), ['a/check']);
+  await writeFile(join(data.repoPath, 'b/check.test.mjs'), "import test from 'node:test';import assert from 'node:assert/strict';test('actual failure',()=>assert.equal(1,2));");
+  const failing = await data.verify({ selection: { kind: 'artifact', artifactId: 'a' }, recursive: true });
+  assert.equal(failing.status, 'RED'); assert.equal(failing.requests.find(r => r.criticId === 'a/check')!.status, 'GREEN');
+  assert.equal(failing.requests.find(r => r.criticId === 'b/check')!.status, 'RED');
+  assert.equal(failing.validation!.satisfied, false);
+});
+
+test('always reviews once per request and metadata-integrity evidence cannot satisfy strict input', async t => {
+  const data = await fixture(t, true); await data.edit('a', m => { m.stale = { kind: 'always' }; });
   for (let i = 0; i < 2; i++) {
-    const run = await broker.submitProject({ selection: { kind: 'artifact', artifactId: 'c' }, recursive: true });
-    await broker.run(run.id);
-    const result = projectRun(f.stateDir, run.id)!;
-    runs.push(run.id);
-    assert.equal(result.status, 'GREEN');
-    assert.equal(result.requests.filter(r => r.criticId === 'a-check').length, 1);
-    assert.equal(result.requests.filter(r => r.criticId === 'b-a').length, 1);
+    const run = await data.verify({ selection: { kind: 'artifact', artifactId: 'a' }, recursive: true });
+    assert.equal(run.status, 'GREEN'); assert.equal(run.requests.length, 2);
   }
-  const first = projectRun(f.stateDir, runs[0])!;
-  assert.equal(queryProject(first.project!.snapshot, projectHistory(f.stateDir), { runId: first.id, attempts: first.requests, selection: { kind: 'artifact', artifactId: 'c' } }).satisfied, true, 'another request must not hide the evidence from this always request');
+  const config = await data.config(), content = await createProjectSnapshot(config, data.repoPath, 'a'.repeat(64)), metadata = await createProjectSnapshot(config, data.repoPath, 'a'.repeat(64), undefined, 'metadata');
+  assert.notEqual(content.inputs['a/check'].key, metadata.inputs['a/check'].key);
 });
 
-test('project CLI executes detached workers, exposes incomplete work and reuses actual evidence', { timeout: 120_000 }, async t => {
-  const f = await fixture(t);
-  const call = async (args: string[]) => {
-    let output = ''; const code = await main([...args, '--repo', f.repoPath, '--state-dir', f.stateDir, '--json'], { stdout: { write: text => { output += text; } } });
-    return { code, value: JSON.parse(output) };
-  };
-  const plan = await call(['plan', 'b']); assert.equal(plan.code, 0); assert.equal(plan.value.counts.execute, 1); assert.equal(plan.value.counts.wait, 1);
-  assert.equal(await fs.stat(f.stateDir).then(() => true, () => false), false);
-  assert.equal((await call(['verify', 'b', '--critic', 'b-own'])).code, 2);
-  assert.equal(await fs.stat(f.stateDir).then(() => true, () => false), false);
-  assert.deepEqual(Object.keys((await call(['graph', 'b'])).value.artifacts), ['a', 'b']);
-  const individual = await call(['verify', 'b', '--wait', '--timeout-ms', '90000']);
-  assert.equal(individual.code, 4, JSON.stringify(individual)); assert.equal(individual.value.requests.length, 1);
-  const complete = await call(['verify', 'c', '--recursive', '--wait', '--timeout-ms', '90000']);
-  assert.equal(complete.code, 0, JSON.stringify(complete)); assert.equal(complete.value.status, 'GREEN');
-  const reuse = await call(['verify', 'c', '--recursive', '--wait']); assert.equal(reuse.code, 0); assert.equal(reuse.value.requests.length, 0);
-  assert.equal((await call(['status', 'c'])).code, 0);
-  assert.equal((await call(['history', 'b'])).value.length, 2);
-  const monitor = createMonitorStore({ stateDirs: [f.stateDir], stateHome: path.join(f.root, 'empty') });
-  const overview = await monitor.runs();
-  const graph = await monitor.graph(overview.projects[0].id, reuse.value.id);
-  assert.equal(graph?.available, true, JSON.stringify(graph)); assert.equal(graph.requests.length, 0);
-  const reused = graph.graph!.critics.find(c => c.id === 'c-b')!;
-  assert.equal(reused.validationStatus, 'PASS'); assert.equal(reused.reusedFrom?.runId, complete.value.id);
-  assert.ok(await monitor.detail(overview.projects[0].id, reused.requestId!));
+test('historical evidence is result-only and old unfinished runs cannot resume', async t => {
+  const data = await fixture(t), run = await data.broker.submitProject({ selection: { kind: 'all' } });
+  const db = new DatabaseSync(join(data.stateDir, 'broker.sqlite'));
+  const saved = JSON.parse(String(db.prepare('SELECT data FROM runs WHERE id=?').get(run.id)!.data)); saved.project.version = 1; saved.project.snapshot.version = 1;
+  db.prepare('UPDATE runs SET data=? WHERE id=?').run(JSON.stringify(saved), run.id); db.close();
+  assert.ok(projectRun(data.stateDir, run.id)); assert.equal(projectRun(data.stateDir, run.id)!.validation, undefined);
+  await assert.rejects(data.broker.run(run.id), /Historical Runs cannot be resumed/);
+  const snapshot = (await inspectProject(data)).snapshot;
+  const history = [{ requestId: 'old', runId: 'old', criticId: 'a/check', input: { ...snapshot.inputs['a/check'], version: 1 }, completedAt: new Date().toISOString(), verdict: 'GREEN', summary: 'Controlled historical fixture', evidence: ['Fixture'] }] as any;
+  assert.equal(queryProject(snapshot, history).critics.find(c => c.id === 'a/check')!.result, null);
 });
 
-test('project Human claim, scoped tool and submission continue the original recursive request', { timeout: 120_000 }, async t => {
-  const f = await fixture(t, config => { config.critics[2].profile = { kind: 'human' }; });
-  const call = async (args: string[]) => {
-    let output = ''; const code = await main([...args, '--repo', f.repoPath, '--state-dir', f.stateDir, '--json'], { stdout: { write: text => { output += text; } } });
-    return { code, value: JSON.parse(output) };
-  };
-  const started = await call(['verify', 'c', '--recursive', '--human-inbox']); assert.equal(started.code, 0, JSON.stringify(started));
-  const deadline = Date.now() + 60000;
-  let request;
-  while (Date.now() < deadline) {
-    request = projectRequests(f.stateDir, started.value.id).find(r => r.criticId === 'b-own');
-    if (request?.notifiedAt) break;
-    await delay(100);
-  }
-  assert.equal(request?.status, 'WAITING_HUMAN'); assert.ok(request.notifiedAt);
-  assert.equal((await call(['request', 'claim', request.id, '--reviewer', 'fixture-reviewer'])).code, 0);
-  const tool = await call(['request', 'tool', request.id, '--reviewer', 'fixture-reviewer', '--tool', 'read_b', '--args', JSON.stringify({ path: 'input.txt' })]);
-  assert.equal(tool.code, 0, JSON.stringify(tool)); assert.match(JSON.stringify(tool.value), /accepted input/);
-  const resultFile = path.join(f.root, 'human-result.json');
-  await fs.writeFile(resultFile, JSON.stringify({ verdict: 'GREEN', summary: 'Fixture Human accepted the observed input.', evidence: ['read_b returned accepted input.'] }));
-  assert.equal((await call(['request', 'submit', request.id, '--reviewer', 'fixture-reviewer', '--result-file', resultFile])).code, 0);
-  const completed = await call(['run', 'show', started.value.id, '--wait', '--timeout-ms', '90000']);
-  assert.equal(completed.code, 0, JSON.stringify(completed)); assert.equal(completed.value.requests.length, 4);
-});
-
-test('declared hash paths detect added and removed files without unrelated invalidation', async t => {
-  const f = await fixture(t, config => { config.artifacts.a.stale = { kind: 'file-hash', paths: ['a', 'references'] }; });
-  const before = await f.inspect();
-  await fs.writeFile(path.join(f.repoPath, 'unrelated.txt'), 'other work');
-  const unrelated = await f.inspect();
-  assert.equal(before.snapshot.inputs['a-check'].key, unrelated.snapshot.inputs['a-check'].key);
-  await fs.mkdir(path.join(f.repoPath, 'references')); await fs.writeFile(path.join(f.repoPath, 'references/new.txt'), 'extra reference');
-  const added = await f.inspect();
-  assert.notEqual(before.snapshot.inputs['a-check'].key, added.snapshot.inputs['a-check'].key);
-  assert.notEqual(before.snapshot.inputs['b-a'].key, added.snapshot.inputs['b-a'].key);
-  assert.equal(before.snapshot.inputs['c-b'].key, added.snapshot.inputs['c-b'].key);
-  await fs.unlink(path.join(f.repoPath, 'references/new.txt'));
-  assert.notEqual(added.snapshot.inputs['a-check'].key, (await f.inspect()).snapshot.inputs['a-check'].key);
-});
-
-test('groups track member content but do not inherit member validation gates', async t => {
-  const f = await fixture(t, config => {
-    config.artifacts.group = { kind: 'group', members: ['a', 'b'] };
-    config.critics.push({ id: 'group-check', title: 'group-check', target: 'group', deps: [], profile: { kind: 'human' }, payload: { instruction: 'Review both members together.' } });
-  });
-  const before = await f.inspect({ kind: 'artifact', artifactId: 'group' });
-  assert.equal(before.plan.items[0].canExecute, true); assert.equal(before.plan.artifacts.find(a => a.id === 'a')?.isStale, true);
-  await fs.writeFile(path.join(f.repoPath, 'a/input.txt'), 'accepted new reference');
-  const after = await f.inspect();
-  assert.notEqual(before.snapshot.artifactHashes.group, after.snapshot.artifactHashes.group);
-  assert.equal(before.snapshot.inputs['c-b'].key, after.snapshot.inputs['c-b'].key);
-});
-
-test('an actual RED blocks only consumers and preserves independent successful reviews', async t => {
-  const f = await fixture(t), broker = f.open();
-  await fs.writeFile(path.join(f.repoPath, 'a/input.txt'), 'rejected input');
-  const run = await broker.submitProject({ selection: { kind: 'all' } }); await broker.run(run.id);
-  const completed = projectRun(f.stateDir, run.id)!;
-  assert.equal(completed.status, 'RED');
-  assert.deepEqual(completed.requests.map(r => [r.criticId, r.status]), [['a-check', 'RED'], ['b-own', 'GREEN']]);
-  assert.equal(completed.validation?.critics.find(c => c.id === 'b-a')?.status, 'BLOCKED');
-  assert.equal(completed.validation?.critics.find(c => c.id === 'c-b')?.status, 'BLOCKED');
-});
-
-test('changing an imported tool implementation invalidates evidence even when Artifact content is equal', async t => {
-  const f = await fixture(t);
-  await fs.unlink(path.join(f.repoPath, 'ccdd.config.json'));
-  const definition = { artifacts: { a: f.config.artifacts.a }, critics: [f.config.critics[0]] };
-  const helper = (text: string) => `export const tool = { metadata: { description: 'Inspect content', inputSchema: { type: 'object', properties: {} }, resultKinds: ['text'], observation: 'none' }, execute() { return { content: [{ type: 'text', text: '${text}' }] }; } };`;
-  await fs.writeFile(path.join(f.repoPath, 'helper.ts'), helper('first implementation'));
-  await fs.writeFile(path.join(f.repoPath, 'ccdd.config.ts'), `import { tool } from './helper.ts'; export default { ...${JSON.stringify(definition)}, artifactTypes: { code: { agentTools: { inspect: tool } } } };`);
-  const before = await f.inspect();
-  await fs.writeFile(path.join(f.repoPath, 'helper.ts'), helper('second implementation'));
-  const after = await f.inspect();
-  assert.equal(before.snapshot.artifactHashes.a, after.snapshot.artifactHashes.a);
-  assert.notEqual(before.snapshot.inputs['a-check'].criticHash, after.snapshot.inputs['a-check'].criticHash);
+test('CLI config and graph queries expose qualified owners and cyclic relation types without executing', async t => {
+  const data = await fixture(t, true); let output = '';
+  const code = await main(['graph', 'a', '--repo', data.repoPath, '--state-dir', data.stateDir, '--json'], { stdout: { write: text => { output += text; } }, stderr: { write: text => { throw new Error(text); } } });
+  assert.equal(code, 0); const graph = JSON.parse(output); assert.equal(graph.version, 2); assert.equal(graph.critics.length, 2); assert.ok(graph.relations.every((edge: any) => edge.kind === 'instruction'));
+  const bytes = await readFile(join(data.stateDir, 'broker.sqlite'));
+  await inspectProject(data); assert.deepEqual(await readFile(join(data.stateDir, 'broker.sqlite')), bytes);
 });

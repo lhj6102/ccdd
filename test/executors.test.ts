@@ -1,170 +1,59 @@
 import test from 'node:test';
-import type { TestContext } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, writeFile, readFile, rm, access } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { writeFile, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { createExecutorRegistry } from '../src/executors/index.js';
-import type { AgentProfile, ReviewEnvelope, ReviewRequest, ExecutionEvent } from '../src/contracts.js';
+import { artifactFixture, fixtureViews, agentProfile, runtimeCritic } from './helpers/artifacts.js';
 import { artifactStream } from './pi-fixture.js';
-import type { ArtifactStreamOptions } from './pi-fixture.js';
+import type { ExecutionEvent } from '../src/contracts.js';
 
-async function fixture(t: TestContext) {
-  const dir = await mkdtemp(join(tmpdir(), 'ccdd-executor-'));
-  t.after(() => rm(dir, { recursive: true, force: true }));
-  const worktreePath = join(dir, 'snapshot');
-  await mkdir(join(worktreePath, 'tests'), { recursive: true });
-  await writeFile(join(worktreePath, 'why.md'), '# Why\nSelect two tasks.');
-  await writeFile(join(worktreePath, 'spec.md'), '# Spec\nSelect two tasks.');
-  const request: ReviewEnvelope & { profile: AgentProfile } = {
-    repoId: 'test', target: 'spec', deps: ['why'], criticId: 'spec-why', title: 'Does Spec match Why?', snapshotHash: 'a'.repeat(64),
-    artifacts: [{ id: 'why', type: 'markdown', path: 'why.md' }, { id: 'spec', type: 'markdown', path: 'spec.md' }],
-    artifactTypes: { markdown: { viewer: 'text', agentTools: { read: {} }, humanTools: { read: {} } }, code: { viewer: 'files', agentTools: { list: {}, read: {} }, humanTools: { list: {}, read: {} } } },
-    payload: { instruction: 'Compare {why} and {spec}.' },
-    profile: { kind: 'agent', provider: 'openai-codex', model: 'gpt-6-astra', reasoning: 'medium', timeoutMs: 5_000 },
-  };
-  return { dir, request, worktreePath, runDir: join(dir, 'run') };
-}
-
-test('Pi Agent uses exact profile and only scoped Artifact tools; result and audit exclude thinking', async t => {
-  const data = await fixture(t);
-  const events: ExecutionEvent[] = [];
-  let calls = 0;
-  const registry = createExecutorRegistry({ streamFn: artifactStream({ onRequest: ({ model, context, options }) => {
-    calls++;
-    assert.equal(model.provider, data.request.profile.provider); assert.equal(model.id, data.request.profile.model);
-    assert.equal(options?.reasoning, 'medium');
-    assert.deepEqual(context.tools?.map(tool => tool.name), ['read_why', 'read_spec']);
-  } }) });
-  const result = await registry.execute(data.request, { ...data, onEvent: event => { events.push(event); } });
-  assert.equal(result.verdict, 'GREEN');
-  assert.deepEqual(result.toolCalls?.map(x => x.name), ['read_why', 'read_spec']);
-  assert.equal(result.provider, 'openai-codex'); assert.equal(result.model, 'gpt-6-astra');
-  assert.ok(calls >= 2);
-  assert.doesNotMatch(JSON.stringify({ result, events }), /PRIVATE_REASONING|SECRET_TOKEN/);
-  assert.ok(events.some(x => x.type === 'artifact.tools.ready'));
-  assert.equal(events.filter(x => x.type === 'artifact.tool.called').length, 2);
+test('Agent evaluates only required target and explicit references and keeps its payload unchanged', async t => {
+  const data = await artifactFixture(t);
+  await data.write('style', { name: 'style', basis: true, views: fixtureViews() });
+  await data.write('service', { name: 'service', views: fixtureViews(), mounts: { guide: 'style' }, critics: [{ id: 'style', title: 'Check style', profile: agentProfile, payload: { instruction: 'Use {guide} for {service}. Keep \\{literal}.' } }] });
+  await data.write('service/assets', { name: 'assets', basis: true });
+  const [request] = await data.requests(), original = structuredClone(request), events: ExecutionEvent[] = [];
+  let prompt = '';
+  const result = await createExecutorRegistry({ streamFn: artifactStream({ onRequest: ({ context }) => { prompt = JSON.stringify(context.messages[0]?.content); } }) }).execute(request, { worktreePath: data.repoPath, runDir: join(data.root, 'run'), onEvent: event => { events.push(event); } });
+  assert.equal(result.verdict, 'GREEN'); assert.deepEqual(result.toolCalls?.map(call => call.name), ['read_service', 'read_style']);
+  assert.deepEqual(request, original); assert.match(prompt, /read_style/); assert.match(prompt, /literal/);
+  assert.equal(events.filter(event => event.type === 'artifact.tool.called').length, 2);
+  assert.doesNotMatch(JSON.stringify(result), /PRIVATE_REASONING/);
 });
 
-test('instruction references render only in the Agent prompt and preserve source payload and tool contracts', async t => {
-  const data = await fixture(t);
-  const instruction = String.raw`Compare {spec} with {why}. Keep {unknown}, {implementation}, {{spec}}, \{spec} and ` + '${spec}.';
-  data.request.payload = Object.freeze({ instruction, extra: { note: '{spec}' }, example: '{why}' });
-  const original = structuredClone(data.request);
-  let inspected = false;
-  const registry = createExecutorRegistry({ streamFn: artifactStream({ onRequest: ({ context }) => {
-    const user = context.messages.find(message => message.role === 'user');
-    const prompt = typeof user?.content === 'string' ? user.content
-      : user?.content.filter(block => block.type === 'text').map(block => block.text).join('\n') ?? '';
-    assert.match(prompt, /Write the summary and evidence in concise English/);
-    const payloadLine = prompt.split('\n').find(line => line.startsWith('Review payload: '));
-    assert.ok(payloadLine);
-    const payload = JSON.parse(payloadLine.slice('Review payload: '.length));
-    assert.deepEqual(payload, {
-      ...original.payload,
-      instruction: String.raw`Compare {"artifact":"spec","tools":["read_spec"]} with {"artifact":"why","tools":["read_why"]}. Keep {unknown}, {implementation}, {{spec}}, \{spec} and ` + '${spec}.',
-    });
-    assert.deepEqual(context.tools?.map(tool => tool.name), ['read_why', 'read_spec']);
-    inspected = true;
-  } }) });
-  const result = await registry.execute(data.request, data);
-  assert.equal(result.verdict, 'GREEN');
-  assert.ok(inspected);
-  assert.deepEqual(data.request, original);
+test('missing content observations and invalid structured verdicts remain errors rather than RED', async t => {
+  const data = await artifactFixture(t); await data.write('a', { name: 'a', views: fixtureViews(), critics: [{ id: 'review', title: 'Review', profile: agentProfile, payload: { instruction: 'Read {a}.' } }] });
+  const [request] = await data.requests(), context = { worktreePath: data.repoPath, runDir: join(data.root, 'run') };
+  for (const mode of ['no-tools', 'beyond-eof', 'malformed', 'unknown-error'] as const) await assert.rejects(createExecutorRegistry({ streamFn: artifactStream({ mode }) }).execute(request, context));
+  for (const result of [{ verdict: 'GREEN', summary: 'Okay', evidence: [], extra: true }, { verdict: 'GREEN', summary: '', evidence: ['Fixture'] }]) await assert.rejects(createExecutorRegistry({ streamFn: artifactStream({ result }) }).execute(request, context));
 });
 
-test('provider errors, invalid final schema and missing observations fail instead of becoming RED', async t => {
-  const modes: [ArtifactStreamOptions['mode'], RegExp][] = [
-    ['unknown-error', /Provider execution/], ['malformed', /final JSON/], ['no-tools', /did not inspect/], ['beyond-eof', /did not inspect/],
-  ];
-  for (const [mode, expected] of modes) {
-    const data = await fixture(t);
-    await assert.rejects(createExecutorRegistry({ streamFn: artifactStream({ mode }) }).execute(data.request, data), expected);
-  }
-  for (const result of [{ verdict:'GREEN', summary:'ok', evidence:['a'], extra:true }, { verdict:'GREEN',summary:'',evidence:['a'] }, { verdict:'RED',summary:'bad',evidence:[] }]) {
-    const data=await fixture(t);
-    await assert.rejects(createExecutorRegistry({streamFn:artifactStream({result})}).execute(data.request,data));
-  }
+test('Runtime resolves a logical mount to real test paths and reports actual assertion failures', async t => {
+  const data = await artifactFixture(t);
+  await data.write('tests', { name: 'tests', basis: true });
+  const critic = runtimeCritic(); critic.profile = { kind: 'runtime', command: 'node', args: ['--test', 'suite/check.test.mjs'] };
+  await data.write('implementation', { name: 'implementation', mounts: { suite: 'tests' }, critics: [critic] });
+  const [request] = await data.requests(), registry = createExecutorRegistry(), context = { worktreePath: data.repoPath, runDir: join(data.root, 'run') };
+  assert.equal((await registry.execute(request, context)).verdict, 'GREEN');
+  await writeFile(join(data.repoPath, 'tests/check.test.mjs'), "import test from 'node:test';import assert from 'node:assert/strict';test('actual failure',()=>assert.equal(1,2));");
+  const failed = await registry.execute(request, context); assert.equal(failed.verdict, 'RED'); assert.equal(failed.exitCode, 1);
 });
 
-test('code runner evaluates actual Node tests and distinguishes pass from assertion failure', async t => {
-  const data = await fixture(t);
-  const registry = createExecutorRegistry();
-  const request:ReviewEnvelope = { ...data.request, profile: { kind: 'runtime', command: 'node', args: ['--test', 'tests/check.test.mjs'] } };
-  await writeFile(join(data.worktreePath, 'tests/check.test.mjs'), "import test from 'node:test'; import assert from 'node:assert/strict'; test('count',()=>assert.equal(2,2));");
-  assert.equal((await registry.execute(request, data)).verdict, 'GREEN');
-  await writeFile(join(data.worktreePath, 'tests/check.test.mjs'), "import test from 'node:test'; import assert from 'node:assert/strict'; test('count',()=>assert.equal(3,2));");
-  const result = await registry.execute(request, data);
-  assert.equal(result.verdict, 'RED'); assert.notEqual(result.exitCode, 0); assert.match(result.stdout!, /count/);
-  assert.equal((await registry.canExecute({ profile: { kind: 'runtime', command: 'node', args: ['-e', 'process.exit()'] } })).ok, false);
+test('concurrent Runtime executions use the Artifact cwd and separate writable outputs, temporary files and homes', async t => {
+  const data = await artifactFixture(t);
+  await data.write('a', { name: 'a', critics: [runtimeCritic()] }, { 'check.test.mjs': "import {writeFile} from 'node:fs/promises';await writeFile(process.env.CCDD_OUTPUT_DIR+'/receipt.json',JSON.stringify({cwd:process.cwd(),tmp:process.env.TMPDIR,home:process.env.HOME,output:process.env.CCDD_OUTPUT_DIR}));" });
+  const [request] = await data.requests(), registry = createExecutorRegistry();
+  await Promise.all(['one', 'two'].map(name => registry.execute(request, { worktreePath: data.repoPath, runDir: join(data.root, name) })));
+  const results = await Promise.all(['one', 'two'].map(async name => JSON.parse(await readFile(join(data.root, name, 'output/receipt.json'), 'utf8'))));
+  assert.equal(results[0].cwd, join(data.repoPath, 'a')); assert.notEqual(results[0].output, results[1].output); assert.notEqual(results[0].tmp, results[1].tmp); assert.notEqual(results[0].home, results[1].home);
+  await assert.rejects(registry.execute(request, { worktreePath: data.repoPath, runDir: join(data.repoPath, 'outputs') }), /outside/);
 });
 
-test('Human uses registered notification and broker completion, independent of Pi auth', async t => {
-  const data=await fixture(t);
-  const request:ReviewRequest = { ...data.request, profile:{kind:'human'}, id:'human-1',runId:'run',status:'WAITING_HUMAN',createdAt:new Date().toISOString(),predecessorId:null,worktreePath:data.worktreePath,
-    workspace:{version:1,mode:'copy',sourcePath:data.worktreePath,path:data.worktreePath,hash:data.request.snapshotHash,stateDir:join(data.dir,'state'),baselineMetadataHash:'b'.repeat(64)} };
+test('Human notifications use registered alarms and never invoke the Agent transport', async t => {
+  const data = await artifactFixture(t); await data.write('a', { name: 'a', views: fixtureViews(), critics: [{ id: 'human', title: 'Human', profile: { kind: 'human' }, payload: { instruction: 'Inspect {a}.' } }] });
+  const [request] = await data.requests(); let alarms = 0;
+  const registry = createExecutorRegistry({ alarmMethods: [async () => { alarms++; }], streamFn: () => { throw new Error('Must not execute Provider.'); } });
+  assert.equal((await registry.canExecute(request)).ok, true); await registry.notifyHuman(request as any); assert.equal(alarms, 1);
+  await assert.rejects(registry.execute(request, { worktreePath: data.repoPath, runDir: join(data.root, 'run') }), /claim\/result/);
   assert.equal((await createExecutorRegistry().canExecute(request)).ok, false);
-  const received:string[] = [];
-  const registry = createExecutorRegistry({ alarmMethods: [{ id: 'inbox', notify: async request => {received.push(request.id);} }] });
-  assert.equal((await registry.canExecute(request)).ok, true);
-  assert.deepEqual(await registry.notifyHuman(request), { alarmMethods: ['inbox'] });
-  assert.deepEqual(received, ['human-1']);
-  await assert.rejects(registry.execute(request, data), /claim\/result/);
-  // @ts-expect-error Intentional malformed notification adapter at runtime boundary.
-  assert.throws(() => createExecutorRegistry({ alarmMethods: ['email'] }), /alarm method/);
-});
-
-test('concurrent runtime reviews share input and use separate output/temp/home directories', async t => {
-  const data = await fixture(t);
-  await writeFile(join(data.worktreePath, 'tests/output.test.mjs'), `
-import test from 'node:test';import assert from 'node:assert/strict';import {writeFile} from 'node:fs/promises';import {join} from 'node:path';import {tmpdir} from 'node:os';
-test('isolated output',async()=>{assert.notEqual(process.cwd(),process.env.CCDD_OUTPUT_DIR);assert.equal(tmpdir(),process.env.CCDD_TMP_DIR);await writeFile(join(process.env.CCDD_OUTPUT_DIR,'result.json'),JSON.stringify({cwd:process.cwd(),output:process.env.CCDD_OUTPUT_DIR,temporary:tmpdir(),home:process.env.HOME}));await writeFile(join(tmpdir(),'temporary.txt'),'scratch');});`);
-  const request:ReviewEnvelope = { ...data.request, profile: { kind: 'runtime', command: 'node', args: ['--test', 'tests/output.test.mjs'] } };
-  const registry = createExecutorRegistry();
-  const dirs = [join(data.dir, 'review-one'), join(data.dir, 'review-two')];
-  const results = await Promise.all(dirs.map(runDir => registry.execute(request, { ...data, runDir })));
-  assert.deepEqual(results.map(result => result.verdict), ['GREEN', 'GREEN']);
-  const outputs = await Promise.all(dirs.map(async runDir => JSON.parse(await readFile(join(runDir, 'output/result.json'), 'utf8')) as Record<string,string>));
-  assert.equal(outputs[0].cwd, outputs[1].cwd);
-  for(const key of ['output','temporary','home']) assert.notEqual(outputs[0][key],outputs[1][key]);
-  await assert.rejects(readFile(join(data.worktreePath, 'result.json')));
-});
-
-test('executors reject output inside input before creating files', async t => {
-  const data = await fixture(t);
-  const registry = createExecutorRegistry({streamFn:artifactStream()});
-  const requests:ReviewEnvelope[] = [data.request, { ...data.request, profile: { kind: 'runtime', command: 'node', args: ['--test', 'tests/check.test.mjs'] } }];
-  for (const request of requests) {
-    const runDir = join(data.worktreePath, `should-not-exist-${request.profile.kind}`);
-    await assert.rejects(registry.execute(request, { ...data, runDir }), /outside the review workspace/);
-    await assert.rejects(access(runDir));
-  }
-});
-
-test('Agent receives exact type descriptions and scope before operation guidance',async t=>{
-  const data=await fixture(t);
-  data.request.artifactTypes.markdown.agentTools={read:{description:'Read specification text from {artifactName} by line.'}};
-  let inspected=false;
-  const registry=createExecutorRegistry({streamFn:artifactStream({mode:'partial',onRequest:({context})=>{
-    const tools=context.tools!;
-    assert.equal(tools[1].description,'Read specification text from spec by line.');
-    for(const tool of tools){
-      const properties=(tool.parameters as unknown as {properties:Record<string,unknown>}).properties;
-      assert.ok(properties.startLine);assert.ok(properties.lineCount);
-      for(const name of ['offset','limit','path','tool'])assert.equal(properties[name],undefined);
-    }
-    const user=context.messages.find(x=>x.role==='user');
-    const prompt=typeof user?.content==='string'?user.content:JSON.stringify(user?.content);
-    assert.ok(prompt.indexOf('Artifacts:')<prompt.indexOf('Each tool is named'));
-    assert.match(prompt,/Read specification text from spec by line/);inspected=true;
-  }})});
-  const result=await registry.execute(data.request,data);
-  assert.equal(result.verdict,'GREEN');assert.ok(inspected);
-  for(const call of result.toolCalls!){assert.equal(call.observation?.lineCount,1);assert.equal(call.observation?.startLine,2);assert.equal(call.observation?.endLine,2);}
-});
-
-test('directory listing alone cannot satisfy required source observation',async t=>{
-  const data=await fixture(t);await writeFile(join(data.worktreePath,'tests/example.mjs'),'export const value=2;');
-  data.request.artifacts=[{id:'tests',type:'code',path:'tests'}];
-  await assert.rejects(createExecutorRegistry({streamFn:artifactStream({mode:'list-only'})}).execute(data.request,data),/did not inspect required artifact: tests/);
 });

@@ -3,19 +3,15 @@ import { randomUUID } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
-import { isDeepStrictEqual } from 'node:util';
 import { setTimeout as delay } from 'node:timers/promises';
-import { prepareReviewRequests, readStoredArtifactScope } from '../requester/index.js';
+import { prepareReviewRequests } from '../requester/index.js';
 import { readWorkspaceConfig } from './config.js';
-import { createGraphDefinition, prerequisiteCriticIds, type GraphDefinition } from './graph.js';
+import { createGraphDefinition, type GraphDefinition } from './graph.js';
 import { createReviewTools } from '../tools/runner.js';
-import { describeReviewTools } from '../tools/runner.js';
-import { validateArguments } from '../tools/schema.js';
 import { createHumanClaims, HUMAN_PREPARATION_LEASE_MS } from './human-claims.js';
 import { prepareHumanReview } from '../executors/human-preparation.js';
-import { prepareWorkspace, reopenWorkspace, type WorkspaceDescriptor, type WorkspaceHandle, type WorkspaceMode, type WorkspaceIntegrity } from '../workspaces/index.js';
+import { prepareWorkspace, reopenWorkspace, type WorkspaceDescriptor, type WorkspaceHandle, type WorkspaceIntegrity } from '../workspaces/index.js';
 import { createProjectSnapshot } from '../project/identity.js';
-import { assertGeneratedReviewInputs, prepareArtifactInputs } from '../artifacts/sources.js';
 import { includedCritics, planProject } from '../project/query.js';
 import { readEvidence } from '../project/store.js';
 import type { ProjectRunDefinition, ProjectSelection } from '../project/types.js';
@@ -138,7 +134,7 @@ function prepareStateDirectory(repoPath: string, stateDir: string) {
   const canonical = canonicalFuturePath(stateDir);
   const relative = path.relative(repoPath, canonical);
   if (relative === '' || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative))) {
-    throw codedError('CCDD state, logs and copied workspaces must be outside the reviewed repository.', 'WORKSPACE_UNSAFE');
+    throw codedError('CCDD state, logs and review outputs must be outside the reviewed repository.', 'WORKSPACE_UNSAFE');
   }
   fs.mkdirSync(canonical, { recursive: true, mode: 0o700 });
   return fs.realpathSync(canonical);
@@ -211,47 +207,14 @@ export function createBroker({ repoPath, stateDir, repoId = 'demo', executors, w
     event: (request, type, message) => appendEvent(request.runId, request.id, type, message),
     assertWaiting: request => {
       ensureOpen();
+      if (request.configManifest?.version !== 2) throw new Error('Historical reviews are available for result lookup only.');
       if (!request.notifiedAt) throw new Error('Human alarm delivery is still pending.');
-      if (request.workspace.mode === 'lock' && !ownerAlive(ownerData(request.runId))) throw new Error('A lock review requires its monitoring worker to remain alive.');
+      if (!ownerAlive(ownerData(request.runId))) throw new Error('An in-place review requires its monitoring worker to remain alive.');
     },
   });
-  const assertRemoteClaim = (requestId: string, reviewerId: string, attemptId: string) => {
-    ensureOpen();
-    const request = required(requestData(requestId), 'request');
-    if (request.profile.kind !== 'human' || request.status !== 'WAITING_HUMAN' || request.claimedBy !== reviewerId || request.claimAttemptId !== attemptId) throw new Error('This confirmed Claim is no longer owned by this reviewer.');
-    if (request.workspace.mode !== 'copy') throw new Error('Remote Human review requires a copied workspace.');
-    return request;
-  };
-  function prerequisites(request: ReviewRequest, run: RunRecord, requests: ReviewRequest[]): ReviewRequest[] {
-    if (run.project) return []; // Project requests are issued only after a pull readiness check.
-    if (run.scope?.kind === 'critic') return [];
-    if (run.graph) {
-      const byCritic = new Map(requests.map(item => [item.criticId, item]));
-      return prerequisiteCriticIds(request, run.graph).map(id => {
-        const dependency = byCritic.get(id);
-        if (!dependency || dependency.runId !== run.id) throw codedError(`Required Critic ${id} is missing from this Run.`, 'REVIEW_GRAPH_INVALID');
-        return dependency;
-      });
-    }
-    // Historical chains retain their explicit links; no target Artifact is guessed.
-    if (request.predecessorId === null || (request.predecessorId === undefined && requests.length === 1)) return [];
-    const previous = requests.find(item => item.id === request.predecessorId);
-    if (!previous || previous.runId !== run.id) throw codedError('This historical Run has no usable predecessor link. Submit a new review.', 'REVIEW_GRAPH_INVALID');
-    return [previous];
-  }
-  function dependencyFailure(request: ReviewRequest, run: RunRecord, requests: ReviewRequest[], seen = new Set<string>()): ReviewRequest | null {
-    if (seen.has(request.id)) return null;
-    seen.add(request.id);
-    for (const dependency of prerequisites(request, run, requests)) {
-      if (dependency.status === 'RED' || dependency.status === 'ERROR') return dependency;
-      const failure = dependencyFailure(dependency, run, requests, seen);
-      if (failure) return failure;
-    }
-    return null;
-  }
   function refreshReadinessWithin(runId: string): void {
     const run = required(runData(runId), 'Run'), requests = runRequests(runId);
-    if (run.project) {
+    if (run.project?.version === 2) {
       if (terminal.has(run.status)) return;
       const plan = planProject(run.project.snapshot, readEvidence(db), { selection: run.project.selection, recursive: run.project.recursive, force: run.project.force, runId, attempts: requests });
       for (const item of plan.items.filter(item => item.action === 'EXECUTE')) {
@@ -266,23 +229,12 @@ export function createBroker({ repoPath, stateDir, repoId = 'demo', executors, w
       }
       return;
     }
-    for (const request of requests) {
-      if (request.status !== 'BLOCKED') continue;
-      const dependencies = prerequisites(request, run, requests);
-      if (dependencies.every(item => item.status === 'GREEN')) {
-        request.status = 'QUEUED'; request.blockedReason = null; saveRequest(request);
-        appendEvent(runId, request.id, 'request.queued', 'All required Artifact reviews are GREEN.');
-      } else {
-        const failed = dependencyFailure(request, run, requests);
-        const reason = failed ? `${failed.criticId} returned ${failed.status}; dependent reviews cannot start.` : `Waiting for ${dependencies.filter(item => item.status !== 'GREEN').map(item => item.criticId).join(', ')} to become GREEN.`;
-        if (request.blockedReason !== reason) { request.blockedReason = reason; saveRequest(request); }
-      }
-    }
+    throw new Error('Historical Runs cannot be resumed; submit a new validation request.');
   }
   const updateRunStatus = (runId: string) => {
     const states = runRequests(runId).map(request => request.status);
     const run = required(runData(runId), 'Run');
-    if (run.project) {
+    if (run.project?.version === 2) {
       if (terminal.has(run.status)) return;
       const plan = planProject(run.project.snapshot, readEvidence(db), { selection: run.project.selection, recursive: run.project.recursive, force: run.project.force, runId, attempts: runRequests(runId) });
       const status: RunStatus = states.includes('RUNNING') ? 'RUNNING' : states.includes('QUEUED') ? 'QUEUED' : states.includes('WAITING_HUMAN') ? 'WAITING_HUMAN' :
@@ -297,17 +249,7 @@ export function createBroker({ repoPath, stateDir, repoId = 'demo', executors, w
       }
       return;
     }
-    // A branch failure is a verdict for that branch, not a stop signal for its siblings.
-    const status = states.includes('RUNNING') ? 'RUNNING' : states.includes('QUEUED') ? 'QUEUED' :
-      states.includes('WAITING_HUMAN') ? 'WAITING_HUMAN' : states.includes('ERROR') ? 'ERROR' : states.includes('RED') ? 'RED' :
-      states.length > 0 && states.every(state => state === 'GREEN') ? 'GREEN' : 'ERROR';
-    if (run.status !== status) {
-      run.status = status;
-      if (terminal.has(status)) run.completedAt = now();
-      else delete run.completedAt;
-      saveRun(run);
-      appendEvent(runId, null, 'run.status', `Run ${status}`, { status });
-    }
+    throw new Error('Historical Runs are available for result lookup only.');
   };
 
   function finishWithin(requestId: string, outcome: { result?: ReviewResult; error?: unknown }, expectedStates: ReviewStatus[] = ['RUNNING', 'WAITING_HUMAN']) {
@@ -335,7 +277,7 @@ export function createBroker({ repoPath, stateDir, repoId = 'demo', executors, w
       request.completedAt = now(); request.blockedReason = null; saveRequest(request);
       appendEvent(runId, request.id, 'request.error', request.error, { status: request.status, ...(request.errorCode ? { code: request.errorCode } : {}) });
     }
-    if (run.project) {
+    if (run.project?.version === 2) {
       const plan = planProject(run.project.snapshot, readEvidence(db), { selection: run.project.selection, recursive: run.project.recursive, force: run.project.force, runId, attempts: runRequests(runId) });
       run.project.evidenceRequestIds = [...new Set(plan.critics.flatMap(c => c.result ? [c.result.requestId] : []))];
     }
@@ -346,13 +288,7 @@ export function createBroker({ repoPath, stateDir, repoId = 'demo', executors, w
   function reconcileWithin(runId: string) {
     const owner = ownerData(runId);
     if (!owner || ownerAlive(owner)) return;
-    const run = runData(runId);
-    const unfinished = runRequests(runId).filter(request => !terminal.has(request.status));
-    const safeHumanWait = run?.workspace?.mode === 'copy' && unfinished.some(request => request.status === 'WAITING_HUMAN') &&
-      unfinished.every(request => request.status === 'BLOCKED' || (request.status === 'WAITING_HUMAN' && request.notifiedAt));
-    if (!safeHumanWait) {
-      failWithin(runId, codedError('The review worker exited before completing its work. Submit a new run to retry.', 'WORKER_EXITED'));
-    }
+    failWithin(runId, codedError('The review worker exited before completing its work. Submit a new run to retry.', 'WORKER_EXITED'));
     db.prepare('DELETE FROM run_owners WHERE run_id = ? AND token = ?').run(runId, owner.token);
     appendEvent(runId, null, 'worker.exited', 'The previous review worker is no longer running.');
   }
@@ -387,7 +323,7 @@ export function createBroker({ repoPath, stateDir, repoId = 'demo', executors, w
       const request = required(requestData(requestId), 'Request');
       if (ownerData(runId)?.token !== token || request.status !== 'QUEUED') throw codedError('Review ownership changed before execution.', 'RUN_OWNERSHIP_LOST');
       request.status = 'RUNNING'; request.startedAt = now(); request.blockedReason = null; saveRequest(request);
-      appendEvent(runId, request.id, 'request.started', `${request.title}: reviewing ${workspace.descriptor.mode} workspace.`, { snapshotHash: workspace.descriptor.hash });
+      appendEvent(runId, request.id, 'request.started', `${request.title}: reviewing the supplied workspace.`, { snapshotHash: workspace.descriptor.hash });
       updateRunStatus(runId);
     });
     changed();
@@ -395,7 +331,6 @@ export function createBroker({ repoPath, stateDir, repoId = 'demo', executors, w
       signal.throwIfAborted();
       await workspace.assertUnchanged();
       const request = required(requestData(requestId), 'Request');
-      assertGeneratedReviewInputs(request);
       const runDir = path.join(stateDir, 'runs', runId, request.id);
       fs.mkdirSync(runDir, { recursive: true, mode: 0o700 });
       if (required(runData(runId), 'Run').project) {
@@ -459,6 +394,7 @@ export function createBroker({ repoPath, stateDir, repoId = 'demo', executors, w
       reconcileWithin(runId);
       stored = runData(runId);
       if (!stored) throw new Error('Unknown Run.');
+      if (stored.project?.version !== 2) throw new Error('Historical Runs cannot be resumed; submit a new validation request.');
       if (terminal.has(stored.status)) return false;
       if (!stored.workspace) throw new Error('This legacy Run has no workspace descriptor; submit a new review.');
       if (ownerData(runId)) throw codedError('Another process already owns this review Run.', 'RUN_ALREADY_OWNED');
@@ -505,28 +441,14 @@ export function createBroker({ repoPath, stateDir, repoId = 'demo', executors, w
             inFlight.set(queued.id, { kind: queued.profile.kind, promise });
           }
           if (inFlight.size) {
-            // Human alarms and independent branches progress together; completed dependencies can unblock work immediately.
+            // Human alarms and independent evaluations progress together.
             await Promise.race([...inFlight.values()].map(item => item.promise).concat(delay(50, undefined, { signal: reviewSignal })));
             continue;
           }
           const waiting = requests.filter(request => request.status === 'WAITING_HUMAN');
           if (waiting.length) {
             if (waiting.some(request => !request.notifiedAt)) throw new Error('Human notification did not complete; submit a new Run to retry.');
-            if (ownedRun.workspace.mode === 'copy') {
-              await workspace.assertUnchanged();
-              // A result can arrive during input validation. Release only after rechecking all branches atomically.
-              const paused = transaction(() => {
-                const pending = runRequests(runId).filter(request => !terminal.has(request.status));
-                if (!pending.some(request => request.status === 'WAITING_HUMAN') || pending.some(request => request.status !== 'BLOCKED' && (request.status !== 'WAITING_HUMAN' || !request.notifiedAt))) return false;
-                if (ownerData(runId)?.token !== token) throw codedError('Review ownership was lost.', 'RUN_OWNERSHIP_LOST');
-                db.prepare('DELETE FROM run_owners WHERE run_id = ? AND token = ?').run(runId, token);
-                appendEvent(runId, null, 'worker.paused', 'Copied Human reviews are persisted; no worker is needed while awaiting results.');
-                return true;
-              });
-              if (paused) break;
-              continue;
-            }
-            // The lock observer stays alive with filesystem events and metadata polls.
+            // The workspace observer stays alive with filesystem events and metadata polls.
             // Notification already crossed its final content boundary; idle waiting
             // must not rehash the entire workspace on every scheduling iteration.
             await delay(100, undefined, { signal: reviewSignal });
@@ -559,22 +481,21 @@ export function createBroker({ repoPath, stateDir, repoId = 'demo', executors, w
   }
 
   return {
-    async submitProject({ mode = 'copy', requesterId = 'cli', selection, recursive = false, force = false }: { mode?: WorkspaceMode; requesterId?: string; selection: ProjectSelection; recursive?: boolean; force?: boolean }) {
+    async submitProject({ requesterId = 'cli', selection, recursive = false, force = false, ...removed }: { requesterId?: string; selection: ProjectSelection; recursive?: boolean; force?: boolean }) {
       ensureOpen(); requireExecutors();
+      if ('mode' in removed) throw new Error('Workspace modes are no longer supported; supply an unchanged workspace.');
       if (!requesterId.trim() || requesterId.length > 200) throw new Error('requesterId is required (maximum 200 characters).');
-      if (!['lock', 'copy'].includes(mode)) throw new Error('mode must be lock or copy.');
       await requireExecutors().validateWorkspace?.(repoPath);
-      const workspace = await workspaceAdapter.prepareWorkspace({ repoPath, stateDir, mode, integrity: workspaceIntegrity });
+      const workspace = await workspaceAdapter.prepareWorkspace({ repoPath, stateDir, integrity: workspaceIntegrity });
       try {
-        const loaded = await readWorkspaceConfig(workspace.descriptor.path);
-        const config = await prepareArtifactInputs(loaded.config, workspace.descriptor.path, 'review', workspace.signal);
+        const { config } = await readWorkspaceConfig(workspace.descriptor.path, workspace.signal);
         const snapshot = await createProjectSnapshot(config, workspace.descriptor.path, workspace.descriptor.hash, workspace.signal, workspace.descriptor.integrity);
         const ids = includedCritics(snapshot, selection, recursive);
         const templates: ReviewEnvelope[] = [];
         for (const id of ids) templates.push(...await prepareReviewRequests({ repoPath: workspace.descriptor.path, repoId, snapshotHash: workspace.descriptor.hash, criticId: id, preparedConfig: config }));
         const id = randomUUID(), createdAt = now();
         const record: RunRecord = { id, repoId, snapshotHash: workspace.descriptor.hash, workspace: workspace.descriptor, requesterId,
-          scope: { kind: 'project' }, graph: createGraphDefinition(config), project: { version: 1, snapshot, selection, recursive, force, templates }, status: 'QUEUED', createdAt };
+          scope: { kind: 'project' }, graph: createGraphDefinition(config), project: { version: 2, snapshot, selection, recursive, force, templates }, status: 'QUEUED', createdAt };
         await workspace.assertUnchanged(); workspace.signal.throwIfAborted();
         transaction(() => {
           db.prepare('INSERT INTO runs(id,created_at,status,data) VALUES (?,?,?,?)').run(id, createdAt, record.status, JSON.stringify(record));
@@ -582,49 +503,6 @@ export function createBroker({ repoPath, stateDir, repoId = 'demo', executors, w
           refreshReadinessWithin(id); updateRunStatus(id);
         });
         changed(); return required(getRun(id), 'Run');
-      } finally { await workspace.close(); }
-    },
-    async submit({ mode = 'copy', requesterId, reviewRequests, criticId, snapshotCommit }: { mode?: WorkspaceMode; requesterId?: unknown; reviewRequests?: unknown; criticId?: unknown; snapshotCommit?: unknown } = {}) {
-      ensureOpen(); requireExecutors();
-      if (snapshotCommit !== undefined) throw new Error('snapshotCommit is no longer accepted; use mode copy or lock with the current workspace.');
-      if (typeof requesterId !== 'string' || !requesterId.trim() || requesterId.length > 200) throw new Error('requesterId is required (maximum 200 characters).');
-      if (!['lock', 'copy'].includes(mode)) throw new Error('mode must be lock or copy.');
-      await requireExecutors().validateWorkspace?.(repoPath);
-      const workspace = await workspaceAdapter.prepareWorkspace({ repoPath, stateDir, mode, integrity: workspaceIntegrity });
-      try {
-        const descriptor = copy(workspace.descriptor);
-        const { config } = await readWorkspaceConfig(descriptor.path);
-        const graph = createGraphDefinition(config);
-        const expected = await prepareReviewRequests({ repoPath: descriptor.path, repoId, snapshotHash: descriptor.hash, criticId, preparedConfig: config });
-        const supplied = reviewRequests === undefined ? expected : reviewRequests;
-        if (!isDeepStrictEqual(supplied, expected)) throw new Error('Submitted review request envelopes must exactly match the Artifact definitions, payload, profiles and dependencies in the requested workspace.');
-        const id = randomUUID();
-        const createdAt = now();
-        const requests: ReviewRequest[] = copy(supplied as ReviewEnvelope[]).map(envelope => ({
-          ...envelope, id: randomUUID(), runId: id, workspace: descriptor, worktreePath: descriptor.path,
-          status: 'BLOCKED', createdAt, startedAt: null, completedAt: null,
-          result: null, error: null, claimedBy: null, claimedAt: null, notifiedAt: null,
-        }));
-        for (const request of requests) {
-          const dependencies = criticId === undefined ? prerequisiteCriticIds(request, graph) : [];
-          request.status = dependencies.length ? 'BLOCKED' : 'QUEUED';
-          request.blockedReason = dependencies.length ? `Waiting for ${dependencies.join(', ')} to become GREEN.` : null;
-          const capability = await requireExecutors().canExecute(copy(request));
-          if (!capability?.ok) throw new Error(`Cannot execute ${request.criticId}: ${capability?.reason ?? 'No compatible executor.'}`);
-          if (request.profile.kind === 'human' && typeof requireExecutors().notifyHuman !== 'function') throw new Error('Human execution requires an alarm method.');
-        }
-        await workspace.assertUnchanged(); workspace.signal.throwIfAborted(); ensureOpen();
-        const scope: NonNullable<RunRecord['scope']> = criticId === undefined ? { kind: 'graph' } : { kind: 'critic', criticId: criticId as string };
-        const record: RunRecord = { id, repoId, snapshotHash: descriptor.hash, workspace: descriptor, requesterId, scope, graph, status: 'QUEUED', createdAt };
-        transaction(() => {
-          db.prepare('INSERT INTO runs(id,created_at,status,data) VALUES (?,?,?,?)').run(id, createdAt, record.status, JSON.stringify(record));
-          requests.forEach((request, index) => db.prepare('INSERT INTO requests(id,run_id,ordinal,status,data) VALUES (?,?,?,?,?)').run(request.id, id, index, request.status, JSON.stringify(request)));
-          appendEvent(id, null, 'run.submitted', 'Review persisted; a request-scoped worker can execute it.', { snapshotHash: descriptor.hash, mode, requesterId, scope });
-          for (const request of requests) if (request.status === 'QUEUED') appendEvent(id, request.id, 'request.queued', 'Required Artifact reviews are satisfied; the review is ready.');
-          appendEvent(id, null, 'workspace.ready', mode === 'copy' ? 'Content-addressed copied workspace is ready.' : 'Current workspace is fixed for this review; changes invalidate it.', { path: descriptor.path, snapshotHash: descriptor.hash });
-        });
-        changed();
-        return required(getRun(id), 'Run');
       } finally { await workspace.close(); }
     },
     run,
@@ -651,13 +529,13 @@ export function createBroker({ repoPath, stateDir, repoId = 'demo', executors, w
     },
     renewHumanTryClaim: humanClaims.renew,
     releaseHumanTryClaim: humanClaims.release,
-    confirmHumanClaim: humanClaims.confirm,
     async claimHuman(requestId: string, reviewerId: unknown, { signal }: { signal?: AbortSignal } = {}) {
       ensureOpen();
       if (typeof reviewerId !== 'string' || !reviewerId.trim()) throw new Error('A reviewerId is required.');
       const existing = requestData(requestId);
       if (existing) reconcile(existing.runId);
       const request = required(requestData(requestId), 'request');
+      if (request.configManifest?.version !== 2) throw new Error('Historical reviews are available for result lookup only.');
       if (request.status === 'WAITING_HUMAN' && request.claimedBy === reviewerId) return request;
       if (request.claimedBy) throw new Error('This review is already claimed by another reviewer.');
       signal?.throwIfAborted();
@@ -680,28 +558,6 @@ export function createBroker({ repoPath, stateDir, repoId = 'demo', executors, w
         throw error;
       } finally { clearInterval(heartbeat); }
     },
-    authorizeRemoteHumanTool(requestId: string, { reviewerId, attemptId, toolName, arguments: args = {} }: { reviewerId: string; attemptId: string; toolName: string; arguments?: unknown }) {
-      const request = assertRemoteClaim(requestId, reviewerId, attemptId);
-      if (!request.configManifest) throw new Error('Remote tool execution requires a TypeScript tool manifest.');
-      const tool = describeReviewTools({ artifacts: request.artifacts, configManifest: request.configManifest, audience: 'human' }).find(value => value.name === toolName);
-      if (!tool) throw new Error('Unknown registered Human tool.');
-      validateArguments(tool.inputSchema, args);
-      return tool;
-    },
-    recordRemoteHumanTool(requestId: string, { reviewerId, attemptId, toolName, arguments: args = {} }: { reviewerId: string; attemptId: string; toolName: string; arguments?: unknown }) {
-      // Client reports only after real local execution and input validation. A receipt
-      // never constitutes content observation or a semantic verdict.
-      const request = assertRemoteClaim(requestId, reviewerId, attemptId);
-      if (!request.configManifest) throw new Error('Remote tool execution requires a TypeScript tool manifest.');
-      const tool = describeReviewTools({ artifacts: request.artifacts, configManifest: request.configManifest, audience: 'human' }).find(value => value.name === toolName);
-      if (!tool) throw new Error('Unknown registered Human tool.');
-      validateArguments(tool.inputSchema, args);
-      transaction(() => {
-        assertRemoteClaim(requestId, reviewerId, attemptId);
-        appendEvent(request.runId, requestId, 'human.tool.executed', 'The claimed reviewer reported successful local tool execution.', { name: tool.name, artifactId: tool.artifactId, operation: tool.operation });
-      });
-      changed();
-    },
     async executeHumanTool(requestId: string, { reviewerId, toolName, arguments: args = {}, signal }: { reviewerId: unknown; toolName: string; arguments?: unknown; signal?: AbortSignal }) {
       ensureOpen();
       const first = requestData(requestId);
@@ -710,8 +566,9 @@ export function createBroker({ repoPath, stateDir, repoId = 'demo', executors, w
         ensureOpen();
         const current = requestData(requestId);
         if (!current || current.profile.kind !== 'human' || current.status !== 'WAITING_HUMAN') throw new Error('Request is not waiting for a human review.');
+        if (current.configManifest?.version !== 2) throw new Error('Historical reviews are available for result lookup only.');
         if (!reviewerId || current.claimedBy !== reviewerId) throw new Error('Only the reviewer who claimed this request can use its tools.');
-        if (current.workspace.mode === 'lock' && !ownerAlive(ownerData(current.runId))) throw new Error('A lock review requires its monitoring worker to remain alive.');
+        if (!ownerAlive(ownerData(current.runId))) throw new Error('An in-place review requires its monitoring worker to remain alive.');
         return current;
       };
       const request = assertClaim();
@@ -723,15 +580,8 @@ export function createBroker({ repoPath, stateDir, repoId = 'demo', executors, w
         // remains mandatory because configuration loading and tool execution can mutate it.
         workspace.signal.throwIfAborted();
         inputsValidated = true;
-        if (!request.configManifest) {
-          if (Object.values(request.artifactTypes).some(type => type.custom)) throw codedError('Stored TS Artifact configuration has no tool manifest.', 'WORKSPACE_ARTIFACT_MISMATCH');
-          const expected = await readStoredArtifactScope({ repoPath: workspace.descriptor.path, criticId: request.criticId });
-          if (!expected || expected.profile.kind !== 'human' || !isDeepStrictEqual(expected.artifactTypes, request.artifactTypes) || !isDeepStrictEqual(expected.artifacts, request.artifacts) || !isDeepStrictEqual(expected.artifactGroups ?? [], request.artifactGroups ?? [])) {
-            throw codedError('Stored Artifact tools do not match the reviewed workspace configuration.', 'WORKSPACE_ARTIFACT_MISMATCH');
-          }
-        }
         const registry = await createReviewTools({
-          worktreePath: workspace.descriptor.path, artifacts: request.artifacts, artifactGroups: request.artifactGroups, artifactTypes: request.artifactTypes,
+          worktreePath: workspace.descriptor.path, artifacts: request.artifacts,
           configManifest: request.configManifest, criticId: request.criticId, audience: 'human',
           runDir: path.resolve(stateDir, 'runs', request.runId, request.id, 'human-tools'), signal: workspace.signal,
         });
@@ -768,6 +618,7 @@ export function createBroker({ repoPath, stateDir, repoId = 'demo', executors, w
       if (first) reconcile(first.runId);
       const request = requestData(requestId);
       if (!request || request.profile.kind !== 'human' || request.status !== 'WAITING_HUMAN') throw new Error('Request is not waiting for a human review.');
+      if (request.configManifest?.version !== 2) throw new Error('Historical reviews are available for result lookup only.');
       if (!reviewerId || request.claimedBy !== reviewerId) throw new Error('Only the reviewer who claimed this request can submit its result.');
       if (!request.notifiedAt) throw new Error('Human alarm delivery is still pending.');
       let workspace: WorkspaceHandle | undefined;
@@ -776,14 +627,13 @@ export function createBroker({ repoPath, stateDir, repoId = 'demo', executors, w
         workspace = await workspaceAdapter.reopenWorkspace(request.workspace);
         // Reopening validates input under its integrity policy. No asynchronous work or
         // user code runs between this boundary and committing the submitted result.
-        assertGeneratedReviewInputs(request);
         workspace.signal.throwIfAborted(); ensureOpen();
         inputsValidated = true;
         transaction(() => {
           const current = required(requestData(requestId), 'Request');
           if (current.status !== 'WAITING_HUMAN') throw new Error('This human review has already completed or failed.');
           if (current.claimedBy !== reviewerId) throw new Error('Only the reviewer who claimed this request can submit its result.');
-          if (current.workspace.mode === 'lock' && !ownerAlive(ownerData(current.runId))) throw new Error('A lock review requires its monitoring worker to remain alive.');
+          if (!ownerAlive(ownerData(current.runId))) throw new Error('An in-place review requires its monitoring worker to remain alive.');
           required(workspace, 'Workspace').signal.throwIfAborted();
           finishWithin(requestId, { result: validated });
         });

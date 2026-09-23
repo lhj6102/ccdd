@@ -1,5 +1,8 @@
 # Remote Human review
 
+Historical plan, superseded by the [in-place workspace contract](../contracts.md#workspace-contract).
+Remote workspace transfer has been removed; reviews use a user-provided local workspace.
+
 ## User requirements
 
 Human reviewers can review from another computer by receiving the complete fixed

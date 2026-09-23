@@ -29,15 +29,13 @@ const artifacts = computed(() => new Map(graph.value?.artifacts.map(artifact => 
 const requests = computed(() => new Map(data.value?.requests.map(request => [request.id, request]) ?? []));
 const selectedArtifact = computed(() => artifacts.value.get(selectedArtifactId.value));
 const selectedCritics = computed(() => graph.value?.critics.filter(critic => critic.target === selectedArtifactId.value) ?? []);
-const selectedMembers = computed(() => selectedArtifact.value?.kind === 'group'
-  ? selectedArtifact.value.members.flatMap(id => artifacts.value.get(id) ? [artifacts.value.get(id)!] : []) : []);
-const containingGroups = computed(() => graph.value?.artifacts.filter(artifact => artifact.kind === 'group' && artifact.members.includes(selectedArtifactId.value)) ?? []);
-const groupCount = computed(() => graph.value?.artifacts.filter(artifact => artifact.kind === 'group').length ?? 0);
+const selectedRelations = computed(() => graph.value?.edges.filter(edge => edge.source === selectedArtifactId.value || edge.target === selectedArtifactId.value) ?? []);
+const cycleCount = computed(() => graph.value?.edges.filter(edge => edge.cyclic).length ?? 0);
 const partial = computed(() => data.value?.run.scope?.kind === 'critic');
 // Request state does not affect layout. Keeping this key stable preserves the user's viewport during polling.
 const topologyKey = computed(() => graph.value ? JSON.stringify([
   props.projectId, props.runId, vertical.value,
-  [...graph.value.artifacts].sort((a, b) => a.id.localeCompare(b.id)).map(artifact => [artifact.id, artifact.kind ?? 'artifact', [...artifact.criticIds].sort()]),
+  [...graph.value.artifacts].sort((a, b) => a.id.localeCompare(b.id)).map(artifact => [artifact.id, artifact.path, [...artifact.criticIds].sort()]),
   [...graph.value.edges].sort((a, b) => a.source.localeCompare(b.source) || a.target.localeCompare(b.target)).map(edge => [edge.source, edge.target, [...edge.criticIds].sort()]),
 ]) : '');
 const nodes = computed<Node<ArtifactNodeData>[]>(() => drawing.value?.nodes.flatMap(position => {
@@ -56,11 +54,12 @@ const nodes = computed<Node<ArtifactNodeData>[]>(() => drawing.value?.nodes.flat
 }) ?? []);
 const edges = computed<Edge<ArtifactEdgeData>[]>(() => drawing.value?.edges.map(route => {
   const connected = route.source === selectedArtifactId.value || route.target === selectedArtifactId.value;
+  const relation = graph.value?.edges.find(edge => edge.source === route.source && edge.target === route.target);
   return {
     id: JSON.stringify([route.source, route.target]), source: route.source, target: route.target,
     sourceHandle: 'source', targetHandle: 'target', type: 'artifact', selectable: false, focusable: false, deletable: false, updatable: false,
     markerEnd: { type: MarkerType.ArrowClosed, color: connected ? '#8da388' : '#bcc5b6', width: 12, height: 12 },
-    data: { route, connected },
+    data: { route, connected, cyclic: Boolean(relation?.cyclic), kinds: [...new Set(relation?.relations.map(edge => edge.kind))] },
   };
 }) ?? []);
 
@@ -68,11 +67,12 @@ function criticLabel(critic: Critic): string {
   return criticPresentation(critic, critic.requestId ? requests.value.get(critic.requestId) : undefined).label;
 }
 function artifactLabel(artifact: Artifact): string {
+  if (artifact.validationStatus === 'INCOMPLETE') return 'Required evidence missing';
   if (artifact.validationStatus === 'STALE') return 'Needs revalidation';
   if (artifact.status === 'BLOCKED' && graph.value?.critics.some(critic => critic.target === artifact.id && criticBlocked(critic))) return 'Blocked by failure';
   return { BASIS: 'Basis Artifact', UNREVIEWED: 'Unreviewed', BLOCKED: 'Awaiting dependencies', QUEUED: 'Queued', RUNNING: 'Running', WAITING_HUMAN: 'Awaiting Human', GREEN: 'Passed', RED: 'Criteria not met', ERROR: 'Execution error' }[artifact.status];
 }
-function artifactAccessibleLabel(artifact: Artifact): string { return `${artifact.id}${artifact.kind === 'group' ? `, group, members: ${artifact.members.length}` : ''}, ${artifactLabel(artifact)}, ${artifact.total ? `Critics passed: ${artifact.passed}/${artifact.total}` : 'No Critics'}`; }
+function artifactAccessibleLabel(artifact: Artifact): string { return `${artifact.id}, folder ${artifact.path || '.'}, ${artifactLabel(artifact)}, ${artifact.passed}/${artifact.total} Critics passed`; }
 function criticBlocked(critic: Critic): boolean {
   return Boolean(critic.requestId && requests.value.get(critic.requestId)?.blockedByFailure);
 }
@@ -186,7 +186,7 @@ defineExpose({ refresh });
     <p v-else-if="layingOut && !drawing" class="graph-placeholder">Laying out Artifact relationships…</p>
     <template v-else-if="graph && drawing">
       <header class="graph-context">
-        <span>Artifacts: {{ graph.artifacts.length - groupCount }} <template v-if="groupCount"><span class="graph-separator">·</span> Groups: {{ groupCount }} </template><span class="graph-separator">·</span> Critics: {{ graph.critics.length }}</span>
+        <span>Artifacts: {{ graph.artifacts.length }} <template v-if="cycleCount"><span class="graph-separator">·</span> Cycle edges: {{ cycleCount }} </template><span class="graph-separator">·</span> Critics: {{ graph.critics.length }}</span>
         <span class="muted"><span v-if="partial" class="graph-partial">Selected Critic Run</span>snapshot <span :title="data?.run.snapshotHash ?? undefined">{{ data?.run.snapshotHash?.slice(0, 10) ?? 'Unavailable' }}</span></span>
       </header>
       <div class="graph-viewport" role="region" aria-label="Artifact graph. Drag to pan and use the zoom buttons to change the scale.">
@@ -204,9 +204,8 @@ defineExpose({ refresh });
       </div>
       <div class="graph-legend"><span>Dependency Artifact <span aria-hidden="true">→</span><span class="sr-only">to</span> Review target</span><span class="graph-state-legend"><span class="requested">Requested</span><span class="running">In review</span><span class="success">Succeeded</span><span class="failure">Failed</span></span></div>
       <section v-if="selectedArtifact" class="graph-detail" :aria-label="`${selectedArtifact.id} Critics`">
-        <header class="graph-detail-heading"><div><h2>{{ selectedArtifact.id }} <span>Critics</span></h2><p v-if="selectedArtifact.kind === 'group'">Artifact group <span class="graph-separator">·</span> Members: {{ selectedArtifact.members.length }}</p><p v-else>{{ selectedArtifact.kind === 'generated' ? 'Generated data' : selectedArtifact.path }} <span class="graph-separator">·</span> {{ selectedArtifact.type }}</p></div><span class="graph-detail-count">{{ selectedArtifact.total ? `${selectedArtifact.passed} / ${selectedArtifact.total} passed` : 'No Critics' }}</span></header>
-        <div v-if="selectedMembers.length" class="graph-members" aria-label="Group members"><span>Members</span><button v-for="member in selectedMembers" :key="member.id" type="button" class="graph-member" @click="selectedArtifactId = member.id"><strong>{{ member.id }}</strong><span v-if="member.kind === 'group'">Group</span><span class="card-status" :class="member.status.toLowerCase()">{{ artifactLabel(member) }}</span></button><p>Verdicts for the group and its members are tracked independently.</p></div>
-        <div v-if="containingGroups.length" class="graph-members graph-memberships" aria-label="Member of"><span>Member of</span><button v-for="group in containingGroups" :key="group.id" type="button" class="graph-member" @click="selectedArtifactId = group.id">{{ group.id }}</button></div>
+        <header class="graph-detail-heading"><div><h2>{{ selectedArtifact.id }} <span>Critics</span></h2><p>Folder {{ selectedArtifact.path || '.' }}</p></div><span class="graph-detail-count">{{ selectedArtifact.passed }} / {{ selectedArtifact.total }} passed</span></header>
+        <ul v-if="selectedRelations.length" class="artifact-references" aria-label="Artifact relations"><li v-for="edge in selectedRelations" :key="`${edge.source}/${edge.target}`"><strong>{{ edge.source }} → {{ edge.target }}</strong><span>{{ edge.relations.map(relation => relation.kind + (relation.name ? `: ${relation.name}` : '')).join(', ') }}{{ edge.cyclic ? ' · Cycle' : '' }}</span></li></ul>
         <p v-if="!selectedCritics.length" class="graph-basis-note">No Critics are registered to review this Artifact.</p>
         <ul v-else class="graph-critic-list">
           <li v-for="critic in selectedCritics" :key="critic.id">

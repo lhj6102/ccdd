@@ -4,7 +4,6 @@ export interface SafeToolFailure { code: string; message: string }
 const failures: Record<string, string> = {
   ABORTED: 'Artifact tool diagnosis was cancelled.',
   WORKSPACE_CHANGED: 'The workspace changed during Artifact tool diagnosis.',
-  WORKSPACE_CACHE_TAMPERED: 'The workspace changed during Artifact tool diagnosis.',
   WORKSPACE_ARTIFACT_MISMATCH: 'Recorded Artifact tools do not match the snapshot configuration.',
   ARTIFACT_TOOLS_UNAVAILABLE: 'A Critic references an Artifact with no tools for its reviewer kind. Register the corresponding agentTools or humanTools.',
   HUMAN_TOOL_TIMEOUT: 'The registered Human tool exceeded its configured time limit.',
@@ -70,7 +69,7 @@ export function safeToolFailure(error: unknown, aborted = false): SafeToolFailur
 
 export function toolFailureStage(error: unknown, fallback: ArtifactToolCheckStage): ArtifactToolCheckStage {
   const code = safeToolFailure(error).code;
-  if (code === 'WORKSPACE_CHANGED' || code === 'WORKSPACE_CACHE_TAMPERED') return 'input-integrity';
+  if (code === 'WORKSPACE_CHANGED') return 'input-integrity';
   if (error instanceof ToolResultError || code === 'ARTIFACT_TOOL_RESULT_INVALID') return 'normalize-result';
   return fallback;
 }

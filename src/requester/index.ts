@@ -1,93 +1,22 @@
-import { readFile, lstat } from 'node:fs/promises';
-import { join } from 'node:path';
-import { readWorkspaceConfig, validateRelativePath } from '../broker/config.js';
+import { readWorkspaceConfig, criticIdentifier } from '../broker/config.js';
 import { assertArtifactAudience } from '../artifacts/types.js';
-import { createArtifactViewer, createArtifactTools } from '../artifacts/index.js';
-import { createHumanArtifactTools } from '../artifacts/human.js';
 import type { ReviewEnvelope, RepoConfig } from '../contracts.js';
-import { describeReviewTools } from '../tools/runner.js';
-import { resolveArtifactScope } from '../artifacts/groups.js';
-import { prepareArtifactInputs } from '../artifacts/sources.js';
+import { resolveArtifactScope } from '../artifacts/scope.js';
 
-/** Repo-side adapter: prepare explicit envelopes from one prepared workspace definition. */
-export async function prepareReviewRequests({ repoPath, repoId = 'demo', snapshotHash, criticId, allowLegacyTools = false, preparedConfig }: { repoPath: string; repoId?: unknown; snapshotHash: unknown; criticId?: unknown; allowLegacyTools?: boolean; preparedConfig?:RepoConfig }): Promise<ReviewEnvelope[]> {
+/** Bind requests to the same static definitions and exact Artifact scope used for validation. */
+export async function prepareReviewRequests({ repoPath, repoId = 'local', snapshotHash, criticId, preparedConfig }: { repoPath: string; repoId?: unknown; snapshotHash: unknown; criticId?: unknown; preparedConfig?: RepoConfig }): Promise<ReviewEnvelope[]> {
   if (typeof repoId !== 'string' || !repoId.trim() || repoId.length > 200) throw new Error('A registered repoId is required (maximum 200 characters).');
   if (typeof snapshotHash !== 'string' || !/^[a-f0-9]{64}$/.test(snapshotHash)) throw new Error('snapshotHash must be a full workspace SHA-256 content hash.');
-  if (criticId !== undefined && (typeof criticId !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(criticId))) {
-    throw new Error('criticId must be a non-empty safe Critic identifier.');
-  }
-  const snapshot = preparedConfig ? {config:preparedConfig} : await readWorkspaceConfig(repoPath);
-  if (!snapshot.config.artifactInputs) snapshot.config = await prepareArtifactInputs(snapshot.config, repoPath, 'review');
-  const critics = criticId === undefined ? snapshot.config.critics : snapshot.config.critics.filter(critic => critic.id === criticId);
-  if (!critics.length) throw new Error(`Unknown Critic in the requested snapshot: ${criticId}`);
-  const requests: ReviewEnvelope[] = critics.map(critic => structuredClone({
-    repoId,
-    snapshotHash,
-    criticId: critic.id,
-    title: critic.title,
-    ...resolveArtifactScope(snapshot.config.artifacts, [critic.target, ...critic.deps], snapshot.config.artifactInputs),
-    artifactTypes: snapshot.config.artifactTypes,
-    ...(snapshot.config.configManifest ? {configManifest:snapshot.config.configManifest} : {}),
-    payload: critic.payload,
-    profile: critic.profile,
-    target: critic.target,
-    deps: critic.deps,
-  }));
-  for (const request of requests) {
-    if (request.profile.kind === 'runtime') continue;
-    if (request.configManifest) {
-      const tools=describeReviewTools({artifacts:request.artifacts,configManifest:request.configManifest,audience:request.profile.kind});
-      for(const artifact of request.artifacts){
-        if (artifact.kind === 'generated') {
-          if (!tools.some(tool => tool.artifactId === artifact.id && tool.metadata?.artifactKind === 'data')) throw new Error(`Generated Artifact ${artifact.id} has no usable ${request.profile.kind} data tools.`);
-          continue;
-        }
-        const info=await lstat(join(repoPath,artifact.path));
-        if(!tools.some(tool=>tool.artifactId===artifact.id&&(!tool.metadata?.artifactKind||tool.metadata.artifactKind==='any'||tool.metadata.artifactKind==='file'&&info.isFile()||tool.metadata.artifactKind==='directory'&&info.isDirectory())))throw Object.assign(new Error(`Artifact ${artifact.id} has no usable ${request.profile.kind} tools.`),{code:'ARTIFACT_TOOLS_UNAVAILABLE'});
-      }
-      continue;
-    }
-    assertArtifactAudience(request, { allowLegacy: allowLegacyTools });
-    const tools = request.profile.kind === 'human'
-      ? (await createHumanArtifactTools({ worktreePath: repoPath, artifacts: request.artifacts, artifactTypes: request.artifactTypes, allowLegacy: allowLegacyTools })).tools
-      : createArtifactTools(await createArtifactViewer({ worktreePath: repoPath, artifacts: request.artifacts, artifactTypes: request.artifactTypes })).tools;
-    for (const artifact of request.artifacts) {
-      if (!tools.some(tool => 'artifactId' in tool ? tool.artifactId === artifact.id : tool.name === `read_${artifact.id}` || tool.name === `list_${artifact.id}`)) {
-        throw new Error(`Artifact ${artifact.id} has no usable ${request.profile.kind} tools for its file or directory shape.`);
-      }
-    }
-  }
-  return requests;
-}
-
-/** Reopen the declared observation scope of a stored review, including historical snapshots.
- * This is never used for admission, scheduling or inferring a legacy target. */
-export async function readStoredArtifactScope({ repoPath, criticId }: { repoPath: string; criticId: string }): Promise<Pick<ReviewEnvelope, 'artifacts' | 'artifactGroups' | 'artifactTypes' | 'profile'>> {
-  const object = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === 'object' && !Array.isArray(value);
-  const raw: unknown = JSON.parse(await readFile(join(repoPath, 'ccdd.config.json'), 'utf8'));
-  if (!object(raw) || !object(raw.artifacts) || !object(raw.artifactTypes) || !Array.isArray(raw.critics)) throw new Error('Invalid stored Artifact configuration.');
-  const matches = raw.critics.filter(critic => object(critic) && critic.id === criticId);
-  if (matches.length !== 1 || !object(matches[0])) throw new Error('Unknown stored Critic.');
-  const critic = matches[0];
-  if (!object(critic.profile) || !['agent', 'runtime', 'human'].includes(String(critic.profile.kind))) throw new Error('Invalid stored Critic profile.');
-  const legacy = !Object.hasOwn(critic, 'target') && Object.hasOwn(critic, 'dependsOn');
-  let ids: unknown;
-  if (legacy) ids = critic.artifacts;
-  else {
-    const { config } = await readWorkspaceConfig(repoPath);
-    const definition = config.critics.find(item => item.id === criticId)!;
-    const scope = { ...resolveArtifactScope(config.artifacts, [definition.target, ...definition.deps]), artifactTypes: config.artifactTypes, profile: definition.profile };
-    await createArtifactViewer({ worktreePath: repoPath, artifacts: scope.artifacts, artifactTypes: scope.artifactTypes });
-    return scope;
-  }
-  if (!Array.isArray(ids) || !ids.length || new Set(ids).size !== ids.length || ids.some(id => typeof id !== 'string' || !Object.hasOwn(raw.artifacts as object, id))) throw new Error('Invalid stored Artifact references.');
-  const definitions = raw.artifacts;
-  const artifacts = (ids as string[]).map(id => {
-    const artifact = definitions[id];
-    if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(id) || !object(artifact) || typeof artifact.type !== 'string' || !Object.hasOwn(raw.artifactTypes as object, artifact.type)) throw new Error('Invalid stored Artifact definition.');
-    return { id, type: artifact.type, path: validateRelativePath(artifact.path) };
+  if (criticId !== undefined && (typeof criticId !== 'string' || !criticIdentifier.test(criticId))) throw new Error('Use an Artifact/local-Critic identifier.');
+  const config = preparedConfig ?? (await readWorkspaceConfig(repoPath)).config;
+  const critics = criticId === undefined ? config.critics : config.critics.filter(c => c.id === criticId);
+  if (criticId !== undefined && !critics.length) throw new Error(`Unknown Critic: ${criticId}`);
+  return critics.map(critic => {
+    const request: ReviewEnvelope = structuredClone({ repoId, snapshotHash, criticId: critic.id, title: critic.title,
+      ...resolveArtifactScope(config.artifacts, [critic.target, ...critic.deps]), configManifest: config.configManifest,
+      references: critic.references, requiredObservations: [critic.target, ...critic.deps],
+      payload: critic.payload, profile: critic.profile, target: critic.target, deps: critic.deps });
+    assertArtifactAudience(request);
+    return request;
   });
-  const scope = { artifacts, artifactTypes: raw.artifactTypes as ReviewEnvelope['artifactTypes'], profile: critic.profile as unknown as ReviewEnvelope['profile'] };
-  await createArtifactViewer({ worktreePath: repoPath, artifacts: scope.artifacts, artifactTypes: scope.artifactTypes });
-  return scope;
 }

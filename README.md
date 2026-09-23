@@ -1,94 +1,101 @@
 # CCDD
 
-[![npm: @ccdd/project](https://img.shields.io/npm/v/@ccdd/project?logo=npm&label=%40ccdd%2Fproject)](https://www.npmjs.com/package/@ccdd/project)
-[![CDD concept](https://img.shields.io/badge/CDD-Concept-3976c7)](https://cdd.boardsketch.com)
+**Let verification define the project.** Give each Artifact its own criteria and the tools a reviewer needs to inspect it. An Artifact can be code, tests, a specification, an image or any other folder of project material.
 
-**Check that the pieces of your project fit together.**
+Put a `ccdd.json` in that folder. It owns the Artifact's name, view tools and Critics. CCDD finds those declarations, connects references and collects actual review evidence.
 
-A project has requirements, designs, tests, and implementations. CCDD connects these pieces to the checks that review them. An AI agent can compare a design with its requirements, a person can inspect an image, and a test runner can check an implementation.
-
-You choose the materials, the review criteria, and the tools reviewers can use. CCDD keeps track of what was reviewed and which checks are still needed.
-
-## How it fits together
-
-**Blue dashed lines: configuration. Orange solid lines: requests and reviews.**
-
-![CCDD: a Critic DAG, customizable Artifact types and tools, Validation, and Pi-based AI agents, people, and test runners.](.github/assets/how-it-fits-together.png)
-
-Three terms explain the picture:
-
-| Term | Meaning | Example |
-| --- | --- | --- |
-| **Artifact** | A named file, folder, captured data value, or group of materials to review. | `spec.md`, `tests/`, an image, or a generated scenario. |
-| **Critic** | A check with one target, reference materials, and a reviewer. | “Does this design meet these requirements?” |
-| **Artifact tool** | A way for a reviewer to inspect an Artifact. | Read text, view an image, or open a desktop application. |
-
-Each Critic declares its target and references. These relationships form a directed acyclic graph, or **DAG**: checks can branch and join, but cannot depend on themselves through a cycle. Design and Tests connect to Implementation through separate Critic lines. Requirements are an explicitly accepted starting point in this example.
-
-## What you do
-
-1. **Name your materials.** Give each Artifact an ID, a type, and a file/folder path or a source for generated data. Groups collect existing Artifacts.
-2. **Connect tools.** Use the optional default tools or write your own `metadata` and `execute` function. Register them by Artifact type in `ccdd.config.ts`.
-3. **Define checks.** For each Critic, choose the target, its references, the review criteria, and an Agent, Human, or Runtime reviewer.
-4. **Request a review.** Read the findings, update your project, and request another check when needed.
-
-For example, a document tool registered as `read` becomes `read_spec` when connected to the `spec` Artifact. CCDD gives the Agent its name, description, and input schema. When the Agent calls it, CCDD invokes your local `execute` function against the fixed review input and returns the content to the Agent.
-
-Artifact types act as plugin slots through explicit registration. Importing a tool library does not register or run its tools. Agent and Human tools are registered separately; Runtime reviewers execute configured Node tests against the declared inputs.
-
-## Try your first review
-
-CCDD supports **Node.js 22 LTS (22.19.0 or later)**. Use the latest patch of a supported LTS release.
-
-For published packages, install:
-
-```sh
-npm install --ignore-scripts @ccdd/core @ccdd/project
+```text
+project/
+  why/ccdd.json
+  spec/ccdd.json
+  tests/ccdd.json
+  implementation/ccdd.json
 ```
 
-Follow [Your first review](docs/getting-started.md) for a complete, small example that runs a real test without an AI account. It also covers installation from local packages when a version has not been published.
+A Critic can ask an Agent to compare Spec with Why, ask a person to compare two images, or run tests against an implementation. It belongs to the Artifact it evaluates. References such as `{spec}` connect it to the other Artifacts it uses.
 
-Once your project has a configuration, the usual loop is:
+```mermaid
+flowchart LR
+  subgraph Project[Your project]
+    Why[Why] -. instruction .-> Spec[Spec]
+    Spec -. instruction .-> Tests[Tests]
+    Tests -. mount / instruction .-> Implementation[Implementation]
+  end
+  Project -. folder declarations .-> CCDD
+  CCDD --> Agent[Agent review]
+  CCDD --> Human[Human review]
+  CCDD --> Runtime[Runtime tests]
+  Agent --> Evidence[Actual evidence]
+  Human --> Evidence
+  Runtime --> Evidence
+  Evidence --> CCDD
+  style Project fill:#eef6ff,stroke:#5c83aa
+  style CCDD fill:#eef9ef,stroke:#588060
+```
+
+These relationships define required input and verification, not execution order. Mutual dependencies are allowed: both Critics may run together, and final validation requires both matching results. Child Artifact folders are automatic dependencies. Logical `mounts` connect other folders without copies or symlinks.
+
+## Start with a runtime check
+
+Use Node.js 22 LTS, version 22.19.0 or later.
 
 ```sh
-npx ccdd-project status
+npm install --ignore-scripts @ccdd/core@^4 @ccdd/project@^4
+```
+
+Inside an Artifact folder, create `ccdd.json`:
+
+```json
+{
+  "name": "implementation",
+  "critics": [{
+    "id": "tests",
+    "title": "Pass the implementation tests",
+    "profile": { "kind": "runtime", "command": "node", "args": ["--test", "check.test.mjs"] },
+    "payload": { "instruction": "Run the tests for {implementation}." }
+  }]
+}
+```
+
+Add your actual `check.test.mjs`, then run from the workspace root:
+
+```sh
+npx ccdd-project config check
 npx ccdd-project plan implementation --recursive
 npx ccdd-project verify implementation --recursive --wait
-npx ccdd-project history implementation
+npx ccdd-project status implementation
 ```
 
-`status` and `plan` explain what is needed without starting reviews. `verify --recursive` includes any required earlier checks. To review only the selected scope, omit `--recursive`; blocked checks are reported as incomplete.
+The [getting-started guide](docs/getting-started.md) includes a complete runnable example. Version 4 is a breaking change; existing projects should follow the [migration guide](docs/migration-v4.md).
 
-## What you get back
+## Read the result
 
-A completed review contains a **verdict, a summary, and concrete evidence**. GREEN means that Critic's criteria were met; RED means they were not. An execution problem is reported as ERROR. All required Critics must pass before their Artifact satisfies a dependent check.
+Every actual review returns a verdict, summary and concrete evidence. GREEN means its criteria were met; RED means they were not. Execution problems produce ERROR. Final validation needs matching PASS evidence for all required Critics and dependencies. A folder without Critics stays UNREVIEWED unless explicitly declared `basis: true`.
 
-CCDD can reuse an actual passing review when its criteria, target, and direct reference materials still match and its dependencies are satisfied. An unchanged intermediate Artifact can therefore prevent unnecessary downstream reviews.
+An individual check runs its selected Critics immediately. If other required evidence is missing, their results are saved and the request is INCOMPLETE. Add `--recursive` to include those other evaluations. CCDD reuses matching actual evidence and computes freshness when queried; it does not store stale flags.
 
-Reviews use a fixed copy of the project by default. Records and generated output live outside the reviewed project. You can keep editing the original while a copied review runs. Reviewers inspect and judge; you or your coding tools make the changes.
+Reviews run in the workspace you supply. Keep it unchanged until completion, including Human waiting. Records, caches and generated output live outside it. To keep editing elsewhere, create your own worktree and pass it with `--repo`.
 
-## Choose your next step
+## Next steps
 
-- [Write an Artifact tool](examples/custom-text-reader/README.md) using the public tool contract.
-- [Use default text, file, image, and desktop tools](packages/default-tools/README.md).
-- [Review a group of materials](examples/artifact-groups/README.md), such as an effect description and its preview image.
-- [Review generated scenario data](docs/generated-artifacts.md) through tools that read a fixed captured value.
-- [Use Agent and Human reviewers](docs/reviewers.md), including credentials and result submission.
-- [Explore the demo](docs/demo.md): Why → Spec → Tests → Implementation.
-- [Look up commands, reuse rules, and exit codes](docs/project-validation.md).
+- [Define a custom view script](examples/custom-text-reader/README.md) with JSON stdin/stdout, using any language.
+- [Register optional text, image and desktop tools](packages/default-tools/README.md).
+- [Compose folders and mounts](examples/artifact-folders/README.md), including coding-style and blind image comparison Critics.
+- [Compute views on demand](examples/computed-views/README.md) from scenario material.
+- [Configure Agent and Human reviewers](docs/reviewers.md).
+- [Try Why → Spec → Tests → Implementation](docs/demo.md).
+- [Look up commands and evidence rules](docs/project-validation.md).
 
-An optional local monitor shows current-input checks and saved reviews. Start it with `npx ccdd-project monitor`.
+The optional local monitor shows folders, relationships, cycles, review progress and saved results. Start it with `npx ccdd-project monitor`.
 
-## Packages and development
-
-| Package | Purpose |
+| Package | Responsibility |
 | --- | --- |
-| `@ccdd/core` | Define Artifacts, Critics, and tools. |
-| `@ccdd/project` | Run the CLI, manage reviews, and view their history. |
-| `@ccdd/default-tools` | Optional ready-made Artifact tools. |
+| `@ccdd/core` | Public definitions and logical path resolution. |
+| `@ccdd/project` | Validation, CLI, Broker, Executors and monitor. |
+| `@ccdd/default-tools` | Optional common view scripts; no automatic registration. |
 
-The repository, examples, CLI, monitor, and built-in review instructions use English. See [Contributing](CONTRIBUTING.md) for setup and checks, [the context map](CONTEXT-MAP.md) for architecture, and [release instructions](docs/releases.md) for packaging and publication.
+See [Contributing](CONTRIBUTING.md), [the context map](CONTEXT-MAP.md), [detailed contracts](docs/contracts.md) and [release instructions](docs/releases.md). Repository content and review prompts use English.
 
 ## License
 
-Licensed under the [MIT License](LICENSE).
+[MIT](LICENSE).

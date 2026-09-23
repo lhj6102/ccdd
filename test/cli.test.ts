@@ -1,253 +1,100 @@
-import test, {type TestContext} from 'node:test';
+import test from 'node:test';
 import assert from 'node:assert/strict';
-import {mkdtemp,readFile,writeFile,mkdir,symlink} from 'node:fs/promises';
-import {tmpdir} from 'node:os';
-import {join} from 'node:path';
-import {fileURLToPath} from 'node:url';
-import {execFile,fork} from 'node:child_process';
-import {promisify} from 'node:util';
-import {setTimeout as delay} from 'node:timers/promises';
-import {main} from '../src/cli.js';
-import {packageVersion} from '../src/runtime-paths.js';
-import {createBroker,type RunView} from '../src/broker/index.js';
-import {createExecutorRegistry} from '../src/executors/index.js';
-import {removeOwnedWorkspaceTree} from '../src/workspaces/index.js';
-import type {ArtifactReadResult} from '../src/artifacts/index.js';
-import type {CriticDefinition,RepoConfig} from '../src/contracts.js';
+import { readFile, writeFile, symlink, rm } from 'node:fs/promises';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import { setTimeout as delay } from 'node:timers/promises';
+import { artifactFixture, fixtureViews, runtimeCritic } from './helpers/artifacts.js';
+import { createBroker } from '../src/broker/index.js';
+import { projectRun } from '../src/project/store.js';
+import { main } from '../src/project/cli.js';
 
-interface CliRun extends RunView {wait?: {completed: boolean}}
-const present = <T>(value:T|null|undefined):T=>{assert.ok(value!=null);return value;};
-
-const cli=fileURLToPath(new URL('../src/cli.js',import.meta.url));
-async function invoke<T=CliRun>(args:string[]){
-  let output='',errors='';
-  const code=await main(args,{stdout:{write:text=>{output+=text;}},stderr:{write:text=>{errors+=text;}}});
-  return {code,output,errors,data:JSON.parse(output) as T};
+const cli = fileURLToPath(new URL('../src/project/cli.js', import.meta.url));
+async function separate(args: string[]) {
+  try { const { stdout } = await promisify(execFile)(process.execPath, [cli, ...args], { env: { ...process.env, NODE_TEST_CONTEXT: '' }, timeout: 20000 }); return { code: 0, data: JSON.parse(stdout) }; }
+  catch (error: any) { if (typeof error.stdout !== 'string' || !error.stdout.trim()) throw error; return { code: error.code, data: JSON.parse(error.stdout) }; }
 }
-async function separate<T=CliRun>(args:string[]){
-  try{const result=await promisify(execFile)(process.execPath,[cli,...args],{env:{...process.env,NODE_TEST_CONTEXT:''}});return {code:0,data:JSON.parse(result.stdout) as T};}
-  catch(error){
-    if(!(error instanceof Error)||!('stdout' in error)||typeof error.stdout!=='string')throw error;
-    return {code:'code' in error?error.code:undefined,data:JSON.parse(error.stdout) as T};
-  }
+async function until<T>(read: () => T | Promise<T>, ready: (value: T) => boolean): Promise<T> {
+  for (let i = 0; i < 500; i++) { const value = await read(); if (ready(value)) return value; await delay(20); }
+  throw new Error('Detached worker did not settle.');
 }
-async function until<T>(read:()=>T|Promise<T>,predicate:(value:T)=>unknown,timeout=10000):Promise<T>{
-  const deadline=Date.now()+timeout;
-  let value:T;
-  do{value=await read();if(predicate(value))return value;await delay(30);}while(Date.now()<deadline);
-  assert.fail(`Timed out: ${JSON.stringify(value)}`);
-}
-async function fixture(t:TestContext,{human=false,slow=0,red=false,chain=false}={}){
-  const root=await mkdtemp(join(tmpdir(),'ccdd-cli-v3-')),repo=join(root,'repo'),state=join(root,'state');
-  await mkdir(repo);
-  await writeFile(join(repo,'why.md'),'Review basis.');
-  await writeFile(join(repo,'test.mjs'),`import test from 'node:test';import assert from 'node:assert/strict';import {setTimeout as delay} from 'node:timers/promises';import {writeFile} from 'node:fs/promises';import {join} from 'node:path';test('actual runtime',async()=>{await delay(${slow});await writeFile(join(process.env.CCDD_OUTPUT_DIR,'result.txt'),'isolated output');assert.equal(${red?1:0},0);});`);
-  const critic:CriticDefinition={id:'runtime',title:'Runtime',target:'tests',deps:[],profile:{kind:'runtime',command:'node',args:['--test','test.mjs']},payload:{instruction:'Execute actual tests.'}};
-  const humanCritic:CriticDefinition={id:'human',title:'Human review',target:'why',deps:[],profile:{kind:'human'},payload:{instruction:'Check the basis.'}};
-  const config:RepoConfig={artifacts:{tests:{type:'code',path:'test.mjs'},why:{type:'text',path:'why.md'}},artifactTypes:{code:{viewer:'files',agentTools:{read:{},list:{}},humanTools:{read:{},list:{}}},text:{viewer:'text',agentTools:{read:{}},humanTools:{read:{}}}},critics:chain?[humanCritic,{...critic,deps:['why']}]:[human?humanCritic:critic]};
-  await writeFile(join(repo,'ccdd.config.json'),JSON.stringify(config));
-  const args=['--repo',repo,'--state-dir',state,'--json'];
-  t.after(async()=>{
-    let broker:ReturnType<typeof createBroker>|undefined;
-    try{
-      broker=createBroker({repoPath:repo,stateDir:state,repoId:'local'});
-      for(const run of broker.listRuns())if(!['GREEN','RED','ERROR'].includes(run.status))broker.cancel(run.id);
-      await until(()=>present(broker).listRuns(),runs=>runs.every(run=>!run.owner),5000);
-    }finally{await broker?.close();await removeOwnedWorkspaceTree(root);}
+async function fixture(t: Parameters<typeof artifactFixture>[0], { human = false, slow = 0, red = false } = {}) {
+  const data = await artifactFixture(t);
+  await data.write('a', { name: 'a', views: fixtureViews(), critics: [human ? { id: 'review', title: 'Human review', profile: { kind: 'human' }, payload: { instruction: 'Read {a}.' } } : runtimeCritic()] }, {
+    'check.test.mjs': `import test from 'node:test';import assert from 'node:assert/strict';import {setTimeout as delay} from 'node:timers/promises';import {writeFile} from 'node:fs/promises';test('actual runtime',async()=>{await delay(${slow});await writeFile(process.env.CCDD_OUTPUT_DIR+'/result.txt','actual output');assert.equal(${red ? 1 : 0},0);});`,
   });
-  const status=(id:string)=>invoke(['status',id,...args]).then(x=>x.data);
-  return {root,repo,state,args,status};
+  const args = ['--repo', data.repoPath, '--state-dir', data.stateDir, '--json'];
+  data.cleanup(async () => {
+    if (!(await readFile(join(data.stateDir, 'broker.sqlite')).catch(() => null))) return;
+    const broker = createBroker({ ...data, repoId: 'local' });
+    try { for (const run of broker.listRuns()) if (!['GREEN', 'RED', 'ERROR', 'INCOMPLETE'].includes(run.status)) broker.cancel(run.id); await until(() => broker.listRuns(), runs => runs.every(run => !run.owner)); } finally { await broker.close(); }
+  });
+  return { ...data, args };
 }
 
-test('npm bin symlink invokes CLI without starting a server',async t=>{
-  const dir=await mkdtemp(join(tmpdir(),'ccdd-bin-'));t.after(()=>removeOwnedWorkspaceTree(dir));
-  const bin=join(dir,'ccdd');await symlink(cli,bin);
-  const {stdout}=await promisify(execFile)(process.execPath,[bin,'help']);
-  assert.ok(stdout.includes(`CCDD ${packageVersion}`));assert.match(stdout,/No daemon/);assert.doesNotMatch(stdout,/ccdd serve/);
+test('installed-style bin symlink opens current Project help without a daemon', async t => {
+  const data = await artifactFixture(t), bin = join(data.root, 'ccdd-project'); await symlink(cli, bin);
+  const { stdout } = await promisify(execFile)(process.execPath, [bin, 'help']); assert.match(stdout, /CCDD Project/); assert.match(stdout, /--recursive/);
 });
 
-test('CLI requires explicit exclusive workspace modes and rejects removed options',async()=>{
-  for(const args of [['run'],['run','--lock','--copy'],['run','--copy','--commit','HEAD'],['serve'],['run','--copy','--timeout-ms','NaN']]){
-    const result=await invoke<{error:string}>([...args,'--json']);assert.equal(result.code,2);assert.ok(result.data.error);
+test('removed workspace modes, remote actions and global run syntax fail explicitly', async () => {
+  for (const args of [['verify', '--all', '--copy'], ['verify', '--all', '--lock'], ['remote-review'], ['run'], ['artifact', 'id', 'a']]) {
+    let output = ''; assert.equal(await main([...args, '--json'], { stdout: { write: text => { output += text; } }, stderr: { write() {} } }), 2); assert.ok(JSON.parse(output).error);
   }
 });
 
-test('real runtime succeeds or fails without Git, commit or HTTP server',async t=>{
-  for(const red of [false,true]){
-    const f=await fixture(t,{red});
-    const result=await invoke(['run','--copy','--critic','runtime','--wait',...f.args]);
-    assert.equal(result.code,red?1:0,result.output+result.errors);
-    assert.equal(result.data.requests.length,1);assert.equal(result.data.requests[0].predecessorId,undefined);
-    assert.equal(result.data.snapshotHash.length,64);assert.equal(result.data.workspace.mode,'copy');
-    assert.equal(present(result.data.requests[0].result).exitCode,red?1:0);
+test('real detached Runtime verification returns GREEN and RED without Git or a server', async t => {
+  for (const red of [false, true]) {
+    const data = await fixture(t, { red }), result = await separate(['verify', '--all', '--wait', ...data.args]);
+    assert.equal(result.code, red ? 1 : 0, JSON.stringify(result.data)); assert.equal(result.data.status, red ? 'RED' : 'GREEN');
+    assert.equal(result.data.requests[0].criticId, 'a/check'); assert.equal(result.data.requests[0].validationInput.version, 2);
   }
 });
 
-test('review continues after submitting CLI exits and original changes cannot alter its copy',async t=>{
-  const f=await fixture(t,{slow:500});
-  const first=await separate(['run','--copy',...f.args]);assert.equal(first.code,0,JSON.stringify(first));
-  await writeFile(join(f.repo,'why.md'),'Changed after capture.');
-  const final=await until(()=>f.status(first.data.id),run=>['GREEN','RED','ERROR'].includes(run.status));
-  assert.equal(final.status,'GREEN',JSON.stringify(final));
-  assert.equal(await readFile(join(final.workspace.path,'why.md'),'utf8'),'Review basis.');
+test('detached worker continues after submission exits and a later verification reuses actual results', async t => {
+  const data = await fixture(t, { slow: 350 }), submitted = await separate(['verify', '--all', ...data.args]);
+  assert.equal(submitted.code, 0); const id = submitted.data.id;
+  const completed = await separate(['run', 'show', id, '--wait', ...data.args]); assert.equal(completed.code, 0); assert.equal(completed.data.status, 'GREEN');
+  const reused = await separate(['verify', '--all', '--wait', ...data.args]); assert.equal(reused.code, 0); assert.equal(reused.data.requests.length, 0);
 });
 
-test('simultaneous CLI reviews reuse one immutable copy and keep independent runtime output',async t=>{
-  const f=await fixture(t,{slow:300});
-  const runs=await Promise.all([invoke(['run','--copy','--wait',...f.args]),invoke(['run','--copy','--wait',...f.args])]);
-  for(const run of runs)assert.equal(run.code,0,run.output+run.errors);
-  assert.notEqual(runs[0].data.id,runs[1].data.id);
-  assert.equal(runs[0].data.workspace.path,runs[1].data.workspace.path);
-  for(const {data} of runs){
-    const path=join(f.state,'runs',data.id,data.requests[0].id,'output','result.txt');
-    assert.equal(await readFile(path,'utf8'),'isolated output');
-  }
+test('single Critic selection persists its result while recursive verification fills missing cycle evidence', async t => {
+  const data = await fixture(t); await data.edit('a', m => { m.mounts = { peer: 'b' }; }); await data.write('b', { name: 'b', mounts: { peer: 'a' }, critics: [runtimeCritic()] });
+  const partial = await separate(['verify', '--critic', 'a/check', '--wait', ...data.args]); assert.equal(partial.code, 4); assert.equal(partial.data.requests[0].status, 'GREEN');
+  const complete = await separate(['verify', 'a', '--recursive', '--wait', ...data.args]); assert.equal(complete.code, 0); assert.deepEqual(complete.data.requests.map((r: any) => r.criticId), ['b/check']);
 });
 
-test('lock detects changed-and-restored content and invalidates review with ERROR',async t=>{
-  const f=await fixture(t,{slow:1500});
-  const first=await invoke(['run','--lock',...f.args]);assert.equal(first.code,0,first.output);
-  await until(()=>f.status(first.data.id),run=>run.status==='RUNNING');
-  await writeFile(join(f.repo,'why.md'),'Temporary change.');await writeFile(join(f.repo,'why.md'),'Review basis.');
-  const final=await until(()=>f.status(first.data.id),run=>run.status==='ERROR');
-  assert.equal(final.requests[0].errorCode,'WORKSPACE_CHANGED');
-  assert.equal(final.requests[0].result,null);
+test('workspace edits during a detached Runtime review invalidate the active result', async t => {
+  const data = await fixture(t, { slow: 1500 }), submitted = await separate(['verify', '--all', ...data.args]);
+  await writeFile(join(data.repoPath, 'a/content.txt'), 'changed');
+  const result = await separate(['run', 'show', submitted.data.id, '--wait', ...data.args]); assert.equal(result.code, 2); assert.equal(result.data.status, 'ERROR'); assert.equal(result.data.requests[0].result, null);
 });
 
-test('wait timeout preserves handle and independent worker; status can wait later',async t=>{
-  const f=await fixture(t,{slow:500});
-  const first=await invoke(['run','--copy','--wait','--timeout-ms','1',...f.args]);
-  assert.equal(first.code,3,first.output);assert.equal(present(first.data.wait).completed,false);
-  const final=await invoke(['status',first.data.id,'--wait',...f.args]);
-  assert.equal(final.code,0,final.output);assert.equal(final.data.status,'GREEN');
+test('client wait timeout preserves the handle and execution can be awaited later', async t => {
+  const data = await fixture(t, { slow: 700 }), submitted = await separate(['verify', '--all', '--wait', '--timeout-ms', '1', ...data.args]);
+  assert.equal(submitted.code, 3); assert.equal(submitted.data.wait.completed, false);
+  assert.equal((await separate(['run', 'show', submitted.data.id, '--wait', ...data.args])).code, 0);
 });
 
-test('Human copy waits with no worker and accepts result through fresh CLI processes',async t=>{
-  const f=await fixture(t,{human:true});
-  const first=await separate(['run','--copy','--human-inbox',...f.args]);assert.equal(first.code,0,JSON.stringify(first));
-  const waiting=await until(()=>f.status(first.data.id),run=>run.status==='WAITING_HUMAN'&&!run.owner);
-  const request=waiting.requests[0];
-  assert.match(await readFile(join(f.state,'human-inbox.jsonl'),'utf8'),new RegExp(request.id));
-  const artifact=await separate<ArtifactReadResult>(['artifact',request.id,'why',...f.args]);assert.equal(artifact.code,0);assert.equal(artifact.data.content,'Review basis.');
-  assert.equal((await separate(['human-claim',request.id,'--reviewer','reviewer-a',...f.args])).code,0);
-  const file=join(f.root,'result.json');await writeFile(file,JSON.stringify({verdict:'GREEN',summary:'Checked.',evidence:['why.md reviewed.']}));
-  const completed=await separate(['human-result',request.id,'--reviewer','reviewer-a','--result-file',file,...f.args]);
-  assert.equal(completed.code,0,JSON.stringify(completed));assert.equal(completed.data.status,'GREEN');
-  assert.equal((await separate(['human-result',request.id,'--reviewer','reviewer-a','--result-file',file,...f.args])).code,2);
+test('Human claim, tool execution and submission work across fresh CLI processes', async t => {
+  const data = await fixture(t, { human: true }), submitted = await separate(['verify', '--all', '--human-inbox', ...data.args]);
+  const run = await until(() => projectRun(data.stateDir, submitted.data.id)!, value => Boolean(value?.requests[0]?.notifiedAt)); const id = run.requests[0].id;
+  const claimed = await separate(['request', 'claim', id, '--reviewer', 'fixture-reader', ...data.args]); assert.equal(claimed.code, 0, JSON.stringify(claimed.data));
+  const result = await separate(['request', 'tool', id, '--reviewer', 'fixture-reader', '--tool', 'read_a', '--args', '{"lineCount":1}', ...data.args]); assert.equal(result.code, 0); assert.equal(result.data.observation.kind, 'content');
+  const filename = join(data.root, 'result.json'); await writeFile(filename, JSON.stringify({ verdict: 'GREEN', summary: 'Controlled Human submission fixture', evidence: ['Observed the fixture through its actual tool.'] }));
+  assert.equal((await separate(['request', 'submit', id, '--reviewer', 'fixture-reader', '--result-file', filename, ...data.args])).code, 0);
+  assert.equal((await separate(['run', 'show', run.id, '--wait', ...data.args])).data.status, 'GREEN');
 });
 
-test('Human completion automatically starts the next chain request without a daemon',async t=>{
-  const f=await fixture(t,{chain:true});
-  const first=await invoke(['run','--copy','--human-inbox',...f.args]);assert.equal(first.code,0,first.output);
-  const waiting=await until(()=>f.status(first.data.id),run=>run.status==='WAITING_HUMAN'&&run.requests[0].notifiedAt);
-  const id=waiting.requests[0].id;
-  await invoke(['human-claim',id,'--reviewer','reviewer-a',...f.args]);
-  const file=join(f.root,'result.json');await writeFile(file,JSON.stringify({verdict:'GREEN',summary:'Checked.',evidence:['why.md reviewed.']}));
-  const final=await invoke(['human-result',id,'--reviewer','reviewer-a','--result-file',file,'--wait',...f.args]);
-  assert.equal(final.code,0,final.output);assert.deepEqual(final.data.requests.map(r=>r.status),['GREEN','GREEN']);
+test('cancel and live resume retain single worker ownership', async t => {
+  const data = await fixture(t, { slow: 2000 }), submitted = await separate(['verify', '--all', ...data.args]);
+  const resumed = await separate(['run', 'resume', submitted.data.id, ...data.args]); assert.equal(resumed.data.owner.pid, submitted.data.owner.pid);
+  const cancelled = await separate(['run', 'cancel', submitted.data.id, ...data.args]); assert.equal(cancelled.data.status, 'ERROR');
 });
 
-test('cancel stops an owned review and reports operational failure',async t=>{
-  const f=await fixture(t,{slow:4000});
-  const first=await invoke(['run','--lock',...f.args]);assert.equal(first.code,0,first.output);
-  const canceled=await invoke(['cancel',first.data.id,...f.args]);assert.equal(canceled.code,0,canceled.output);
-  assert.equal(canceled.data.status,'ERROR');assert.equal(canceled.data.requests[0].errorCode,'REVIEW_CANCELED');
-  await until(()=>f.status(first.data.id),run=>!run.owner);
-});
-
-
-test('worker completes even if startup IPC client disappears before ready',async t=>{
-  const f=await fixture(t,{slow:100});
-  const broker=createBroker({repoPath:f.repo,stateDir:f.state,repoId:'local',executors:createExecutorRegistry()});
-  try{
-    const run=await broker.submit({mode:'copy',requesterId:'ipc-regression'});
-    const child=fork(fileURLToPath(new URL('../src/worker.js',import.meta.url)),[JSON.stringify({repoPath:f.repo,stateDir:f.state,repoId:'local',runId:run.id})],{stdio:['ignore','ignore','pipe','ipc'],execArgv:[]});
-    let errors='';present(child.stderr).on('data',chunk=>{errors+=chunk;});
-    const exit=new Promise<{code:number|null;signal:NodeJS.Signals|null}>((ok,no)=>{child.once('error',no);child.once('exit',(code,signal)=>ok({code,signal}));});
-    child.disconnect();
-    const result=await exit;assert.equal(result.code,0,errors);
-    assert.equal(present(broker.getRun(run.id)).status,'GREEN',JSON.stringify(broker.getRun(run.id)));
-  }finally{await broker.close();}
-});
-
-test('copy history and Human completion work from state alone after source deletion',async t=>{
-  const f=await fixture(t,{human:true});
-  const first=await invoke(['run','--copy','--human-inbox',...f.args]);assert.equal(first.code,0,first.output);
-  const waiting=await until(()=>f.status(first.data.id),run=>run.status==='WAITING_HUMAN'&&!run.owner);
-  await removeOwnedWorkspaceTree(f.repo);
-  const args=['--state-dir',f.state,'--json'];
-  assert.equal((await separate(['status',first.data.id,...args])).data.status,'WAITING_HUMAN');
-  assert.equal((await separate<ArtifactReadResult>(['artifact',waiting.requests[0].id,'why',...args])).data.content,'Review basis.');
-  assert.equal((await separate(['human-claim',waiting.requests[0].id,'--reviewer','reviewer-a',...args])).code,0);
-  const file=join(f.root,'result.json');await writeFile(file,JSON.stringify({verdict:'GREEN',summary:'Checked.',evidence:['copied why.md reviewed.']}));
-  const final=await separate(['human-result',waiting.requests[0].id,'--reviewer','reviewer-a','--result-file',file,...args]);
-  assert.equal(final.code,0,JSON.stringify(final));assert.equal(final.data.status,'GREEN');
-});
-
-test('resume of a live worker preserves single ownership and execution',async t=>{
-  const f=await fixture(t,{slow:400});
-  const first=await invoke(['run','--copy',...f.args]);assert.equal(first.code,0,first.output);
-  const second=await invoke(['resume',first.data.id,'--wait',...f.args]);assert.equal(second.code,0,second.output);
-  assert.equal(second.data.events.filter(event=>event.type==='request.started').length,1);
-});
-
-
-test('CLI Artifact partial reads use line arguments and reject listing pagination on reads',async t=>{
-  const f=await fixture(t,{human:true});
-  await writeFile(join(f.repo,'why.md'),'\uccab \uc904\r\n\ub458\uc9f8 \uc904\r\n\uc14b\uc9f8 \uc904\n');
-  const first=await invoke(['run','--copy','--human-inbox',...f.args]);assert.equal(first.code,0,first.output);
-  const waiting=await until(()=>f.status(first.data.id),run=>run.status==='WAITING_HUMAN'&&!run.owner);
-  const id=waiting.requests[0].id;
-  const partial=await separate<ArtifactReadResult>(['artifact',id,'why','--start-line','2','--line-count','1',...f.args]);
-  assert.equal(partial.code,0,JSON.stringify(partial));assert.equal(partial.data.content,'\ub458\uc9f8 \uc904\r\n');
-  assert.equal(partial.data.startLine,2);assert.equal(partial.data.endLine,2);assert.equal(partial.data.nextStartLine,3);
-  for(const flags of [['--start-line','0'],['--line-count','501'],['--offset','1'],['--file','why.md']]){
-    const invalid=await separate<ArtifactReadResult>(['artifact',id,'why',...flags,...f.args]);assert.equal(invalid.code,2,JSON.stringify(invalid));
-  }
-});
-
-
-test('worker settings persist credential paths across Human resume without copying credentials',async t=>{
-  const f=await fixture(t,{chain:true});
-  const authFile=join(f.root,'pi-auth.json');
-  const codexAuthFile=join(f.root,'codex-auth.json');
-  const secret='test-credential-must-remain-outside-worker-settings';
-  await writeFile(authFile,JSON.stringify({openai:{type:'api_key',key:secret}}));
-  await writeFile(codexAuthFile,JSON.stringify({tokens:{access_token:secret}}));
-  const first=await invoke(['run','--copy','--human-inbox','--pi-auth-file',authFile,'--codex-auth-file',codexAuthFile,...f.args]);
-  assert.equal(first.code,0,first.output);
-  const waiting=await until(()=>f.status(first.data.id),run=>run.status==='WAITING_HUMAN'&&!run.owner);
-  const settingsFile=join(f.state,'runs',first.data.id,'worker.json');
-  const saved=await readFile(settingsFile,'utf8');
-  assert.deepEqual(JSON.parse(saved),{piOptions:{authFile,codexAuthFile},humanInbox:true});
-  assert.ok(!saved.includes(secret));
-  const requestId=waiting.requests[0].id;
-  await separate(['human-claim',requestId,'--reviewer','reviewer-a',...f.args]);
-  const resultFile=join(f.root,'result.json');
-  await writeFile(resultFile,JSON.stringify({verdict:'GREEN',summary:'Checked.',evidence:['why.md reviewed.']}));
-  const completed=await separate(['human-result',requestId,'--reviewer','reviewer-a','--result-file',resultFile,'--wait',...f.args]);
-  assert.equal(completed.code,0,JSON.stringify(completed));
-  assert.deepEqual(completed.data.requests.map(request=>request.status),['GREEN','GREEN']);
-  assert.equal(await readFile(settingsFile,'utf8'),saved);
-});
-
-test('tools check inspects exact audience definitions without creating a review and executes only when requested', async t => {
-  const f = await fixture(t, { human: true });
-  const checked = await invoke<{ ok: boolean; status: string; checks: unknown[] }>(['tools', 'check', '--artifact', 'why', '--for', 'human', ...f.args]);
-  assert.equal(checked.code, 0, checked.output + checked.errors);
-  assert.equal(checked.data.ok, true);
-  assert.equal(checked.data.status, 'READY');
-  await assert.rejects(readFile(join(f.state, 'broker.sqlite')));
-  const result = await invoke<{ ok: boolean; result: ArtifactReadResult }>(['tools', 'check', '--artifact', 'why', '--for', 'human', '--tool', 'read_why', '--execute', '--args', '{"startLine":1,"lineCount":1}', ...f.args]);
-  assert.equal(result.code, 0, result.output + result.errors);
-  assert.equal(result.data.result.content, 'Review basis.');
-  await assert.rejects(readFile(join(f.state, 'broker.sqlite')));
-  for (const selection of [
-    ['--artifact', 'why', '--for', 'missing'], ['--args', '{}'], ['--execute'],
-    ['--artifact', 'why', '--for', 'human', '--tool', 'read_why', '--execute', '--args', '{"lineCount":"1"}'],
-    ['--artifact', 'why', '--for', 'human', '--tool', 'unregistered'], ['--wait'],
-  ]) {
-    const response = await invoke<{ ok?: boolean; error?: string }>(['tools', 'check', ...selection, ...f.args]);
-    assert.notEqual(response.code, 0, response.output);
-  }
+test('stored results remain readable after the supplied workspace is deleted', async t => {
+  const data = await fixture(t), completed = await separate(['verify', '--all', '--wait', ...data.args]); await rm(data.repoPath, { recursive: true });
+  const result = await separate(['run', 'show', completed.data.id, '--state-dir', data.stateDir, '--json']); assert.equal(result.code, 0); assert.equal(result.data.status, 'GREEN');
 });

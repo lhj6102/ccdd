@@ -14,6 +14,7 @@ import { serveArtifactMcp } from '../src/artifacts/mcp-server.js';
 import { prepareReviewRequests } from '../src/requester/index.js';
 import { artifactStream } from './pi-fixture.js';
 import { removeOwnedWorkspaceTree } from '../src/workspaces/index.js';
+import { artifactFixture } from './helpers/artifacts.js';
 import type { AgentProfile } from '../src/contracts.js';
 
 const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aD1sAAAAASUVORK5CYII=';
@@ -21,45 +22,21 @@ const agentProfile: AgentProfile = { kind: 'agent', provider: 'openai-codex', mo
 const verdict = { verdict: 'GREEN', summary: 'Frame checked', evidence: ['Observed the specified frame.'] };
 
 async function fixture(t: TestContext, { observation = true, preflight = true, hang = false } = {}) {
-  const dir = await mkdtemp(join(tmpdir(), 'ccdd-custom-adapters-'));
-  t.after(() => removeOwnedWorkspaceTree(dir));
-  const repoPath = join(dir, 'repo');
-  await mkdir(repoPath);
-  await writeFile(join(repoPath, 'clip.bin'), Buffer.from([0, 255, 12, 8]));
-  const launched = join(dir, 'launched');
-  const hostPid = join(dir, 'host-pid');
-  await writeFile(join(repoPath, 'ccdd.config.ts'), `
-import { writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
-const schema = { type: 'object', additionalProperties: false, properties: { frame: { type: 'integer', minimum: 0, maximum: 4 }, channels: { type: 'array', items: { type: 'string', enum: ['color', 'depth'] } }, transparent: { type: 'boolean' } }, required: ['frame', 'transparent'] };
-export default () => ({
-  artifacts: { clip: { type: 'animation', path: 'clip.bin' } },
-  artifactTypes: { animation: {
-    agentTools: { frame: {
-      metadata: { description: 'Observe the specified frame in {artifactName}.', inputSchema: schema, resultKinds: ['image'], observation: ${JSON.stringify(observation ? 'content' : 'none')}, artifactKind: 'file' },
-      ${preflight ? "preflight: async () => ({ ok: true, message: 'Renderer registration checked without rendering.' })," : ''}
-      async execute(context, args) {
-        ${hang ? `await writeFile(${JSON.stringify(hostPid)}, String(process.pid)); await new Promise(() => {});` : ''}
-        const image = join(context.outputDir, 'frame.png');
-        await writeFile(image, Buffer.from('${png}', 'base64'));
-        return { content: [{ type: 'image', path: image, mimeType: 'image/png' }]${observation ? ", observation: { kind: 'content', detail: 'frame ' + args.frame }" : ''} };
-      }
-    } },
-    humanTools: { open: {
-      metadata: { description: 'Open {artifactName} on the desktop.', inputSchema: { type: 'object', properties: {}, additionalProperties: false }, resultKinds: ['launch'], observation: 'none', artifactKind: 'file' },
-      preflight: async () => ({ ok: true, message: 'Desktop registration checked without launching.' }),
-      async execute(context) { await writeFile(${JSON.stringify(launched)}, context.artifactPath); return { content: [{ type: 'launch', launched: true }] }; }
-    } }
-  } },
-  critics: [
-    { id: 'frame-review', title: 'Frame review', target: 'clip', deps: [], profile: ${JSON.stringify(agentProfile)}, payload: { instruction: 'Inspect the frame.' } },
-    { id: 'human-review', title: 'Human review', target: 'clip', deps: [], profile: { kind: 'human' }, payload: { instruction: 'Inspect in the application.' } }
-  ]
-});
-`);
-  const [request] = await prepareReviewRequests({ repoPath, repoId: 'custom-test', snapshotHash: 'a'.repeat(64), criticId: 'frame-review' });
-  assert.ok(request.configManifest, 'The test must exercise snapshot TS registration, not a legacy built-in adapter.');
-  return { dir, repoPath, worktreePath: repoPath, stateDir: join(dir, 'state'), runDir: join(dir, 'review'), launched, hostPid, request };
+  const data = await artifactFixture(t), dir = data.root, repoPath = data.repoPath;
+  const launched = join(dir, 'launched'), hostPid = join(dir, 'host-pid');
+  const schema = { type: 'object', additionalProperties: false, properties: { frame: { type: 'integer', minimum: 0, maximum: 4 }, channels: { type: 'array', items: { type: 'string', enum: ['color', 'depth'] } }, transparent: { type: 'boolean' } }, required: ['frame', 'transparent'] };
+  await data.write('clip', { name: 'clip', views: {
+    agentTools: { frame: { metadata: { description: 'Observe the specified frame in {artifactName}.', inputSchema: schema, resultKinds: ['image'], observation: observation ? 'content' : 'none' }, script: { command: 'node', args: ['frame.mjs'] } } },
+    humanTools: { open: { metadata: { description: 'Open {artifactName}.', inputSchema: { type: 'object', properties: {}, additionalProperties: false }, resultKinds: ['launch'], observation: 'none' }, script: { command: 'node', args: ['open.mjs'] } } },
+  }, critics: [
+    { id: 'frame-review', title: 'Frame review', profile: agentProfile, payload: { instruction: 'Inspect the frame.' } },
+    { id: 'human-review', title: 'Human review', profile: { kind: 'human' }, payload: { instruction: 'Inspect the application.' } },
+  ] }, {
+    'frame.mjs': `import {writeFile} from 'node:fs/promises';import {join} from 'node:path';let text='';for await(const chunk of process.stdin)text+=chunk;const {context,args}=JSON.parse(text);${hang ? `await writeFile(${JSON.stringify(hostPid)},String(process.pid));await new Promise(()=>setInterval(()=>{},1000));` : ''}const image=join(context.outputDir,'frame.png');await writeFile(image,Buffer.from('${png}','base64'));process.stdout.write(JSON.stringify({content:[{type:'image',path:image,mimeType:'image/png'}]${observation ? ",observation:{kind:'content',detail:'frame '+args.frame}" : ''}}));`,
+    'open.mjs': `import {writeFile} from 'node:fs/promises';let text='';for await(const chunk of process.stdin)text+=chunk;const {context}=JSON.parse(text);await writeFile(${JSON.stringify(launched)},context.artifactPath);process.stdout.write(JSON.stringify({content:[{type:'launch',launched:true}]}));`,
+  });
+  const [request] = await data.requests('clip/frame-review');
+  return { dir, repoPath, worktreePath: repoPath, stateDir: data.stateDir, runDir: join(dir, 'review'), launched, hostPid, request };
 }
 
 function frameStream({ args = { frame: 2, transparent: false, channels: ['color'] }, onResult }: { args?: Record<string, unknown>; onResult?: (result: ToolResultMessage) => void } = {}): StreamFn {
@@ -117,7 +94,7 @@ test('custom schema errors and results without observations cannot pass a requir
 test('MCP exposes arbitrary schemas and sends image content with the same audited observation', async t => {
   const data = await fixture(t);
   const manifestPath = join(data.dir, 'mcp-manifest.json'), auditPath = join(data.dir, 'audit.jsonl');
-  await writeFile(manifestPath, JSON.stringify({ worktreePath: data.worktreePath, artifacts: data.request.artifacts, artifactTypes: data.request.artifactTypes, configManifest: data.request.configManifest, runDir: data.runDir, auditPath }));
+  await writeFile(manifestPath, JSON.stringify({ worktreePath: data.worktreePath, artifacts: data.request.artifacts, configManifest: data.request.configManifest, runDir: data.runDir, auditPath }));
   const messages = [
     { jsonrpc: '2.0', id: 1, method: 'tools/list' },
     { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'frame_clip', arguments: { frame: 1, transparent: true } } },
@@ -135,7 +112,7 @@ test('MCP exposes arbitrary schemas and sends image content with the same audite
   assert.equal(audit[0].observation.kind, 'content');
 });
 
-test('TS tools check preflights without rendering or launching and executes only an explicit tool selection', async t => {
+test('script tools check preflights without rendering or launching and executes only an explicit tool selection', async t => {
   const data = await fixture(t);
   const report = await diagnoseArtifactTools(data);
   assert.equal(report.ok, true, JSON.stringify(report));
@@ -144,16 +121,16 @@ test('TS tools check preflights without rendering or launching and executes only
   const run = await diagnoseArtifactTools({ ...data, artifactId: 'clip', audience: 'human', toolName: 'open', execute: true });
   assert.equal(run.ok, true, JSON.stringify(run));
   assert.ok(run.result && 'content' in run.result && Array.isArray(run.result.content));
-  assert.equal(await readFile(data.launched, 'utf8'), join(run.workspacePath!, 'clip.bin'));
+  assert.equal(await readFile(data.launched, 'utf8'), join(run.workspacePath!, 'clip'));
 });
 
-test('doctor preflights TS tools without executing', async t => {
+test('doctor preflights script tools without executing', async t => {
   const data = await fixture(t);
   let probes = 0;
-  const report = await diagnoseProject({ ...data, criticId: 'human-review', executors: { async probe() { probes++; return { ok: true, message: 'Human registration checked.', details: { notificationsSent: false } }; } } });
+  const report = await diagnoseProject({ ...data, criticId: 'clip/human-review', executors: { async probe() { probes++; return { ok: true, message: 'Human registration checked.', details: { notificationsSent: false } }; } } });
   assert.equal(report.ok, true, JSON.stringify(report));
   assert.equal(probes, 1);
-  assert.equal(report.checks.find(check => check.id === 'artifacts:human-review')?.details?.programsLaunched, false);
+  assert.equal(report.checks.find(check => check.id === 'artifacts:clip/human-review')?.details?.programsLaunched, false);
   await assert.rejects(readFile(data.launched), { code: 'ENOENT' });
 });
 
@@ -166,11 +143,11 @@ test('Provider readiness uses its private nonce even when the project has only c
   const calls = result.details.toolCalls as Array<{ name: string }>;
   assert.equal(calls.length, 1);
   assert.match(calls[0].name, /^read_ccdd_probe_/);
-  assert.equal(data.request.configManifest?.types.animation.agentTools.frame.resultKinds[0], 'image');
+  assert.equal(data.request.configManifest.artifacts.clip.views.agentTools!.frame.metadata.resultKinds[0], 'image');
 });
 
 
-test('Pi timeout closes a running custom tool host before returning an execution error', async t => {
+test('Pi timeout closes a running custom tool process before returning an execution error', async t => {
   const data = await fixture(t, { hang: true });
   const started = performance.now();
   await assert.rejects(createExecutorRegistry({ streamFn: frameStream() }).execute({ ...data.request, profile: { ...agentProfile, timeoutMs: 5_000 } }, data), /timed out/);
@@ -192,10 +169,11 @@ test('Broker persists custom operation and observation kind through completion a
   const data = await fixture(t);
   const broker = createBroker({ repoPath: data.repoPath, stateDir: data.stateDir, executors: createExecutorRegistry({ streamFn: frameStream() }) });
   t.after(() => broker.close());
-  const submitted = await broker.submit({ mode: 'copy', criticId: 'frame-review', requesterId: 'integration-test' });
+  const submitted = await broker.submitProject({ selection: { kind: 'critic', criticId: 'clip/frame-review' }, requesterId: 'integration-test' });
   const completed = await broker.run(submitted.id);
   assert.ok(completed);
-  assert.equal(completed.status, 'GREEN');
+  assert.equal(completed.status, 'INCOMPLETE');
+  assert.equal(completed.requests[0].status, 'GREEN');
   const observation = { artifactId: 'clip', operation: 'frame', kind: 'content', detail: 'frame 2' };
   assert.deepEqual(completed.requests[0].result?.toolCalls?.[0].observation, observation);
   assert.deepEqual((broker.getRun(submitted.id)!.events.find(event => event.type === 'artifact.tool.called')?.data as { observation?: unknown }).observation, observation);

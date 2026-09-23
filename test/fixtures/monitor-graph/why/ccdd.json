@@ -1,0 +1,65 @@
+{
+  "name": "why",
+  "views": {
+    "agentTools": {
+      "read": {
+        "metadata": {
+          "description": "Read content from {artifactName}.",
+          "inputSchema": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "path"
+            ],
+            "additionalProperties": false
+          },
+          "resultKinds": [
+            "text"
+          ],
+          "observation": "content"
+        },
+        "script": {
+          "command": "node",
+          "args": [
+            "view.mjs"
+          ]
+        }
+      }
+    },
+    "humanTools": {
+      "read": {
+        "metadata": {
+          "description": "Read content from {artifactName}.",
+          "inputSchema": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "path"
+            ],
+            "additionalProperties": false
+          },
+          "resultKinds": [
+            "text"
+          ],
+          "observation": "content"
+        },
+        "script": {
+          "command": "node",
+          "args": [
+            "view.mjs"
+          ]
+        }
+      }
+    }
+  },
+  "critics": [],
+  "basis": true
+}

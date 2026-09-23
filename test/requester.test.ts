@@ -1,197 +1,125 @@
-import test, { type TestContext } from 'node:test';
+import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, writeFile, mkdir } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { mkdir, readFile, symlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { prepareReviewRequests, readStoredArtifactScope } from '../src/requester/index.js';
+import { artifactFixture, fixtureViews, agentProfile, runtimeCritic } from './helpers/artifacts.js';
+import { readWorkspaceConfig } from '../src/broker/config.js';
+import { instructionReferences, parseArtifactInstruction, digestArtifactInstruction } from '../src/artifacts/instruction.js';
+import { resolveScopePath } from '../src/artifact-scope.js';
+import { createGraphDefinition, stronglyConnectedComponents } from '../src/broker/graph.js';
 import { createBroker } from '../src/broker/index.js';
-import { fingerprintWorkspace, prepareWorkspace, removeOwnedWorkspaceTree } from '../src/workspaces/index.js';
-import type { RepoConfig, ArtifactDefinition } from '../src/contracts.js';
 
-async function fixture(t: TestContext) {
-  const root = await mkdtemp(join(tmpdir(), 'ccdd-requester-'));
-  const repoPath = join(root, 'repo');
-  const stateDir = join(root, 'state');
-  await mkdir(repoPath);
-  await mkdir(join(repoPath, 'tests'));
-  await writeFile(join(repoPath, 'why.md'), 'Why');
-  await writeFile(join(repoPath, 'spec.md'), 'Spec');
-  await writeFile(join(repoPath, 'tests', 'rank.test.mjs'), '');
-  const config: Omit<RepoConfig, 'artifacts'> & { artifacts: Record<string, ArtifactDefinition> } = {
-    artifacts: { why: { type: 'markdown', path: 'why.md', basis: true }, spec: { type: 'markdown', path: 'spec.md' }, tests: { type: 'code', path: 'tests' } },
-    artifactTypes: { markdown: { viewer: 'text', agentTools: { read: {} }, humanTools: { read: {} } }, code: { viewer: 'files', agentTools: { list: {}, read: {} }, humanTools: { list: {}, read: {} } } },
-    critics: [
-      { id: 'spec-why', title: 'Spec fits Why', target: 'spec', deps: ['why'], profile: { kind: 'agent', provider: 'codex', model: 'gpt-6-astra', reasoning: 'medium' }, payload: { instruction: 'Basis: {why}. Target: {spec}' } },
-      { id: 'tests-spec', title: 'Tests fit Spec', target: 'tests', deps: ['spec'], profile: { kind: 'agent', provider: 'codex', model: 'gpt-6-astra', reasoning: 'medium' }, payload: { instruction: 'Compare tests and spec' } },
-      { id: 'implementation-tests', title: 'Runtime', target: 'tests', deps: ['spec'], profile: { kind: 'runtime', command: 'node', args: ['--test', 'tests/rank.test.mjs'] }, payload: { instruction: 'Run tests' } },
-    ],
-  };
-  await writeFile(join(repoPath, 'ccdd.config.json'), JSON.stringify(config));
-  t.after(() => removeOwnedWorkspaceTree(root));
-  return { root, repoPath, stateDir, config, snapshotHash: await fingerprintWorkspace(repoPath) };
-}
+const review = (instruction = 'Inspect {spec}.') => ({ id: 'style', title: 'Inspect', profile: agentProfile, payload: { instruction } });
 
-test('requester sends explicit artifact metadata, workspace hash, payload and provider requirements without Git', async t => {
-  const data = await fixture(t);
-  const requests = await prepareReviewRequests({ ...data, repoId: 'focus-demo' });
-  assert.equal(requests.length, 3);
-  assert.deepEqual(requests.map(x => [x.target,x.deps]), [['spec',['why']],['tests',['spec']],['tests',['spec']]]);
-  assert.ok(requests.every(x => !('dependsOn' in x)));
-  assert.ok(requests.every(x => x.repoId === 'focus-demo' && x.snapshotHash === data.snapshotHash && !('snapshotCommit' in x)));
-  assert.deepEqual(requests[0].artifacts, [{ id: 'spec', type: 'markdown', path: 'spec.md' }, { id: 'why', type: 'markdown', path: 'why.md' }]);
-  assert.match(requests[0].payload.instruction, /Basis: \{why\}. Target: \{spec\}/);
-  assert.equal(requests[0].profile.kind, 'agent');
-  assert.ok(requests[0].profile.kind === 'agent');
-  assert.equal(requests[0].profile.provider, 'codex');
-  assert.equal(requests[2].profile.kind, 'runtime');
-  assert.ok(!('id' in requests[0]) && !('runId' in requests[0]) && !('status' in requests[0]));
-  requests[0].artifactTypes.markdown.viewer = 'files';
-  assert.equal(requests[1].artifactTypes.markdown.viewer, 'text');
+test('folder declarations discover nearest children without merging owned Critics or views', async t => {
+  const data = await artifactFixture(t);
+  await data.write('', { name: 'root', basis: true });
+  await data.write('docs/spec', { name: 'spec', views: fixtureViews(), critics: [review()] });
+  await data.write('docs/spec/examples/deep', { name: 'example' });
+  const config = await data.config();
+  assert.equal(config.artifacts.root.path, '');
+  assert.deepEqual(config.artifacts.root.children, { 'docs/spec': 'spec' });
+  assert.deepEqual(config.artifacts.spec.children, { 'examples/deep': 'example' });
+  assert.deepEqual(config.artifacts.root.views, {});
+  assert.deepEqual(config.critics.map(c => [c.id, c.target]), [['spec/style', 'spec']]);
+  const [request] = await data.requests('spec/style');
+  assert.deepEqual(request.artifacts.map(a => a.id), ['spec', 'example']);
+  assert.deepEqual(request.requiredObservations, ['spec']);
+  assert.equal(request.configManifest.version, 2);
 });
 
-test('requester reads current definitions including edits, and copied definitions remain fixed', async t => {
-  const data = await fixture(t);
-  const copied = await prepareWorkspace({ ...data, mode: 'copy' });
-  t.after(() => copied.close());
-  const original = await prepareReviewRequests({ ...data, repoPath: copied.descriptor.path, snapshotHash: copied.descriptor.hash });
-  data.config.critics[0].payload.instruction = 'Changed current definition';
-  await writeFile(join(data.repoPath, 'ccdd.config.json'), JSON.stringify(data.config));
-  const current = await prepareReviewRequests({ ...data, snapshotHash: await fingerprintWorkspace(data.repoPath) });
-  assert.equal(current[0].payload.instruction, 'Changed current definition');
-  assert.notEqual(current[0].snapshotHash, original[0].snapshotHash);
-  assert.deepEqual(await prepareReviewRequests({ ...data, repoPath: copied.descriptor.path, snapshotHash: copied.descriptor.hash }), original);
-  await writeFile(join(data.repoPath, 'ccdd.config.json'), '{"invalid":true}');
-  await assert.rejects(prepareReviewRequests(data), /Config requires/);
-  assert.equal(await readFile(join(data.repoPath, 'ccdd.config.json'), 'utf8'), '{"invalid":true}');
-  await assert.rejects(prepareReviewRequests({ ...data, snapshotHash: 'HEAD' }), /workspace SHA-256/);
-  await assert.rejects(prepareReviewRequests({ ...data, repoId: '' }), /repoId/);
-});
-
-test('selecting one Critic preserves its definition and excludes other envelopes', async t => {
-  const data = await fixture(t);
-  const chain = await prepareReviewRequests(data);
-  assert.deepEqual(await prepareReviewRequests({ ...data, criticId: 'tests-spec' }), [chain[1]]);
-  assert.equal(chain[1].target, 'tests');
-  assert.deepEqual(chain[1].deps, ['spec']);
-  await assert.rejects(prepareReviewRequests({ ...data, criticId: 'missing' }), /Unknown Critic/);
-  for (const criticId of ['', ' ', '../spec-why', null, 1, ['spec-why']]) await assert.rejects(prepareReviewRequests({ ...data, criticId }), /criticId/);
-});
-
-test('configuration rejects unsafe paths and Artifact dependency cycles', async t => {
-  const data = await fixture(t);
-  data.config.artifacts.why.path = '../outside';
-  await writeFile(join(data.repoPath, 'ccdd.config.json'), JSON.stringify(data.config));
-  await assert.rejects(prepareReviewRequests(data), /safe repository-relative/);
-  data.config.artifacts.why.path = 'why.md';
-  data.config.critics[0].deps = ['tests'];
-  await writeFile(join(data.repoPath, 'ccdd.config.json'), JSON.stringify(data.config));
-  await assert.rejects(prepareReviewRequests(data), /cycle/);
-});
-
-test('legacy Critic config is rejected for admission but its historical Artifact scope remains readable', async t => {
-  const data = await fixture(t);
-  const historical = { ...data.config, critics: data.config.critics.map((critic, index) => {
-    const { target, deps, ...rest } = critic;
-    return { ...rest, artifacts: [target, ...deps], dependsOn: index ? data.config.critics[index - 1].id : null };
-  }) };
-  await writeFile(join(data.repoPath, 'ccdd.config.json'), JSON.stringify(historical));
-  await assert.rejects(prepareReviewRequests(data), /replaced by target/);
-  const scope = await readStoredArtifactScope({ repoPath: data.repoPath, criticId: 'spec-why' });
-  assert.deepEqual(scope.artifacts.map(a => a.id), ['spec', 'why']);
-  assert.ok(!('target' in scope) && !('deps' in scope));
-  historical.artifacts.spec.path = '../private';
-  await writeFile(join(data.repoPath, 'ccdd.config.json'), JSON.stringify(historical));
-  await assert.rejects(readStoredArtifactScope({ repoPath: data.repoPath, criticId: 'spec-why' }), /safe repository-relative/);
-});
-
-test('Critic array order has no effect on declared roles and every target/dep receives a tool', async t => {
-  const data = await fixture(t);
-  data.config.critics.reverse();
-  await writeFile(join(data.repoPath, 'ccdd.config.json'), JSON.stringify(data.config));
-  const selected = (await prepareReviewRequests({ ...data, criticId: 'spec-why' }))[0];
-  assert.equal(selected.target, 'spec'); assert.deepEqual(selected.deps, ['why']);
-  assert.deepEqual(selected.artifacts.map(a => a.id), ['spec', 'why']);
-  data.config.artifacts.why.basis = false;
-  await writeFile(join(data.repoPath, 'ccdd.config.json'), JSON.stringify(data.config));
-  await assert.rejects(prepareReviewRequests(data), /no Critic.*basis/);
-});
-
-test('repo-defined types preserve description templates in isolated request envelopes', async t => {
-  const data = await fixture(t);
-  data.config.artifactTypes = {
-    requirements: { viewer: 'text', agentTools: { read: { description: 'Read requirements from {artifactName} and find evidence in {artifactName}.' } } },
-    test_suite: { viewer: 'files', agentTools: { read: {}, list: { description: 'List test files in {artifactName}.' } } },
-  };
-  data.config.artifacts.why.type = 'requirements';
-  data.config.artifacts.spec.type = 'requirements';
-  data.config.artifacts.tests.type = 'test_suite';
-  await writeFile(join(data.repoPath, 'ccdd.config.json'), JSON.stringify(data.config));
-  const requests = await prepareReviewRequests({ ...data, snapshotHash: await fingerprintWorkspace(data.repoPath) });
-  assert.deepEqual(requests[0].artifactTypes, data.config.artifactTypes);
-  assert.deepEqual(requests[1].artifactTypes, data.config.artifactTypes);
-  assert.equal(requests[0].artifacts[1].type, 'requirements');
-  requests[0].artifactTypes.requirements.agentTools!.read!.description = 'Changed envelope';
-  assert.equal(requests[1].artifactTypes.requirements.agentTools!.read!.description, data.config.artifactTypes.requirements.agentTools!.read!.description);
-});
-
-test('new requests require audience tools on every supplied Artifact while an independent runtime remains selectable', async t => {
-  const data = await fixture(t);
-  const save = () => writeFile(join(data.repoPath, 'ccdd.config.json'), JSON.stringify(data.config));
-  data.config.artifactTypes.markdown = { viewer: 'text', humanTools: { read: {} } };
-  await save();
-  await assert.rejects(prepareReviewRequests({ ...data, criticId: 'spec-why' }), /spec has no agent tools/);
-  const runtime = await prepareReviewRequests({ ...data, criticId: data.config.critics[2].id });
-  assert.equal(runtime[0].profile.kind, 'runtime');
-  data.config.critics[0].profile = { kind: 'human' };
-  await save();
-  assert.equal((await prepareReviewRequests({ ...data, criticId: 'spec-why' }))[0].profile.kind, 'human');
-  data.config.artifacts.spec.type = 'disabled';
-  data.config.artifactTypes.disabled = { viewer: 'text', humanTools: {}, agentTools: { read: {} } };
-  await save();
-  await assert.rejects(prepareReviewRequests({ ...data, criticId: 'spec-why' }), /spec has no human tools/);
-  data.config.artifactTypes.disabled = { viewer: 'text', tools: { read: { description: 'Legacy description' } } };
-  await save();
-  await assert.rejects(prepareReviewRequests({ ...data, criticId: 'spec-why' }), /spec has no human tools/);
-});
-
-test('a configured list operation cannot make a file Artifact reviewable', async t => {
-  const data = await fixture(t);
-  data.config.artifactTypes.markdown = { viewer: 'files', agentTools: { list: {} } };
-  await writeFile(join(data.repoPath, 'ccdd.config.json'), JSON.stringify(data.config));
-  await assert.rejects(prepareReviewRequests({ ...data, criticId: 'spec-why' }), /no usable agent tools/);
-});
-
-test('malformed type tool definitions are rejected before Provider checks or request persistence', async t => {
-  const data = await fixture(t);
-  const calls: string[] = [];
-  const broker = createBroker({ repoPath: data.repoPath, stateDir: data.stateDir, executors: {
-    canExecute: request => { calls.push(request.criticId); return { ok: true }; },
-    execute: async () => { throw new Error('Invalid configuration must not execute.'); },
-  } });
-  t.after(() => broker.close());
-  const invalid = [
-    { viewer: 'text', description: 'Unknown type field' },
-    { viewer: 'text', tools: null },
-    { viewer: 'text', tools: [] },
-    { viewer: 'text', tools: { list: { description: 'Not supported for text' } } },
-    { viewer: 'files', tools: { write: { description: 'Not a viewer operation' } } },
-    { viewer: 'text', tools: { read: null } },
-    { viewer: 'text', tools: { read: 'A bare string is not a tool definition' } },
-    { viewer: 'text', tools: { read: {} } },
-    { viewer: 'text', tools: { read: { description: 'Read', enabled: true } } },
-    { viewer: 'text', tools: { read: { description: '' } } },
-    { viewer: 'text', tools: { read: { description: ' \n\t ' } } },
-    { viewer: 'text', tools: { read: { description: 42 } } },
-    { viewer: 'text', tools: { read: { description: 'x'.repeat(4001) } } },
-    { viewer: 'text', tools: { read: { description: 'Read {artifactPath}' } } },
-    { viewer: 'text', tools: { read: { description: 'Read {artifactName' } } },
-    { viewer: 'text', tools: { read: { description: 'Read {{artifactName}}' } } },
-  ];
-  for (const definition of invalid) {
-    Reflect.set(data.config.artifactTypes, 'markdown', definition);
-    await writeFile(join(data.repoPath, 'ccdd.config.json'), JSON.stringify(data.config));
-    await assert.rejects(broker.submit({ requesterId: 'builder', mode: 'copy' }), /artifact (type|.*tool)/i);
+test('discovery excludes installed packages, Git internals and symlink directories without executing global config', async t => {
+  const data = await artifactFixture(t), marker = join(data.root, 'executed');
+  await data.write('spec', { name: 'spec' });
+  for (const folder of ['.git/objects', 'node_modules/package']) {
+    await mkdir(join(data.repoPath, folder), { recursive: true }); await writeFile(join(data.repoPath, folder, 'ccdd.json'), '{invalid');
   }
-  assert.deepEqual(calls, []);
-  assert.deepEqual(broker.listRuns(), []);
+  await symlink('spec', join(data.repoPath, 'linked'));
+  await writeFile(join(data.repoPath, 'ccdd.config.ts'), `import {writeFileSync} from 'node:fs';writeFileSync(${JSON.stringify(marker)},'executed');throw new Error('legacy');`);
+  assert.deepEqual(Object.keys((await data.config()).artifacts), ['spec']);
+  await assert.rejects(readFile(marker), { code: 'ENOENT' });
+});
+
+test('legacy global declarations do not define any Artifact', async t => {
+  const data = await artifactFixture(t);
+  await writeFile(join(data.repoPath, 'ccdd.config.json'), '{"artifacts":{}}');
+  await assert.rejects(data.config(), /at least one ccdd.json/);
+});
+
+test('duplicate names, duplicate local Critics, unknown fields and symlink markers fail statically', async t => {
+  const data = await artifactFixture(t);
+  await data.write('a', { name: 'spec' }); await data.write('b', { name: 'spec' });
+  await assert.rejects(data.config(), /Duplicate Artifact/);
+  await data.edit('b', m => { m.name = 'other'; m.critics = [runtimeCritic(), runtimeCritic()]; });
+  await assert.rejects(data.config(), /Duplicate local Critic/);
+  await data.edit('b', m => { m.critics = [runtimeCritic()]; Reflect.set(m.critics[0], 'target', 'spec'); });
+  await assert.rejects(data.config(), /Unknown Critic field: target/);
+  await data.edit('b', m => { m.critics = []; Reflect.set(m, 'artifactTypes', {}); });
+  await assert.rejects(data.config(), /Unknown Artifact field/);
+});
+
+test('mount aliases share canonical identity and Critic references produce dependencies without duplicate declarations', async t => {
+  const data = await artifactFixture(t);
+  await data.write('style', { name: 'coding-style', basis: true, views: fixtureViews() });
+  await data.write('spec', { name: 'spec', views: fixtureViews(), mounts: { style: 'coding-style', guide: 'coding-style' }, critics: [review('Use {style}, {guide} and {coding-style} to evaluate {spec}.')] });
+  const config = await data.config(), [request] = await data.requests();
+  assert.equal(request.criticId, 'spec/style'); assert.deepEqual(request.deps, ['coding-style']);
+  assert.deepEqual(request.references, { style: 'coding-style', guide: 'coding-style', 'coding-style': 'coding-style', spec: 'spec' });
+  assert.equal(request.artifacts.filter(a => a.id === 'coding-style').length, 1);
+  const instruction = digestArtifactInstruction(request.payload.instruction, request.artifacts, [{ name: 'read_coding-style', artifactId: 'coding-style' }], request.references);
+  assert.equal(instruction.split('read_coding-style').length - 1, 3);
+  assert.equal(config.relations.filter(edge => edge.kind === 'mount').length, 2);
+});
+
+test('unresolved references and ambiguous mount aliases are configuration errors', async t => {
+  const data = await artifactFixture(t);
+  await data.write('spec', { name: 'spec', views: fixtureViews(), critics: [review('Read {missing}.')] });
+  await assert.rejects(data.config(), /Unknown Artifact reference/);
+  await data.edit('spec', m => { m.critics = []; m.mounts = { missing: 'absent' }; });
+  await assert.rejects(data.config(), /Unknown mount target/);
+  await data.write('style', { name: 'style' });
+  await data.edit('spec', m => { m.mounts = { style: 'spec' }; });
+  await assert.rejects(data.config(), /Ambiguous mount alias/);
+  await data.edit('spec', m => { m.mounts = { 'content': 'style' }; });
+  await mkdir(join(data.repoPath, 'spec/content'));
+  await assert.rejects(data.config(), /conflicts with a physical entry/);
+});
+
+test('instruction escaping retains existing literals and binds aliases to canonical tool audiences', () => {
+  const input = 'Use {alias}, \\{missing}, {{literal}}, ${variable}, {"json":1}, and {self}.';
+  assert.deepEqual(instructionReferences(input), ['alias', 'self']);
+  const parts = parseArtifactInstruction(input, [{ id: 'spec' }], { alias: 'spec', self: 'spec' });
+  assert.equal(parts.filter(part => part.type === 'artifact').length, 2);
+  assert.match(digestArtifactInstruction('{alias}', [{ id: 'spec' }], [{ name: 'open_spec', artifactId: 'spec' }], { alias: 'spec' }), /open_spec/);
+});
+
+test('logical paths traverse nested folders and cycles finitely without creating filesystem links', () => {
+  const scope = { a: { path: '/a', children: { 'nested/child': 'b' }, mounts: { peer: 'b' } }, b: { path: '/b', children: {}, mounts: { back: 'a' } } };
+  assert.deepEqual(resolveScopePath(scope, 'a', 'peer/back/peer/file.txt'), { artifactId: 'b', path: 'file.txt' });
+  assert.deepEqual(resolveScopePath(scope, 'a', 'nested/child/file.txt'), { artifactId: 'b', path: 'file.txt' });
+  for (const path of ['../secret', '/secret', 'peer/../file', 'C:/file', 'peer\\file']) assert.throws(() => resolveScopePath(scope, 'a', path));
+});
+
+test('cycles and unevaluated dependencies are accepted while audience requirements stay local to explicit references', async t => {
+  const data = await artifactFixture(t);
+  await data.write('a', { name: 'a', mounts: { peer: 'b' }, critics: [runtimeCritic()] });
+  await data.write('b', { name: 'b', mounts: { peer: 'a' } });
+  const config = await data.config();
+  assert.deepEqual(stronglyConnectedComponents(Object.keys(config.artifacts), config.relations), [['a', 'b']]);
+  assert.doesNotThrow(() => createGraphDefinition(config));
+  await data.edit('a', m => { m.views = fixtureViews(); m.critics = [review('Inspect {a}.')]; });
+  await data.requests('a/style');
+  await data.edit('a', m => { m.critics![0].payload.instruction = 'Inspect {a} and {peer}.'; });
+  await assert.rejects(data.requests('a/style'), /b has no agent views/);
+});
+
+test('invalid configuration is rejected before tickets or Provider readiness checks', async t => {
+  const data = await artifactFixture(t); await data.write('a', { name: 'a', critics: [runtimeCritic()] });
+  await data.edit('a', m => { Reflect.set(m, 'sources', {}); });
+  let readiness = 0;
+  const broker = createBroker({ ...data, executors: { canExecute: () => { readiness++; return { ok: true }; }, execute: async () => { throw new Error('Must not execute.'); } } });
+  data.cleanup(() => broker.close());
+  await assert.rejects(broker.submitProject({ selection: { kind: 'all' } }), /Unknown Artifact field/);
+  assert.equal(readiness, 0); assert.deepEqual(broker.listRuns(), []);
+  await assert.rejects(readWorkspaceConfig(join(data.repoPath, 'missing')), { code: 'ENOENT' });
 });

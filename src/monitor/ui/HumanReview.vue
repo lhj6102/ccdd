@@ -3,7 +3,6 @@ import { computed, nextTick, onUnmounted, ref, watch } from 'vue';
 import type { MonitorDetail, MonitorHumanTool, MonitorSession, MonitorToolResponse } from '../types.js';
 import { api, ApiError, errorMessage, requestRoute } from './api';
 import ToolOutput from './ToolOutput.vue';
-import { artifactInstructionMembers } from '../../artifacts/instruction.js';
 import { initialToolFields, initialToolJson, parseToolFields, parseToolJson, toolInputForm, validateToolInput } from './tool-input';
 import { dateLabel } from './format';
 
@@ -16,7 +15,7 @@ const summary = ref(''), evidence = ref(''), verdict = ref<'GREEN' | 'RED'>('GRE
 const toolForm = ref<HTMLFormElement | null>(null);
 const toolsRegion = ref<HTMLElement | null>(null), focusedArtifact = ref('');
 const tool = computed(() => props.detail.tools?.find(item => item.name === toolName.value));
-const focusedMembers = computed(() => new Set(artifactInstructionMembers(focusedArtifact.value, props.detail.artifacts, props.detail.artifactGroups)));
+const focusedMembers = computed(() => new Set([focusedArtifact.value]));
 const visibleTools = computed(() => props.detail.tools?.filter(item => !focusedArtifact.value || focusedMembers.value.has(item.artifactId)) ?? []);
 const canAct = computed(() => Boolean(props.session && props.detail.human?.canComplete));
 const route = computed(() => requestRoute(props.detail.request.projectId, props.detail.request.id));
@@ -69,11 +68,11 @@ function toolLabel(value: MonitorHumanTool): string {
 }
 function selectTool(value: MonitorHumanTool): void {
   toolName.value = value.name; fields.value = {}; error.value = ''; toolResult.value = null;
-  fields.value = initialToolFields(toolInputForm(value.inputSchema).fields, props.detail.artifactPreview !== 'tools');
+  fields.value = initialToolFields(toolInputForm(value.inputSchema).fields);
   jsonInput.value = initialToolJson(value.inputSchema); preferJson.value = false;
 }
 function showArtifactTools(artifactId: string): void {
-  const members = new Set(artifactInstructionMembers(artifactId, props.detail.artifacts, props.detail.artifactGroups));
+  const members = new Set([artifactId]);
   const registered = props.detail.tools?.find(item => members.has(item.artifactId));
   if (!registered || busy.value) return;
   focusedArtifact.value = artifactId;

@@ -1,7 +1,6 @@
-import type { ArtifactGroupReference, CriticProfile, ReviewStatus, RunStatus } from '../contracts.js';
+import type { CriticProfile, ReviewStatus, RunStatus } from '../contracts.js';
 import type { ArtifactReferenceMetadata } from '../artifacts/index.js';
 import type { GraphProjection } from '../broker/graph.js';
-import type { ArtifactCallResult } from '../artifacts/index.js';
 import type { ProjectPlan } from '../project/types.js';
 import type { HumanPreparationAttempt } from '../broker/human-claims.js';
 
@@ -48,15 +47,11 @@ export interface MonitorDetail {
   error: string | null;
   timeline: { label: string; at: string }[];
   artifacts: ArtifactReferenceMetadata[];
-  artifactGroups?: ArtifactGroupReference[];
-  artifactPreview?: 'legacy' | 'tools';
+  references: Record<string, string>;
+  artifactPreview?: 'tools' | 'historical';
   human?: MonitorHumanState;
   tools?: MonitorHumanTool[];
   toolIssue?: string;
-}
-export interface MonitorArtifactPage {
-  artifact: { id: string; path: string; directory: boolean; description: string };
-  result: ArtifactCallResult;
 }
 export interface MonitorQuery { run?: string; lane?: MonitorLane; project?: string; filter?: MonitorFilter; limit?: number; offset?: number }
 export interface MonitorSources { stateHome?: string; stateDirs?: string[] }
