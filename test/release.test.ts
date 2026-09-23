@@ -46,21 +46,41 @@ function tarball(name: string, version = '1.0.0', publishConfig?: Record<string,
   return gzipSync(Buffer.concat([header, contents, Buffer.alloc((512 - contents.length % 512) % 512 + 1024)]));
 }
 
-async function assets(root: string, reportOverrides: Record<string, unknown> = {}) {
+async function assets(root: string, reportOverrides: Record<string, unknown> = {}, releaseMetadata = metadata) {
   const assetsDir = join(root, 'assets'); await mkdir(assetsDir, { recursive: true });
-  const packages = [[coreName, metadata.coreFile], [toolsName, metadata.toolsFile], ...(typeof reportOverrides.projectFile === 'string' ? [['@ccdd/project', reportOverrides.projectFile]] : [])].map(([name, file]) => {
-    const bytes = tarball(name, '1.0.0', reportOverrides.publishConfig as Record<string, unknown> | undefined, reportOverrides.nodeRange as string | undefined); return { name, version: '1.0.0', file, sha256: hash(bytes), bytes: bytes.length, content: bytes };
+  const packages = [[coreName, releaseMetadata.coreFile], [toolsName, releaseMetadata.toolsFile], ...(typeof reportOverrides.projectFile === 'string' ? [['@ccdd/project', reportOverrides.projectFile]] : [])].map(([name, file]) => {
+    const bytes = tarball(name, releaseMetadata.version, reportOverrides.publishConfig as Record<string, unknown> | undefined, reportOverrides.nodeRange as string | undefined); return { name, version: releaseMetadata.version, file, sha256: hash(bytes), bytes: bytes.length, content: bytes };
   });
   for (const item of packages) await writeFile(join(assetsDir, item.file), item.content);
   const installations = [
     { name: 'core-and-default-tools', productionInstall: true, installScripts: false, cliHelpVersion: '1.0.0', defaultToolsInstalled: true, tool: 'read_spec', actualToolExecution: true, workspaceMode: 'copy', runtime: 'GREEN', projectValidation: true },
     { name: 'core-only-custom-tool', productionInstall: true, installScripts: false, cliHelpVersion: '1.0.0', defaultToolsInstalled: false, tool: 'inspect_spec', actualToolExecution: true, workspaceMode: 'copy', projectValidation: true },
   ];
-  const report = { schemaVersion: 1, status: 'PASS', ...metadata, sourceCommit: sha, tests: { total: 2, passed: 2, failed: 0, skipped: 0, cancelled: 0, todo: 0, reportSha256: 'c'.repeat(64) }, packages: packages.map(({ content, ...item }) => item), installations, providerCalls: false, desktopLaunches: false, ...reportOverrides };
+  const report = { schemaVersion: 1, status: 'PASS', ...releaseMetadata, sourceCommit: sha, tests: { total: 2, passed: 2, failed: 0, skipped: 0, cancelled: 0, todo: 0, reportSha256: 'c'.repeat(64) }, packages: packages.map(({ content, ...item }) => item), installations, providerCalls: false, desktopLaunches: false, ...reportOverrides };
   const reportText = JSON.stringify(report); await writeFile(join(assetsDir, 'verification.json'), reportText);
   await writeFile(join(assetsDir, 'SHA256SUMS'), [...packages.map(item => `${item.sha256}  ${item.file}`), `${hash(reportText)}  verification.json`].join('\n') + '\n');
   return assetsDir;
 }
+
+test('version 4 release assets require actual in-place tool and Runtime verification in both installations', async t => {
+  const { root } = await fixture(t);
+  const current = { version: '4.0.0', tag: 'v4.0.0', coreFile: 'ccdd-core-4.0.0.tgz', toolsFile: 'ccdd-default-tools-4.0.0.tgz', projectFile: 'ccdd-project-4.0.0.tgz' };
+  const installations = [true, false].map(defaults => ({
+    name: defaults ? 'core-and-default-tools' : 'core-only-custom-tool',
+    productionInstall: true, installScripts: false, cliHelpVersion: current.version,
+    defaultToolsInstalled: defaults, tool: defaults ? 'read_spec' : 'inspect_spec',
+    actualToolExecution: true, workspace: 'in-place', runtime: 'GREEN', projectValidation: true,
+  }));
+  const assetsDir = await assets(root, { projectFile: current.projectFile, installations }, current);
+  assert.equal((await validateAssets(assetsDir, current, sha)).size, 5);
+  for (const index of [0, 1]) {
+    for (const invalid of [{ workspace: undefined, workspaceMode: 'copy' }, { actualToolExecution: false }, { runtime: 'RED' }, { projectValidation: false }]) {
+      await assets(root, { projectFile: current.projectFile,
+        installations: installations.map((run, item) => item === index ? { ...run, ...invalid } : run) }, current);
+      await assert.rejects(validateAssets(assetsDir, current, sha), /installation check|actual validation/);
+    }
+  }
+});
 
 async function npmFixture(t: TestContext, nodeRange = '>=24') {
   const data = await fixture(t), npmMetadata = { ...metadata, projectFile: 'ccdd-project-1.0.0.tgz' };
@@ -343,6 +363,7 @@ test('cancellation prevents new API mutations and aborts an in-flight request', 
 
 test('CD publishes the exact successful main CI artifact and retries without rebuilding or republishing', async t => {
   const data = await npmFixture(t), api = announcementApi(), request = api.request;
+  api.setTag(sha);
   let downloads = 0;
   api.request = async (method: string, path: string, body?: Record<string, unknown>) => {
     if (path.startsWith('actions/workflows/ci.yml/runs?')) {
@@ -373,6 +394,10 @@ test('CD cannot download or publish without successful CI for the tagged main co
   const data = await npmFixture(t), api = announcementApi();
   const success = { id: 42, head_sha: sha, head_branch: 'main', event: 'push', conclusion: 'success' };
   const options = { ...data, api, ref: 'refs/tags/v1.0.0', download: async () => assert.fail('No artifact may be downloaded') };
+  await assert.rejects(publishFromCi(options), /tag must identify/);
+  api.setTag(otherSha);
+  await assert.rejects(publishFromCi(options), /tag must identify/);
+  api.setTag(sha);
   for (const runs of [[], [{ ...success, head_sha: otherSha }], [{ ...success, conclusion: 'failure' }],
     [{ ...success, event: 'pull_request' }], [{ ...success, head_branch: 'untrusted' }]]) {
     api.request = async () => ({ workflow_runs: runs });
@@ -380,5 +405,5 @@ test('CD cannot download or publish without successful CI for the tagged main co
   }
   await assert.rejects(publishFromCi({ ...options, ref: 'refs/tags/v9.0.0' }), /tag must match/);
   assert.deepEqual(data.events, []);
-  assert.deepEqual(api.events, []);
+  assert.ok(api.events.every(event => event === 'GET git/ref/tags/v1.0.0'));
 });

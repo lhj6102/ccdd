@@ -185,9 +185,12 @@ export async function validateAssets(directory, metadata, sha) {
   invariant(tests && Number.isSafeInteger(tests.total) && tests.total > 0 && tests.passed === tests.total && tests.failed === 0 && tests.cancelled === 0 && tests.skipped === 0 && tests.todo === 0 && hashPattern.test(tests.reportSha256), 'Verification report must prove a complete passing test run.');
   invariant(report.providerCalls === false && report.desktopLaunches === false, 'Release verification must not call Providers or launch desktop applications.');
   invariant(Array.isArray(report.installations) && report.installations.length === 2, 'Verification report must prove both production installation modes.');
+  const inPlace = compareVersions(metadata.version, '4.0.0') >= 0;
   for (const [name, defaults, tool] of [['core-and-default-tools', true, 'read_spec'], ['core-only-custom-tool', false, 'inspect_spec']]) {
     const run = report.installations.find(item => item.name === name);
-    invariant(run?.productionInstall === true && run.installScripts === false && run.cliHelpVersion === metadata.version && run.defaultToolsInstalled === defaults && run.tool === tool && run.actualToolExecution === true && run.workspaceMode === 'copy' && (!defaults || run.runtime === 'GREEN'), `Verification report is missing the ${name} installation check.`);
+    const workspaceVerified = inPlace ? run?.workspace === 'in-place' && run.runtime === 'GREEN'
+      : run?.workspaceMode === 'copy' && (!defaults || run.runtime === 'GREEN');
+    invariant(run?.productionInstall === true && run.installScripts === false && run.cliHelpVersion === metadata.version && run.defaultToolsInstalled === defaults && run.tool === tool && run.actualToolExecution === true && workspaceVerified, `Verification report is missing the ${name} installation check.`);
     if (metadata.projectFile) invariant(run.projectValidation === true, 'Project package must prove actual validation and reuse in both installation modes.');
   }
   invariant(Array.isArray(report.packages) && report.packages.length === packages.length, 'Verification report must identify all declared packages.');
