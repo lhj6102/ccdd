@@ -42,6 +42,10 @@ export function runProcess(command: string, args: string[], { cwd, env, input, s
     child.stdin.on('error', () => {});
     const cleanup = () => { clearTimeout(timer); clearTimeout(killTimer); signal?.removeEventListener('abort', abort); };
     child.on('error', error => { cleanup(); reject(error); });
+    // A review command may not leave descendants running after its main process exits.
+    child.on('exit', () => {
+      if (process.platform !== 'win32' && child.pid) { try { process.kill(-child.pid, 'SIGKILL'); } catch {} }
+    });
     child.on('close', (exitCode, exitSignal) => {
       cleanup();
       if (failure) reject(failure);

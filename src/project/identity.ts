@@ -1,91 +1,108 @@
 import { createHash } from 'node:crypto';
 import { createReadStream } from 'node:fs';
-import { lstat, readdir } from 'node:fs/promises';
+import { lstat, readdir, readlink } from 'node:fs/promises';
 import path from 'node:path';
 import type { RepoConfig, WorkspaceIntegrity } from '../contracts.js';
-import { isArtifactGroup, isGeneratedArtifact, resolveArtifactScope } from '../artifacts/groups.js';
-import { preparedArtifact } from '../artifacts/sources.js';
-import { createGraphDefinition } from '../broker/graph.js';
-import { validateRelativePath } from '../broker/config.js';
+import { createGraphDefinition, stronglyConnectedComponents } from '../broker/graph.js';
 import { packageVersion } from '../runtime-paths.js';
+import { resolveScopePath } from '../artifact-scope.js';
 import type { ProjectSnapshot, ValidationInput } from './types.js';
 
 export function canonical(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(canonical).join(',')}]`;
-  if (value !== null && typeof value === 'object') return `{${Object.entries(value).filter(([, v]) => v !== undefined).sort(([a], [b]) => a.localeCompare(b, 'en')).map(([k, v]) => `${JSON.stringify(k)}:${canonical(v)}`).join(',')}}`;
+  if (value !== null && typeof value === 'object') return `{${Object.entries(value).filter(([, v]) => v !== undefined).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([k, v]) => `${JSON.stringify(k)}:${canonical(v)}`).join(',')}}`;
   return JSON.stringify(value) ?? 'null';
 }
 export const inputHash = (value: unknown): string => createHash('sha256').update(canonical(value)).digest('hex');
 
-/** Hash declared content, including additions, removals, names and empty directories. */
-async function hashPath(root: string, relative: string, signal?: AbortSignal): Promise<string> {
-  validateRelativePath(relative);
-  // Check every ancestor before following a path: a file under a symlink is not scoped input.
+/** Own material excludes separately identified child Artifacts and installed runtime directories. */
+async function hashMaterial(root: string, relative: string, childPaths: Set<string>, signal?: AbortSignal): Promise<string> {
   let current = root;
-  for (const component of relative.split('/')) {
+  for (const component of relative.split('/').filter(Boolean)) {
     current = path.join(current, component);
     const info = await lstat(current).catch(error => { if (error.code === 'ENOENT') return null; throw error; });
     if (!info) return inputHash({ path: relative, type: 'missing' });
-    if (info.isSymbolicLink()) throw new Error(`Stale input must not contain symlinks: ${relative}`);
+    if (info.isSymbolicLink()) return inputHash({ path: relative, type: 'symlink', target: await readlink(current) });
   }
   const entries: unknown[] = [];
-  const walk = async (absolute: string, name: string): Promise<void> => {
+  const walk = async (name: string): Promise<void> => {
     signal?.throwIfAborted();
-    const info = await lstat(absolute);
-    if (info.isSymbolicLink()) throw new Error(`Stale input must not contain symlinks: ${name}`);
-    if (info.isDirectory()) {
+    if (childPaths.has(name)) return;
+    const absolute = path.join(root, name), info = await lstat(absolute);
+    if (info.isSymbolicLink()) entries.push({ name, type: 'symlink', target: await readlink(absolute) });
+    else if (info.isDirectory()) {
       entries.push({ name, type: 'directory' });
-      for (const child of (await readdir(absolute)).sort()) await walk(path.join(absolute, child), `${name}/${child}`);
+      for (const child of (await readdir(absolute)).sort()) if (!['.git', 'node_modules'].includes(child)) await walk(path.posix.join(name, child));
     } else if (info.isFile()) {
       const hash = createHash('sha256');
       for await (const bytes of createReadStream(absolute, { signal })) hash.update(bytes);
       entries.push({ name, type: 'file', executable: info.mode & 0o111, hash: hash.digest('hex') });
-    } else throw new Error(`Unsupported stale input: ${name}`);
+    } else throw new Error(`Unsupported Artifact input: ${name}`);
   };
-  await walk(path.join(root, relative), relative);
+  await walk(relative);
   return inputHash(entries);
 }
 
 export async function createProjectSnapshot(config: RepoConfig, root: string, snapshotHash: string, signal?: AbortSignal, workspaceIntegrity: WorkspaceIntegrity = 'content'): Promise<ProjectSnapshot> {
   if (!['content', 'metadata'].includes(workspaceIntegrity)) throw new Error('Workspace integrity must be content or metadata.');
-  // Keep historical strict hashes byte-for-byte stable; an opt-in trust policy
-  // must never let its evidence silently satisfy the strict default.
-  const integrityIdentity = workspaceIntegrity === 'metadata' ? { workspaceIntegrity } : {};
   createGraphDefinition(config);
-  const artifactHashes: Record<string, string> = {}, reusable: Record<string, boolean> = {};
-  const paths = new Map<string, Promise<string>>();
-  const fingerprintPath = (value: string) => { if (!paths.has(value)) paths.set(value, hashPath(root, value, signal)); return paths.get(value)!; };
-  const visit = async (id: string): Promise<string> => {
-    if (artifactHashes[id]) return artifactHashes[id];
-    const artifact = config.artifacts[id];
-    if (isGeneratedArtifact(artifact)) {
-      const input = preparedArtifact(config, id, artifact);
-      reusable[id] = artifact.stale?.kind !== 'always';
-      return artifactHashes[id] = inputHash({ definition: artifact, identity: input.identity });
+  const artifactHashes: Record<string, string> = {}, reusable: Record<string, boolean> = {}, ownHashes = new Map<string, string>();
+  const scope = Object.fromEntries(Object.entries(config.artifacts).map(([id, artifact]) => [id, { ...artifact, path: path.join(root, artifact.path) }]));
+  for (const [id, artifact] of Object.entries(config.artifacts)) {
+    const childPaths = new Set(Object.keys(artifact.children).map(child => path.posix.join(artifact.path, child)));
+    const paths = new Set(artifact.stale?.kind === 'file-hash' && artifact.stale.paths ? artifact.stale.paths.map(name => path.posix.join(artifact.path, name)) : [artifact.path]);
+    const mandatoryPaths = new Set([path.posix.join(artifact.path, 'ccdd.json')]);
+    const tools = [...Object.values(artifact.views.agentTools ?? {}), ...Object.values(artifact.views.humanTools ?? {})];
+    // Local script entry files are mandatory inputs even with a narrower stale.paths declaration.
+    for (const tool of tools) for (const argument of [tool.script.command, ...tool.script.args]) {
+      if (!argument || argument.startsWith('-')) continue;
+      const candidate = path.resolve(root, artifact.path, argument), relative = path.relative(root, candidate);
+      if (path.isAbsolute(relative) || relative === '..' || relative.startsWith(`..${path.sep}`)) continue;
+      const info = await lstat(candidate).catch(() => null);
+      if (info?.isFile()) mandatoryPaths.add(relative.split(path.sep).join('/'));
     }
-    const extraPaths = artifact.stale?.kind === 'file-hash' ? artifact.stale.paths : undefined;
-    const fingerprints = await Promise.all((extraPaths ?? (isArtifactGroup(artifact) ? [] : [artifact.path])).slice().sort().map(async name => ({ path: name, hash: await fingerprintPath(name) })));
-    const members = isArtifactGroup(artifact) ? await Promise.all(artifact.members.map(async member => ({ id: member, hash: await visit(member) }))) : [];
-    reusable[id] = artifact.stale?.kind !== 'always' && members.every(member => reusable[member.id]);
-    return artifactHashes[id] = inputHash({ definition: artifact, fingerprints, members });
+    // Runtime test entry points also remain inputs when material selection is narrowed.
+    // Resolve logical mount paths exactly as the Runtime executor does.
+    for (const critic of config.critics.filter(critic => critic.target === id && critic.profile.kind === 'runtime')) {
+      if (critic.profile.kind !== 'runtime') continue;
+      for (const argument of critic.profile.args.filter(argument => !argument.startsWith('-'))) {
+        const resolved = resolveScopePath(scope, id, argument);
+        const relative = path.posix.join(config.artifacts[resolved.artifactId].path, resolved.path);
+        const info = await lstat(path.join(root, relative)).catch(() => null);
+        if (info?.isFile() || info?.isDirectory()) mandatoryPaths.add(relative);
+      }
+    }
+    for (const name of mandatoryPaths) paths.add(name);
+    const fingerprints = await Promise.all([...paths].sort().map(async name => ({ path: name, hash: await hashMaterial(root, name, mandatoryPaths.has(name) ? new Set() : childPaths, signal) })));
+    const executionPaths = new Set(tools.flatMap(tool => tool.metadata.executionPaths ?? []));
+    const executionInputs = config.configManifest.executionInputs?.filter(input => executionPaths.has(input.path));
+    const requirements = Object.fromEntries(Object.entries(config.configManifest.envRequirements ?? {}).filter(([name]) => name.startsWith(`${id}/`)));
+    const environmentPaths = new Set(Object.values(requirements).flatMap(requirement => [requirement.script, ...requirement.inputs ?? []]));
+    const environmentInputs = config.configManifest.environmentInputs?.filter(input => environmentPaths.has(input.path));
+    ownHashes.set(id, inputHash({ version: 2, definition: artifact, fingerprints, executionInputs, requirements, environmentInputs }));
+  }
+  const components = stronglyConnectedComponents(Object.keys(config.artifacts), config.relations), componentOf = new Map(components.flatMap((members, index) => members.map(id => [id, index] as const)));
+  const hashes = new Map<number, string>(), reusableComponents = new Map<number, boolean>();
+  const visit = (index: number): string => {
+    if (hashes.has(index)) return hashes.get(index)!;
+    const members = components[index], edges = config.relations.filter(edge => componentOf.get(edge.target) === index).sort((a, b) => canonical(a).localeCompare(canonical(b), 'en'));
+    const dependencies = [...new Set(edges.map(edge => componentOf.get(edge.source)!).filter(value => value !== index))].sort((a, b) => components[a][0].localeCompare(components[b][0], 'en'));
+    const hash = inputHash({ members: members.map(id => ({ id, hash: ownHashes.get(id) })), edges,
+      dependencies: dependencies.map(dependency => ({ members: components[dependency], hash: visit(dependency) })) });
+    hashes.set(index, hash);
+    reusableComponents.set(index, members.every(id => config.artifacts[id].stale?.kind !== 'always') && dependencies.every(dependency => reusableComponents.get(dependency)));
+    return hash;
   };
-  for (const id of Object.keys(config.artifacts)) await visit(id);
+  for (const [index, members] of components.entries()) {
+    const hash = visit(index);
+    for (const id of members) { artifactHashes[id] = inputHash({ id, component: hash }); reusable[id] = reusableComponents.get(index)!; }
+  }
   const inputs: Record<string, ValidationInput> = {};
   for (const critic of config.critics) {
-    const scope = resolveArtifactScope(config.artifacts, [critic.target, ...critic.deps]);
-    const types = Object.fromEntries([...new Set(scope.artifacts.map(a => a.type))].sort().map(type => [type, config.artifactTypes[type]]));
-    // A TS tool can close over arbitrary imported values. Keep its module snapshot in
-    // the identity rather than falsely treating identical function text as identical behavior.
-    const modules = config.configManifest?.modules;
-    const tools = config.configManifest ? Object.fromEntries(Object.keys(types).map(type => [type, config.configManifest!.types[type]])) : types;
-    const audience = critic.profile.kind === 'human' ? 'humanTools' : critic.profile.kind === 'agent' ? 'agentTools' : undefined;
-    const executionPaths = new Set(audience ? Object.keys(types).flatMap(type => Object.values(config.configManifest?.types[type]?.[audience] ?? {}).flatMap(tool => tool.executionPaths ?? [])) : []);
-    const executionInputs = config.configManifest?.executionInputs?.filter(input => executionPaths.has(input.path));
-    const environment = critic.profile.kind === 'human' && config.configManifest?.envRequirements ? { requirements: config.configManifest.envRequirements, inputs: config.configManifest.environmentInputs } : undefined;
-    const criticHash = inputHash({ version: 1, executorVersion: packageVersion, critic, tools, modules, ...(executionInputs?.length ? { executionInputs } : {}), ...(environment ? { environment } : {}), ...integrityIdentity, runtime: critic.profile.kind === 'runtime' ? { node: process.versions.node, platform: process.platform, arch: process.arch } : undefined });
-    const target = { id: critic.target, hash: artifactHashes[critic.target] };
-    const deps = critic.deps.slice().sort().map(id => ({ id, hash: artifactHashes[id] }));
-    inputs[critic.id] = { version: 1, key: inputHash({ criticHash, target, deps }), criticHash, target, deps, reusable: [critic.target, ...critic.deps].every(id => reusable[id]), ...integrityIdentity };
+    const criticHash = inputHash({ version: 2, executorVersion: packageVersion, critic, workspaceIntegrity,
+      runtime: { node: process.versions.node, platform: process.platform, arch: process.arch } });
+    const target = { id: critic.target, hash: artifactHashes[critic.target] }, deps = critic.deps.slice().sort().map(id => ({ id, hash: artifactHashes[id] }));
+    inputs[critic.id] = { version: 2, key: inputHash({ criticHash, target, deps }), criticHash, target, deps, reusable: [critic.target, ...critic.deps].every(id => reusable[id]), workspaceIntegrity };
   }
-  return { version: 1, config: structuredClone(config), snapshotHash, artifactHashes, inputs, ...integrityIdentity };
+  return { version: 2, config: structuredClone(config), snapshotHash, artifactHashes, inputs, workspaceIntegrity };
 }

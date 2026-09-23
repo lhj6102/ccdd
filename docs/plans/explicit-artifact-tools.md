@@ -1,3 +1,5 @@
+> Historical plan. Version 4 replaces this global configuration model; see [current contracts](../contracts.md).
+
 # Plan for explicitly registered Artifact tools and TS configuration
 
 Status: approved plan implemented in v0.9.0. Written on 2026-09-06 against main after PR #9 was merged. The finalized APIs and constraints are documented in the [current contracts](../contracts.md), and results in the [v0.9.0 verification record](../v0.9.0-validation.md). Historical review snapshots and verdicts remain unchanged.

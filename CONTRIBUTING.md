@@ -1,6 +1,6 @@
 # Contributing to CCDD
 
-CCDD checks project materials through explicit Artifact, Critic, and tool definitions. Start with the [README](README.md), then read [the context map](CONTEXT-MAP.md) and [implementation contracts](docs/contracts.md) before changing how those pieces work together.
+CCDD checks project materials through folder-owned Artifact, Critic, and script tool definitions. Start with the [README](README.md), then read [the context map](CONTEXT-MAP.md) and [implementation contracts](docs/contracts.md) before changing how those pieces work together.
 
 ## Set up
 
@@ -34,8 +34,7 @@ Keep the main README approachable. Put detailed command options and execution co
 - Describe the problem, the resulting behavior, and the validation in your pull request.
 
 For review preparation and result-handling performance, see the
-[CLI overhead benchmark](docs/performance.md), including reproduction commands,
-recorded lock/copy results and integrity-policy limitations.
+[CLI overhead benchmark](docs/performance.md), including the distinction between current folder-model benchmarks and historical lock/copy measurements.
 
 Test fixtures may use controlled transports for deterministic tests. Distinguish those fixtures from actual Provider evaluations and release verification evidence.
 

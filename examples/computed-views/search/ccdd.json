@@ -1,0 +1,133 @@
+{
+  "name": "search",
+  "views": {
+    "agentTools": {
+      "overview": {
+        "metadata": {
+          "description": "Inspect {artifactName} with overview.",
+          "inputSchema": {
+            "type": "object",
+            "properties": {},
+            "additionalProperties": false
+          },
+          "resultKinds": [
+            "json"
+          ],
+          "observation": "content",
+          "executionPaths": [
+            "view.mjs"
+          ]
+        },
+        "script": {
+          "command": "node",
+          "args": [
+            "../view.mjs",
+            "overview"
+          ]
+        }
+      },
+      "detail": {
+        "metadata": {
+          "description": "Inspect {artifactName} with detail.",
+          "inputSchema": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "id"
+            ]
+          },
+          "resultKinds": [
+            "json"
+          ],
+          "observation": "content",
+          "executionPaths": [
+            "view.mjs"
+          ]
+        },
+        "script": {
+          "command": "node",
+          "args": [
+            "../view.mjs",
+            "detail"
+          ]
+        }
+      }
+    },
+    "humanTools": {
+      "overview": {
+        "metadata": {
+          "description": "Inspect {artifactName} with overview.",
+          "inputSchema": {
+            "type": "object",
+            "properties": {},
+            "additionalProperties": false
+          },
+          "resultKinds": [
+            "json"
+          ],
+          "observation": "content",
+          "executionPaths": [
+            "view.mjs"
+          ]
+        },
+        "script": {
+          "command": "node",
+          "args": [
+            "../view.mjs",
+            "overview"
+          ]
+        }
+      },
+      "detail": {
+        "metadata": {
+          "description": "Inspect {artifactName} with detail.",
+          "inputSchema": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "id"
+            ]
+          },
+          "resultKinds": [
+            "json"
+          ],
+          "observation": "content",
+          "executionPaths": [
+            "view.mjs"
+          ]
+        },
+        "script": {
+          "command": "node",
+          "args": [
+            "../view.mjs",
+            "detail"
+          ]
+        }
+      }
+    }
+  },
+  "critics": [
+    {
+      "id": "review",
+      "title": "Review the search scenario",
+      "profile": {
+        "kind": "human"
+      },
+      "payload": {
+        "instruction": "Read the overview of {search}, then inspect every listed detail. Decide whether observations satisfy each criterion. Cite detail IDs and explain missing or contradictory evidence."
+      }
+    }
+  ]
+}

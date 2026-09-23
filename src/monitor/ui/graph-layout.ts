@@ -1,7 +1,7 @@
 import type { ELK, ELKConstructorArguments, ElkNode } from 'elkjs/lib/elk-api.js';
 
 export interface LayoutGraphInput {
-  artifacts: readonly { id: string; kind?: 'artifact' | 'group' | 'generated'; criticIds?: readonly string[] }[];
+  artifacts: readonly { id: string; criticIds?: readonly string[] }[];
   edges: readonly { source: string; target: string; criticIds: readonly string[] }[];
 }
 export interface GraphPoint { x: number; y: number }
@@ -34,13 +34,12 @@ export async function layoutGraph(graph: LayoutGraphInput, vertical = false, sig
     relations.set(key, { source: edge.source, target: edge.target, criticIds: distinct([...(previous?.criticIds ?? []), ...edge.criticIds]) });
   }
   const edges = [...relations.values()].sort((a, b) => compare(a.source, b.source) || compare(a.target, b.target));
-  validateDag(artifacts, edges);
   if (!artifacts.length) return { nodes: [], edges: [], width: padding * 2, height: padding * 2 };
 
   // Internal identifiers prevent Artifact names from colliding with port or root IDs.
   const internalIds = new Map(artifacts.map((artifact, index) => [artifact.id, `artifact-${index}`]));
   const shapes = artifacts.map(artifact => {
-    const width = nodeWidth, height = Math.max(112, 80 + Math.ceil((artifact.criticIds?.length ?? 0) / 5) * 34) + (artifact.kind === 'group' ? 21 : 0);
+    const width = nodeWidth, height = Math.max(133, 101 + Math.ceil((artifact.criticIds?.length ?? 0) / 5) * 34);
     const sourcePort = vertical ? { x: width / 2, y: height } : { x: width, y: height / 2 };
     const targetPort = vertical ? { x: width / 2, y: 0 } : { x: 0, y: height / 2 };
     return { id: artifact.id, width, height, sourcePort, targetPort };
@@ -103,26 +102,6 @@ export async function layoutGraph(graph: LayoutGraphInput, vertical = false, sig
     width: Math.max(result.width ?? 0, ...nodes.map(node => node.x + node.width + padding), ...allPoints.map(p => p.x + padding)),
     height: Math.max(result.height ?? 0, ...nodes.map(node => node.y + node.height + padding), ...allPoints.map(p => p.y + padding)),
   };
-}
-
-function validateDag(artifacts: readonly { id: string }[], edges: readonly { source: string; target: string }[]): void {
-  const incoming = new Map(artifacts.map(artifact => [artifact.id, 0]));
-  const outgoing = new Map(artifacts.map(artifact => [artifact.id, [] as string[]]));
-  for (const edge of edges) {
-    incoming.set(edge.target, incoming.get(edge.target)! + 1);
-    outgoing.get(edge.source)!.push(edge.target);
-  }
-  const ready = artifacts.filter(artifact => !incoming.get(artifact.id)).map(artifact => artifact.id);
-  let visited = 0;
-  for (let cursor = 0; cursor < ready.length; cursor++) {
-    visited++;
-    for (const target of outgoing.get(ready[cursor])!) {
-      const count = incoming.get(target)! - 1;
-      incoming.set(target, count);
-      if (count === 0) ready.push(target);
-    }
-  }
-  if (visited !== artifacts.length) throw new Error('Artifact graph contains a cycle.');
 }
 
 async function runElk(graph: ElkNode, signal?: AbortSignal): Promise<ElkNode> {

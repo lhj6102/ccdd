@@ -7,7 +7,7 @@ import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import type { ReviewRequest } from '../src/contracts.js';
 import type { GraphDefinition } from '../src/broker/graph.js';
-type StoredRequest = Omit<ReviewRequest, 'target' | 'deps'> & Partial<Pick<ReviewRequest, 'target' | 'deps'>> & { dependsOn?: string | null };
+type StoredRequest = Omit<ReviewRequest, 'target' | 'deps' | 'artifacts' | 'configManifest' | 'references' | 'requiredObservations'> & Partial<Pick<ReviewRequest, 'target' | 'deps'>> & { predecessorId?: string | null; dependsOn?: string | null; artifacts: {id:string;path:string;type?:string}[]; artifactTypes?: unknown };
 import { createMonitorStore } from '../src/monitor/store.js';
 
 const at = (seconds: number): string => new Date(Date.UTC(2026, 8, 6, 0, 0, seconds)).toISOString();
@@ -246,7 +246,7 @@ test('public summaries whitelist fields while the internal Artifact lookup retai
   assert.ok(!JSON.stringify(overview).includes('secret'));
   const detail = present(await store.detail(source.id, request.id));
   assert.deepEqual(detail.profile, request.profile);
-  assert.deepEqual(detail.artifacts, request.artifacts);
+  assert.deepEqual(detail.artifacts, request.artifacts.map(({ id, path }) => ({ id, path })));
   assert.deepEqual(detail.result, { summary: 'Fits the stated requirement.', evidence: ['spec.md:2'] });
   assert.equal(detail.instruction, request.payload.instruction);
   assert.ok(!JSON.stringify(detail).includes('secret'));
@@ -303,64 +303,15 @@ test('kanban lanes have independent counts and pagination with claimed Human req
   await assert.rejects(store.overview({ lane: 'unknown' as 'requested' }));
 });
 
-test('group observation projects saved composition without new dependency edges or source access', async t => {
-  const f = await fixture(t), hash = 'a'.repeat(64);
-  const graph: GraphDefinition = { version: 1, artifacts: {
-    effect: { type: 'vfx', path: 'effect.vfx' }, preview: { type: 'image', path: 'preview.png' }, published: { type: 'text', path: 'published.md' },
-    bundle: { kind: 'group', members: ['effect', 'preview'] },
-  }, critics: [
-    { id: 'holistic', title: 'Overall review', target: 'bundle', deps: [], kind: 'human' },
-    { id: 'preview-check', title: 'Preview review', target: 'preview', deps: [], kind: 'runtime' },
-    { id: 'publish-check', title: 'Publication review', target: 'published', deps: ['bundle'], kind: 'runtime' },
-  ] };
-  const artifacts = [{ id: 'effect', type: 'vfx', path: 'effect.vfx' }, { id: 'preview', type: 'image', path: 'preview.png' }];
-  const requests = graph.critics.map(critic => f.request(critic.id, {
-    runId: 'group-run', snapshotHash: hash, criticId: critic.id, target: critic.target, deps: critic.deps,
-    status: critic.id === 'preview-check' ? 'RED' : 'GREEN', profile: critic.kind === 'human' ? { kind: 'human' } : { kind: 'runtime', command: 'node', args: ['--test', 'test.mjs'] },
-    artifacts: critic.id === 'preview-check' ? [artifacts[1]] : critic.id === 'publish-check' ? [{ id: 'published', type: 'text', path: 'published.md' }, ...artifacts] : artifacts,
-    ...(critic.id === 'preview-check' ? {} : { artifactGroups: [{ id: 'bundle', members: ['effect', 'preview'], ...{ privateData: 'GROUP_PRIVATE_SENTINEL' } }] }),
-  }));
-  const state = await f.state('group', requests, { runData: { 'group-run': { snapshotHash: hash, graph, scope: { kind: 'graph' } } } });
-  const dbPath = path.join(state.stateDir, 'broker.sqlite'), before = await fs.readFile(dbPath);
-  const store = createMonitorStore({ stateDirs: [state.stateDir] });
-  const detail = present(await store.detail(state.id, 'holistic'));
-  assert.deepEqual(detail.artifactGroups, [{ id: 'bundle', members: ['effect', 'preview'] }]);
-  assert.doesNotMatch(JSON.stringify(detail), /GROUP_PRIVATE_SENTINEL/);
-  const projection = present((await store.graph(state.id, 'group-run'))?.graph);
-  const bundle = present(projection.artifacts.find(artifact => artifact.id === 'bundle'));
-  assert.equal(bundle.kind, 'group');
-  assert.deepEqual(bundle.kind === 'group' ? bundle.members : null, ['effect', 'preview']);
-  assert.equal(bundle.status, 'GREEN');
-  assert.equal(projection.artifacts.find(artifact => artifact.id === 'preview')?.status, 'RED');
-  assert.equal(projection.artifacts.find(artifact => artifact.id === 'effect')?.status, 'UNREVIEWED');
-  assert.deepEqual(projection.edges, [{ source: 'bundle', target: 'published', criticIds: ['publish-check'] }]);
-  assert.deepEqual(await fs.readFile(dbPath), before, 'Observation must leave the database unchanged');
-  await assert.rejects(fs.stat(state.repoPath), { code: 'ENOENT' });
-});
-
-test('group detail rejects cyclic and out-of-scope saved composition while retaining legacy records', async t => {
-  const f = await fixture(t);
-  const state = await f.state('invalid-groups', [
-    f.request('legacy'),
-    f.request('nested', { artifactGroups: [{ id: 'outer', members: ['inner', 'spec'] }, { id: 'inner', members: ['spec'] }] }),
-    f.request('outside', { artifactGroups: [{ id: 'bundle', members: ['other'] }] }),
-    f.request('cycle', { artifactGroups: [{ id: 'first', members: ['second'] }, { id: 'second', members: ['first'] }] }),
-    f.request('duplicate', { artifactGroups: [{ id: 'bundle', members: ['spec', 'spec'] }] }),
-  ]);
-  const store = createMonitorStore({ stateDirs: [state.stateDir] });
-  assert.equal((await store.detail(state.id, 'legacy'))?.artifactGroups, undefined);
-  assert.equal((await store.detail(state.id, 'nested'))?.artifactGroups?.length, 2);
-  for (const id of ['outside', 'cycle', 'duplicate']) assert.equal(await store.detail(state.id, id), null);
-});
-
 const graphDefinition = (): GraphDefinition => ({
-  version: 1,
-  artifacts: { why: { type: 'text', path: 'why.md', basis: true }, spec: { type: 'text', path: 'spec.md' }, tests: { type: 'code', path: 'tests' }, implementation: { type: 'code', path: 'src' }, unused: { type: 'text', path: 'notes.md' } },
+  version: 2,
+  relations: [{source:"why",target:"spec",kind:"instruction"},{source:"spec",target:"tests",kind:"instruction"},{source:"spec",target:"implementation",kind:"instruction"},{source:"tests",target:"implementation",kind:"instruction"}],
+  artifacts: Object.fromEntries(['why','spec','tests','implementation','unused'].map(name => [name, { name, path: name, views: {}, mounts: {}, children: {}, ...(name === 'why' ? { basis: true } : {}) }])),
   critics: [
-    { id: 'spec-agent', title: 'Check Spec intent', kind: 'agent', target: 'spec', deps: ['why'] },
-    { id: 'spec-human', title: 'Human Spec review', kind: 'human', target: 'spec', deps: ['why'] },
-    { id: 'tests', title: 'Check Tests', kind: 'runtime', target: 'tests', deps: ['spec'] },
-    { id: 'implementation', title: 'Check implementation', kind: 'runtime', target: 'implementation', deps: ['spec', 'tests'] },
+    { id: 'spec/agent', title: 'Check Spec intent', kind: 'agent', target: 'spec', deps: ['why'] },
+    { id: 'spec/human', title: 'Human Spec review', kind: 'human', target: 'spec', deps: ['why'] },
+    { id: 'tests/check', title: 'Check Tests', kind: 'runtime', target: 'tests', deps: ['spec'] },
+    { id: 'implementation/check', title: 'Check implementation', kind: 'runtime', target: 'implementation', deps: ['spec', 'tests'] },
   ],
 });
 
@@ -371,15 +322,15 @@ test('run-scoped graph includes all declarations and never borrows passes from o
     return f.request(`${runId}-${criticId}`, { runId, criticId, target: critic.target, deps: critic.deps, snapshotHash: hash, status, profile: critic.kind === 'human' ? { kind: 'human' } : critic.kind === 'agent' ? { kind: 'agent', provider: 'safe-provider', model: 'safe-model', reasoning: 'medium' } : { kind: 'runtime', command: 'node', args: [] } });
   };
   const rows = [
-    request('full', 'spec-agent', 'GREEN'), { ...request('full', 'spec-human', 'WAITING_HUMAN'), claimedBy: 'browser-person', claimedAt: at(2), notifiedAt: at(1) }, request('full', 'tests', 'BLOCKED'), request('full', 'implementation', 'BLOCKED'),
-    request('partial', 'spec-agent', 'GREEN'), request('other', 'spec-human', 'GREEN', secondHash),
+    request('full', 'spec/agent', 'GREEN'), { ...request('full', 'spec/human', 'WAITING_HUMAN'), claimedBy: 'browser-person', claimedAt: at(2), notifiedAt: at(1) }, request('full', 'tests/check', 'BLOCKED'), request('full', 'implementation/check', 'BLOCKED'),
+    request('partial', 'spec/agent', 'GREEN'), request('other', 'spec/human', 'GREEN', secondHash),
   ];
   const state = await f.state('graph', rows, { runData: {
     full: { snapshotHash: firstHash, graph, scope: { kind: 'graph' }, privateRunPayload: 'RUN_PRIVATE_SENTINEL' },
-    partial: { snapshotHash: firstHash, graph, scope: { kind: 'critic', criticId: 'spec-agent' } },
-    other: { snapshotHash: secondHash, graph, scope: { kind: 'critic', criticId: 'spec-human' } },
+    partial: { snapshotHash: firstHash, graph, scope: { kind: 'critic', criticId: 'spec/agent' } },
+    other: { snapshotHash: secondHash, graph, scope: { kind: 'critic', criticId: 'spec/human' } },
   } });
-  const otherProject = await f.state('other-project', [request('full', 'spec-human', 'RED')], { runData: { full: { snapshotHash: firstHash, graph } } });
+  const otherProject = await f.state('other-project', [request('full', 'spec/human', 'RED')], { runData: { full: { snapshotHash: firstHash, graph } } });
   const store = createMonitorStore({ stateHome: f.stateHome });
   const before = await fs.readFile(path.join(state.stateDir, 'broker.sqlite'));
   const full = present(await store.graph(state.id, 'full'));
@@ -388,7 +339,7 @@ test('run-scoped graph includes all declarations and never borrows passes from o
   assert.equal(full.requests.length, 4);
   const spec = present(full.graph?.artifacts.find(item => item.id === 'spec'));
   assert.deepEqual({ status: spec.status, passed: spec.passed, total: spec.total, included: spec.included }, { status: 'WAITING_HUMAN', passed: 1, total: 2, included: 2 });
-  assert.equal(full.graph?.critics.find(item => item.id === 'spec-human')?.claimedBy, 'browser-person');
+  assert.equal(full.graph?.critics.find(item => item.id === 'spec/human')?.claimedBy, 'browser-person');
   assert.equal(full.graph?.artifacts.find(item => item.id === 'why')?.status, 'BASIS');
   assert.equal(full.graph?.artifacts.find(item => item.id === 'unused')?.status, 'UNREVIEWED');
   assert.ok(full.graph?.edges.some(edge => edge.source === 'spec' && edge.target === 'implementation'));
@@ -396,8 +347,8 @@ test('run-scoped graph includes all declarations and never borrows passes from o
   const partialSpec = present(partial.graph?.artifacts.find(item => item.id === 'spec'));
   assert.deepEqual({ status: partialSpec.status, passed: partialSpec.passed, total: partialSpec.total, included: partialSpec.included }, { status: 'UNREVIEWED', passed: 1, total: 2, included: 1 });
   assert.equal(partial.graph?.critics.length, 4);
-  assert.equal(partial.graph?.critics.find(item => item.id === 'spec-human')?.requestId, null);
-  assert.equal(partial.graph?.critics.find(item => item.id === 'spec-human')?.status, null);
+  assert.equal(partial.graph?.critics.find(item => item.id === 'spec/human')?.requestId, null);
+  assert.equal(partial.graph?.critics.find(item => item.id === 'spec/human')?.status, null);
   assert.equal((await store.graph(otherProject.id, 'full'))?.graph?.artifacts.find(item => item.id === 'spec')?.status, 'RED');
   const board = await store.overview({ project: state.id, run: 'partial', lane: 'success' });
   assert.equal(board.total, 1);
@@ -415,8 +366,8 @@ test('run-scoped graph includes all declarations and never borrows passes from o
 test('historical or inconsistent graph metadata remains explicit unavailable without inspecting current source', async t => {
   const f = await fixture(t), graph = graphDefinition(), hash = 'a'.repeat(64);
   const historical = f.request('old', { runId: 'legacy' });
-  const invalidSnapshot = f.request('mismatch', { runId: 'mismatch', criticId: 'tests', target: 'tests', deps: ['spec'], snapshotHash: 'b'.repeat(64) });
-  const invalidTarget = f.request('scope', { runId: 'scope', criticId: 'tests', target: 'implementation', deps: ['spec'], snapshotHash: hash });
+  const invalidSnapshot = f.request('mismatch', { runId: 'mismatch', criticId: 'tests/check', target: 'tests', deps: ['spec'], snapshotHash: 'b'.repeat(64) });
+  const invalidTarget = f.request('scope', { runId: 'scope', criticId: 'tests/check', target: 'implementation', deps: ['spec'], snapshotHash: hash });
   const state = await f.state('history', [historical, invalidSnapshot, invalidTarget], { runData: { mismatch: { snapshotHash: hash, graph }, scope: { snapshotHash: hash, graph } } });
   const store = createMonitorStore({ stateDirs: [state.stateDir] });
   const old = present(await store.graph(state.id, 'legacy'));

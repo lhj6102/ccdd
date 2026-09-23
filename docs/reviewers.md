@@ -1,96 +1,50 @@
-# Choose a reviewer
+# Agent and Human reviewers
 
-A Critic says what to check. Its `profile.kind` chooses who performs the review: an Agent, a Human, or a Runtime. All three review the input captured for that request.
+A folder's `ccdd.json` owns its Critics and audience-specific tools. Keep the view scripts, declared execution inputs and review material in the supplied workspace. Keep credentials and writable state outside it.
 
-Start with [Your first review](getting-started.md) to try Runtime tests. This guide adds the two other review methods.
+## Agent
 
-## Let an Agent compare two documents
+The [custom-reader example](../examples/custom-text-reader/README.md) uses `{spec}` and `{why}` in its Critic instruction. CCDD derives the reference and binds each folder's Agent tools. Existing brace escapes remain literal. A mounted alias works the same way; descriptions use only the separate `{artifactName}` placeholder.
 
-Install `@ccdd/core`, `@ccdd/project`, and `@ccdd/default-tools` in your project, using published packages or the [local package instructions](getting-started.md#install-from-local-packages).
+Agent profiles specify `kind`, `provider`, `model`, `reasoning` and optional `timeoutMs`. The requested settings are used for the actual Pi evaluation. For example:
 
-Create `why.md` with your requirements and `spec.md` with your proposed design. For a small example, put “Show at most two unfinished tasks.” in `why.md`, and describe how your design meets that rule in `spec.md`.
-
-Create `ccdd.config.ts`:
-
-```ts
-import { defineConfig } from '@ccdd/core';
-import { agent, human } from '@ccdd/default-tools';
-
-export default defineConfig({
-  artifactTypes: {
-    document: {
-      agentTools: { read: agent.text.read() },
-      humanTools: { open: human.desktop.open() },
-    },
-  },
-  artifacts: {
-    why: { type: 'document', path: 'why.md', basis: true },
-    spec: { type: 'document', path: 'spec.md' },
-  },
-  critics: [{
-    id: 'spec-why',
-    title: 'Design meets the requirements',
-    target: 'spec',
-    deps: ['why'],
-    profile: {
-      kind: 'agent',
-      provider: 'openai-codex',
-      model: 'gpt-6-astra',
-      reasoning: 'medium',
-    },
-    payload: {
-      instruction: 'Read {spec} and {why}. Check whether the design meets every stated requirement. Cite the relevant passages.',
-    },
-  }],
-});
+```json
+{"kind":"agent","provider":"openai-codex","model":"gpt-6-astra","reasoning":"medium"}
 ```
-
-The model above is the profile used by this repository's examples. CCDD requires the exact Provider, model, and reasoning level to be supported by its installed catalog and accessible to your account. You can choose another supported profile explicitly.
-
-Supply credentials through a supported Provider environment variable or an explicit credential file. For `openai-codex`, you can connect an existing, unexpired Codex credential file with `--codex-auth-file`. Keep that file outside your project. The login tool that issued it handles renewal.
 
 ```sh
-npx ccdd-project tools check --artifact spec --for agent --tool read --execute
-npx ccdd-project verify spec --wait --codex-auth-file /absolute/path/outside/project/auth.json
+ccdd-project doctor --critic spec/alignment --codex-auth-file /external/auth.json
+ccdd-project tools check --artifact spec --for agent --tool read --execute --args '{"startLine":1,"lineCount":20}'
+ccdd-project verify spec --recursive --wait --codex-auth-file /external/auth.json
 ```
 
-The tool check actually reads the file but does not call an AI Provider. The verification does call the configured Provider and uses your account's usage. See [credential and Provider contracts](contracts.md#pi-agent-execution) for other credential options and diagnostics.
+Use `--pi-auth-file`/`CCDD_PI_AUTH_FILE` for a Pi auth store, or `--codex-auth-file`/`CCDD_CODEX_AUTH_FILE` to bridge an existing Codex auth file read-only. Credentials must never be inside reviewed input. Doctor makes a real Provider call with a private nonce outside the project; it does not evaluate project quality or substitute for the actual Critic.
 
-CCDD gives its review Agent `read_spec` and `read_why`, including each tool's description and argument schema. References such as `{spec}` become the corresponding Artifact ID and tool names in the review prompt. The file contents arrive when the Agent calls the tools. The Agent returns a verdict, summary, and evidence; CCDD checks that all supplied Artifacts were actually observed.
+Agents receive only scoped tools and return structured GREEN/RED, summary and evidence. Each target and explicit instruction reference must have a successful content or empty observation. Listing files, mentioning a reference or launching an app does not count. An admitted child or mount is not automatically a mandatory observation. Image views require a model supporting image input.
 
-To support a new material format, replace or extend the tools in `artifactTypes`. A [custom reader](../examples/custom-text-reader/README.md) uses the same `metadata` and `execute(context, args)` contract. The Agent session and tool-call routing remain CCDD's responsibility.
+## Human
 
-## Ask a person to review
-
-In the configuration above, change the Critic's profile to:
-
-```ts
-profile: { kind: 'human' },
-```
-
-The same target, references, and instruction now go to a person. The `humanTools` map supplies their tools. The default desktop opener uses macOS's application association; on another platform, configure an explicit viewer command as described in [desktop opening](../packages/default-tools/README.md#desktop-opening).
-
-Request the review with a local inbox notification, then open the monitor:
+Set a Critic profile to `{"kind":"human"}` and register `views.humanTools`. These can return text/JSON/images or launch a local desktop application. [Default tools](../packages/default-tools/README.md) and [computed views](../examples/computed-views/README.md) show both forms.
 
 ```sh
-npx ccdd-project verify spec --human-inbox
-npx ccdd-project monitor
+ccdd-project verify spec --human-inbox
+ccdd-project monitor
 ```
 
-Open the local address printed by the monitor. Choose the project, switch to Kanban, and open the Human review card. Select **Claim review**. The request enters **Try Claim** while its input and environment are prepared; successful preparation confirms the assignment. Use the provided tools to inspect the materials, then enter a verdict, a summary, and at least one item of evidence before selecting **Submit result**.
+The monitor can show the request, reserve a Try Claim, prepare input/environment, confirm the claim, call its registered views and submit the reviewer's result. The worker remains alive throughout. There is no remote transfer or downloaded workspace. A failed preparation releases the reservation; it never fabricates a verdict.
 
-During Claim, the card shows the current preparation phase, elapsed time, last
-heartbeat, and available scan progress. Expand **Phase timings** to see which
-completed checks took time. Each attempt has an ID; a retry identifies the attempt
-it replaces. A released or expired attempt stops preparing and shows the next
-action. The fixed input is still checked before assignment, and preparation does
-not launch a viewer or establish that its rendered content is ready.
+Equivalent local CLI actions are:
 
-Artifact references in the instruction are buttons that take you to the relevant tool choices. Selecting a reference does not itself execute a tool. Opening an application does not automatically approve the review.
+```sh
+ccdd-project request claim REQUEST_ID --reviewer me
+ccdd-project request tool REQUEST_ID --reviewer me --tool read_spec --args '{"path":"spec.md"}'
+ccdd-project request submit REQUEST_ID --reviewer me --result-file /external/result.json
+```
 
-For a terminal-only workflow, use `request claim`, `request tool`, and `request submit`. See [Human actions and review history](project-validation.md#execution-history-and-human-actions).
+The tool name and arguments depend on the declared view. The result file contains the person's actual `{"verdict":"GREEN|RED","summary":"...","evidence":["..."]}`. A launch receipt alone never completes a review. Only the current claimant can call Human tools or submit results, and completion requires a live worker and unchanged input.
 
-Human reviews use the supplied local workspace. Keep the worker running and all
-inputs unchanged until completion. If isolation is needed, the user creates a
-separate worktree and supplies its path when submitting the review. Remote
-workspace transfer and remote review clients are no longer supported.
+## Local environment checks
+
+An Artifact may own `envRequirements: {"viewer": {"description":"Viewer available", "script":"checks/viewer.mjs", "timeoutMs":30000, "inputs":["checks/settings.json"]}}`. Paths here are relative to that folder. A zero exit means ready. Checks run only during explicit Human preparation and only for admitted Artifacts; queries and monitor GETs do not execute them. Scripts receive external output/temp paths and an allowlisted environment. CCDD does not install missing tools automatically.
+
+See [Human lifecycle contracts](contracts.md#human-lifecycle) for reservations, expiry, authoritative completion and input mutation behavior.

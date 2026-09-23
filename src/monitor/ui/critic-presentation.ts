@@ -19,7 +19,7 @@ export function criticPresentation(critic: GraphCriticState, request?: MonitorRe
     label = critic.validationStatus === 'STALE' ? 'Needs revalidation' : 'Unreviewed';
     return { tone, mark, label, actionable: false, accessibleLabel: `${critic.title} · ${label} · ${critic.validationReason ?? ''}` };
   }
-  if (critic.validationStatus === 'BLOCKED') {
+  if (critic.validationStatus === 'INCOMPLETE') {
     label = 'Dependencies need validation';
     return { tone, mark, label, actionable: Boolean(critic.requestId), accessibleLabel: `${critic.title} · ${label} · ${critic.validationReason ?? ''}` };
   }

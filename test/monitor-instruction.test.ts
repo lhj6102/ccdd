@@ -107,8 +107,8 @@ function detail(claimed: boolean, tools: MonitorHumanTool[] = [tool('spec'), too
   return {
     request: { id: 'request', projectId: 'project', status: 'WAITING_HUMAN', kind: 'human', claimedBy: claimed ? 'me' : null, waitingReason: null } as MonitorDetail['request'],
     profile: { kind: 'human' }, instruction: 'Review {spec} and {why}.',
-    artifacts: [{ id: 'spec', type: 'text', path: 'spec.md' }, { id: 'why', type: 'text', path: 'why.md' }],
-    tools, artifactPreview: 'tools', human: { canClaim: !claimed, claimedByMe: claimed, canComplete: claimed },
+    artifacts: [{ id: 'spec', path: 'spec.md' }, { id: 'why', path: 'why.md' }],
+    tools, artifactPreview: 'tools', references: {}, human: { canClaim: !claimed, claimedByMe: claimed, canComplete: claimed },
     result: null, error: null, timeline: [],
   };
 }
@@ -322,42 +322,6 @@ test('a delayed refresh from a failed Claim cannot cancel the next Claim attempt
   } finally { app.unmount(); }
 });
 
-test('Human group references expose deduplicated scoped member tools and preserve claim gating', async t => {
-  browserGlobals(t);
-  const artifactGroups = [{ id: 'documents', members: ['spec', 'why'] }, { id: 'bundle', members: ['documents', 'spec'] }];
-  const instructionHost = node('root'), selected: string[] = [];
-  const instruction = mount(await component('ArtifactInstruction'), {
-    instruction: 'Review: {bundle} and {outside}', artifacts: [{ id: 'spec' }, { id: 'why' }], artifactGroups,
-    tools: [tool('spec'), tool('why'), tool('outside')], active: true, onArtifact: (id: string) => selected.push(id),
-  }, instructionHost);
-  t.after(() => instruction.app.unmount());
-  const reference = matching(instructionHost, 'button', 'bundle');
-  reference.props.onClick(); assert.deepEqual(selected, ['bundle']);
-  assert.equal(all(instructionHost).filter(child => child.type === 'button').length, 1);
-  assert.match(text(instructionHost), /\{outside\}/);
-
-  const host = node('root'), requests: string[] = [];
-  const groupedDetail = (claimed: boolean): MonitorDetail => ({ ...detail(claimed, [tool('spec'), tool('why'), tool('outside')]), artifactGroups });
-  const props = reactive({ detail: groupedDetail(false), session: { reviewerId: 'me', csrfToken: 'csrf' }, sessionError: '',
-    onUpdated: (updated: MonitorDetail) => { props.detail = updated; } });
-  t.mock.method(globalThis, 'fetch', async (input: string | URL | Request) => {
-    const url = String(input); requests.push(url);
-    return new Response(JSON.stringify(url.endsWith('/claim') ? groupedDetail(true) : { result: { content: [{ type: 'launch', launched: true }] } }), { status: 200 });
-  });
-  const { app, view } = mount(await component('HumanReview'), props, host); t.after(() => app.unmount());
-  view.showArtifactTools('bundle'); await nextTick();
-  assert.equal(requests.length, 0); assert.match(text(host), /bundle · Available tools/);
-  assert.match(text(host), /Claim the review/); assert.doesNotMatch(text(host), /outside/);
-  await matching(host, 'button', 'Claim review').props.onClick(); await nextTick();
-  view.showArtifactTools('bundle'); await nextTick();
-  const buttons = all(host).filter(child => child.type === 'button' && String(child.props.class).includes('artifact-choice'));
-  assert.deepEqual(buttons.map(text), ['spec · Open', 'why · Open']);
-  assert.equal(requests.length, 1, 'Choosing a group only focuses the provided tools');
-  matching(host, 'button', 'why · Open').props.onClick();
-  await new Promise(resolve => setImmediate(resolve)); await nextTick();
-  assert.deepEqual(requests, ['/api/requests/project/request/claim', '/api/requests/project/request/tools/open_why']);
-});
-
 test('Human form and JSON submission preserve typed arguments and reject invalid input before HTTP', async t => {
   browserGlobals(t);
   const sent: unknown[] = [], host = node('root');
@@ -411,7 +375,7 @@ test('rendered Critic status distinguishes omitted, claimed, blocked, failed and
       [{ status: 'RED' }, 'failure', /Criteria not met/, false],
       [{ status: 'ERROR' }, 'failure', /Execution error/, false],
       [{ status: null, requestId: null, validationStatus: 'STALE' }, 'requested', /Needs revalidation/, true],
-      [{ validationStatus: 'BLOCKED' }, 'requested', /Dependencies need validation/, false],
+      [{ validationStatus: 'INCOMPLETE' }, 'requested', /Dependencies need validation/, false],
       [{ status: 'GREEN', validationStatus: 'PASS', reusedFrom: { requestId: 'previous', runId: 'previous-run', completedAt: '2026-01-01T00:00:00.000Z' } }, 'success', /Previous verdict reused/, false],
     ];
     for (const [changes, state, label, disabled] of cases) {

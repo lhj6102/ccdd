@@ -1,21 +1,15 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { readFile, readdir } from 'node:fs/promises';
 import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
-import { isDeepStrictEqual } from 'node:util';
-import { createArtifactViewer, createArtifactTools } from '../artifacts/index.js';
-import { createHumanArtifactTools } from '../artifacts/human.js';
 import { describeReviewTools } from '../tools/runner.js';
 import type { MonitorStoredRequest } from './store.js';
-import { readStoredArtifactScope } from '../requester/index.js';
-import { reopenWorkspace } from '../workspaces/index.js';
 import { createMonitorStore } from './store.js';
 import { inspectProject } from '../project/index.js';
-import { MonitorActionError, authorizeWorkspace, claimReview, completeReview, executeReviewTool } from './actions.js';
+import { MonitorActionError, claimReview, completeReview, executeReviewTool } from './actions.js';
 import { activeTryClaim } from '../broker/human-claims.js';
 import { humanPreparationState } from './human-preparation.js';
-import type { MonitorArtifactPage, MonitorDetail, MonitorFilter, MonitorLane, MonitorSession, MonitorSources } from './types.js';
+import type { MonitorDetail, MonitorFilter, MonitorLane, MonitorSession, MonitorSources } from './types.js';
 
-const ARTIFACT_BUDGET_MS = 10_000;
 const MAX_ARTIFACT_READS = 2;
 const identifier = /^[A-Za-z0-9][A-Za-z0-9_-]*$/;
 class HttpError extends MonitorActionError {}
@@ -142,7 +136,7 @@ async function staticAssets(): Promise<Map<string, [string, Buffer]>> {
 }
 
 async function decorateDetail(detail: MonitorDetail, record: MonitorStoredRequest, reviewerId?: string): Promise<MonitorDetail> {
-  const waiting = detail.request.kind === 'human' && detail.request.status === 'WAITING_HUMAN';
+  const waiting = record.request.configManifest?.version === 2 && detail.request.kind === 'human' && detail.request.status === 'WAITING_HUMAN';
   const claimedByMe = Boolean(reviewerId && detail.request.claimedBy === reviewerId);
   const reservation = waiting ? activeTryClaim(record.request) : undefined;
   const preparation = humanPreparationState(record.request, reviewerId);
@@ -154,19 +148,13 @@ async function decorateDetail(detail: MonitorDetail, record: MonitorStoredReques
     ...(preparation ? { preparation } : {}),
   };
   detail.tools = [];
-  detail.artifactPreview = record.request.configManifest ? 'tools' : 'legacy';
-  if (detail.request.kind === 'human') {
+  detail.artifactPreview = record.request.configManifest?.version === 2 ? 'tools' : 'historical';
+  if (detail.request.kind === 'human' && record.request.configManifest?.version === 2) {
     try {
-      if (record.request.configManifest) {
-        // A monitor GET only projects the stored manifest. Loading a TS config is executable work.
-        detail.tools = describeReviewTools({ artifacts: record.request.artifacts, configManifest: record.request.configManifest, audience: 'human' })
-          .map(tool => ({ name: tool.name, artifactId: tool.artifactId, operation: tool.operation, description: tool.description, inputSchema: tool.inputSchema }));
-      } else {
-        await authorizeWorkspace(record);
-        const registry = await createHumanArtifactTools({ worktreePath: record.request.workspace.path, artifacts: record.request.artifacts, artifactTypes: record.request.artifactTypes, allowLegacy: true, signal: AbortSignal.timeout(5_000) });
-        detail.tools = registry.tools.map(tool => ({ name: tool.name, artifactId: tool.artifactId, operation: tool.operation, description: tool.description, inputSchema: tool.inputSchema }));
-      }
-    } catch { detail.toolIssue = 'Unable to prepare tools for this review. Check the stored input and tool definitions.'; }
+      // GET projects saved declarations only. It never reads config or executes scripts.
+      detail.tools = describeReviewTools({ artifacts: record.request.artifacts, configManifest: record.request.configManifest, audience: 'human' })
+        .map(tool => ({ name: tool.name, artifactId: tool.artifactId, operation: tool.operation, description: tool.description, inputSchema: tool.inputSchema }));
+    } catch { detail.toolIssue = 'Unable to read tool declarations for this review.'; }
   }
   return detail;
 }
@@ -299,53 +287,7 @@ export async function startMonitor(options: MonitorSources & { port?: number } =
         const token = tokenFrom(request);
         json(response, record ? await decorateDetail(result, record, token ? reviewer(token) : undefined) : result); return;
       }
-      const artifact = /^\/api\/requests\/([^/]+)\/([^/]+)\/artifacts\/([^/]+)$/.exec(url.pathname);
-      if (!artifact) throw new HttpError(404, 'Request URL not found.');
-      parameters(url, ['operation', 'path', 'startLine', 'lineCount', 'offset', 'limit']);
-      if (active.size >= MAX_ARTIFACT_READS) { response.setHeader('Retry-After', '1'); throw new HttpError(429, 'Other Artifacts are being inspected. Please try again shortly.'); }
-      const controller = new AbortController();
-      const disconnect = () => { if (!response.writableEnded) controller.abort(new Error('Monitor client disconnected')); };
-      request.once('aborted', disconnect); response.once('close', disconnect);
-      const timer = setTimeout(() => controller.abort(new HttpError(504, 'Artifact inspection timed out. Try again with a smaller input.')), ARTIFACT_BUDGET_MS);
-      active.add(controller);
-      try {
-        const projectId = id(artifact[1]), requestId = id(artifact[2]), artifactId = id(artifact[3]);
-        const record = await store.request(projectId, requestId);
-        controller.signal.throwIfAborted();
-        if (!record) throw new HttpError(404, 'Review request not found.');
-        if (record.request.id !== requestId) throw new HttpError(409, 'The stored review request identifier does not match.');
-        if (record.request.configManifest) throw new HttpError(409, 'Inspect this Artifact with its registered tools. Human reviewers can use the programs provided in the Review tab.');
-        await authorizeWorkspace(record);
-        controller.signal.throwIfAborted();
-        const handle = await reopenWorkspace(record.request.workspace, { signal: controller.signal });
-        try {
-          await handle.assertUnchanged();
-          const expected = await readStoredArtifactScope({ repoPath: handle.descriptor.path, criticId: record.request.criticId });
-          if (!expected || !isDeepStrictEqual(expected.artifacts, record.request.artifacts) || !isDeepStrictEqual(expected.artifactTypes, record.request.artifactTypes)) throw new HttpError(409, 'The stored Artifact scope does not match the review input definitions.');
-          const viewer = await createArtifactViewer({ worktreePath: handle.descriptor.path, artifacts: record.request.artifacts, artifactTypes: record.request.artifactTypes, signal: handle.signal });
-          const definition = viewer.listArtifacts().find(item => item.id === artifactId);
-          if (!definition) throw new HttpError(404, 'This Artifact is not included in the review request.');
-          const operation = url.searchParams.get('operation') ?? (definition.directory ? 'list' : 'read');
-          if (operation !== 'read' && operation !== 'list') throw new HttpError(400, 'Unsupported Artifact inspection method.');
-          const registry = createArtifactTools(viewer, { audience: 'viewer' });
-          const toolName = `${operation}_${artifactId}`;
-          const tool = registry.tools.find(item => item.name === toolName);
-          if (!tool) throw new HttpError(400, 'This Artifact does not have the requested inspection tool.');
-          const args: Record<string, unknown> = {};
-          if (url.searchParams.has('path')) args.path = url.searchParams.get('path');
-          for (const [key, minimum, maximum] of [['startLine', 1, Number.MAX_SAFE_INTEGER], ['lineCount', 1, 500], ['offset', 0, Number.MAX_SAFE_INTEGER], ['limit', 1, 200]] as const) {
-            if (url.searchParams.has(key)) args[key] = number(url.searchParams.get(key), minimum, minimum, maximum);
-          }
-          const result = await registry.call(toolName, args);
-          await handle.assertUnchanged();
-          handle.signal.throwIfAborted();
-          const page: MonitorArtifactPage = { artifact: { id: definition.id, path: definition.path, directory: definition.directory, description: tool.description }, result };
-          json(response, page);
-        } finally { await handle.close(); }
-      } catch (error) { throw controller.signal.aborted ? controller.signal.reason : safeError(error); }
-      finally {
-        clearTimeout(timer); request.off('aborted', disconnect); response.off('close', disconnect); active.delete(controller);
-      }
+      throw new HttpError(404, 'Request URL not found. Inspect Artifacts using the explicit review tools.');
     })().catch(error => {
       const safe = safeError(error);
       if (safe.status === 405) response.setHeader('Allow', 'GET');

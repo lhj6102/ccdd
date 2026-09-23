@@ -339,9 +339,7 @@ export async function prepareWorkspace({ repoPath, stateDir, integrity = 'conten
 }
 
 export async function reopenWorkspace(descriptor: WorkspaceDescriptor, { signal, onProgress, integrity }: { signal?: AbortSignal; onProgress?: (progress: WorkspaceScanProgress) => void; integrity?: WorkspaceIntegrity } = {}): Promise<WorkspaceHandle> {
-  // Historical in-place inputs can reopen; copied inputs remain history only.
-  const legacy = descriptor as unknown as { version?: number; mode?: unknown };
-  if (!descriptor || !(descriptor.version === 2 && !('mode' in descriptor) || legacy.version === 1 && legacy.mode === 'lock') ||
+  if (!descriptor || descriptor.version !== 2 || 'mode' in descriptor ||
       !validHash(descriptor.hash) || !validHash(descriptor.baselineMetadataHash) ||
       (descriptor.integrity !== undefined && !['content', 'metadata'].includes(descriptor.integrity)) ||
       (descriptor.structureHash !== undefined && !validHash(descriptor.structureHash)) ||
@@ -361,8 +359,7 @@ export async function reopenWorkspace(descriptor: WorkspaceDescriptor, { signal,
   const observer = observe(expectedPath, signal, onProgress, effectiveIntegrity);
   try {
     await observer.initialize({ hash: descriptor.hash, metadataHash: descriptor.baselineMetadataHash, structureHash: descriptor.structureHash });
-    const { mode: _legacyMode, ...current } = descriptor as WorkspaceDescriptor & { mode?: unknown };
-    return { descriptor: Object.freeze({ ...current, version: 2 as const, ...(integrity !== undefined ? { integrity } : {}) }), signal: observer.signal, assertUnchanged: observer.assertUnchanged, close: observer.close };
+    return { descriptor: Object.freeze({ ...descriptor, ...(integrity !== undefined ? { integrity } : {}) }), signal: observer.signal, assertUnchanged: observer.assertUnchanged, close: observer.close };
   } catch (error) { await observer.close(); throw error; }
 }
 

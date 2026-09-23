@@ -2,14 +2,14 @@ import type { RepoConfig, ReviewEnvelope, ReviewResult, ReviewRequest, Workspace
 
 export type ProjectSelection = { kind: 'all' } | { kind: 'artifact'; artifactId: string } | { kind: 'critic'; criticId: string };
 export interface ValidationInput {
-  version: 1; key: string; criticHash: string;
+  version: 2; key: string; criticHash: string;
   target: { id: string; hash: string }; deps: { id: string; hash: string }[];
   reusable: boolean;
   /** Omitted for historical/default content verification. Part of the effective Critic identity when nondefault. */
   workspaceIntegrity?: WorkspaceIntegrity;
 }
 export interface ProjectSnapshot {
-  version: 1; config: RepoConfig; snapshotHash: string;
+  version: 2; config: RepoConfig; snapshotHash: string;
   artifactHashes: Record<string, string>; inputs: Record<string, ValidationInput>;
   workspaceIntegrity?: WorkspaceIntegrity;
 }
@@ -18,14 +18,14 @@ export interface ValidationEvidence {
   completedAt: string; verdict: ReviewResult['verdict']; summary: string; evidence: string[];
 }
 export interface ProjectRunDefinition {
-  version: 1; snapshot: ProjectSnapshot; selection: ProjectSelection;
+  version: 2; snapshot: ProjectSnapshot; selection: ProjectSelection;
   recursive: boolean; force: boolean;
   /** Prepared definitions, not tickets or persisted stale states. */
   templates: ReviewEnvelope[];
   /** Original evidence consumed by a completed execution; never a cached stale flag. */
   evidenceRequestIds?: string[];
 }
-export type ValidationStatus = 'PASS' | 'BASIS' | 'UNREVIEWED' | 'STALE' | 'RED' | 'ERROR' | 'BLOCKED' | 'QUEUED' | 'RUNNING' | 'WAITING_HUMAN';
+export type ValidationStatus = 'PASS' | 'BASIS' | 'UNREVIEWED' | 'STALE' | 'RED' | 'ERROR' | 'INCOMPLETE' | 'QUEUED' | 'RUNNING' | 'WAITING_HUMAN';
 export interface CriticValidation {
   id: string; title: string; target: string; deps: string[]; status: ValidationStatus;
   isStale: boolean; canExecute: boolean; needsReview: boolean; blockedBy: string[];

@@ -15,9 +15,10 @@ const installFixtureDependencies:DemoDependencyInstaller=async({stagePath})=>{
   const core=join(stagePath,'node_modules/@ccdd/core');
   const tools=join(stagePath,'node_modules/@ccdd/default-tools');
   await mkdir(core,{recursive:true}); await mkdir(tools,{recursive:true});
-  await cp(fileURLToPath(new URL('../src/sdk.js',import.meta.url)),join(core,'sdk.js'));
+  await mkdir(join(core,'dist/src'),{recursive:true});
+  for(const name of ['sdk.js','artifact-scope.js']) await cp(fileURLToPath(new URL('../src/'+name,import.meta.url)),join(core,'dist/src',name));
   const {version}=JSON.parse(await readFile(new URL('../../package.json',import.meta.url),'utf8'));
-  await writeFile(join(core,'package.json'),JSON.stringify({name:'@ccdd/core',version,type:'module',exports:'./sdk.js'}));
+  await writeFile(join(core,'package.json'),JSON.stringify({name:'@ccdd/core',version,type:'module',exports:'./dist/src/sdk.js'}));
   const toolsDist=dirname(fileURLToPath(import.meta.resolve('@ccdd/default-tools')));
   await cp(toolsDist,join(tools,'dist'),{recursive:true});
   await cp(join(toolsDist,'../package.json'),join(tools,'package.json'));
@@ -34,32 +35,30 @@ async function demoOptions(t:TestContext){
 test('monitor fixture keeps semantic reviews as Agent Critics alongside Human and Runtime',async()=>{
   const {config}=await readWorkspaceConfig(fileURLToPath(new URL('../../test/fixtures/monitor-graph/',import.meta.url)));
   const critics=new Map(config.critics.map(critic=>[critic.id,critic]));
-  for(const id of ['spec-why','tests-spec'])assert.deepEqual(critics.get(id)?.profile,{kind:'agent',provider:'openai-codex',model:'gpt-6-astra',reasoning:'medium'});
-  assert.equal(critics.get('spec-human')?.profile.kind,'human');
-  assert.equal(critics.get('notes-independent')?.profile.kind,'runtime');
-  assert.deepEqual(critics.get('implementation-tests')?.profile,{kind:'runtime',command:'node',args:['--test','tests/focus.test.mjs']});
-  assert.deepEqual(config.critics.filter(critic=>critic.target==='spec').map(critic=>critic.id).sort(),['spec-human','spec-why']);
-  assert.deepEqual(critics.get('tests-spec')?.deps,['spec']);
+  for(const id of ['spec/spec-why','tests/tests-spec'])assert.deepEqual(critics.get(id)?.profile,{kind:'agent',provider:'openai-codex',model:'gpt-6-astra',reasoning:'medium'});
+  assert.equal(critics.get('spec/spec-human')?.profile.kind,'human');
+  assert.equal(critics.get('notes/notes-independent')?.profile.kind,'runtime');
+  assert.deepEqual(critics.get('implementation/implementation-tests')?.profile,{kind:'runtime',command:'node',args:['--test','tests/focus.test.mjs']});
+  assert.deepEqual(config.critics.filter(critic=>critic.target==='spec').map(critic=>critic.id).sort(),['spec/spec-human','spec/spec-why']);
+  assert.deepEqual(critics.get('tests/tests-spec')?.deps,['spec']);
 });
 
 test('four editable workspaces preserve the graph and real runtime regression without Git',async t=>{
   const options=await demoOptions(t), {root}=options;
   try{
-    const manifest=await prepareDemo(options);assert.equal(manifest.scenarios.length,4);assert.equal(manifest.version,9);
+    const manifest=await prepareDemo(options);assert.equal(manifest.scenarios.length,4);assert.equal(manifest.version,10);
     assert.deepEqual(await prepareDemo({root}),manifest);
     for(const scenario of manifest.scenarios){
       const read=(p:string)=>readFile(join(scenario.repoPath,p),'utf8');
       const {config}=await readWorkspaceConfig(scenario.repoPath);
       await assert.rejects(access(join(scenario.repoPath,'ccdd.config.json')));
-      assert.deepEqual(config.critics.map(c=>[c.target,c.deps]),[['spec',['why']],['tests',['spec']],['implementation',['tests']]]);assert.equal(config.artifacts.why.basis,true);
-      assert.deepEqual(config.critics.slice(0,2).map(c=>c.profile),Array(2).fill({kind:'agent',provider:'openai-codex',model:'gpt-6-astra',reasoning:'medium'}));
-      assert.equal(config.configManifest!.types.markdown.agentTools.read.description,'Read document content from {artifactName} by line.');
-      assert.equal(config.configManifest!.types.code.agentTools.list.description,'List files in {artifactName}.');
-      assert.equal(config.configManifest!.types.code.agentTools.read.description,'Read source text from {artifactName} by line.');
-      assert.deepEqual(Object.keys(config.configManifest!.types.markdown.humanTools),['open']);
-      assert.deepEqual(config.configManifest!.types.markdown.humanTools.open.resultKinds,['launch']);
+      assert.deepEqual(config.critics.map(c=>[c.target,c.deps]).sort(),[['spec',['why']],['tests',['spec']],['implementation',['tests']]].sort());assert.equal(config.artifacts.why.basis,true);
+      assert.deepEqual(config.critics.filter(c=>c.profile.kind==='agent').map(c=>c.profile),Array(2).fill({kind:'agent',provider:'openai-codex',model:'gpt-6-astra',reasoning:'medium'}));
+      assert.equal(config.configManifest.version,2);
+      assert.deepEqual(Object.keys(config.artifacts.spec.views.agentTools!),['read','list']);
+      assert.deepEqual(config.artifacts.spec.views.humanTools!.open.metadata.resultKinds,['launch']);
       await assert.rejects(access(join(scenario.repoPath,'.git')));
-      if(scenario.id==='why-change'){assert.match(await read('why.md'),/at most 2/);assert.match(await read('spec.md'),/at most 3/);}
+      if(scenario.id==='why-change'){assert.match(await read('why/why.md'),/at most 2/);assert.match(await read('spec/spec.md'),/at most 3/);}
       const {NODE_TEST_CONTEXT,...childEnv}=process.env;
       const run=spawnSync(process.execPath,['--test','tests/rank.test.mjs'],{cwd:scenario.repoPath,encoding:'utf8',env:childEnv});
       assert.equal(run.status,scenario.id==='runtime-failure'?1:0,run.stdout+run.stderr);
@@ -71,7 +70,7 @@ test('preparing a demo preserves edited current files and rejects an older manif
   const options=await demoOptions(t), {root}=options;
   try{
     const manifest=await prepareDemo(options);
-    const configPath=join(manifest.scenarios[0].repoPath,'ccdd.config.ts');
+    const configPath=join(manifest.scenarios[0].repoPath,'spec/ccdd.json');
     const edited=(await readFile(configPath,'utf8')).replaceAll('gpt-6-astra','gpt-5.6-sol').replace('Read document content','Custom description');
     await writeFile(configPath,edited);
     assert.deepEqual(await prepareDemo({root}),manifest);
@@ -93,19 +92,4 @@ test('a new demo requires both package inputs before creating any directory',asy
   await assert.rejects(access(root),{code:'ENOENT'});
   await assert.rejects(prepareDemo({root,coreTarball:join(dir,'missing.tgz'),toolsTarball:join(dir,'also-missing.tgz')}),/existing regular files/);
   assert.deepEqual(await readdir(dir),[]);
-});
-
-test('saved demos using the previous npm namespace are reused without rewriting their config', async t => {
-  const options = await demoOptions(t), manifest = await prepareDemo(options);
-  const saved: string[] = [];
-  for (const scenario of manifest.scenarios) {
-    const configPath = join(scenario.repoPath, 'ccdd.config.ts');
-    const config = (await readFile(configPath, 'utf8')).replaceAll('@ccdd/core', '@lhj6102/ccdd').replaceAll('@ccdd/default-tools', '@lhj6102/ccdd-default-tools');
-    await writeFile(configPath, config); saved.push(config);
-    await mkdir(join(scenario.repoPath, 'node_modules/@lhj6102'), { recursive: true });
-    await rename(join(scenario.repoPath, 'node_modules/@ccdd/core'), join(scenario.repoPath, 'node_modules/@lhj6102/ccdd'));
-    await rename(join(scenario.repoPath, 'node_modules/@ccdd/default-tools'), join(scenario.repoPath, 'node_modules/@lhj6102/ccdd-default-tools'));
-  }
-  assert.deepEqual(await prepareDemo({ root: options.root }), manifest);
-  for (const [index, scenario] of manifest.scenarios.entries()) assert.equal(await readFile(join(scenario.repoPath, 'ccdd.config.ts'), 'utf8'), saved[index]);
 });

@@ -1,3 +1,4 @@
+import type { ArtifactReferenceMetadata } from '../artifacts/index.js';
 import { createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { readdir, readFile, realpath, stat } from 'node:fs/promises';
@@ -5,7 +6,7 @@ import { homedir } from 'node:os';
 import { basename, isAbsolute, join, resolve } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { promisify } from 'node:util';
-import type { ArtifactReference, CriticProfile, ReviewRequest, ReviewStatus, RunStatus } from '../contracts.js';
+import type { CriticProfile, ReviewRequest, ReviewStatus, RunStatus } from '../contracts.js';
 import { projectGraph, validateGraphDefinition } from '../broker/graph.js';
 import { storedRun } from '../project/store.js';
 import { projectValidationGraph } from '../project/graph.js';
@@ -106,7 +107,7 @@ function readRun(row: Record<string, unknown>, project: string): MonitorRun {
     if (raw.kind === 'chain' || raw.kind === 'graph' || raw.kind === 'project') scope = { kind: raw.kind };
     else if (raw.kind === 'critic' && typeof raw.criticId === 'string') scope = { kind: 'critic', criticId: text(raw.criticId, 128) };
   }
-  return { id: string(row.id), projectId: project, snapshotHash: nullableString(row.snapshot_hash), status: status as RunStatus, createdAt: date(row.created_at), completedAt: nullableDate(row.completed_at), scope, graphAvailable: row.graph_type === 'object' && row.graph_version === 1 };
+  return { id: string(row.id), projectId: project, snapshotHash: nullableString(row.snapshot_hash), status: status as RunStatus, createdAt: date(row.created_at), completedAt: nullableDate(row.completed_at), scope, graphAvailable: row.graph_type === 'object' && row.graph_version === 2 };
 }
 
 /** Open only existing databases. All reads for one source share one SQLite snapshot. */
@@ -322,38 +323,12 @@ function profile(value: unknown): CriticProfile {
   if (value.kind === 'runtime' && Array.isArray(value.args) && value.args.every(arg => typeof arg === 'string')) return { kind: 'runtime', command: string(value.command), args: value.args as string[], ...timeout };
   throw storageError();
 }
-function artifactReferences(value: unknown): ArtifactReference[] {
+function artifactReferences(value: unknown): ArtifactReferenceMetadata[] {
   if (!Array.isArray(value)) throw storageError();
   return value.map(item => {
     if (!object(item)) throw storageError();
-    if (item.kind === 'generated') return { id: string(item.id), type: string(item.type), kind: 'generated' as const, source: string(item.source) };
-    return { id: string(item.id), path: string(item.path), type: string(item.type) };
+    return { id: string(item.id), path: typeof item.path === 'string' ? item.path : '(historical input)' };
   });
-}
-
-/** Project only saved composition metadata. Observation must not load config or execute tools. */
-function artifactGroupReferences(value: unknown, artifacts: ArtifactReference[]): NonNullable<MonitorDetail['artifactGroups']> | undefined {
-  if (value === undefined) return undefined;
-  if (!Array.isArray(value)) throw storageError();
-  const identifier = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
-  const groups = value.map(item => {
-    if (!object(item) || typeof item.id !== 'string' || !identifier.test(item.id) || !Array.isArray(item.members) || !item.members.length
-        || item.members.some(member => typeof member !== 'string' || !identifier.test(member)) || new Set(item.members).size !== item.members.length) throw storageError();
-    return { id: item.id, members: [...item.members] as string[] };
-  });
-  const leaves = new Set(artifacts.map(artifact => artifact.id)), byId = new Map(groups.map(group => [group.id, group]));
-  if (byId.size !== groups.length || groups.some(group => leaves.has(group.id))) throw storageError();
-  const visited = new Set<string>(), visiting = new Set<string>();
-  const visit = (id: string): void => {
-    if (leaves.has(id) || visited.has(id)) return;
-    const group = byId.get(id);
-    if (!group || visiting.has(id)) throw storageError();
-    visiting.add(id);
-    for (const member of group.members) visit(member);
-    visiting.delete(id); visited.add(id);
-  };
-  for (const group of groups) visit(group.id);
-  return groups;
 }
 
 function pagination(query: { limit?: number; offset?: number }): { limit: number; offset: number } {
@@ -437,11 +412,11 @@ export function createMonitorStore(options: MonitorSources = {}) {
         const outcome = object(raw.result) && typeof raw.result.summary === 'string' && Array.isArray(raw.result.evidence) && raw.result.evidence.every(item => typeof item === 'string')
           ? { summary: text(raw.result.summary, 12_000), evidence: (raw.result.evidence as string[]).slice(0, 100).map(item => text(item, 4_000)) } : null;
         const request = (await projectRequests(snapshot, new Map(), requestId))[0];
-        const artifacts = artifactReferences(raw.artifacts), artifactGroups = artifactGroupReferences(raw.artifactGroups, artifacts);
+        const artifacts = artifactReferences(raw.artifacts);
         return {
           request, instruction: text(string(raw.payload.instruction), 24_000), profile: profile(raw.profile), result: outcome,
           error: typeof raw.error === 'string' ? text(raw.error, 2_000) : null, timeline: timeline(header, snapshot.events), artifacts,
-          ...(artifactGroups === undefined ? {} : { artifactGroups }),
+          references: object(raw.references) ? Object.fromEntries(Object.entries(raw.references).filter((entry): entry is [string, string] => typeof entry[1] === 'string')) : {},
         };
       } catch { return null; }
     },

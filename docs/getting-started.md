@@ -1,84 +1,45 @@
-# Your first review
+# Getting started
 
-This walkthrough reviews a tiny implementation by running one real Node test. It needs no AI account or desktop application. Afterward, you can add Agent or Human Critics and Artifact tools to the same project.
-
-## 1. Install CCDD
-
-Use Node.js 22 LTS (22.19.0 or later), preferably the latest LTS patch. Check with `node --version`. Node 22 support starts with CCDD 3.1.0. For an unpublished source version, use [Install from local packages](#install-from-local-packages).
-
-Create a new folder outside the CCDD source checkout, or use a small existing project:
+Use Node 22 LTS, at least 22.19.0. Create an empty project and install the version 4 packages (or install the corresponding local tarballs while developing an unpublished release).
 
 ```sh
 mkdir my-ccdd-project
 cd my-ccdd-project
 npm init -y
-npm pkg set type=module
-npm install --ignore-scripts @ccdd/core @ccdd/project
+npm install --ignore-scripts @ccdd/core@^4 @ccdd/project@^4
+mkdir implementation
 ```
-
-These commands require published versions of the packages. If you are working with an unpublished source version, follow [Install from local packages](#install-from-local-packages) below instead of the last command. A declaration of a version in this repository is not a claim that it is published.
-
-The project must contain the packages imported by its configuration. CCDD captures those dependencies with the review input. Parent-folder or global installations do not supply missing configuration imports.
-
-## 2. Add two small files
 
 Create `implementation/add.mjs`:
 
 ```js
-export function add(a, b) {
-  return a + b;
-}
+export const add = (a, b) => a + b;
 ```
 
-Create `tests/add.test.mjs`:
+Create `implementation/check.test.mjs`:
 
 ```js
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { add } from '../implementation/add.mjs';
-
-test('adds two numbers', () => {
-  assert.equal(add(2, 3), 5);
-});
+import { add } from './add.mjs';
+test('add two integers', () => assert.equal(add(2, 3), 5));
 ```
 
-## 3. Describe the review
+Create `implementation/ccdd.json`:
 
-Create `ccdd.config.ts` in the project root:
-
-```ts
-import { defineConfig } from '@ccdd/core';
-
-export default defineConfig({
-  artifactTypes: {
-    code: {},
-  },
-  artifacts: {
-    tests: { type: 'code', path: 'tests', basis: true },
-    implementation: { type: 'code', path: 'implementation' },
-  },
-  critics: [{
-    id: 'implementation-tests',
-    title: 'Implementation passes the tests',
-    target: 'implementation',
-    deps: ['tests'],
-    profile: {
-      kind: 'runtime',
-      command: 'node',
-      args: ['--test', 'tests/add.test.mjs'],
-    },
-    payload: {
-      instruction: 'Run the tests against the implementation.',
-    },
-  }],
-});
+```json
+{
+  "name": "implementation",
+  "critics": [{
+    "id": "tests",
+    "title": "Pass the addition tests",
+    "profile": { "kind": "runtime", "command": "node", "args": ["--test", "check.test.mjs"] },
+    "payload": { "instruction": "Run the actual tests for {implementation}." }
+  }]
+}
 ```
 
-Here, `implementation` is the **target** being judged. `tests` is a **dependency** used to judge it. `basis: true` explicitly accepts the test suite as the starting point for this example; it does not claim that the tests have themselves passed a review. You can later add a separate Critic to assess test quality, replacing that acceptance with a real review.
-
-The `code` type has no Agent or Human tools because this first Critic runs tests directly. Agent and Human Critics need their own explicitly registered observation tools.
-
-## 4. Check and run
+The marker makes this folder an Artifact. The target is implicit; its full Critic ID is `implementation/tests`. Runtime needs no view tools or Provider credentials.
 
 ```sh
 npx ccdd-project config check
@@ -88,69 +49,20 @@ npx ccdd-project status implementation
 npx ccdd-project history implementation
 ```
 
-The configuration check validates your declarations. The plan shows what can run. Verification runs the Node test and records its real result and evidence. With the files above, the test should pass and the current validation should be satisfied.
+The first verify executes real tests. A second unchanged verify reuses its evidence without executing another review. Change addition to subtraction to produce a real RED result. Restoring the exact earlier input can reuse the earlier matching PASS. A failed process or broken configuration is an operational error, not a semantic failure.
 
-Run `verify implementation --wait` again without changing any input. CCDD should reference the original passing review instead of creating another review ticket.
+State defaults to `~/.local/state/ccdd/<workspace-path-hash>`. Use `--state-dir /absolute/external/path` to choose another location. Output, caches, result files and state must remain outside the workspace. Do not edit input while a review is active. A user-created worktree passed with `--repo` lets development continue elsewhere.
 
-Now change `return a + b` to `return a - b` and verify again. The changed implementation needs a new review, and the real test should fail with RED. Restore the correct implementation and request verification again. These are expected outcomes for you to observe, not pre-recorded review results.
+## Add observation tools
 
-Records live outside your project, by default under `~/.local/state/ccdd/`. `--state-dir` chooses another external location. Verification uses the supplied workspace directly and checks the entire project, including installed dependencies. Keep it unchanged until completion, including while waiting for a Human reviewer. To keep working elsewhere, create a separate worktree and pass its path with `--repo`. CCDD does not add exclusions to the reviewed input.
+Agent and Human Critics need their own registered views. Install `@ccdd/default-tools@^4` and copy/adapt its [JSON example](../packages/default-tools/examples/document/ccdd.json). A tool declares metadata and a fixed script, such as `{"command":"ccdd-view","args":["read"]}`. Reviewer arguments are validated and supplied as JSON stdin. Installing the library alone does not register it.
 
-## 5. Add reviewers and tools
+For a custom implementation, see [the standalone reader](../examples/custom-text-reader/README.md). It uses only Node and standard JSON, with no TypeScript config or mandatory tool library. Other languages can implement the same protocol.
 
-For ready-made tools, install the optional package in the project:
+## Connect Artifacts
 
-```sh
-npm install --ignore-scripts @ccdd/default-tools
-```
+Move independently reviewed material into another marked folder. Refer to its unique name in a Critic instruction, or add a logical mount such as `"mounts":{"suite":"tests"}`. A Runtime profile in `implementation` can then run `suite/check.test.mjs` without creating a physical `suite` directory. Nearest nested Artifacts are dependencies automatically.
 
-Register tools for each audience in your configuration:
+`verify implementation` executes its own Critics. `verify implementation --recursive` also evaluates the required dependency scope. Mutual references are supported and run without waiting for each other's PASS, while the final answer still requires both evaluations.
 
-```ts
-import { agent, human } from '@ccdd/default-tools';
-
-// Inside artifactTypes:
-code: {
-  agentTools: {
-    list: agent.files.list(),
-    read: agent.files.read(),
-  },
-  humanTools: {
-    open: human.desktop.open(),
-  },
-}
-```
-
-This fragment replaces the earlier `code: {}` entry. It defines access for future Agent and Human Critics; the existing Runtime Critic still runs the configured test.
-
-- **Agent:** choose a Provider, model, reasoning level, and review instruction. Supply the Provider's credentials outside the reviewed input. CCDD starts a review Agent and supplies only its registered Artifact tools. See [the reviewer guide](reviewers.md).
-- **Human:** add a Human Critic and register an alarm, such as the CLI's `--human-inbox` option. The person claims the review, opens its materials, and submits a verdict, summary, and evidence. See [Human actions](project-validation.md#execution-history-and-human-actions).
-- **Custom tools:** implement `metadata` and `execute(context, args)` using the same contract. See [the custom reader](../examples/custom-text-reader/README.md).
-
-The default desktop opener uses macOS's application association. On other platforms, configure a suitable executable with `human.desktop.open({ command: '/path/to/viewer' })`. See [desktop opening](../packages/default-tools/README.md#desktop-opening).
-
-## Install from local packages
-
-If a package version is not yet published, build tarballs from the CCDD source checkout with Node 22 LTS (22.19.0 or later):
-
-```sh
-npm ci
-npm run build
-```
-
-Create an empty package-output directory **outside** both the source checkout and your review project. Replace `/absolute/path/to/ccdd-packages` below with its actual path:
-
-```sh
-npm pack --ignore-scripts --pack-destination /absolute/path/to/ccdd-packages
-npm pack --ignore-scripts --workspace @ccdd/project --pack-destination /absolute/path/to/ccdd-packages
-```
-
-In your new project, install the actual tarballs produced by those commands together. For the current version:
-
-```sh
-npm install --ignore-scripts \
-  /absolute/path/to/ccdd-packages/ccdd-core-3.1.1.tgz \
-  /absolute/path/to/ccdd-packages/ccdd-project-3.1.1.tgz
-```
-
-To use default tools too, pack `@ccdd/default-tools` and include its tarball in the same install command. Package versions must be compatible. These commands build and install locally; they do not publish a release.
+An Artifact without Critics is UNREVIEWED. Use `basis: true` only for an explicitly accepted starting point. The [demo](demo.md) illustrates a complete linear project; the [folder example](../examples/artifact-folders/README.md) shows code-style and image criteria.

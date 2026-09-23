@@ -4,7 +4,7 @@ These measurements describe earlier versions with separate lock/copy policies.
 Current reviews use only the supplied workspace in place; copy publication and
 remote transfer are removed. The archived copy reports below are historical
 evidence, not supported workflows. The benchmark script now measures in-place
-review only; omit the former `BENCH_MODE` setting.
+review only with version 4 folder declarations; both compared revisions must support that contract. Omit the former `BENCH_MODE` setting. Historical comparisons require their original harness.
 
 
 The CLI benchmark measures CCDD preparation and result handling separately from

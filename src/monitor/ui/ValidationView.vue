@@ -23,7 +23,7 @@ async function inspect(): Promise<void> {
     if (value instanceof ApiError && value.status === 403) emit('session-expired');
   } finally { if (current === version) loading.value = false; }
 }
-const actionLabels = { REUSE: 'Reuse verdict', EXECUTE: 'Ready to review', WAIT: 'Dependencies need review', ACTIVE: 'In progress', FAILED: 'Execution needs attention' };
+const actionLabels = { REUSE: 'Reuse verdict', EXECUTE: 'Ready to review', WAIT: 'Execution not ready', ACTIVE: 'In progress', FAILED: 'Execution needs attention' };
 </script>
 
 <template>
@@ -37,13 +37,14 @@ const actionLabels = { REUSE: 'Reuse verdict', EXECUTE: 'Ready to review', WAIT:
     <p v-if="error" class="inline-error" role="alert">{{ error }}</p>
     <template v-if="result">
       <p class="validation-summary" role="status"><strong>{{ result.plan.satisfied ? 'PASS · All required reviews are satisfied.' : 'More reviews are needed.' }}</strong><span>Observed at {{ dateLabel(result.observedAt) }} · Inspect again after editing files or completing reviews.</span></p>
-      <p class="validation-counts">Reuse {{ result.plan.counts.reuse }} · Ready to review {{ result.plan.counts.execute }} · Awaiting dependencies {{ result.plan.counts.wait }}</p>
+      <p class="validation-counts">Reuse {{ result.plan.counts.reuse }} · Ready to review {{ result.plan.counts.execute }} · Execution not ready {{ result.plan.counts.wait }}</p>
+      <ul class="validation-artifacts" aria-label="Artifact validation requirements"><li v-for="artifact in result.plan.artifacts" :key="artifact.id"><strong>{{ artifact.id }}</strong> · {{ artifact.status }} · {{ artifact.passed }}/{{ artifact.total }} Critics passed<span v-if="artifact.status === 'UNREVIEWED' && !artifact.total"> · No Critics or explicit basis</span></li></ul>
       <div class="validation-table-wrap"><table>
         <thead><tr><th scope="col">Critic / Target</th><th scope="col">Status</th><th scope="col">Next action and reason</th></tr></thead>
         <tbody><tr v-for="critic in result.plan.items" :key="critic.id">
           <th scope="row">{{ critic.title }}<small>{{ critic.id }} → {{ critic.target }}</small></th>
           <td><span :class="['validation-status', { passed: critic.status === 'PASS' }]">{{ critic.status }}</span></td>
-          <td><strong>{{ actionLabels[critic.action] }}</strong><p>{{ critic.reason }}</p><button v-if="critic.result" type="button" class="text-button" @click="emit('open-request', { projectId, id: critic.result.requestId })">View recorded verdict · {{ dateLabel(critic.result.completedAt) }}</button></td>
+          <td><strong>{{ actionLabels[critic.action] }}</strong><p>{{ critic.reason }}</p><p v-if="critic.blockedBy.length">Final validation still needs: {{ critic.blockedBy.join(', ') }}. This does not delay this Critic's execution.</p><button v-if="critic.result" type="button" class="text-button" @click="emit('open-request', { projectId, id: critic.result.requestId })">View recorded verdict · {{ dateLabel(critic.result.completedAt) }}</button></td>
         </tr></tbody>
       </table></div>
     </template>
@@ -58,6 +59,7 @@ h2 { margin: 0 0 8px; font-size: 19px; } p { line-height: 1.65; } .validation-he
 .inspect-button:disabled { opacity: .55; cursor: default; }
 .validation-summary { padding-top: 16px; border-top: 1px solid #e4e7e6; } .validation-summary span { display: block; color: #67716c; font-size: 12px; }
 .validation-counts { font-size: 13px; }.validation-table-wrap { overflow-x: auto; } table { width: 100%; border-collapse: collapse; text-align: left; font-size: 13px; }
+.validation-artifacts { padding-left: 18px; font-size: 12px; line-height: 1.8; color: #67716c; }
 th, td { border-bottom: 1px solid #e8ecea; padding: 15px 12px; vertical-align: top; } thead th { color: #67716c; font-size: 12px; } td p { margin: 6px 0; }
 small { display: block; color: #67716c; font-weight: normal; margin-top: 7px; }.validation-status { display: inline-block; padding: 4px 7px; background: #f3efe3; border-radius: 5px; font-size: 11px; }.validation-status.passed { background: #e6f1e9; color: #246740; }
 @media (max-width: 650px) { .validation-view { padding: 16px; }.validation-heading { align-items: flex-start; flex-direction: column; } }

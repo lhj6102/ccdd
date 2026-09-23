@@ -18,6 +18,7 @@ async function fixture(t: TestContext, contents = '\uccab\uc9f8\r\nsecond\nthird
   await mkdir(tmpDir);
   const abort = new AbortController();
   const context: ToolContext = {
+    scope: {},
     artifactId: 'spec', artifactPath, artifactDirectory: directory, outputDir, tmpDir, signal: abort.signal,
     async resolvePath(path = '') {
       if (!directory && path) throw new Error('A file artifact has no child paths');

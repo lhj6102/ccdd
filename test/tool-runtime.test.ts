@@ -1,246 +1,148 @@
 import test, { type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, writeFile, readFile, symlink } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { execFileSync } from 'node:child_process';
+import { readFile, writeFile, mkdir, symlink } from 'node:fs/promises';
+import { join, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
-import { readWorkspaceConfig } from '../src/broker/config.js';
-import { createBroker } from '../src/broker/index.js';
-import { prepareReviewRequests } from '../src/requester/index.js';
+import { execFileSync } from 'node:child_process';
+import { artifactFixture, fixtureViews } from './helpers/artifacts.js';
 import { createReviewTools, describeReviewTools } from '../src/tools/runner.js';
-import { defineTool } from '../src/sdk.js';
-import { removeOwnedWorkspaceTree } from '../src/workspaces/index.js';
+import { defineTool, type ToolMetadata } from '../src/sdk.js';
+import { diagnoseArtifactTools } from '../src/artifacts/tool-check.js';
+import { serveArtifactMcp } from '../src/artifacts/mcp-server.js';
+import { PassThrough } from 'node:stream';
 
-const metadata = {
-  description: 'Inspect {artifactName}.',
-  inputSchema: { type: 'object', properties: {}, additionalProperties: false },
-  resultKinds: ['text', 'json', 'image', 'launch'], observation: 'content',
-};
-async function fixture(t: TestContext, options: { execute?: string; prelude?: string; meta?: object; tools?: string; audience?: 'human' | 'agent' } = {}) {
-  const dir = await mkdtemp(join(tmpdir(), 'ccdd-tool-runtime-'));
-  const repoPath = join(dir, 'project');
-  await mkdir(repoPath);
-  await writeFile(join(repoPath, 'spec.md'), '# Requirements\n');
-  const configPath = join(repoPath, 'ccdd.config.ts');
-  const tools = options.tools ?? `inspect: { metadata: ${JSON.stringify(options.meta ?? metadata)}, ${options.execute ?? "execute() { return { content: [{ type: 'text', text: 'observed' }], observation: { kind: 'content' } }; }"} }`;
-  const audience = options.audience ?? 'human';
-  const source = `${options.prelude ?? ''}
-export default async () => ({
-  artifacts: { spec: { type: 'custom', path: 'spec.md' } },
-  artifactTypes: { custom: { ${audience}Tools: { ${tools} } } },
-  critics: [{ id: 'review', title: 'Review', target: 'spec', deps: [], profile: ${JSON.stringify(audience === 'human' ? { kind: 'human' } : { kind: 'agent', provider: 'openai-codex', model: 'gpt-6-astra', reasoning: 'medium' })}, payload: { instruction: 'Review spec.' } }]
-});`;
-  await writeFile(configPath, source);
-  t.after(() => removeOwnedWorkspaceTree(dir));
-  const optionsFor = async () => {
-    const request = (await prepareReviewRequests({ repoPath, snapshotHash: 'a'.repeat(64) }))[0];
-    return { worktreePath: repoPath, artifacts: request.artifacts, artifactTypes: request.artifactTypes, configManifest: request.configManifest, audience, runDir: join(dir, 'outputs') };
-  };
-  return { dir, repoPath, configPath, source, optionsFor };
-}
-
-test('TS config loads local helpers, preserves schemas, and never executes a registered tool during admission', async t => {
-  const data = await fixture(t, { prelude: "import { helper } from './helper.js';", tools: 'inspect: helper' });
-  const marker = join(data.dir, 'executed');
-  await writeFile(join(data.repoPath, 'helper.ts'), `import { writeFile } from 'node:fs/promises';
-export const helper = { metadata: ${JSON.stringify(metadata)}, async execute() { await writeFile(${JSON.stringify(marker)}, 'yes'); return { content: [{ type: 'text', text: 'helper' }], observation: { kind: 'content' } }; } };`);
-  const options = await data.optionsFor();
-  assert.deepEqual(options.configManifest?.modules.map(item => item.path), ['ccdd.config.ts', 'helper.ts']);
-  assert.equal(JSON.stringify(options.configManifest).includes('execute'), false);
-  await assert.rejects(readFile(marker), { code: 'ENOENT' });
-  const registry = await createReviewTools(options);
-  t.after(() => registry.close());
-  assert.equal(registry.tools[0].description, 'Inspect spec.');
-  assert.deepEqual(registry.tools[0].inputSchema, metadata.inputSchema);
-  assert.equal((await registry.preflight())[0].ok, true);
-  await assert.rejects(readFile(marker), { code: 'ENOENT' });
-  assert.equal((await registry.call('inspect_spec')).content[0].text, 'helper');
-  assert.equal(await readFile(marker, 'utf8'), 'yes');
-});
-
-test('submission evaluates the config once for both graph and request manifests', async t => {
-  const data = await fixture(t);
-  const marker = join(data.dir, 'loads');
-  await writeFile(data.configPath, `import { appendFileSync } from 'node:fs'; appendFileSync(${JSON.stringify(marker)}, 'load\\n');\n${data.source}`);
-  const broker = createBroker({ repoPath: data.repoPath, stateDir: join(data.dir, 'state'), executors: { canExecute: () => ({ ok: true }), notifyHuman: async () => {}, execute: async () => { throw new Error('Not executed during admission'); } } });
-  t.after(() => broker.close());
-  const run = await broker.submit({ requesterId: 'unit-test' });
-  assert.equal(await readFile(marker, 'utf8'), 'load\n');
-  assert.ok(run.requests[0].configManifest);
-  assert.deepEqual(Object.keys(run.graph!.artifacts), ['spec']);
-});
-
-test('each tool registry rehydrates a fresh closure and rejects changed snapshot declarations', async t => {
-  const data = await fixture(t, { prelude: 'let count = 0;', execute: "execute() { return { content: [{ type: 'json', data: ++count }] }; }" });
-  const options = await data.optionsFor();
-  for (let index = 0; index < 2; index++) {
-    const registry = await createReviewTools(options);
-    try {
-      assert.equal((await registry.call('inspect_spec')).content[0].data, 1);
-      assert.equal((await registry.call('inspect_spec')).content[0].data, 2);
-    } finally { await registry.close(); }
-  }
-  await writeFile(data.configPath, data.source.replace('Inspect {artifactName}.', 'Changed {artifactName}.'));
-  await assert.rejects(createReviewTools(options), /manifest does not match/);
-});
-
-test('config conflict is rejected before evaluation and empty audience tools never gain defaults', async t => {
-  const data = await fixture(t, { tools: '' });
-  const { config } = await readWorkspaceConfig(data.repoPath);
-  assert.deepEqual(config.configManifest?.types.custom.humanTools, {});
-  assert.deepEqual(describeReviewTools({ artifacts: [{ id: 'spec', type: 'custom', path: 'spec.md' }], configManifest: config.configManifest!, audience: 'human' }), []);
-  await assert.rejects(data.optionsFor(), /no usable human tools/);
-  await writeFile(join(data.repoPath, 'ccdd.config.json'), '{}');
-  await writeFile(data.configPath, "throw new Error('MUST_NOT_EXECUTE');");
-  await assert.rejects(readWorkspaceConfig(data.repoPath), /Both ccdd.config/);
-});
-
-test('configuration imports must resolve inside the snapshot, including deferred imports', async t => {
-  const data = await fixture(t);
-  await writeFile(join(data.dir, 'external.ts'), 'export const value = 1;');
-  await writeFile(data.configPath, `import '../external.ts';\n${data.source}`);
-  await assert.rejects(readWorkspaceConfig(data.repoPath), /imports must resolve inside/);
-  await writeFile(data.configPath, data.source.replace("execute() { return", "async execute() { await import('../external.ts'); return"));
-  const registry = await createReviewTools(await data.optionsFor());
-  t.after(() => registry.close());
-  await assert.rejects(registry.call('inspect_spec'), /imports must resolve inside/);
-  assert.equal(registry.toolCalls.length, 0);
-});
-
-test('malformed registration and schema are rejected at admission', async t => {
-  const cases = [
-    'inspect: {}',
-    `inspect: { metadata: ${JSON.stringify(metadata)}, execute: 'not a function' }`,
-    `inspect: { metadata: ${JSON.stringify({ ...metadata, inputSchema: { type: 'object', $ref: 'remote' } })}, execute() {} }`,
-    `inspect: { metadata: ${JSON.stringify({ ...metadata, description: '{unknown}' })}, execute() {} }`,
-    ...[{ additionalProperties: 'false' }, { minimum: '10' }, { maxLength: -1 }, { multipleOf: 0 },
-      { enum: 'abc' }, { uniqueItems: 'true' }, { required: ['x', 'x'] }].map(fragment =>
-      `inspect: { metadata: ${JSON.stringify({ ...metadata, inputSchema: { type: 'object', ...fragment } })}, execute() {} }`),
-  ];
-  for (const tools of cases) {
-    const data = await fixture(t, { tools });
-    await assert.rejects(readWorkspaceConfig(data.repoPath), /Invalid tool definition|Unsupported tool schema|description requires|Invalid schema/);
-  }
-});
-
-test('strict arguments prevent execution and tool scope rejects traversal and symlinks', async t => {
-  const schema = { type: 'object', properties: { frame: { type: 'integer', minimum: 0 }, enabled: { type: 'boolean' }, channel: { type: 'string', enum: ['color', 'depth'] } }, required: ['frame', 'enabled', 'channel'], additionalProperties: false };
-  const data = await fixture(t, { prelude: 'let count = 0;', meta: { ...metadata, inputSchema: schema }, execute: "execute(context, args) { return { content: [{ type: 'json', data: { ...args, count: ++count } }] }; }" });
-  const registry = await createReviewTools(await data.optionsFor());
-  t.after(() => registry.close());
-  for (const args of [{ frame: '1', enabled: true, channel: 'color' }, { frame: 1, enabled: 'false', channel: 'color' }, { frame: 1, enabled: true, channel: 'unknown' }, { frame: 1, enabled: true, channel: 'color', extra: 1 }]) {
-    await assert.rejects(registry.call('inspect_spec', args), /input schema/);
-  }
-  assert.deepEqual((await registry.call('inspect_spec', { frame: 2, enabled: false, channel: 'depth' })).content[0].data, { frame: 2, enabled: false, channel: 'depth', count: 1 });
-  const scoped = await fixture(t, { execute: "async execute(context) { await context.resolvePath('../private'); return { content: [{ type: 'text', text: 'unreachable' }] }; }" });
-  const scopedRegistry = await createReviewTools(await scoped.optionsFor());
-  t.after(() => scopedRegistry.close());
-  await assert.rejects(scopedRegistry.call('inspect_spec'), /does not accept an internal path/);
-  await symlink(join(data.repoPath, 'spec.md'), join(scoped.repoPath, 'link'));
-  await writeFile(scoped.configPath, scoped.source.replace("path: 'spec.md'", "path: 'link'"));
-  await assert.rejects(readWorkspaceConfig(scoped.repoPath), /escapes|symlinks/);
-});
-
-test('nested native image paths return the same PNG bytes for absolute and relative output paths', async t => {
-  const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aD1sAAAAASUVORK5CYII=';
-  const data = await fixture(t, {
-    audience: 'agent',
-    meta: { ...metadata, resultKinds: ['image'] },
-    prelude: "import { mkdir, writeFile } from 'node:fs/promises'; import { join } from 'node:path';",
-    execute: `async execute(context) {
-      const directory = join(context.outputDir, 'render');
-      await mkdir(directory);
-      const path = join(directory, 'preview.png');
-      await writeFile(path, Buffer.from('${png}', 'base64'));
-      return { content: [path, join('render', 'preview.png')].map(path => ({ type: 'image', path, mimeType: 'image/png' })), observation: { kind: 'content' } };
-    }`,
+const metadata: ToolMetadata = { description: 'Inspect {artifactName}.', inputSchema: { type: 'object', properties: {}, additionalProperties: false }, resultKinds: ['text', 'json', 'image', 'launch'], observation: 'content' };
+async function fixture(t: TestContext, script = "return {content:[{type:'text',text:'observed'}],observation:{kind:'content'}};", meta = metadata) {
+  const data = await artifactFixture(t), views = fixtureViews();
+  views.humanTools = { inspect: { metadata: meta, script: { command: 'node', args: ['inspect.mjs'] } } };
+  await data.write('spec', { name: 'spec', views, critics: [{ id: 'review', title: 'Review', profile: { kind: 'human' }, payload: { instruction: 'Inspect {spec}.' } }] }, {
+    'inspect.mjs': `import {readFile,writeFile,mkdir,symlink} from 'node:fs/promises';import {join} from 'node:path';import {spawn} from 'node:child_process';let text='';for await(const chunk of process.stdin)text+=chunk;const request=JSON.parse(text);const {context,args}=request;async function execute(){${script}}const result=await execute();process.stdout.write(JSON.stringify(result));`,
   });
-  const registry = await createReviewTools(await data.optionsFor());
-  t.after(() => registry.close());
+  const request = (await data.requests())[0];
+  const options = { ...request, worktreePath: data.repoPath, audience: 'human' as const, runDir: join(data.root, 'output') };
+  return { ...data, options, request, registry: () => createReviewTools(options) };
+}
+const json = (value: Awaited<ReturnType<Awaited<ReturnType<typeof createReviewTools>>['call']>>) => { const block = value.content[0]; assert.ok(block.type === 'json'); return block.data; };
+
+test('JSON discovery, stored descriptors and preflight never execute scripts; real calls receive protocol context', async t => {
+  const data = await fixture(t, "await writeFile(join(context.outputDir,'receipt'), 'executed'); return {content:[{type:'json',data:{version:request.version,args,cwd:process.cwd(),context,secret:process.env.CCDD_TEST_SECRET??null,nodeOptions:process.env.NODE_OPTIONS??null}}]};");
+  const before = await readFile(join(data.repoPath, 'spec/ccdd.json'), 'utf8');
+  assert.equal(describeReviewTools(data.options)[0].name, 'inspect_spec');
+  const registry = await data.registry(); t.after(() => registry.close());
+  assert.ok((await registry.preflight()).every(check => check.ok));
+  const old = process.env.CCDD_TEST_SECRET; process.env.CCDD_TEST_SECRET = 'not inherited';
+  t.after(() => { if (old === undefined) delete process.env.CCDD_TEST_SECRET; else process.env.CCDD_TEST_SECRET = old; });
+  const result = json(await registry.call('inspect_spec')) as any;
+  assert.equal(result.version, 1); assert.equal(result.cwd, join(data.repoPath, 'spec'));
+  assert.equal(result.context.scope.spec.path, result.cwd); assert.equal(result.context.artifactPath, result.cwd);
+  assert.equal(result.secret, null); assert.equal(result.nodeOptions, null);
+  assert.ok(result.context.outputDir.startsWith(data.root) && !result.context.outputDir.startsWith(data.repoPath));
+  assert.equal(await readFile(join(data.repoPath, 'spec/ccdd.json'), 'utf8'), before);
+});
+
+test('fixed argv and schema validation prevent reviewer arguments from becoming command text', async t => {
+  const meta = { ...metadata, inputSchema: { type: 'object', properties: { frame: { type: 'integer', minimum: 0 }, enabled: { type: 'boolean' } }, required: ['frame', 'enabled'], additionalProperties: false } };
+  const data = await fixture(t, 'return {content:[{type:"json",data:args}]};', meta), registry = await data.registry(); t.after(() => registry.close());
+  for (const args of [null, { frame: '1', enabled: true }, { frame: 1, enabled: 'false' }, { frame: 1, enabled: false, command: 'sh' }]) await assert.rejects(registry.call('inspect_spec', args), /arguments|schema/);
+  assert.deepEqual(json(await registry.call('inspect_spec', { frame: 2, enabled: false })), { frame: 2, enabled: false });
+  assert.equal(registry.toolCalls.length, 1);
+  const calls = registry.toolCalls; calls.length = 0; assert.equal(registry.toolCalls.length, 1);
+});
+
+test('stored manifests and Artifact scope must match before reconnecting script execution', async t => {
+  const data = await fixture(t);
+  await assert.rejects(createReviewTools({ ...data.options, artifacts: [] }), { code: 'WORKSPACE_ARTIFACT_MISMATCH' });
+  await data.edit('spec', manifest => { manifest.views!.humanTools!.inspect.metadata.description = 'Changed'; });
+  await assert.rejects(data.registry(), { code: 'WORKSPACE_ARTIFACT_MISMATCH' });
+});
+
+test('a result and audit are returned only after successful observation persistence', async t => {
+  const data = await fixture(t);
+  const registry = await createReviewTools({ ...data.options, onCall: async () => { throw new Error('audit failed'); } }); t.after(() => registry.close());
+  await assert.rejects(registry.call('inspect_spec'), /audit failed/); assert.deepEqual(registry.toolCalls, []);
+});
+
+test('actual script output preserves text, JSON and normalized images with bounded observations', async t => {
+  const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aD1sAAAAASUVORK5CYII=';
+  const data = await fixture(t, `await mkdir(join(context.outputDir,'frames'));await writeFile(join(context.outputDir,'frames/a.png'),Buffer.from('${png}','base64'));return {content:[{type:'text',text:'frame'},{type:'json',data:{frame:1}},{type:'image',path:'frames/a.png',mimeType:'image/png'}],observation:{kind:'content'}};`);
+  const registry = await data.registry(); t.after(() => registry.close());
   const result = await registry.call('inspect_spec');
-  assert.deepEqual(result.content, Array.from({ length: 2 }, () => ({ type: 'image', data: png, mimeType: 'image/png' })));
+  assert.deepEqual(result.content[2], { type: 'image', data: png, mimeType: 'image/png' });
   assert.deepEqual(registry.toolCalls[0].observation, { artifactId: 'spec', operation: 'inspect', kind: 'content' });
 });
 
-test('image output paths reject traversal and directory symlinks without recording observations', async t => {
-  for (const [setup, path, error] of [
-    ['', "join('..', 'outside.png')", /outside the tool output/],
-    ["await mkdir(join(context.outputDir, 'source')); await symlink(join(context.outputDir, 'source'), join(context.outputDir, 'render'), 'junction');", "join('render', 'preview.png')", /symlinks/],
-  ] as const) {
-    const data = await fixture(t, {
-      prelude: "import { mkdir, symlink } from 'node:fs/promises'; import { join } from 'node:path';",
-      execute: `async execute(context) { ${setup} return { content: [{ type: 'image', path: ${path}, mimeType: 'image/png' }], observation: { kind: 'content' } }; }`,
-    });
-    const registry = await createReviewTools(await data.optionsFor());
-    try {
-      await assert.rejects(registry.call('inspect_spec'), error);
-      assert.equal(registry.toolCalls.length, 0);
-    } finally { await registry.close(); }
-  }
+for (const [title, script, error] of [
+  ['invalid image bytes', "return {content:[{type:'image',data:'eA==',mimeType:'image/png'}]};", /do not match/],
+  ['image outside outputs', "return {content:[{type:'image',path:context.artifactPath+'/content.txt',mimeType:'image/png'}]};", /outside/],
+  ['symlink image path', "await mkdir(join(context.outputDir,'source'));await symlink('source',join(context.outputDir,'alias'));return {content:[{type:'image',path:'alias/a.png',mimeType:'image/png'}]};", /symlinks/],
+  ['launch observations', "return {content:[{type:'launch',launched:true}],observation:{kind:'content'}};", /alone is not/],
+  ['oversized text', "return {content:[{type:'text',text:'x'.repeat(65537)}]};", /64 KiB/],
+  ['non JSON output', "process.stdout.write('log before result');return {content:[{type:'text',text:'x'}]};", /JSON/],
+  ['process failure', "process.stderr.write('private error');process.exit(3);", /nonzero/],
+] as const) test(`script result rejects ${title} without recording an observation`, async t => {
+  const data = await fixture(t, script), registry = await data.registry(); t.after(() => registry.close());
+  await assert.rejects(registry.call('inspect_spec'), error); assert.equal(registry.toolCalls.length, 0);
 });
 
-test('images cannot refer to inputs or masquerade as a different MIME type and launches do not prove observation', async t => {
-  for (const execute of [
-    "execute(context) { return { content: [{ type: 'image', path: context.artifactPath, mimeType: 'image/png' }] }; }",
-    "execute() { return { content: [{ type: 'image', data: 'bm90IGEgcG5n', mimeType: 'image/png' }] }; }",
-    "execute() { return { content: [{ type: 'launch', launched: true }], observation: { kind: 'content' } }; }",
-  ]) {
-    const data = await fixture(t, { execute });
-    const registry = await createReviewTools(await data.optionsFor());
-    try {
-      await assert.rejects(registry.call('inspect_spec'), /outside the tool output|do not match|alone is not a content observation/);
-      assert.equal(registry.toolCalls.length, 0);
-    } finally { await registry.close(); }
-  }
+test('script timeout, cancellation and close stop active processes', async t => {
+  const data = await fixture(t, 'await new Promise(()=>{});return {};', { ...metadata, timeoutMs: 150 });
+  // An active interval keeps the real script running while cancellation is tested.
+  const filename = join(data.repoPath, 'spec/inspect.mjs'); await writeFile(filename, (await readFile(filename, 'utf8')).replace('await new Promise(()=>{})', 'await new Promise(()=>setInterval(()=>{},1000))'));
+  let registry = await data.registry();
+  await assert.rejects(registry.call('inspect_spec'), { code: 'ARTIFACT_TOOL_TIMEOUT' }); await registry.close();
+  const abort = new AbortController(); registry = await createReviewTools({ ...data.options, signal: abort.signal });
+  const call = registry.call('inspect_spec'); setTimeout(() => abort.abort(), 30); await assert.rejects(call); await registry.close();
+  registry = await data.registry(); const closing = registry.call('inspect_spec'); const rejected = assert.rejects(closing); await delay(20); await registry.close(); await rejected;
 });
 
-test('a crashed config host cleans up a surviving command before the registry closes', async t => {
+test('a crashed script kills surviving children before its failed call settles', { skip: process.platform === 'win32' }, async t => {
+  const data = await fixture(t, `const child=spawn(process.execPath,['-e','process.on("SIGTERM",()=>{});setInterval(()=>{},1000)'],{stdio:'ignore'});await writeFile(join(context.outputDir,'pid'),String(child.pid));await new Promise(r=>setTimeout(r,150));process.exit(2);`);
+  const registry = await data.registry();
+  await assert.rejects(registry.call('inspect_spec')); await registry.close();
+  const directories = await (await import('node:fs/promises')).readdir(registry.outputDir);
+  const pid = Number(await readFile(join(registry.outputDir, directories[0], 'pid'), 'utf8'));
+  await delay(30);
+  try { assert.match(execFileSync('ps', ['-o', 'stat=', '-p', String(pid)], { encoding: 'utf8' }), /^Z/); } catch (error) { if (!(error && typeof error === 'object' && 'status' in error && error.status === 1)) throw error; }
+});
+
+test('outputs cannot create any directory inside reviewed input, including through symlink ancestors', async t => {
   const data = await fixture(t);
-  const childPidPath = join(data.dir, 'child-pid');
-  await writeFile(data.configPath, `import { spawn } from 'node:child_process'; import { writeFile } from 'node:fs/promises';\n${data.source.replace("execute() { return", `async execute() {
-    const child = spawn(process.execPath, ['-e', 'process.on("SIGTERM", () => {}); setInterval(() => {}, 1000)'], { stdio: 'ignore' });
-    await writeFile(${JSON.stringify(childPidPath)}, String(child.pid));
-    await new Promise(resolve => setTimeout(resolve, 200));
-    process.exit(2);
-    return`)} `);
-  const registry = await createReviewTools(await data.optionsFor());
-  await assert.rejects(registry.call('inspect_spec'), /host exited/);
-  await registry.close();
-  const pid = Number(await readFile(childPidPath, 'utf8'));
-  assert.ok(pid > 0);
-  // An orphan may briefly remain as a non-running zombie until the OS reaps its PID.
-  for(let attempt=0;attempt<25;attempt++){
-    try{process.kill(pid,0);}catch(error){assert.equal((error as NodeJS.ErrnoException).code,'ESRCH');return;}
-    await delay(20);
-  }
-  try {
-    const state=execFileSync('ps',['-o','stat=','-p',String(pid)],{encoding:'utf8'}).trim();
-    assert.match(state,/^Z/,'A surviving subprocess is still executing after registry.close()');
-  } catch(error) {
-    // ps exits 1 when the PID disappears between the liveness check and the process query.
-    if(error&&typeof error==='object'&&'status' in error&&error.status===1)return;
-    throw error;
-  }
+  await symlink(data.repoPath, join(data.root, 'linked'));
+  for (const runDir of [join(data.repoPath, 'new-output'), join(data.root, 'linked/new-output')]) await assert.rejects(createReviewTools({ ...data.options, runDir }), /outside reviewed input/);
+  await assert.rejects(readFile(join(data.repoPath, 'new-output')), { code: 'ENOENT' });
 });
 
-test('background host cleanup failures are observed while explicit close retains the rejection', async t => {
-  if(process.platform==='win32')return;
-  const data=await fixture(t);
-  const hostPidPath=join(data.dir,'host-pid');
-  await writeFile(data.configPath,`import { writeFileSync } from 'node:fs'; writeFileSync(${JSON.stringify(hostPidPath)},String(process.pid));\n${data.source.replace('execute() { return','execute() { process.exit(2); return')}`);
-  const registry=await createReviewTools(await data.optionsFor());
-  const hostPid=Number(await readFile(hostPidPath,'utf8'));
-  const kill=process.kill;
-  // Simulate a group the OS still reports after termination. Signals still target only this test's host.
-  process.kill=((pid:number,signal?:number|NodeJS.Signals)=>pid===-hostPid&&signal===0?true:kill(pid,signal)) as typeof process.kill;
-  try{
-    await assert.rejects(registry.call('inspect_spec'),/host exited/);
-    await delay(2300);
-    await assert.rejects(registry.close(),{code:'ARTIFACT_TOOL_CLEANUP_FAILED'});
-  }finally{process.kill=kill;await registry.close().catch(()=>{});}
+test('default script CLI resolves mount chains to actual files and lists logical mounts without writing links', async t => {
+  const data = await artifactFixture(t), command = resolve('packages/default-tools/dist/script.js');
+  const scriptView = (operation: string) => ({ metadata: { ...metadata, inputSchema: { type: 'object', properties: { path: { type: 'string' } }, additionalProperties: false } }, script: { command: 'node', args: [command, operation] } });
+  await data.write('a', { name: 'a', mounts: { peer: 'b' }, views: { humanTools: { read: scriptView('read'), list: scriptView('list') } } });
+  await data.write('b', { name: 'b', mounts: { back: 'a' } }, { 'content.txt': 'Mounted content\n' });
+  const config = await data.config(), { resolveArtifactScope } = await import('../src/artifacts/scope.js');
+  const registry = await createReviewTools({ worktreePath: data.repoPath, ...resolveArtifactScope(config.artifacts, ['a']), configManifest: config.configManifest, audience: 'human' }); t.after(() => registry.close());
+  assert.equal((json(await registry.call('read_a', { path: 'peer/back/peer/content.txt' })) as any).content, 'Mounted content\n');
+  assert.ok((json(await registry.call('list_a')) as any).entries.some((entry: any) => entry.name === 'peer' && entry.kind === 'mount'));
+  await assert.rejects(readFile(join(data.repoPath, 'a/peer')), { code: 'ENOENT' });
+  await assert.rejects(registry.call('read_a', { path: 'peer/../content.txt' }));
 });
 
+test('MCP projects script schemas and audited native content using the standard registry', async t => {
+  const data = await fixture(t); await data.edit('spec', m => { m.views!.agentTools = m.views!.humanTools; m.critics![0].profile = { kind: 'agent', provider: 'openai-codex', model: 'gpt-6-astra', reasoning: 'medium' }; });
+  const request = (await data.requests())[0], manifestPath = join(data.root, 'mcp.json'), input = new PassThrough(), output = new PassThrough(); let messages = '';
+  output.on('data', chunk => { messages += chunk; });
+  await writeFile(manifestPath, JSON.stringify({ ...request, worktreePath: data.repoPath, runDir: join(data.root, 'mcp-output') }));
+  const serving = serveArtifactMcp({ manifestPath, input, output });
+  input.end([['initialize', {}], ['tools/list', {}], ['tools/call', { name: 'inspect_spec', arguments: {} }]].map(([method, params], id) => JSON.stringify({ jsonrpc: '2.0', id, method, params })).join('\n') + '\n');
+  await serving; const replies = messages.trim().split('\n').map(line => JSON.parse(line));
+  assert.equal(replies[1].result.tools[0].name, 'inspect_spec'); assert.equal(replies[2].result.content[0].text, 'observed');
+});
+
+test('explicit tool diagnosis distinguishes execution failure, result normalization and integrity failure', async t => {
+  for (const [script, stage] of [["return {content:[{type:'image',data:'eA==',mimeType:'image/png'}]};", 'normalize-result'], ["process.exit(3);", 'execute'], ["await writeFile(join(context.artifactPath,'changed'),'x');return {content:[{type:'text',text:'x'}]};", 'input-integrity']] as const) {
+    const data = await fixture(t, script);
+    const report = await diagnoseArtifactTools({ ...data, artifactId: 'spec', audience: 'human', toolName: 'inspect', execute: true });
+    assert.equal(report.ok, false); assert.equal(report.checks.at(-1)?.stage, stage); assert.equal(report.result, undefined);
+  }
+});
 test('public defineTool infers typed arguments without executing the factory', () => {
   const tool = defineTool({
     metadata: { description: 'Inspect {artifactName}.', inputSchema: { type: 'object', properties: { frame: { type: 'integer' }, channels: { type: 'array', items: { type: 'string', enum: ['color', 'depth'] } }, overlay: { type: 'boolean' } }, required: ['frame', 'channels'], additionalProperties: false }, resultKinds: ['json'], observation: 'none' },

@@ -154,21 +154,22 @@ try {
   for (let i = 0; i < files; i++) await writeFile(join(repoPath, `dependency-${Math.floor(i / 100)}`, `${i}.js`), Buffer.alloc(1024, i % 251));
   await writeFile(join(repoPath, 'runtime.bin'), Buffer.alloc(64 * 1024 * 1024, 51));
   await writeFile(join(repoPath, 'artifact.txt'), 'Synthetic CLI benchmark Artifact.\n');
-  await writeFile(join(repoPath, 'ccdd.config.ts'), `
+  await writeFile(join(repoPath, 'ccdd.json'), JSON.stringify({
+    name: 'sample',
+    views: { humanTools: { inspect: {
+      metadata: { description: 'Read the synthetic {artifactName}.', inputSchema: { type: 'object', properties: {}, additionalProperties: false }, resultKinds: ['json'], observation: 'content' },
+      script: { command: 'node', args: ['view.mjs'] },
+    } } },
+    critics: [{ id: 'inspect', title: 'Synthetic CLI benchmark request', profile: { kind: 'human' }, payload: { instruction: 'Inspect {sample}, the controlled benchmark fixture.' } }],
+  }));
+  await writeFile(join(repoPath, 'view.mjs'), `
     import { readFile } from 'node:fs/promises';
-    export default {
-      artifacts: { sample: { type: 'custom', path: 'artifact.txt' } },
-      artifactTypes: { custom: { humanTools: { inspect: {
-        metadata: { description: 'Read the synthetic {artifactName}.', inputSchema: { type: 'object', properties: {}, additionalProperties: false }, resultKinds: ['json'], observation: 'content', artifactKind: 'file' },
-        async execute(context) {
-          const started = performance.now();
-          const text = await readFile(context.artifactPath, 'utf8');
-          const executionMs = performance.now() - started;
-          return { content: [{ type: 'json', data: { text, executionMs } }], observation: { kind: 'content' } };
-        }
-      } } } },
-      critics: [{ id: 'inspect-sample', title: 'Synthetic CLI benchmark request', target: 'sample', deps: [], profile: { kind: 'human' }, payload: { instruction: 'Inspect the controlled benchmark fixture.' } }]
-    };
+    let input='';for await (const chunk of process.stdin) input+=chunk;
+    const {version,context}=JSON.parse(input);if(version!==1)throw new Error('Unsupported request');
+    const started = performance.now();
+    const text = await readFile(context.artifactPath+'/artifact.txt', 'utf8');
+    const executionMs = performance.now() - started;
+    process.stdout.write(JSON.stringify({ content: [{ type: 'json', data: { text, executionMs } }], observation: { kind: 'content' } }));
   `);
   const verdictPath = join(root, 'fixture-verdict.json');
   await writeFile(verdictPath, JSON.stringify({ verdict: 'GREEN', summary: 'Controlled synthetic benchmark only; not an actual Human review.', evidence: ['A test caller returned this fixture verdict.'] }));

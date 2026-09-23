@@ -3,8 +3,6 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { prepareReviewRequests } from '../requester/index.js';
 import { prepareWorkspace, removeOwnedWorkspaceTree } from '../workspaces/index.js';
-import { createArtifactViewer, createArtifactTools, type ArtifactListResult } from '../artifacts/index.js';
-import { createHumanArtifactTools } from '../artifacts/human.js';
 import { createReviewTools } from '../tools/runner.js';
 import { errorCode, errorMessage } from '../executors/errors.js';
 import type { ReviewEnvelope, ExecutorRegistry, ExecutionEvent, WorkspaceHandle } from '../contracts.js';
@@ -48,52 +46,14 @@ const bounded = (value: unknown): string => String(value).slice(0, 2_000);
 const remedyFor = (value: unknown): string | undefined => value && typeof value === 'object' && 'remedy' in value && typeof value.remedy === 'string' ? value.remedy : undefined;
 
 async function inspectViewers(request: ReviewEnvelope, worktreePath: string, signal?: AbortSignal, runDir?: string) {
-  if (request.configManifest) {
-    // Runtime has its own path/startup contract and requires no Agent/Human tools.
-    if (request.profile.kind === 'runtime') return { toolNames: [], toolsExecuted: false, artifactPathsVerified: true };
-    const registry = await createReviewTools({ worktreePath, artifacts: request.artifacts, artifactGroups: request.artifactGroups, artifactTypes: request.artifactTypes, configManifest: request.configManifest, criticId: request.criticId, audience: request.profile.kind, signal, runDir });
-    try {
-      const checks = await registry.preflight();
-      const failed = checks.filter(check => !check.ok);
-      if (failed.length) throw new Error(failed.map(check => `${check.toolName}: ${check.message}`).join('; '));
-      return { toolNames: registry.tools.map(tool => tool.name), checks, toolsExecuted: false, programsLaunched: false };
-    } finally { await registry.close(); }
-  }
-  if (request.profile.kind === 'human') {
-    const registry = await createHumanArtifactTools({ worktreePath, artifacts: request.artifacts, artifactTypes: request.artifactTypes, signal });
+  if (request.profile.kind === 'runtime') return { toolNames: [], toolsExecuted: false, artifactPathsVerified: true };
+  const registry = await createReviewTools({ worktreePath, artifacts: request.artifacts, configManifest: request.configManifest, criticId: request.criticId, audience: request.profile.kind, signal, runDir });
+  try {
     const checks = await registry.preflight();
     const failed = checks.filter(check => !check.ok);
     if (failed.length) throw new Error(failed.map(check => `${check.toolName}: ${check.message}`).join('; '));
-    return { toolNames: registry.tools.map(tool => tool.name), checks, programsLaunched: false };
-  }
-  const viewer = await createArtifactViewer({ worktreePath, artifacts: request.artifacts, artifactTypes: request.artifactTypes, signal });
-  const registry = createArtifactTools(viewer, { audience: request.profile.kind === 'runtime' ? 'viewer' : 'agent' });
-  const hasTool = (name: string) => registry.tools.some(tool => tool.name === name);
-  let inspectedFiles = 0;
-  const inspectFile = async (artifactId: string, path?: string): Promise<void> => {
-    if (!hasTool(`read_${artifactId}`)) return;
-    if (++inspectedFiles > 10_000) throw new Error('Artifact viewer readiness check exceeds 10000 files; narrow the Critic artifact scope.');
-    await registry.call(`read_${artifactId}`, { ...(path ? { path } : {}), startLine: 1, lineCount: 80 });
-  };
-  const inspectDirectory = async (artifactId: string, path = ''): Promise<void> => {
-    let offset: number | null = 0;
-    do {
-      const listing: ArtifactListResult = hasTool(`list_${artifactId}`)
-        ? await registry.call(`list_${artifactId}`, { path, offset })
-        : await viewer.list({ artifactId, path, offset });
-      for (const entry of listing.entries) {
-        if (entry.kind === 'directory') await inspectDirectory(artifactId, entry.path);
-        else if (entry.kind === 'file') await inspectFile(artifactId, entry.path);
-        else throw new Error(`Unsupported artifact entry: ${entry.path}`);
-      }
-      offset = listing.nextOffset;
-    } while (offset !== null);
-  };
-  for (const artifact of viewer.listArtifacts()) {
-    if (artifact.directory) await inspectDirectory(artifact.id);
-    else await inspectFile(artifact.id);
-  }
-  return { toolNames: registry.tools.map(tool => tool.name), inspectedFiles, readLimitLinesPerFile: 80, readLimitBytesPerFile: 65_536 };
+    return { toolNames: registry.tools.map(tool => tool.name), checks, toolsExecuted: false, programsLaunched: false };
+  } finally { await registry.close(); }
 }
 
 /** Ephemeral diagnostics: no broker, review history, verdict, test or notification. */
@@ -125,7 +85,7 @@ export async function diagnoseProject({ repoPath, repoId = 'demo', stateDir, cri
       await workspace.assertUnchanged();
       await add({ id: 'workspace-config', status: 'PASS', kind: 'workspace', criticIds: requests.map(x => x.criticId), message: 'Verified the current workspace configuration and Artifact definitions.' });
     } catch (error) {
-      await add({ id: 'workspace-config', status: 'FAIL', kind: 'workspace', message: bounded(errorMessage(error)), remedy: 'Check the current ccdd.config.ts or legacy ccdd.config.json, Artifact paths, and Critic IDs.', details: { code: errorCode(error) ?? 'WORKSPACE_CONFIG_INVALID' } });
+      await add({ id: 'workspace-config', status: 'FAIL', kind: 'workspace', message: bounded(errorMessage(error)), remedy: 'Check the folder ccdd.json declarations, Artifact paths, and Critic IDs.', details: { code: errorCode(error) ?? 'WORKSPACE_CONFIG_INVALID' } });
       return report;
     }
     const readyViewers = new Set<string>();
@@ -136,7 +96,7 @@ export async function diagnoseProject({ repoPath, repoId = 'demo', stateDir, cri
         readyViewers.add(request.criticId);
         await add({ id: `artifacts:${request.criticId}`, status: 'PASS', kind: 'artifacts', criticIds: [request.criticId], message: request.configManifest ? 'Verified registered Artifact tool manifests and execution readiness. Use tools check --execute to verify actual tool execution separately.' : request.profile.kind === 'human' ? 'Verified Human Artifact tool registration and execution readiness. No programs were launched.' : 'Verified the snapshot Artifact Viewer list and read entry points.', details });
       } catch (error) {
-        await add({ id: `artifacts:${request.criticId}`, status: 'FAIL', kind: 'artifacts', criticIds: [request.criticId], message: bounded(errorMessage(error)), remedy: 'Check Artifact paths, types, contents, and read permissions.', details: { code: 'ARTIFACT_VIEWER_UNAVAILABLE' } });
+        await add({ id: `artifacts:${request.criticId}`, status: 'FAIL', kind: 'artifacts', criticIds: [request.criticId], message: bounded(errorMessage(error)), remedy: 'Check Artifact folders, views, contents, and read permissions.', details: { code: 'ARTIFACT_VIEWER_UNAVAILABLE' } });
       }
     }
     const groups = new Map<string, ReviewEnvelope[]>();

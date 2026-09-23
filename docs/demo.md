@@ -1,62 +1,38 @@
-# CCDD CLI demo
+# Linear folder Artifact demo
 
-This guide assumes core, Project, and default tools installed using the [installation guide](getting-started.md) on Node 22 LTS (22.19.0 or later). Run the Project CLI; each scenario installs only the core and default-tools packages imported by its configuration. Agent scenarios require Pi Provider authentication and use the profile openai-codex / gpt-6-astra / medium. The CLI is sufficient for the demo; the monitor is optional.
+The demo keeps Why → Spec → Tests → Implementation. It creates four independent scenarios with per-folder `ccdd.json`, explicit script views, two Agent Critics and one Runtime Critic. Preparing the demo writes a new example workspace before evaluation; reviewing it never copies input.
 
-The demo also needs two actual tarball files. Installing packages with `npm install` does not create them. First follow [Preparing tarballs from source](#preparing-tarballs-from-source) below, which writes matching core and default-tools tarballs to `/tmp/ccdd-local-packages`. The following commands use that exact output location. If you prepared packages elsewhere, substitute their absolute paths.
-
-```sh
-export CCDD_DEMO_CORE_TARBALL=/tmp/ccdd-local-packages/ccdd-core-3.1.1.tgz
-export CCDD_DEMO_TOOLS_TARBALL=/tmp/ccdd-local-packages/ccdd-default-tools-3.1.1.tgz
-export CCDD_DEMO_DIR="$HOME/.local/share/ccdd/demo-3.1.1"
-export CCDD_CODEX_AUTH_FILE="$HOME/.codex/auth.json" # Example: explicitly bridge an existing Codex access token.
-npx ccdd prepare-demo --demo-dir "$CCDD_DEMO_DIR"
-npx ccdd doctor --demo --demo-dir "$CCDD_DEMO_DIR" --scenario fixed --json
-```
-
-This example uses a fresh `demo-3.1.1` folder. Omitting `--demo-dir` uses the existing default `~/.local/share/ccdd/demo-v9`. `v9` is the demo format version, separate from the CCDD package version. Earlier demo folders and user configuration are preserved. The four scenarios are separate folders without Git, and their current files can be edited directly. New demos import the separate default tool library in `ccdd.config.ts` and explicitly register Agent CLI reading/listing and Human desktop opening. The default Critics are two Agents and one Runtime; registering Human tools alone does not create Human requests.
-
-Preparation installs dependencies once from the specified local tarballs, then physically copies them into each scenario. It does not assume public npm publication; installing public transitive dependencies may require network access or a local cache. All four projects retain their package locks, tarballs, and node_modules, so later snapshots can resolve tools without a parent project. Reusing an existing demo does not reinstall dependencies; choose an empty `--demo-dir` to test a new Release.
-
-| Scenario | Maximum item count in Why / Spec / Tests / Implementation | Check |
-| --- | --- | --- |
-| baseline | 3 / 3 / 3 / 3 | Full consistency |
-| why-change | 2 / 3 / 3 / 3 | Spec↔Why mismatch |
-| runtime-failure | 2 / 2 / 2 / 3 | Actual runtime test failure |
-| fixed | 2 / 2 / 2 / 2 | Full reevaluation after correction |
+Build and pack Core and optional default tools, then provide their absolute tarball paths. Preparation does not assume that version 4 is already published:
 
 ```sh
-npx ccdd run --demo --demo-dir "$CCDD_DEMO_DIR" --scenario why-change --critic spec-why --wait
-npx ccdd run --demo --demo-dir "$CCDD_DEMO_DIR" --scenario runtime-failure --critic implementation-tests --wait
-npx ccdd run --demo --demo-dir "$CCDD_DEMO_DIR" --scenario fixed --wait
-```
-
-Agent verdicts are actual Provider responses, not hardcoded expected outcomes from the table. Runtime executes actual Node tests. A standalone `--critic` verdict is distinct from a full-chain verdict.
-
-Two `run` requests against the same unchanged folder return different Handles sharing its `workspace.path` and `snapshotHash`. Each review has its own result and output directory.
-
-```sh
-npx ccdd list --demo --demo-dir "$CCDD_DEMO_DIR" --scenario fixed
-npx ccdd status RUN_ID --demo --demo-dir "$CCDD_DEMO_DIR" --scenario fixed
-```
-
-Editing the supplied workspace during review causes an input-change ERROR. Keep it unchanged through Human waiting. To keep editing elsewhere, supply your own separate worktree. Run `ccdd monitor --repo <scenario-folder>` separately to observe request state during the demo. Reviews continue after the monitor closes.
-
-Agent Artifact tool names include `read_spec`, `list_tests`, and `read_tests`. Human tools `open_spec` and `open_tests` open files or folders in desktop applications instead of returning text. Default desktop integration targets macOS; specify an executable when using Human tools on other operating systems. The demo's markdown/code types contain per-operation description templates, with `{artifactName}` replaced by the actual ID. For example, `read_tests({path: "rank.test.mjs", startLine: 1, lineCount: 80})` reads a test file by line.
-
-## Preparing tarballs from source
-
-To test source under development instead of a Release, run the following in the CCDD repository. Then change the tarball environment variables above to the absolute paths of the generated files.
-
-```sh
-npm ci
 npm run build
-mkdir -p /tmp/ccdd-local-packages
-npm pack --ignore-scripts --pack-destination /tmp/ccdd-local-packages
-npm pack --workspace @ccdd/default-tools --ignore-scripts --pack-destination /tmp/ccdd-local-packages
-export CCDD_DEMO_CORE_TARBALL=/tmp/ccdd-local-packages/ccdd-core-3.1.1.tgz
-export CCDD_DEMO_TOOLS_TARBALL=/tmp/ccdd-local-packages/ccdd-default-tools-3.1.1.tgz
+mkdir -p /tmp/ccdd-demo-packages
+npm pack --ignore-scripts --pack-destination /tmp/ccdd-demo-packages
+npm pack --ignore-scripts --workspace @ccdd/default-tools --pack-destination /tmp/ccdd-demo-packages
+export CCDD_DEMO_CORE_TARBALL=/tmp/ccdd-demo-packages/ccdd-core-4.0.0.tgz
+export CCDD_DEMO_TOOLS_TARBALL=/tmp/ccdd-demo-packages/ccdd-default-tools-4.0.0.tgz
+node dist/src/cli.js prepare-demo --demo-dir /tmp/ccdd-demo-v4
 ```
 
-These commands pack the current source directly. To prepare source fixed to a commit with full tests and installation verification, use `npm run release -- --commit <40-character SHA> --dry-run --output-dir <empty-external-directory>` and select the two relevant tarballs from its output folder. See the [local release guide](releases.md#releasing-a-specific-commit-locally) for the full procedure.
+Use an empty directory. The default is `~/.local/share/ccdd/demo-v10`; 10 is the demo format version, separate from package version 4. Existing demos are preserved. Preparation installs dependencies once, then includes installed packages in each scenario before evaluation. Public transitive dependencies require the registry or a populated npm cache.
 
-Run the source CLI as `node dist/src/cli.js` instead of `npx ccdd`. Actual Agent diagnostics and reviews consume Provider usage. Local Release verification calls no external LLM; use this demo's `doctor` to check authentication and model access in the installation environment.
+| Scenario | Intended difference |
+| --- | --- |
+| `baseline` | All stages agree on at most three tasks. |
+| `why-change` | Why allows two tasks, while Spec still allows three. |
+| `runtime-failure` | Spec and Tests allow two tasks; implementation allows three. |
+| `fixed` | Every stage agrees on at most two tasks. |
+
+Use ordinary workspace selectors; `--demo` and `--scenario` execution routes are removed:
+
+```sh
+node dist/src/cli.js config check --repo /tmp/ccdd-demo-v4/fixed
+node dist/src/cli.js doctor --repo /tmp/ccdd-demo-v4/fixed --critic spec/matches-why
+node dist/src/cli.js verify implementation --repo /tmp/ccdd-demo-v4/fixed --recursive --wait
+node dist/src/cli.js run list --repo /tmp/ccdd-demo-v4/fixed
+node dist/src/cli.js monitor --repo /tmp/ccdd-demo-v4/fixed
+```
+
+Agent commands use the requested Provider and consume its usage. Configure credentials outside the reviewed workspace; see [reviewers](reviewers.md). No Agent verdict is predetermined. To exercise only actual Runtime behavior, use `verify --critic implementation/passes-tests`; a passing test result can still yield final INCOMPLETE because Spec/Tests Agent evidence is absent.
+
+Ready Critics can run concurrently despite the linear input relationships. The full result needs all required matching evidence. Changing a scenario creates new current input; recorded results remain tied to their original input. Registered Human views do not create Human reviews automatically.

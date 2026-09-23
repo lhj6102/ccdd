@@ -1,29 +1,26 @@
 # @ccdd/project
 
-CCDD's project validation tool. `@ccdd/core` provides definitions only; this package provides validation history, the CLI, Broker, Executors, and optional monitor. Default tools are available separately in `@ccdd/default-tools`.
+Version 4 project validation, review history, CLI, Broker, Executors and optional local monitor. Use Node 22 LTS, at least 22.19.0. Install with `npm install --ignore-scripts @ccdd/core@^4 @ccdd/project@^4`; default tools are optional.
 
-CCDD 3.1.1 supports Node.js 22 LTS (22.19.0 or later). For versions published to npm, install with `npm install --ignore-scripts @ccdd/core @ccdd/project` and run `npx ccdd-project`. Also install `@ccdd/default-tools` if you use its tools.
+Each folder with `ccdd.json` is an Artifact that owns its Critics and script views. Child folders, mounts and instruction references derive dependencies. Cycles are supported. A ready Critic never waits for another PASS, while final validation needs matching actual evidence throughout the required scope.
 
 ```sh
+ccdd-project config check
 ccdd-project status
 ccdd-project plan implementation --recursive
 ccdd-project verify implementation --recursive --wait
-ccdd-project history implementation
+ccdd-project verify --critic implementation/tests --wait
 ccdd-project run show RUN_ID
 ```
 
-`verify ARTIFACT` requests only ready Critics and reports those with unmet prerequisites as incomplete. `--recursive` includes necessary predecessor validations. Selecting one Critic with `--critic ID` still checks prerequisites. Actual PASS evidence for identical input is reused by referencing the original verdict without creating a ticket. `--force` reviews selected Critics again.
+Individual verification preserves selected results and reports missing other required evidence as INCOMPLETE. `--recursive` includes that evidence's Critics. `--force` reevaluates selected Critics. Matching actual PASS is reused; no stale state is persisted. Queries execute no scripts and create no tickets or stores.
 
-No staleState is stored on Artifacts. SQLite records the target and direct dependency hashes and Critic conditions at verdict time; current validation is computed by recursively querying the DAG. `status` and `plan` create neither verdicts nor tickets. Temporary memoization exists only within a query.
+State defaults to `~/.local/state/ccdd/<workspace-path-hash>`, configurable with `--state-dir` or `CCDD_STATE_HOME`. State and all output must remain outside reviewed input. Reviews use the unchanged supplied workspace directly through execution and Human waiting. Users may provide a separate worktree with `--repo`.
 
-State defaults to `~/.local/state/ccdd/<repo-path-hash>` and can be configured with `--state-dir` or `CCDD_STATE_HOME`. SQLite and review output must stay outside the reviewed repo. Reviews use the supplied workspace directly and require it to remain unchanged through completion, including Human waiting. Supply a separate user-managed worktree with `--repo` when needed.
+With `--wait`: 0=fulfilled, 1=RED, 2=ERROR, 3=timeout, 4=incomplete. Without waiting, inspect the returned Run status; acceptance is not completion. `request claim`, `request tool` and `request submit` perform explicit local Human actions. `doctor`, `tools check` and `monitor` are supported.
 
-`--json` returns structured results. `verify --wait` exit codes are 0=scope satisfied, 1=RED, 2=ERROR, 3=wait timeout, and 4=incomplete. For asynchronous execution, 0 means successful acceptance; a wait timeout does not cancel execution.
-
-Handle Human reviews with `request claim`, `request tool`, and `request submit`. `doctor`, `tools check`, and `monitor` are also supported. See `ccdd-project help` for detailed options.
-
-The existing `ccdd` command is included as a compatibility CLI in this execution package. Legacy `ccdd run --critic` retains its prerequisite bypass; use `ccdd-project verify` for the new project validation flow. Historical verdicts without recorded validation input hashes are not assumed to be reusable.
+`ccdd` exposes the same commands. There is no legacy run/config/group/generated compatibility path. Historical input versions are result-only, never reused or resumed. See the [repository guides](https://github.com/lhj6102/ccdd#readme).
 
 ## License
 
-Licensed under the [MIT License](LICENSE).
+[MIT](LICENSE).

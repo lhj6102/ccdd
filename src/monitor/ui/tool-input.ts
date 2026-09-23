@@ -47,10 +47,9 @@ export function toolInputForm(schema: Record<string, unknown>): { fields: ToolFi
   return { fields, json: false };
 }
 
-export function initialToolFields(fields: ToolField[], legacy = false): Record<string, string> {
-  const legacyDefaults: Record<string, number> = { startLine: 1, lineCount: 80, offset: 0, limit: 100 };
+export function initialToolFields(fields: ToolField[]): Record<string, string> {
   return Object.fromEntries(fields.map(field => {
-    const value = field.default !== undefined ? field.default : legacy ? legacyDefaults[field.name] : undefined;
+    const value = field.default;
     return [field.name, value === undefined ? '' : field.kind === 'enum'
       ? String(field.options?.findIndex(option => JSON.stringify(option) === JSON.stringify(value)) ?? -1)
       : String(value)];

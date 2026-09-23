@@ -51,16 +51,12 @@ test('removed workspace options fail before input acquisition instead of silentl
   await assert.rejects(lstat(data.stateDir), { code: 'ENOENT' });
 });
 
-test('historical in-place descriptors reopen but copied descriptors cannot resume', async t => {
+test('historical workspace descriptors cannot resume execution', async t => {
   const data = await fixture(t);
   const handle = await prepareWorkspace(data);
   await handle.close();
   const legacy = { ...handle.descriptor, version: 1, mode: 'lock' } as unknown as WorkspaceDescriptor;
-  const reopened = await reopenWorkspace(legacy);
-  t.after(() => reopened.close());
-  assert.equal(reopened.descriptor.version, 2);
-  assert.equal(Object.hasOwn(reopened.descriptor, 'mode'), false);
-  await reopened.assertUnchanged();
+  await assert.rejects(reopenWorkspace(legacy), /Invalid persisted/);
   await assert.rejects(reopenWorkspace({ ...legacy, mode: 'copy' } as unknown as WorkspaceDescriptor), /Invalid persisted/);
   await assert.rejects(reopenWorkspace({ ...handle.descriptor, path: data.root }), /invalid input path/);
 });

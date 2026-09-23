@@ -1,4 +1,6 @@
-# Generated Artifact tool overhead
+# Historical generated Artifact tool overhead
+
+This records the version 3 implementation. Version 4 removes generated sources and the private IPC data host; use on-demand [computed views](../examples/computed-views/README.md). The timings below are not measurements of version 4. Reproduction requires the matching historical checkout and its harness.
 
 Issue [#32](https://github.com/lhj6102/ccdd/issues/32) identified repeated payload
 transport, content hashing and copying on every generated-data tool invocation.

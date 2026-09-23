@@ -25,6 +25,7 @@ async function fixture(t: TestContext, directory = false) {
   await mkdir(temporary);
   const abort = new AbortController();
   const context: ToolContext = {
+    scope: {},
     artifactId: 'preview', artifactPath, artifactDirectory: directory, outputDir, tmpDir: temporary, signal: abort.signal,
     async resolvePath(path = '') {
       if (!directory && path) throw new Error('A file artifact has no child paths');
@@ -114,30 +115,13 @@ test('default image tool preserves cancellation and process time limits', async 
 test('explicit default view_image registration reaches the scoped Runner and Pi Agent with an audited image observation', async t => {
   const data = await fixture(t);
   const repoPath = join(data.root, 'project');
-  const defaultsRoot = fileURLToPath(new URL('../', import.meta.resolve('@ccdd/default-tools')));
-  const sourceModules = resolve(defaultsRoot, '../../node_modules');
-  const targetDefaults = join(repoPath, 'node_modules/@ccdd/default-tools');
-  await mkdir(targetDefaults, { recursive: true });
-  await cp(join(defaultsRoot, 'package.json'), join(targetDefaults, 'package.json'));
-  await cp(join(defaultsRoot, 'dist'), join(targetDefaults, 'dist'), { recursive: true });
-  // Physically copy the pinned Pi read runtime, without symlinks, mocks or the lazily loaded Provider SDKs.
-  for (const name of ['@earendil-works/pi-agent-core', '@earendil-works/pi-ai', '@earendil-works/pi-telemetry', '@earendil-works/chord', 'typebox', 'diff', 'ignore', 'yaml', 'partial-json']) {
-    await cp(join(sourceModules, name), join(repoPath, 'node_modules', name), {
-      recursive: true, filter: source => !source.endsWith('.map') && !source.endsWith('.d.ts'),
-    });
-  }
+  await mkdir(repoPath);
   await writeFile(join(repoPath, 'preview.png'), png);
-  await writeFile(join(repoPath, 'ccdd.config.ts'), `
-import { agent } from '@ccdd/default-tools';
-export default {
-  artifacts: { preview: { type: 'image', path: 'preview.png' } },
-  artifactTypes: { image: { agentTools: { view_image: agent.image.view() } } },
-  critics: [{ id: 'image-review', title: 'Image review', target: 'preview', deps: [],
-    profile: { kind: 'agent', provider: 'openai-codex', model: 'gpt-6-astra', reasoning: 'medium', timeoutMs: 15000 },
-    payload: { instruction: 'Inspect {preview}.' } }],
-};
-`);
-  const [request] = await prepareReviewRequests({ repoPath, snapshotHash: 'a'.repeat(64), criticId: 'image-review' });
+  await writeFile(join(repoPath, 'ccdd.json'), JSON.stringify({ name: 'preview', views: { agentTools: { view_image: {
+    metadata: { description: 'View {artifactName}.', inputSchema: { type: 'object', properties: {}, additionalProperties: false }, resultKinds: ['image'], observation: 'content' }, script: { command: 'node', args: ['view.mjs'] },
+  } } }, critics: [{ id: 'image-review', title: 'Image review', profile: { kind: 'agent', provider: 'openai-codex', model: 'gpt-6-astra', reasoning: 'medium', timeoutMs: 15000 }, payload: { instruction: 'Inspect {preview}.' } }] }));
+  await writeFile(join(repoPath, 'view.mjs'), `import {imageRequest} from ${JSON.stringify(new URL('./image.js',import.meta.resolve('@ccdd/default-tools')).href)};let text='';for await(const chunk of process.stdin)text+=chunk;const {context}=JSON.parse(text);const image=await imageRequest({operation:'view_image',root:context.artifactPath+'/preview.png',directory:false,args:{}});process.stdout.write(JSON.stringify({content:[image],observation:{kind:'content'}}));`);
+  const [request] = await prepareReviewRequests({ repoPath, snapshotHash: 'a'.repeat(64), criticId: 'preview/image-review' });
   assert.ok(request.configManifest);
   const registry = await createReviewTools({ ...request, worktreePath: repoPath, runDir: join(data.root, 'preflight'), audience: 'agent' });
   try {

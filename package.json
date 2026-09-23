@@ -1,14 +1,28 @@
 {
   "name": "@ccdd/core",
-  "version": "3.3.1",
+  "version": "4.0.0",
   "license": "MIT",
-  "publishConfig": { "access": "public", "registry": "https://registry.npmjs.org/" },
-  "repository": { "type": "git", "url": "git+https://github.com/lhj6102/ccdd.git" },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lhj6102/ccdd.git"
+  },
   "description": "Artifact, Critic, relationship and tool definitions for CCDD",
   "type": "module",
   "types": "./dist/src/sdk.d.ts",
-  "exports": { ".": { "types": "./dist/src/sdk.d.ts", "import": "./dist/src/sdk.js" } },
-  "workspaces": ["packages/default-tools", "packages/project"],
+  "exports": {
+    ".": {
+      "types": "./dist/src/sdk.d.ts",
+      "import": "./dist/src/sdk.js"
+    }
+  },
+  "workspaces": [
+    "packages/default-tools",
+    "packages/project"
+  ],
   "engines": {
     "node": "^22.19.0"
   },
@@ -27,13 +41,13 @@
     "release": "node scripts/local-release.mjs",
     "release:npm": "node scripts/local-release.mjs --npm",
     "release:npm:check": "node scripts/check-npm.mjs",
-    "demo:prepare": "npm run build && node dist/src/cli.js prepare-demo",
-    "demo": "npm run build && node dist/src/cli.js run --demo --wait"
+    "demo:prepare": "npm run build && node dist/src/cli.js prepare-demo"
   },
   "files": [
     "dist/src/sdk.*",
     "dist/src/definitions.*",
     "dist/src/tools/contracts.*",
+    "dist/src/artifact-scope.*",
     "LICENSE",
     "README.md",
     "examples/"

@@ -50,7 +50,7 @@ export function artifactStream({ mode = 'valid', result, onRequest }: ArtifactSt
       const probe = seen.find(message => message.toolName.startsWith('read_ccdd_probe_'));
       if (probe) {
         const text = probe.content.find(block => block.type === 'text');
-        const data = text?.type === 'text' ? JSON.parse(text.text) as { content: string } : { content: '' };
+        const data = text?.type === 'text' ? { content: text.text } : { content: '' };
         return fauxAssistantMessage(JSON.stringify({ ready: true, nonce: mode === 'wrong-nonce' ? 'wrong' : data.content.trim() }));
       }
       return fauxAssistantMessage(mode === 'malformed' ? 'not json' : JSON.stringify(result ?? { verdict: 'GREEN', summary: 'Inspected the declared Artifacts.', evidence: ['Read the actual contents of the requested Artifacts with tools.'] }));

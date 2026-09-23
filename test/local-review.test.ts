@@ -22,29 +22,19 @@ async function fixture(t: TestContext, script = 'console.log("Required runtime i
   await writeFile(join(repoPath, 'asset.txt'), 'first asset');
   await writeFile(join(repoPath, 'unchanged-runtime.bin'), Buffer.alloc(256 * 1024, 7));
   const configMarker = join(dir, 'config-imports');
-  await writeFile(join(repoPath, 'ccdd.config.ts'), `
-    import { appendFileSync, readFileSync, writeFileSync } from 'node:fs';
-    import { join } from 'node:path';
-    appendFileSync(${JSON.stringify(configMarker)}, 'imported\\n');
-    export default {
-      artifacts: { asset: { type: 'text', path: 'asset.txt' } },
-      envRequirements: { runtime: { description: 'Install the required runtime and retry.', script: 'checks/environment.mjs', timeoutMs: 10000 } },
-      artifactTypes: { text: { humanTools: { view: {
-        metadata: { description: 'Inspect {artifactName}.', inputSchema: { type: 'object', additionalProperties: false }, resultKinds: ['text'], observation: 'none' },
-        execute(context) {
-          const text = readFileSync(context.artifactPath, 'utf8');
-          writeFileSync(join(context.outputDir, 'actually-viewed.txt'), text);
-          return { content: [{ type: 'text', text }] };
-        }
-      } } } },
-      critics: [{ id: 'human', title: 'Inspect the asset', target: 'asset', deps: [], profile: { kind: 'human' }, payload: { instruction: 'Inspect {asset}.', privateField: 'NOT_IN_PORTABLE_REVIEW' } }]
-    };`);
+  await writeFile(configMarker, 'Static JSON discovery does not execute imports.');
+  await writeFile(join(repoPath, 'ccdd.json'), JSON.stringify({ name: 'asset',
+    envRequirements: { runtime: { description: 'Install the required runtime and retry.', script: 'checks/environment.mjs', timeoutMs: 10000 } },
+    views: { humanTools: { view: { metadata: { description: 'Inspect {artifactName}.', inputSchema: { type: 'object', additionalProperties: false }, resultKinds: ['text'], observation: 'none' }, script: { command: 'node', args: ['view.mjs'] } } } },
+    critics: [{ id: 'human', title: 'Inspect the asset', profile: { kind: 'human' }, payload: { instruction: 'Inspect {asset}.', privateField: 'NOT_IN_PORTABLE_REVIEW' } }],
+  }));
+  await writeFile(join(repoPath, 'view.mjs'), `import {readFile,writeFile} from 'node:fs/promises';let input='';for await(const chunk of process.stdin)input+=chunk;const {context}=JSON.parse(input);const text=await readFile(context.artifactPath+'/asset.txt','utf8');await writeFile(context.outputDir+'/actually-viewed.txt',text);process.stdout.write(JSON.stringify({content:[{type:'text',text}]}));`);
   const broker = createBroker({ repoPath, stateDir, repoId: 'test', executors: {
     canExecute: () => ({ ok: true }), notifyHuman: async () => {},
     execute: async () => { throw new Error('This fixture must perform only actual Human tool execution.'); },
   } });
   const submit = async () => {
-    const run = await broker.submit({ requesterId: 'test-builder', });
+    const run = await broker.submitProject({ selection: { kind: 'all' }, requesterId: 'test-builder', force: true });
     await runUntilSettled(broker, run.id);
     return broker.getRequest(run.requests[0].id)!;
   };
@@ -188,7 +178,7 @@ test('both local CLI entrypoints cancel actual check processes and release Try C
   const data = await fixture(t), marker = join(data.dir, 'checker-pid');
   await writeFile(join(data.repoPath, 'checks', 'environment.mjs'), `import { writeFileSync } from 'node:fs'; writeFileSync(${JSON.stringify(marker)}, String(process.pid)); await new Promise(resolve => setTimeout(resolve, 9000));`);
   const request = await data.submit();
-  for (const [entrypoint, action] of [['../src/project/cli.js', ['request', 'claim']], ['../src/cli.js', ['human-claim']]] as const) {
+  for (const [entrypoint, action] of [['../src/project/cli.js', ['request', 'claim']], ['../src/cli.js', ['request', 'claim']]] as const) {
     await rm(marker, { force: true });
     const child = spawn(process.execPath, [fileURLToPath(new URL(entrypoint, import.meta.url)), ...action, request.id, '--state-dir', data.stateDir, '--reviewer', 'alice'], { stdio: ['ignore', 'pipe', 'pipe'] });
     let stderr = ''; child.stdout.resume(); child.stderr.on('data', chunk => { stderr += chunk; });

@@ -8,6 +8,7 @@ import { streamSimple as streamAnthropic } from '@earendil-works/pi-ai/api/anthr
 import { invokePi, validatePiProfile, type InvokePiOptions, type StreamFn } from '../src/executors/pi.js';
 import { assertPiAuthFilesOutsideWorkspace, createPiCredentialStore } from '../src/executors/auth.js';
 import type { AgentProfile, ExecutionEvent, ReviewEnvelope } from '../src/contracts.js';
+import { artifactFixture, fixtureViews } from './helpers/artifacts.js';
 import { artifactStream } from './pi-fixture.js';
 
 const schema = { type: 'object', required: ['verdict', 'summary', 'evidence'], additionalProperties: false, properties: { verdict: { type: 'string', enum: ['GREEN', 'RED'] }, summary: { type: 'string' }, evidence: { type: 'array', items: { type: 'string' } } } };
@@ -15,17 +16,9 @@ const profile: AgentProfile = { kind: 'agent', provider: 'openai-codex', model: 
 const verdict = { verdict: 'GREEN', summary: 'Inspection complete', evidence: ['Inspected line 2 of spec.md.'] };
 
 async function fixture(t: TestContext): Promise<InvokePiOptions & { dir: string }> {
-  const dir = await mkdtemp(join(tmpdir(), 'ccdd-pi-'));
-  t.after(() => rm(dir, { recursive: true, force: true }));
-  const worktreePath = join(dir, 'snapshot');
-  await mkdir(worktreePath);
-  await writeFile(join(worktreePath, 'spec.md'), '\uccab\uc9f8 \uc904\r\n\ub458\uc9f8 \uc904\r\n\uc14b\uc9f8 \uc904\n');
-  const request: ReviewEnvelope = {
-    repoId: 'test', criticId: 'spec-why', title: 'Review Spec', snapshotHash: 'a'.repeat(64), target: 'spec', deps: [],
-    artifacts: [{ id: 'spec', type: 'markdown', path: 'spec.md' }],
-    artifactTypes: { markdown: { viewer: 'text', tools: { read: { description: 'Read content from {artifactName} by line.' } } } },
-    payload: { instruction: 'Inspect Spec.' }, profile: { ...profile },
-  };
+  const data = await artifactFixture(t), dir = data.root, worktreePath = data.repoPath;
+  await data.write('', { name: 'spec', views: fixtureViews(), critics: [{ id: 'review', title: 'Review Spec', profile: { ...profile }, payload: { instruction: 'Inspect Spec.' } }] }, { 'content.txt': '\uccab\uc9f8 \uc904\r\n\ub458\uc9f8 \uc904\r\n\uc14b\uc9f8 \uc904\n' });
+  const [request] = await data.requests();
   return { dir, request, worktreePath, runDir: join(dir, 'run'), schema, makePrompt: ({ viewer, tools }) => `Review payload: ${JSON.stringify(request.payload)}\nArtifacts: ${JSON.stringify(viewer.listArtifacts())}\nTools: ${JSON.stringify(tools)}` };
 }
 
@@ -59,8 +52,7 @@ test('Pi Agent loop receives exact provider/model/reasoning and scoped tools acr
     assert.equal((actual.final as { verdict: string }).verdict, 'GREEN');
     assert.equal(actual.toolCalls.length, 1);
     assert.deepEqual(actual.toolCalls[0]?.arguments, { startLine: 2, lineCount: 1 });
-    assert.equal(actual.toolCalls[0]?.observation?.lineCount, 1);
-    assert.equal(actual.toolCalls[0]?.observation?.startLine, 2);
+    assert.equal(actual.toolCalls[0]?.observation?.kind, 'content');
     assert.equal(events.filter(event => event.type === 'artifact.tool.called').length, 1);
     assert.doesNotMatch(JSON.stringify({ actual, events }), /PRIVATE_REASONING|\ub458\uc9f8 \uc904/);
   }
@@ -184,7 +176,7 @@ test('credential boundary checks the source before copy, including missing paths
 
 test('Pi timeout and cancellation interrupt large skipped-line scans before a successful observation', async t => {
   const data = await fixture(t);
-  const path = join(data.worktreePath, 'spec.md');
+  const path = join(data.worktreePath, 'content.txt');
   await writeFile(path, '');
   // Sparse file: exercise a long scan without allocating gigabytes of disk space.
   await truncate(path, 2 * 1024 ** 3);

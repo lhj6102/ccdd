@@ -1,5 +1,3 @@
-import type { ArtifactGroupReference } from '../contracts.js';
-
 export type InstructionPart = { type: 'text'; text: string } | { type: 'artifact'; artifactId: string };
 
 const identifier = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
@@ -29,20 +27,34 @@ function closingBrace(source: string, start: number): number {
   return -1;
 }
 
-/** Resolve only bare IDs already supplied to this request; never grant scope or evaluate code. */
-export function parseArtifactInstruction(instruction: string, artifacts: readonly { id: string }[], groups: readonly ArtifactGroupReference[] = []): InstructionPart[] {
-  const allowed = new Set([...artifacts, ...groups].map(artifact => artifact.id));
+/** Extract only bare reference tokens; all existing literal and escape rules apply. */
+export function instructionReferences(instruction: string): string[] {
+  const result = new Set<string>();
+  let cursor = 0;
+  while (cursor < instruction.length) {
+    if (instruction[cursor] !== '{') { cursor++; continue; }
+    const end = closingBrace(instruction, cursor);
+    if (end === -1) break;
+    const id = instruction.slice(cursor + 1, end);
+    if (instruction[cursor - 1] !== '$' && !escaped(instruction, cursor) && identifier.test(id)) result.add(id);
+    cursor = end + 1;
+  }
+  return [...result];
+}
+
+/** Render references only within the already admitted scope, preserving the stored source. */
+export function parseArtifactInstruction(instruction: string, artifacts: readonly { id: string }[], references: Readonly<Record<string, string>> = {}): InstructionPart[] {
+  const allowed = new Set(artifacts.map(artifact => artifact.id));
   const parts: InstructionPart[] = [];
   let textStart = 0, cursor = 0;
   while (cursor < instruction.length) {
     if (instruction[cursor] !== '{') { cursor++; continue; }
     const end = closingBrace(instruction, cursor);
     if (end === -1) break;
-    const artifactId = instruction.slice(cursor + 1, end);
-    if (instruction[cursor - 1] !== '$' && !escaped(instruction, cursor) && identifier.test(artifactId) && allowed.has(artifactId)) {
+    const name = instruction.slice(cursor + 1, end), artifactId = Object.hasOwn(references, name) ? references[name] : name;
+    if (instruction[cursor - 1] !== '$' && !escaped(instruction, cursor) && identifier.test(name) && allowed.has(artifactId)) {
       if (textStart < cursor) parts.push({ type: 'text', text: instruction.slice(textStart, cursor) });
-      parts.push({ type: 'artifact', artifactId });
-      textStart = end + 1;
+      parts.push({ type: 'artifact', artifactId }); textStart = end + 1;
     }
     cursor = end + 1;
   }
@@ -50,31 +62,8 @@ export function parseArtifactInstruction(instruction: string, artifacts: readonl
   return parts;
 }
 
-/** Presentation only: actual tool definitions remain in the existing tool channel. */
-export function digestArtifactInstruction(instruction: string, artifacts: readonly { id: string }[], tools: readonly { artifactId: string; name: string }[], groups: readonly ArtifactGroupReference[] = []): string {
-  const names = new Map<string, Set<string>>();
-  for (const tool of tools) {
-    if (!names.has(tool.artifactId)) names.set(tool.artifactId, new Set());
-    names.get(tool.artifactId)!.add(tool.name);
-  }
-  const describe = (id: string) => ({ artifact: id, tools: [...(names.get(id) ?? [])] });
-  return parseArtifactInstruction(instruction, artifacts, groups).map(part => part.type === 'text' ? part.text
-    : JSON.stringify(groups.some(group => group.id === part.artifactId)
-      ? { artifactGroup: part.artifactId, members: artifactInstructionMembers(part.artifactId, artifacts, groups).map(describe) }
-      : describe(part.artifactId))).join('');
-}
-
-/** Expand presentation references only within the request's already granted leaf scope. */
-export function artifactInstructionMembers(id: string, artifacts: readonly { id: string }[], groups: readonly ArtifactGroupReference[] = []): string[] {
-  const leaves = new Set(artifacts.map(artifact => artifact.id));
-  const byId = new Map(groups.map(group => [group.id, group]));
-  const visited = new Set<string>(), result = new Set<string>();
-  const visit = (current: string): void => {
-    if (visited.has(current)) return;
-    visited.add(current);
-    if (leaves.has(current)) result.add(current);
-    else for (const member of byId.get(current)?.members ?? []) visit(member);
-  };
-  visit(id);
-  return [...result];
+/** Presentation only: actual definitions remain in the tool channel. */
+export function digestArtifactInstruction(instruction: string, artifacts: readonly { id: string }[], tools: readonly { artifactId: string; name: string }[], references: Readonly<Record<string, string>> = {}): string {
+  return parseArtifactInstruction(instruction, artifacts, references).map(part => part.type === 'text' ? part.text
+    : JSON.stringify({ artifact: part.artifactId, tools: tools.filter(tool => tool.artifactId === part.artifactId).map(tool => tool.name) })).join('');
 }
