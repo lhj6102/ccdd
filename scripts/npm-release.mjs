@@ -10,7 +10,7 @@ import { packedManifest, validateAssets } from './release.mjs';
 const registry = 'https://registry.npmjs.org/';
 const integrity = bytes => `sha512-${createHash('sha512').update(bytes).digest('base64')}`;
 
-export function createNpmClient({ environment = process.env, signal } = {}, fetchImpl = fetch) {
+export function createNpmClient({ environment = process.env, signal, confirmationIntervalMs = 10_000 } = {}, fetchImpl = fetch) {
   return {
     async version(name, version) {
       signal?.throwIfAborted();
@@ -26,10 +26,12 @@ export function createNpmClient({ environment = process.env, signal } = {}, fetc
       return metadata.versions?.[version] ?? null;
     },
     async confirm(name, version) {
-      for (let attempt = 0; attempt < 30; attempt++) {
+      // npm scans accepted publishes before exposing them. Allow about 20 minutes
+      // for availability while preserving cancellation and exact-byte confirmation.
+      for (let attempt = 0; attempt < 121; attempt++) {
         const published = await this.version(name, version);
         if (published) return published;
-        if (attempt < 29) await delay(1_000, undefined, { signal });
+        if (attempt < 120) await delay(confirmationIntervalMs, undefined, { signal });
       }
       return null;
     },
