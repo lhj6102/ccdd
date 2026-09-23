@@ -111,6 +111,14 @@ This automation runs through `npm run release:npm` (equivalent to `npm run relea
 
 The three npm publications and the GitHub announcement are not one transaction. For GitHub Actions, rerun Release to reuse the verified CI artifact. For local publication, rerun the same commit with a new empty output directory. Identical versions already in npm are skipped. Never increment versions just to retry unchanged bytes.
 
+If the publication scripts need a fix after tagging, merge and verify that fix first, then use the current workflow to publish the original tag:
+
+```sh
+gh workflow run release.yml --ref main -f tag=v4.0.0
+```
+
+This recovery uses the publication scripts from main and a separate checkout of the existing tag for release metadata. It still requires that tag's successful main CI and publishes only its retained, checksum-verified packages. It never moves the tag, rebuilds packages, or substitutes the workflow commit's packages. CI also checks each completed verification report with the same asset validator used by publication.
+
 If npm succeeded but the GitHub announcement failed, use the retained verified files and the original source commit:
 
 ```sh

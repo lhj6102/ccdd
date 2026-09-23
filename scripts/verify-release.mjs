@@ -8,6 +8,7 @@ import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { nodeRequirement, supportedNodeRange, supportsNodeVersion } from '../src/node-version.ts';
+import { readReleaseMetadata, validateAssets } from './release.mjs';
 
 const exec = promisify(execFile);
 const sourceDirectory = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -305,6 +306,7 @@ export async function verifyRelease(argv) {
     await writeFile(join(outputDirectory, 'verification.json'), report);
     const sums = [...packages.map(pkg => `${pkg.sha256}  ${pkg.file}`), `${sha256(report)}  verification.json`].join('\n') + '\n';
     await writeFile(join(outputDirectory, 'SHA256SUMS'), sums);
+    await validateAssets(outputDirectory, await readReleaseMetadata(sourceDirectory), sourceCommit);
     console.log(JSON.stringify({ status: 'PASS', version, tag: options['--tag'], sourceCommit, packages: packages.map(pkg => pkg.file), tests: tests.tests }));
     return verification;
   } finally {

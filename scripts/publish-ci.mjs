@@ -5,7 +5,7 @@ import { realpath } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
-import { createGitHubClient, readReleaseMetadata } from './release.mjs';
+import { createGitHubClient, readReleaseMetadata, tagCommit } from './release.mjs';
 import { createNpmClient } from './npm-release.mjs';
 import { publishNpmAndAnnounce } from './npm-announcement.mjs';
 
@@ -17,6 +17,7 @@ export async function publishFromCi({ root, repository, sourceCommit, ref, asset
   assert.match(sourceCommit, /^[a-f0-9]{40}$/);
   const metadata = await readReleaseMetadata(root);
   assert.equal(ref, `refs/tags/${metadata.tag}`, 'The release tag must match the package version');
+  assert.equal(await tagCommit(api, metadata.tag), sourceCommit, 'The release tag must identify the verified source commit');
   const query = new URLSearchParams({ head_sha: sourceCommit, branch: 'main', event: 'push', status: 'success', per_page: '1' });
   const { workflow_runs: runs } = await api.request('GET', `actions/workflows/ci.yml/runs?${query}`);
   const run = runs[0];
@@ -34,7 +35,8 @@ if (process.argv[1] && await realpath(process.argv[1]) === fileURLToPath(import.
     const repository = environment.GITHUB_REPOSITORY;
     const sourceCommit = (await exec('git', ['rev-parse', 'HEAD'], { cwd: root })).stdout.trim();
     const api = createGitHubClient({ repository, token: environment.GH_TOKEN });
-    const result = await publishFromCi({ root, repository, sourceCommit, ref: environment.GITHUB_REF,
+    const ref = environment.GITHUB_EVENT_NAME === 'workflow_dispatch' ? environment.CCDD_RELEASE_REF : environment.GITHUB_REF;
+    const result = await publishFromCi({ root, repository, sourceCommit, ref,
       assetsDir: resolve(process.argv[2]), api, client: createNpmClient(),
       download: (runId, name, directory) => exec('gh', ['run', 'download', String(runId), '--repo', repository, '--name', name, '--dir', directory]),
     });
