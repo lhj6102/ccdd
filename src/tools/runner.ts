@@ -7,6 +7,7 @@ import type { ArtifactReference } from '../artifacts/index.js';
 import { resolveArtifactScope } from '../artifacts/scope.js';
 import type { ArtifactScope, ReviewToolCall } from '../contracts.js';
 import { readWorkspaceConfig } from '../broker/config.js';
+import { bestEffortDiagnostic } from '../executors/telemetry.js';
 import { runProcess } from '../executors/process.js';
 import type { ConfigManifest, JsonSchema, ScriptToolRequest, ToolMetadata, ToolResult } from './contracts.js';
 import { metadata, object, jsonCopy, validateArguments } from './schema.js';
@@ -26,10 +27,14 @@ export interface ReviewToolRegistry {
   preflight(options?: { toolName?: string }): Promise<ReviewToolCheck[]>;
   close(): Promise<void>;
 }
+export interface ToolExecutionDiagnostic {
+  name: string; artifactId: string; operation: string; startedAt: string; durationMs: number; outcome: 'success' | 'error';
+}
 export interface ReviewToolsOptions {
   worktreePath: string; artifacts: readonly ArtifactReference[]; configManifest: ConfigManifest;
   audience: 'agent' | 'human'; runDir?: string; signal?: AbortSignal; criticId?: string;
   onCall?: (call: ReviewToolCall) => void | Promise<void>;
+  onExecution?: (diagnostic: ToolExecutionDiagnostic) => void | Promise<void>;
 }
 export function describeReviewTools({ artifacts, configManifest, audience }: Pick<ReviewToolsOptions, 'artifacts' | 'configManifest' | 'audience'>): ReviewToolDefinition[] {
   if (configManifest.version !== 2 || !/^[a-f0-9]{64}$/.test(configManifest.configHash)) throw new Error('Unsupported stored tool manifest.');
@@ -172,7 +177,7 @@ export async function createReviewTools(options: ReviewToolsOptions): Promise<Re
   const find = (name: string) => { const tool = tools.find(value => value.name === name); if (!tool) throw new Error('Unknown registered Artifact tool.'); return tool; };
   const args = (name: string, value: unknown) => validateArguments(find(name).inputSchema, value);
   const definition = (tool: ReviewToolDefinition) => config.artifacts[tool.artifactId].views[audience === 'agent' ? 'agentTools' : 'humanTools']![tool.operation];
-  const invoke = async (tool: ReviewToolDefinition, actual: Record<string, unknown>): Promise<ToolResult> => {
+  const invoke = async (tool: ReviewToolDefinition, actual: Record<string, unknown>): Promise<{ result: ToolResult; call: ReviewToolCall }> => {
     controller.signal.throwIfAborted();
     const cwd = scope[tool.artifactId].path, script = definition(tool).script;
     const command = await executable(script.command, cwd, root);
@@ -196,13 +201,22 @@ export async function createReviewTools(options: ReviewToolsOptions): Promise<Re
     controller.signal.throwIfAborted();
     const call: ReviewToolCall = { name: tool.name, arguments: actual, at: new Date().toISOString(), ...(result.isError ? { isError: true } : {}), observation: { artifactId: tool.artifactId, operation: tool.operation, ...result.observation } };
     await onCall?.(structuredClone(call));
-    recorded.push(structuredClone(call));
-    return result;
+    return { result, call };
   };
   return { tools, get toolCalls() { return structuredClone(recorded); }, outputDir, validateArguments: args,
     async call(name, value = {}) {
       if (closed) return Promise.reject(new Error('Artifact tool registry is closed.'));
-      const task = invoke(find(name), args(name, value));
+      const tool = find(name), actual = args(name, value);
+      const startedAt = new Date().toISOString(), started = performance.now();
+      const task = (async () => {
+        const attempt = await invoke(tool, actual).then(value => ({ ok: true as const, ...value }), error => ({ ok: false as const, error: error as unknown }));
+        const diagnostic: ToolExecutionDiagnostic = { name: tool.name, artifactId: tool.artifactId, operation: tool.operation, startedAt, durationMs: performance.now() - started, outcome: attempt.ok && !attempt.result.isError ? 'success' : 'error' };
+        if (options.onExecution) await bestEffortDiagnostic(() => options.onExecution!(diagnostic));
+        if (!attempt.ok) throw attempt.error;
+        // Optional telemetry cannot withhold successfully observed content.
+        recorded.push(structuredClone(attempt.call));
+        return attempt.result;
+      })();
       active.add(task); task.then(() => active.delete(task), () => active.delete(task));
       return task;
     },

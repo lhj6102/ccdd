@@ -160,10 +160,36 @@ test('public defineTool infers typed arguments without executing the factory', (
 });
 
 
+for (const fail of [false, true]) test(`tool timing reports a real ${fail ? 'failed' : 'successful'} process without entering observation records`, async t => {
+  const data = await fixture(t, `await new Promise(resolve=>setTimeout(resolve,35));${fail ? "process.stderr.write('PRIVATE_DIAGNOSTIC');process.exit(2);" : "return {content:[{type:'text',text:'observed'}],observation:{kind:'content'}};"}`);
+  const diagnostics: unknown[] = [];
+  const registry = await createReviewTools({ ...data.options, onExecution: diagnostic => { diagnostics.push(diagnostic); } }); t.after(() => registry.close());
+  await assert.rejects(registry.call('unknown')); await assert.rejects(registry.call('inspect_spec', { extra: true }));
+  assert.deepEqual(diagnostics, []);
+  if (fail) await assert.rejects(registry.call('inspect_spec'), /nonzero/); else await registry.call('inspect_spec');
+  assert.equal(diagnostics.length, 1);
+  const diagnostic = diagnostics[0] as { startedAt: string; durationMs: number; outcome: string; name: string };
+  assert.equal(diagnostic.name, 'inspect_spec'); assert.equal(diagnostic.outcome, fail ? 'error' : 'success');
+  assert.ok(Number.isFinite(Date.parse(diagnostic.startedAt))); assert.ok(diagnostic.durationMs >= 35);
+  assert.doesNotMatch(JSON.stringify(registry.toolCalls), /durationMs|startedAt|outcome/);
+  assert.doesNotMatch(JSON.stringify(diagnostics), /PRIVATE_DIAGNOSTIC/);
+});
+
+
+test('failed optional telemetry never withholds successful tool content or its observation', async t => {
+  const data = await fixture(t);
+  const registry = await createReviewTools({ ...data.options, onExecution: () => { throw new Error('Controlled diagnostic write failure'); } }); t.after(() => registry.close());
+  const result = await registry.call('inspect_spec');
+  assert.equal(result.observation?.kind, 'content');
+  assert.equal(registry.toolCalls[0].observation?.kind, 'content');
+});
+
 test('explicit script errors are bounded UTF-8 text, audited without observations, and require audit persistence', async t => {
   const data = await fixture(t, "process.stderr.write('PRIVATE_STDERR');return {isError:true,content:[{type:'text',text:'Unknown skill 16145'}]};", { ...metadata, resultKinds: ['image'] });
-  const registry = await data.registry(); t.after(() => registry.close());
+  const diagnostics: Array<{ outcome: string }> = [];
+  const registry = await createReviewTools({ ...data.options, onExecution: diagnostic => { diagnostics.push(diagnostic); } }); t.after(() => registry.close());
   assert.deepEqual(await registry.call('inspect_spec'), { isError: true, content: [{ type: 'text', text: 'Unknown skill 16145' }] });
+  assert.equal(diagnostics[0].outcome, 'error');
   assert.equal(registry.toolCalls[0].isError, true);
   assert.deepEqual(registry.toolCalls[0].observation, { artifactId: 'spec', operation: 'inspect' });
   assert.doesNotMatch(JSON.stringify(registry.toolCalls), /Unknown skill|PRIVATE_STDERR/);

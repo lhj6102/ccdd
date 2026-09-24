@@ -297,3 +297,54 @@ unchanged. Closing, cancellation, or invalidation stops fallback scheduling.
 The optional loopback monitor displays saved review state, owner overlays and folder locations. Graphs show owned Critics, containment, mounts, instruction edges and cycles. Waiting for execution is separate from missing final validation evidence. Explicit current-input inspection is a POST delegated to Project Validation; its answer is not stored as stale state. GET never evaluates config, executes scripts, reconciles workers or mutates stored review state.
 
 Human claim, tool and result POSTs delegate to the Broker with origin/CSRF and browser-reviewer checks. Historical reviews are result-only: no live tool, claim, workspace preview or resume route. The monitor owns no execution scheduler. User-managed worktrees are accepted as supplied input; no transfer, copy or virtual filesystem materialization occurs.
+
+
+### Execution telemetry
+
+Request-scoped Broker event data carries execution diagnostics, not semantic evidence:
+
+- `artifact.tool.completed`: `name`, `artifactId`, `operation`, `startedAt` (UTC),
+  `durationMs` (monotonic elapsed milliseconds) and `outcome` (`success` or `error`).
+  Timing starts after registered-tool/argument validation and includes executable
+  resolution, process execution, result normalization and observation auditing. It
+  excludes telemetry persistence. Registered invocations that fail, time out or
+  abort still notify the Executor; a canceled or already terminal request does not
+  accept late events. Invalid names/arguments never start a measured invocation.
+- `human.tool.executed`: the same timing/outcome fields, saved only after workspace
+  integrity and claimant checks, including ordinary execution failure. No timing
+  is accepted after a lost claim or input-integrity failure.
+- `executor.usage`: one event per completed, identity-validated Pi assistant message
+  carrying `provider`, `model` and `usage`. Allowed counters are `input`, `output`,
+  `cacheRead`, `cacheWrite`, `cacheWrite1h`, `reasoning` and `totalTokens`; only
+  present nonnegative safe integers reported by Pi are retained. Missing/invalid
+  fields are omitted, not estimated or replaced with zeros. Pi may itself report
+  zero counters when the underlying Provider does not expose usage; these are not
+  a claim of independently measured billing. Usage is emitted as each message completes, with pending writes drained when
+  the Agent attempt settles, including a later Provider or final-schema failure.
+
+`reasoning` is a subset of `output`, and `cacheWrite1h` a subset of `cacheWrite`;
+never sum every field as disjoint counts. Provider cache accounting varies, so
+CCDD retains Pi's reported total instead of computing one. It never records cost,
+price estimates, raw responses, prompts or hidden reasoning for telemetry.
+
+Broker run views and readonly `run show`/stored-run queries expose safe event data.
+Their existing latest-500-event window remains unchanged: this is diagnostic
+history, not an exhaustive billing ledger. No aggregates are fabricated for reused
+evidence, Runtime execution or older runs that lack telemetry.
+
+Telemetry is never added to Artifact/SCC hashes, ValidationInput, reuse keys,
+`ReviewResult.toolCalls` or the Project's semantic `ValidationEvidence` projection.
+It adds only event types and JSON payload fields in existing SQLite storage;
+no schema/identity version or data migration is needed. Existing stored state and
+its evidence remain valid under the existing executor-version identity rules.
+
+Telemetry persistence is best-effort, independent of successful observation delivery.
+Rejected or unresponsive optional sinks do not change the evaluation verdict,
+status or evidence reuse. Writes have a separate 100 ms bound, run independently,
+and do not consume a completed evaluation's deadline. One fixed-text
+`executor.telemetry.failed` event reports incomplete diagnostics when storage is
+still available; no system can guarantee that warning if its event store itself
+is unavailable. Underlying callbacks cannot be forcibly canceled, so consumers
+must also bound their own I/O. User cancellation still applies during the bounded
+drain. Existing mandatory observation/Human execution audit failures remain
+operational failures; that preexisting evidence requirement is not telemetry.
