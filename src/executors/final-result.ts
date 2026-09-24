@@ -11,9 +11,58 @@ function parses(text: string): boolean {
   try { JSON.parse(text); return true; } catch { return false; }
 }
 
+/** Recognize an unfinished JSON container, without mistaking bracketed prose for JSON. */
+function isContainerPrefix(text: string): boolean {
+  const source = text.trim();
+  if (source[0] !== '[' && source[0] !== '{') return false;
+  type State = 'value' | 'arrayFirst' | 'arrayNext' | 'objectFirst' | 'key' | 'colon' | 'objectNext' | 'done';
+  const states: State[] = ['value'];
+  const containers: State[] = ['done'];
+  const token = /\s*("(?:[^"\\\x00-\x1f]|\\(?:["\\/bfnrt]|u[0-9a-fA-F]{4}))*"|-?(?:0|[1-9][0-9]*)(?:\.[0-9]*)?(?:[eE][+-]?[0-9]*)?|true|false|null|[{}\[\]:,])/y;
+  let offset = 0;
+  while (offset < source.length) {
+    token.lastIndex = offset;
+    const match = token.exec(source);
+    if (!match) {
+      // Only an unfinished token at EOF can extend a syntactically valid prefix.
+      const tail = source.slice(offset).trimStart();
+      const state = states.at(-1);
+      const stringPosition = ['value', 'arrayFirst', 'objectFirst', 'key'].includes(state!);
+      if (stringPosition && /^"(?:[^"\\\x00-\x1f]|\\(?:["\\/bfnrt]|u[0-9a-fA-F]{4}))*(?:\\(?:u[0-9a-fA-F]{0,3})?)?$/.test(tail)) return true;
+      return (state === 'value' || state === 'arrayFirst') && /^(?:t(?:r(?:u)?)?|f(?:a(?:l(?:s)?)?)?|n(?:u(?:l)?)?|-)$/.test(tail);
+    }
+    offset = token.lastIndex;
+    const word = match[1], state = states.at(-1)!;
+    if (state === 'done') return false;
+    if (state === 'colon') { if (word !== ':') return false; states[states.length - 1] = 'value'; continue; }
+    if (state === 'arrayNext' || state === 'objectNext') {
+      if (word === (state === 'arrayNext' ? ']' : '}')) { states.pop(); containers.pop(); continue; }
+      if (word !== ',') return false;
+      states[states.length - 1] = state === 'arrayNext' ? 'value' : 'key'; continue;
+    }
+    if (state === 'objectFirst' && word === '}') { states.pop(); containers.pop(); continue; }
+    if (state === 'key' || state === 'objectFirst') {
+      if (!word.startsWith('"')) return false;
+      states[states.length - 1] = 'colon'; continue;
+    }
+    if (state === 'arrayFirst' && word === ']') { states.pop(); containers.pop(); continue; }
+    if (/^[}\]:,]$/.test(word)) return false;
+    if (/^[0-9-]/.test(word) && !parses(word)) return offset === source.length;
+    // The parent container determines the state after consuming this value.
+    const parent = containers.at(-1)!;
+    states[states.length - 1] = parent;
+    if (word === '[' || word === '{') {
+      states.push(word === '[' ? 'arrayFirst' : 'objectFirst');
+      containers.push(word === '[' ? 'arrayNext' : 'objectNext');
+    }
+  }
+  return states.length > 1;
+}
+
 /** Diagnostic detection only: never extract or accept a verdict from surrounding text. */
 function containsJson(text: string): boolean {
   const stack: { start: number; char: string }[] = [];
+  const leadingContainer = isContainerPrefix(text);
   let quote = -1, escaped = false;
   // Nested complete candidates survive unmatched delimiters in surrounding prose.
   // A total parse budget bounds overlapping malformed candidates to linear work.
@@ -30,15 +79,15 @@ function containsJson(text: string): boolean {
       if (escaped) escaped = false;
       else if (char === '\\') escaped = true;
       else if (char === '"') {
-        if (candidate(quote, index + 1)) return true;
+        if ((!stack.length || !leadingContainer) && candidate(quote, index + 1)) return true;
         quote = -1;
       }
     } else if (char === '"') quote = index;
     else if (char === '{' || char === '[') stack.push({ start: index, char });
     else if (char === '}' || char === ']') {
       const open = stack.pop();
-      if (open?.char === (char === '}' ? '{' : '[') && candidate(open.start, index + 1)) return true;
-    } else if (/[tfn0-9-]/.test(char) && (index === 0 || /\s/.test(text[index - 1]))) {
+      if (open?.char === (char === '}' ? '{' : '[') && (!stack.length || !leadingContainer) && candidate(open.start, index + 1)) return true;
+    } else if ((!stack.length || !leadingContainer) && /[tfn0-9-]/.test(char) && (index === 0 || /\s/.test(text[index - 1]))) {
       let end = index;
       while (end < text.length && !/\s/.test(text[end])) end++;
       if (candidate(index, end)) return true;

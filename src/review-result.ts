@@ -15,7 +15,7 @@ export function storedObservation(value: unknown, isError = false): ReviewToolCa
   return observation;
 }
 
-export function normalizeReviewResult(value: unknown): ReviewResult {
+function measureReviewResult(value: unknown): { result: ReviewResult; length: number } {
   if (!object(value) || (value.verdict !== 'GREEN' && value.verdict !== 'RED') || typeof value.summary !== 'string' || !value.summary.trim() ||
       !Array.isArray(value.evidence) || value.evidence.some(item => typeof item !== 'string')) {
     throw new Error('Review result requires GREEN/RED verdict, a summary, and string evidence[].');
@@ -30,6 +30,28 @@ export function normalizeReviewResult(value: unknown): ReviewResult {
     if (observation) call.observation = observation;
     return call;
   });
-  if (JSON.stringify(result).length > 256_000) throw new Error('Review result exceeds the supported size.');
-  return result;
+  return { result, length: JSON.stringify(result).length };
+}
+
+export function normalizeReviewResult(value: unknown): ReviewResult {
+  const measured = measureReviewResult(value);
+  assertResultSize(measured.length);
+  return measured.result;
+}
+
+function assertResultSize(length: number) {
+  if (length > 256_000) throw new Error('Review result exceeds the supported size.');
+}
+
+/** Cache immutable metadata normalization/serialization across final-response candidates. */
+export function createReviewResultSizeCheck(metadata: Pick<ReviewResult, 'provider' | 'model' | 'toolCalls'>) {
+  const placeholder = { verdict: 'GREEN', summary: '.', evidence: [] };
+  // Measure without rejecting here: even an over-limit size must stay cached.
+  const metadataSize = measureReviewResult({ ...placeholder, ...metadata }).length - JSON.stringify(placeholder).length;
+  return (value: unknown): ReviewResult => {
+    assertResultSize(metadataSize);
+    const measured = measureReviewResult(value);
+    assertResultSize(measured.length + metadataSize);
+    return measured.result;
+  };
 }

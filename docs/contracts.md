@@ -259,7 +259,10 @@ The review schema includes nonblank summary/evidence strings, string length
 bounds and evidence-count bounds, so those shape errors also reach repair.
 An additional safe check preserves the existing UTF-16 code-unit length limits
 (TypeBox uses graphemes) and applies the same normalized persisted-result size
-check as the Broker, including tool-call metadata and reserved duration space.
+check as the Broker, including tool-call metadata and the actual duration captured
+for the accepted candidate. That exact duration is persisted, excluding subsequent
+diagnostic-drain and cleanup latency. Immutable tool metadata is normalized and
+its serialized size counted once across candidate inspections.
 An envelope already too large because of immutable tool metadata cannot be
 repaired by changing evidence; the one attempt still fails closed.
 Only a strictly valid repaired response can proceed to ordinary result and required
