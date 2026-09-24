@@ -10,6 +10,7 @@ import { defineTool, type ToolMetadata } from '../src/sdk.js';
 import { diagnoseArtifactTools } from '../src/artifacts/tool-check.js';
 import { serveArtifactMcp } from '../src/artifacts/mcp-server.js';
 import { PassThrough } from 'node:stream';
+import { safeToolFailure } from '../src/tools/diagnostics.js';
 
 const metadata: ToolMetadata = { description: 'Inspect {artifactName}.', inputSchema: { type: 'object', properties: {}, additionalProperties: false }, resultKinds: ['text', 'json', 'image', 'launch'], observation: 'content' };
 async function fixture(t: TestContext, script = "return {content:[{type:'text',text:'observed'}],observation:{kind:'content'}};", meta = metadata) {
@@ -47,6 +48,95 @@ test('fixed argv and schema validation prevent reviewer arguments from becoming 
   assert.deepEqual(json(await registry.call('inspect_spec', { frame: 2, enabled: false })), { frame: 2, enabled: false });
   assert.equal(registry.toolCalls.length, 1);
   const calls = registry.toolCalls; calls.length = 0; assert.equal(registry.toolCalls.length, 1);
+});
+
+test('nested argument diagnostics identify paths and constraints without exposing values or trusting forged errors', async t => {
+  const inputSchema = { type: 'object', properties: { tripods: { type: 'array', items: { type: 'object', properties: { level: { type: 'number' }, label: { enum: ['allowed'] }, fixed: { const: 'fixed' }, code: { type: 'string', pattern: '^safe$' } }, required: ['level'], additionalProperties: false } } }, additionalProperties: false };
+  const data = await fixture(t, undefined, { ...metadata, inputSchema }), registry = await data.registry(); t.after(() => registry.close());
+  const cases: Array<[unknown, RegExp[]]> = [
+    [{ tripods: [{ level: 1, extra: 'PRIVATE_ARGUMENT' }] }, [/instancePath "\/tripods\/0" \[additionalProperties\]/, /property: "extra"/]],
+    [{ tripods: [{ level: 'PRIVATE_ARGUMENT' }] }, [/instancePath "\/tripods\/0\/level" \[type\]: expected number/]],
+    [{ tripods: [{}] }, [/instancePath "\/tripods\/0" \[required\]: missing required property: "level"/]],
+    [{ tripods: [{ level: 1, label: 'PRIVATE_ARGUMENT', fixed: 'PRIVATE_ARGUMENT', code: 'PRIVATE_ARGUMENT' }] }, [/\[enum\]/, /\[const\]/, /\[pattern\]/]],
+  ];
+  for (const [args, patterns] of cases) await assert.rejects(registry.call('inspect_spec', args), error => {
+    assert.ok(error instanceof Error);
+    patterns.forEach(pattern => assert.match(error.message, pattern));
+    assert.doesNotMatch(error.message, /PRIVATE_ARGUMENT/);
+    assert.deepEqual(safeToolFailure(error), { code: 'ARTIFACT_TOOL_ARGUMENTS_INVALID', message: error.message });
+    const trusted = error.message;
+    error.message = 'PRIVATE_MUTATED_EXCEPTION';
+    assert.equal(safeToolFailure(error).message, trusted);
+    assert.doesNotMatch(safeToolFailure(Object.assign(new Error('PRIVATE_FORGED_EXCEPTION'), { code: 'ARTIFACT_TOOL_ARGUMENTS_INVALID' })).message, /PRIVATE_/);
+    assert.doesNotMatch(safeToolFailure(new Error(trusted + ' PRIVATE_FORGED_EXCEPTION')).message, /PRIVATE_|instancePath/);
+    assert.equal(safeToolFailure(error, true).code, 'ABORTED');
+    return true;
+  });
+  assert.deepEqual(registry.toolCalls, []);
+  await registry.call('inspect_spec', { tripods: [{ level: 1 }] });
+  assert.equal(registry.toolCalls.length, 1);
+});
+
+test('argument diagnostics bound counts and UTF-8 output and preserve the original object size guard', async t => {
+  const properties = Object.fromEntries(Array.from({ length: 8 }, (_, index) => [`field${index}`, { type: 'number' }]));
+  const data = await fixture(t, undefined, { ...metadata, inputSchema: { type: 'object', properties, additionalProperties: false } }), registry = await data.registry(); t.after(() => registry.close());
+  await assert.rejects(registry.call('inspect_spec', Object.fromEntries(Object.keys(properties).map(key => [key, 'PRIVATE_VALUE']))), error => {
+    assert.ok(error instanceof Error);
+    assert.equal(error.message.match(/^- instancePath/gm)?.length, 5);
+    assert.match(error.message, /Additional diagnostics omitted/);
+    assert.doesNotMatch(error.message, /field5|PRIVATE_VALUE/);
+    return true;
+  });
+  await assert.rejects(registry.call('inspect_spec', Object.fromEntries(Array.from({ length: 8 }, (_, index) => [`${index}\n\u001b${'\u{1f600}'.repeat(2000)}`, 'PRIVATE_VALUE']))), error => {
+    assert.ok(error instanceof Error);
+    assert.ok(Buffer.byteLength(error.message) <= 4096);
+    assert.match(error.message, /truncated/);
+    assert.match(error.message, /more properties omitted/);
+    assert.doesNotMatch(error.message, /PRIVATE_VALUE|\u001b|�/);
+    return true;
+  });
+  const longKeys = Array.from({ length: 8 }, (_, index) => `${index}${'p'.repeat(180)}`);
+  const bounded = await fixture(t, undefined, { ...metadata, inputSchema: { type: 'object', properties: Object.fromEntries(longKeys.map(key => [key, { type: 'object', additionalProperties: false }])) } });
+  const boundedRegistry = await bounded.registry(); t.after(() => boundedRegistry.close());
+  const manyErrors = Object.fromEntries(longKeys.map(key => [key, Object.fromEntries(Array.from({ length: 4 }, (_, index) => [`${index}${'q'.repeat(180)}`, 'PRIVATE_VALUE']))]));
+  await assert.rejects(boundedRegistry.call('inspect_spec', manyErrors), error => {
+    assert.ok(error instanceof Error);
+    assert.ok(Buffer.byteLength(error.message) <= 4096);
+    assert.match(error.message, /Additional diagnostics omitted/);
+    assert.doesNotMatch(error.message, /PRIVATE_VALUE/);
+    return true;
+  });
+  for (const args of [null, [], 'text', { value: 'x'.repeat(65536) }]) await assert.rejects(registry.call('inspect_spec', args), { message: 'Tool arguments must be an object of at most 64 KiB.' });
+  assert.deepEqual(registry.toolCalls, []);
+});
+
+test('union and schema-valued additional-property failures retain actionable constraints without values', async t => {
+  const inputSchema = { type: 'object', properties: { choice: { anyOf: [{ type: 'number' }, { type: 'boolean' }] }, metadata: { type: 'object', additionalProperties: { type: 'number' } } } };
+  const data = await fixture(t, undefined, { ...metadata, inputSchema }), registry = await data.registry(); t.after(() => registry.close());
+  await assert.rejects(registry.call('inspect_spec', { choice: 'PRIVATE_VALUE' }), error => {
+    assert.ok(error instanceof Error);
+    assert.match(error.message, /instancePath "\/choice" \[anyOf\]: must match at least one registered alternative/);
+    assert.doesNotMatch(error.message, /PRIVATE_VALUE/);
+    return true;
+  });
+  await assert.rejects(registry.call('inspect_spec', { metadata: { count: 'PRIVATE_VALUE' } }), error => {
+    assert.ok(error instanceof Error);
+    assert.match(error.message, /instancePath "\/metadata" \[additionalProperties\]: unexpected or invalid property: "count"/);
+    assert.doesNotMatch(error.message, /PRIVATE_VALUE/);
+    return true;
+  });
+});
+
+test('argument paths escape property names and disclose ambiguous TypeBox paths instead of inventing a location', async t => {
+  const inputSchema = { type: 'object', properties: { 'a~/b': { type: 'number' }, 'a/b': { type: 'number' }, a: { type: 'object', properties: { b: { type: 'number' } } } } };
+  const data = await fixture(t, undefined, { ...metadata, inputSchema }), registry = await data.registry(); t.after(() => registry.close());
+  await assert.rejects(registry.call('inspect_spec', { 'a~/b': 'PRIVATE_VALUE' }), /instancePath "\/a~0~1b" \[type\]/);
+  await assert.rejects(registry.call('inspect_spec', { 'a/b': 'PRIVATE_VALUE', a: { b: 1 } }), error => {
+    assert.ok(error instanceof Error);
+    assert.match(error.message, /"\/a~1b"/); assert.match(error.message, /"\/a\/b"/); assert.match(error.message, / or /);
+    assert.doesNotMatch(error.message, /PRIVATE_VALUE/);
+    return true;
+  });
 });
 
 test('stored manifests and Artifact scope must match before reconnecting script execution', async t => {

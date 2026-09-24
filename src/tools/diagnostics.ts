@@ -1,3 +1,5 @@
+import { toolArgumentErrorMessage } from './schema.js';
+
 export type ArtifactToolCheckStage = 'snapshot' | 'preflight' | 'execute' | 'normalize-result' | 'input-integrity';
 export interface SafeToolFailure { code: string; message: string }
 
@@ -57,6 +59,8 @@ export class ToolResultError extends Error {
 
 export function safeToolFailure(error: unknown, aborted = false): SafeToolFailure {
   if (aborted) return { code: 'ABORTED', message: failures.ABORTED };
+  const argumentMessage = toolArgumentErrorMessage(error);
+  if (argumentMessage !== undefined) return { code: 'ARTIFACT_TOOL_ARGUMENTS_INVALID', message: argumentMessage };
   if (error instanceof ToolResultError) {
     const cause = error.cause;
     if (cause instanceof Error && resultMessages.has(cause.message)) return { code: 'ARTIFACT_TOOL_RESULT_INVALID', message: cause.message };

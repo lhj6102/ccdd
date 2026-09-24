@@ -1,5 +1,6 @@
 import { Type } from 'typebox';
 import { Compile } from 'typebox/compile';
+import type { TValidationError } from 'typebox/error';
 import type { EnvironmentRequirement, JsonSchema, ToolMetadata } from './contracts.js';
 import { posix, win32 } from 'node:path';
 
@@ -41,10 +42,79 @@ export function validateSchema(schema: unknown): asserts schema is JsonSchema {
   };
   jsonCopy(schema); walk(schema,0); Compile(Type.Unsafe(schema));
 }
+const argumentFailures = new WeakMap<Error, string>();
+/** Only errors created by argument validation may cross the diagnostic boundary. */
+export function toolArgumentErrorMessage(error: unknown): string | undefined {
+  return error instanceof Error ? argumentFailures.get(error) : undefined;
+}
+
+function diagnosticName(value: string): string {
+  // Bound the quoted UTF-8 form; control characters cannot forge diagnostic lines.
+  let prefix = '', bytes = 2;
+  for (const character of value) {
+    bytes += Buffer.byteLength(JSON.stringify(character)) - 2;
+    if (bytes > 160) return `${JSON.stringify(prefix)} (truncated)`;
+    prefix += character;
+  }
+  return JSON.stringify(prefix);
+}
+const pointerToken = (key: string) => key.replaceAll('~', '~0').replaceAll('/', '~1');
+function diagnosticPaths(args: unknown, instancePath: string): string {
+  // TypeBox currently joins property names without JSON Pointer escaping. Recover
+  // escaped paths from argument keys only; report alternatives if that join is ambiguous.
+  const pending = [{ value: args, raw: '', pointer: '' }], paths: string[] = [];
+  while (pending.length && paths.length < 6) {
+    const current = pending.pop()!;
+    if (current.raw === instancePath) { paths.push(diagnosticName(current.pointer)); continue; }
+    if (!object(current.value) && !Array.isArray(current.value)) continue;
+    for (const key of Object.keys(current.value)) {
+      const raw = `${current.raw}/${key}`;
+      if (instancePath === raw || instancePath.startsWith(`${raw}/`)) pending.push({ value: (current.value as Record<string, unknown>)[key], raw, pointer: `${current.pointer}/${pointerToken(key)}` });
+    }
+  }
+  return paths.length ? paths.slice(0, 5).join(' or ') + (paths.length > 5 ? ' (more paths omitted)' : '') : diagnosticName(instancePath);
+}
+function argumentReason(error: TValidationError): string {
+  const names = (values: string[]) => values.slice(0, 3).map(diagnosticName).join(', ') + (values.length > 3 ? ' (more properties omitted)' : '');
+  switch (error.keyword) {
+    case 'additionalProperties': return `unexpected or invalid property: ${names(error.params.additionalProperties)}`;
+    case 'required': return `missing required property: ${names(error.params.requiredProperties)}`;
+    case 'type': {
+      const types = Array.isArray(error.params.type) ? error.params.type : [error.params.type];
+      return `expected ${types.filter(type => ['object', 'array', 'string', 'integer', 'number', 'boolean', 'null'].includes(type)).join(' or ') || 'registered type'}`;
+    }
+    case 'enum': return 'expected one of the registered enum values';
+    case 'const': return 'expected the registered constant';
+    case 'pattern': return 'must match the registered pattern';
+    case 'anyOf': return 'must match at least one registered alternative';
+    case 'oneOf': return 'must match exactly one registered alternative';
+    case 'not': return 'must not match the excluded schema';
+    case 'uniqueItems': return 'array items must be unique';
+    default: return 'does not satisfy the registered constraint';
+  }
+}
+function argumentMessage(errors: TValidationError[], args: unknown): string {
+  let message = 'Tool arguments do not match the registered input schema.';
+  const omitted = '\nAdditional diagnostics omitted.';
+  let shown = 0;
+  for (const error of errors.slice(0, 5)) {
+    // Do not forward TypeBox messages or arbitrary params: they can contain values.
+    const line = `\n- instancePath ${diagnosticPaths(args, error.instancePath)} [${error.keyword}]: ${argumentReason(error)}.`;
+    if (Buffer.byteLength(message + line + omitted) > 4096) break;
+    message += line; shown++;
+  }
+  return message + (shown < errors.length ? omitted : '');
+}
 export function validateArguments(schema: JsonSchema, args: unknown): Record<string, unknown> {
   if (!object(args) || Buffer.byteLength(JSON.stringify(args)) > 65536) throw new Error('Tool arguments must be an object of at most 64 KiB.');
   const actual = jsonCopy(args);
-  if (!Compile(Type.Unsafe(schema)).Check(actual)) throw new Error('Tool arguments do not match the registered input schema.');
+  const validator = Compile(Type.Unsafe(schema));
+  if (!validator.Check(actual)) {
+    const message = argumentMessage(validator.Errors(actual), actual);
+    const error = new Error(message);
+    argumentFailures.set(error, message);
+    throw error;
+  }
   return actual;
 }
 export function metadata(value: unknown): ToolMetadata {
