@@ -9,7 +9,10 @@ Pi tool loop and MCP error results, allowing a corrected call instead of treatin
 a schema mismatch as an impossible inspection.
 
 Diagnostics are bounded to 4 KiB of UTF-8 text. Property names are quoted and
-bounded; omitted diagnostics are marked. Argument values, raw TypeBox messages
+bounded; omitted diagnostics are marked. Invalid arguments exceeding the 512-item
+array or 2048-node diagnostic budget receive an explicit notice instead of running
+potentially expensive exhaustive error collection. Valid arguments are unaffected.
+Argument values, raw TypeBox messages
 and arbitrary exception text are never forwarded. The safe diagnostic boundary
 accepts only errors created by CCDD argument validation. The existing object and
 64 KiB argument limit, script isolation, observation auditing and telemetry

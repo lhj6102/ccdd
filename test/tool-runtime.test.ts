@@ -110,6 +110,22 @@ test('argument diagnostics bound counts and UTF-8 output and preserve the origin
   assert.deepEqual(registry.toolCalls, []);
 });
 
+test('large invalid arguments skip exhaustive diagnostics without rejecting valid large arrays', async t => {
+  const data = await fixture(t, undefined, { ...metadata, inputSchema: { type: 'object', properties: { values: { type: 'array', uniqueItems: true, items: { type: 'integer' } }, extra: { type: 'object' } }, additionalProperties: false } });
+  const registry = await data.registry(); t.after(() => registry.close());
+  const started = performance.now();
+  await assert.rejects(registry.call('inspect_spec', { values: Array(32700).fill(0) }), /array at instancePath "\/values" exceeds the 512-item diagnostic budget/);
+  assert.ok(performance.now() - started < 1000, 'Duplicate diagnostics must not block the event loop with quadratic collection');
+  await assert.rejects(registry.call('inspect_spec', { values: [1, 1] }), /instancePath "\/values" \[uniqueItems\]: array items must be unique/);
+  await assert.rejects(registry.call('inspect_spec', { values: [1, 1], extra: Object.fromEntries(Array.from({ length: 2050 }, (_, index) => [index, 'PRIVATE_VALUE'])) }), error => {
+    assert.ok(error instanceof Error);
+    assert.match(error.message, /2048-node diagnostic budget/); assert.doesNotMatch(error.message, /PRIVATE_VALUE/);
+    return true;
+  });
+  await registry.call('inspect_spec', { values: Array.from({ length: 1000 }, (_, index) => index) });
+  assert.equal(registry.toolCalls.length, 1);
+});
+
 test('union and schema-valued additional-property failures retain actionable constraints without values', async t => {
   const inputSchema = { type: 'object', properties: { choice: { anyOf: [{ type: 'number' }, { type: 'boolean' }] }, metadata: { type: 'object', additionalProperties: { type: 'number' } } } };
   const data = await fixture(t, undefined, { ...metadata, inputSchema }), registry = await data.registry(); t.after(() => registry.close());

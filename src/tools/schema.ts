@@ -67,9 +67,12 @@ function diagnosticPaths(args: unknown, instancePath: string): string {
     const current = pending.pop()!;
     if (current.raw === instancePath) { paths.push(diagnosticName(current.pointer)); continue; }
     if (!object(current.value) && !Array.isArray(current.value)) continue;
-    for (const key of Object.keys(current.value)) {
-      const raw = `${current.raw}/${key}`;
-      if (instancePath === raw || instancePath.startsWith(`${raw}/`)) pending.push({ value: (current.value as Record<string, unknown>)[key], raw, pointer: `${current.pointer}/${pointerToken(key)}` });
+    const rest = instancePath.slice(current.raw.length + 1);
+    // Try only path prefixes that are actual keys, not every sibling in a container.
+    for (let end = 0; end <= rest.length; end++) {
+      if (end !== rest.length && rest[end] !== '/') continue;
+      const key = rest.slice(0, end);
+      if (Object.hasOwn(current.value, key)) pending.push({ value: (current.value as Record<string, unknown>)[key], raw: `${current.raw}/${key}`, pointer: `${current.pointer}/${pointerToken(key)}` });
     }
   }
   return paths.length ? paths.slice(0, 5).join(' or ') + (paths.length > 5 ? ' (more paths omitted)' : '') : diagnosticName(instancePath);
@@ -93,6 +96,21 @@ function argumentReason(error: TValidationError): string {
     default: return 'does not satisfy the registered constraint';
   }
 }
+function diagnosticLimit(args: unknown): string | undefined {
+  // TypeBox Errors is exhaustive, and uniqueItems copies its duplicate-index array
+  // for every duplicate. Output truncation alone cannot bound that synchronous work.
+  const pending = [{ value: args, pointer: '' }];
+  let visited = 0;
+  while (pending.length) {
+    const { value, pointer } = pending.pop()!;
+    if (++visited > 2048) return 'Detailed diagnostics omitted: arguments exceed the 2048-node diagnostic budget. Check the registered input schema.';
+    if (Array.isArray(value) && value.length > 512) return `Detailed diagnostics omitted: array at instancePath ${diagnosticName(pointer)} exceeds the 512-item diagnostic budget. Check the registered input schema.`;
+    if (object(value) || Array.isArray(value)) {
+      for (const key of Object.keys(value)) pending.push({ value: (value as Record<string, unknown>)[key], pointer: `${pointer}/${pointerToken(key)}` });
+    }
+  }
+  return undefined;
+}
 function argumentMessage(errors: TValidationError[], args: unknown): string {
   let message = 'Tool arguments do not match the registered input schema.';
   const omitted = '\nAdditional diagnostics omitted.';
@@ -110,7 +128,8 @@ export function validateArguments(schema: JsonSchema, args: unknown): Record<str
   const actual = jsonCopy(args);
   const validator = Compile(Type.Unsafe(schema));
   if (!validator.Check(actual)) {
-    const message = argumentMessage(validator.Errors(actual), actual);
+    const limit = diagnosticLimit(actual);
+    const message = limit ? `Tool arguments do not match the registered input schema.\n${limit}` : argumentMessage(validator.Errors(actual), actual);
     const error = new Error(message);
     argumentFailures.set(error, message);
     throw error;

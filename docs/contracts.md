@@ -51,14 +51,18 @@ A script declares a fixed `command` and string `args`. There is no shell interpo
 }
 ```
 
-Arguments must remain an object of at most 64 KiB. Schema mismatches return the
-first five TypeBox validation errors, bounded to 4 KiB of UTF-8 text, with instance
+Arguments must remain an object of at most 64 KiB. Schema mismatches normally return
+the first five TypeBox validation errors, bounded to 4 KiB of UTF-8 text, with instance
 JSON Pointer paths, keywords and short reasons. The empty pointer `""` means the
 root object. Missing and unexpected/invalid property names accompany the parent
 object path. Names are JSON-quoted, individually bounded and marked when truncated;
 additional diagnostics or property names are explicitly marked as omitted. If
 TypeBox's unescaped path matches several actual locations, escaped alternatives
-are reported rather than choosing one arbitrarily.
+are reported rather than choosing one arbitrarily. To avoid TypeBox's exhaustive
+error-generation costs, invalid arguments with arrays over 512 items or more than
+2048 visited JSON nodes instead receive an explicit diagnostic-budget notice
+(with the array path when available). This limits diagnostics, not admission:
+valid arguments within 64 KiB still pass regardless of those diagnostic budgets.
 
 These runner-owned diagnostics never echo argument values, raw TypeBox messages,
 or arbitrary error parameters. Pi returns them as tool errors so the reviewer can
