@@ -26,10 +26,14 @@ export interface ReviewToolRegistry {
   preflight(options?: { toolName?: string }): Promise<ReviewToolCheck[]>;
   close(): Promise<void>;
 }
+export interface ToolExecutionDiagnostic {
+  name: string; artifactId: string; operation: string; startedAt: string; durationMs: number; outcome: 'success' | 'error';
+}
 export interface ReviewToolsOptions {
   worktreePath: string; artifacts: readonly ArtifactReference[]; configManifest: ConfigManifest;
   audience: 'agent' | 'human'; runDir?: string; signal?: AbortSignal; criticId?: string;
   onCall?: (call: ReviewToolCall) => void | Promise<void>;
+  onExecution?: (diagnostic: ToolExecutionDiagnostic) => void | Promise<void>;
 }
 export function describeReviewTools({ artifacts, configManifest, audience }: Pick<ReviewToolsOptions, 'artifacts' | 'configManifest' | 'audience'>): ReviewToolDefinition[] {
   if (configManifest.version !== 2 || !/^[a-f0-9]{64}$/.test(configManifest.configHash)) throw new Error('Unsupported stored tool manifest.');
@@ -196,7 +200,15 @@ export async function createReviewTools(options: ReviewToolsOptions): Promise<Re
   return { tools, get toolCalls() { return structuredClone(recorded); }, outputDir, validateArguments: args,
     async call(name, value = {}) {
       if (closed) return Promise.reject(new Error('Artifact tool registry is closed.'));
-      const task = invoke(find(name), args(name, value));
+      const tool = find(name), actual = args(name, value);
+      const startedAt = new Date().toISOString(), started = performance.now();
+      const task = (async () => {
+        let outcome: ToolExecutionDiagnostic['outcome'] = 'error';
+        try { const result = await invoke(tool, actual); outcome = 'success'; return result; }
+        finally {
+          await options.onExecution?.({ name: tool.name, artifactId: tool.artifactId, operation: tool.operation, startedAt, durationMs: performance.now() - started, outcome });
+        }
+      })();
       active.add(task); task.then(() => active.delete(task), () => active.delete(task));
       return task;
     },

@@ -7,6 +7,9 @@ import { createBroker, type BrokerExecutors } from '../src/broker/index.js';
 import { createExecutorRegistry } from '../src/executors/index.js';
 import { artifactFixture, runtimeCritic, fixtureViews } from './helpers/artifacts.js';
 import { runUntilSettled } from './helpers/run.js';
+import { inspectProject, projectHistory, projectRun } from '../src/project/index.js';
+import { artifactStream } from './pi-fixture.js';
+import { agentProfile } from './helpers/artifacts.js';
 import { DatabaseSync } from 'node:sqlite';
 
 const controlledResult = { verdict: 'GREEN' as const, summary: 'Controlled executor fixture', evidence: ['Controlled unit-test response, not Provider evaluation.'] };
@@ -154,4 +157,43 @@ test('failed Human alarms remain operational failures while independent Human wo
 test('workspace preflight rejects embedded credentials before any tickets or input acquisition', async t => {
   const data = await fixture(t, false, { validateWorkspace() { throw new Error('Controlled credential boundary'); }, canExecute: () => ({ ok: true }), execute: async () => controlledResult });
   const before = await readdir(data.repoPath); await assert.rejects(data.submit(), /credential boundary/); assert.deepEqual(data.broker.listRuns(), []); assert.deepEqual(await readdir(data.repoPath), before);
+});
+
+
+test('run telemetry survives readonly reopening but never changes identities, evidence or reuse', async t => {
+  const data = await artifactFixture(t);
+  await data.write('a', { name: 'a', views: fixtureViews(), critics: [{ id: 'review', title: 'Review', profile: agentProfile, payload: { instruction: 'Read {a}.' } }] });
+  const broker = createBroker({ ...data, executors: createExecutorRegistry({ streamFn: artifactStream() }) }); data.cleanup(() => broker.close());
+  const before = (await inspectProject(data)).snapshot;
+  const submitted = await broker.submitProject({ selection: { kind: 'all' } }); await broker.run(submitted.id);
+  const run = projectRun(data.stateDir, submitted.id)!;
+  assert.equal(run.status, 'GREEN');
+  const timing = run.events.find(event => event.type === 'artifact.tool.completed')!.data as Record<string, unknown>;
+  assert.equal(timing.outcome, 'success'); assert.equal(timing.name, 'read_a'); assert.ok(Number(timing.durationMs) >= 0);
+  assert.equal(run.events.filter(event => event.type === 'executor.usage').length, 2);
+  const actual = (await inspectProject(data)).snapshot;
+  assert.deepEqual(actual.inputs, before.inputs); assert.deepEqual(actual.artifactHashes, before.artifactHashes);
+  assert.doesNotMatch(JSON.stringify(projectHistory(data.stateDir)), /durationMs|startedAt|usage|cost/);
+  assert.doesNotMatch(JSON.stringify(run.requests[0].result!.toolCalls), /durationMs|startedAt|usage/);
+  const reused = await broker.submitProject({ selection: { kind: 'all' } });
+  assert.equal(reused.requests.length, 0); assert.equal(reused.status, 'GREEN');
+  assert.equal(projectRun(data.stateDir, reused.id)!.events.some(event => event.type === 'executor.usage'), false);
+  await broker.close();
+  assert.deepEqual(projectRun(data.stateDir, run.id)!.events, run.events);
+});
+
+test('Broker telemetry allowlists counters and retains diagnostics on failed attempts', async t => {
+  const data = await fixture(t, false, { canExecute: () => ({ ok: true }), async execute(_request, { onEvent }) {
+    await onEvent?.({ type: 'artifact.tool.completed', name: 'read_a', artifactId: 'a', operation: 'read', startedAt: '2026-09-24T12:00:00.000Z', durationMs: 12.25, outcome: 'error', stderr: 'SECRET_DIAGNOSTIC' });
+    await onEvent?.({ type: 'executor.usage', provider: 'fixture', model: 'fixture', usage: { input: 10, output: 2, totalTokens: 12, cacheRead: -1, cacheWrite: '3', reasoning: Infinity, cost: 1.25, response: 'SECRET_DIAGNOSTIC' } });
+    await onEvent?.({ type: 'executor.usage', usage: { input: NaN } });
+    throw new Error('Controlled later execution failure');
+  } });
+  const submitted = await data.submit(); await data.broker.run(submitted.id);
+  const run = projectRun(data.stateDir, submitted.id)!;
+  assert.equal(run.status, 'ERROR'); assert.equal(run.requests[0].result, null);
+  const usage = run.events.filter(event => event.type === 'executor.usage');
+  assert.equal(usage.length, 1); assert.deepEqual((usage[0].data as { usage: unknown }).usage, { input: 10, output: 2, totalTokens: 12 });
+  assert.deepEqual(run.events.find(event => event.type === 'artifact.tool.completed')!.data, { name: 'read_a', artifactId: 'a', startedAt: '2026-09-24T12:00:00.000Z', durationMs: 12.25, outcome: 'error', operation: 'read' });
+  assert.doesNotMatch(JSON.stringify(run), /SECRET_DIAGNOSTIC|cost/);
 });

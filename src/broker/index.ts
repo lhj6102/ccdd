@@ -7,7 +7,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { prepareReviewRequests } from '../requester/index.js';
 import { readWorkspaceConfig } from './config.js';
 import { createGraphDefinition, type GraphDefinition } from './graph.js';
-import { createReviewTools } from '../tools/runner.js';
+import { createReviewTools, type ToolExecutionDiagnostic } from '../tools/runner.js';
 import { createHumanClaims, HUMAN_PREPARATION_LEASE_MS } from './human-claims.js';
 import { prepareHumanReview } from '../executors/human-preparation.js';
 import { prepareWorkspace, reopenWorkspace, type WorkspaceDescriptor, type WorkspaceHandle, type WorkspaceIntegrity } from '../workspaces/index.js';
@@ -361,9 +361,23 @@ export function createBroker({ repoPath, stateDir, repoId = 'demo', executors, w
       const result = validateResult(await requireExecutors().execute(copy(request), {
         worktreePath: workspace.descriptor.path, workspacePath: workspace.descriptor.path, runDir, signal,
         onEvent(event) {
-          if (closed || closing || signal.aborted || !event || requestData(requestId)?.status !== 'RUNNING' || !['executor.started', 'artifact.tools.ready', 'artifact.tool.called', 'executor.completed'].includes(event.type)) return;
+          if (closed || closing || signal.aborted || !event || requestData(requestId)?.status !== 'RUNNING' || !['executor.started', 'artifact.tools.ready', 'artifact.tool.called', 'artifact.tool.completed', 'executor.usage', 'executor.completed'].includes(event.type)) return;
           const safe: Record<string, unknown> = {};
           for (const key of ['name', 'provider', 'model', 'kind', 'artifactId', 'path']) if (typeof event[key] === 'string') safe[key] = (event[key] as string).slice(0, 1000);
+          if (event.type === 'artifact.tool.completed') {
+            if (typeof event.startedAt === 'string' && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(event.startedAt) && Number.isFinite(Date.parse(event.startedAt))) safe.startedAt = event.startedAt;
+            if (typeof event.durationMs === 'number' && Number.isFinite(event.durationMs) && event.durationMs >= 0) safe.durationMs = event.durationMs;
+            if (event.outcome === 'success' || event.outcome === 'error') safe.outcome = event.outcome;
+            if (typeof event.operation === 'string') safe.operation = event.operation.slice(0, 1000);
+          }
+          if (event.type === 'executor.usage' && object(event.usage)) {
+            const usage = Object.fromEntries(['input', 'output', 'cacheRead', 'cacheWrite', 'cacheWrite1h', 'reasoning', 'totalTokens'].flatMap(key => {
+              const value = (event.usage as Record<string, unknown>)[key];
+              return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? [[key, value]] : [];
+            }));
+            if (!Object.keys(usage).length) return;
+            safe.usage = usage;
+          } else if (event.type === 'executor.usage') return;
           if (object(event.observation)) {
             // Persist the same bounded metadata as final results, even if the Provider later fails.
             const observed = storedObservation(event.observation);
@@ -580,7 +594,9 @@ export function createBroker({ repoPath, stateDir, repoId = 'demo', executors, w
         // remains mandatory because configuration loading and tool execution can mutate it.
         workspace.signal.throwIfAborted();
         inputsValidated = true;
+        let timing: ToolExecutionDiagnostic | undefined;
         const registry = await createReviewTools({
+          onExecution: diagnostic => { timing = diagnostic; },
           worktreePath: workspace.descriptor.path, artifacts: request.artifacts,
           configManifest: request.configManifest, criticId: request.criticId, audience: 'human',
           runDir: path.resolve(stateDir, 'runs', request.runId, request.id, 'human-tools'), signal: workspace.signal,
@@ -588,13 +604,22 @@ export function createBroker({ repoPath, stateDir, repoId = 'demo', executors, w
         try {
           registry.validateArguments(toolName, args);
           assertClaim();
-          const result = await registry.call(toolName, args);
+          let result;
+          try { result = await registry.call(toolName, args); }
+          catch (error) {
+            await workspace.assertUnchanged(); workspace.signal.throwIfAborted(); assertClaim();
+            if (timing) {
+              transaction(() => { assertClaim(); appendEvent(request.runId, requestId, 'human.tool.executed', 'The claimed reviewer attempted a registered Artifact tool.', { ...timing }); });
+              changed();
+            }
+            throw error;
+          }
           await workspace.assertUnchanged(); workspace.signal.throwIfAborted();
           assertClaim();
           const tool = registry.tools.find(tool => tool.name === toolName)!;
           transaction(() => {
             assertClaim();
-            appendEvent(request.runId, requestId, 'human.tool.executed', 'The claimed reviewer executed a registered Artifact tool.', { name: tool.name, artifactId: tool.artifactId, operation: tool.operation });
+            appendEvent(request.runId, requestId, 'human.tool.executed', 'The claimed reviewer executed a registered Artifact tool.', { name: tool.name, artifactId: tool.artifactId, operation: tool.operation, ...(timing ? { startedAt: timing.startedAt, durationMs: timing.durationMs, outcome: timing.outcome } : {}) });
           });
           changed();
           return result;

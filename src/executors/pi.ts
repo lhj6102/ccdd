@@ -78,6 +78,7 @@ export async function invokePi({ request, worktreePath, runDir, schema, makeProm
   let identityMismatch = false;
   let registry: ReviewToolRegistry | undefined;
   let toolFailure: Error | undefined;
+  let usageWrites = Promise.resolve();
   const abort = () => { controller.abort(); agent?.abort(); };
   if (signal?.aborted) abort();
   signal?.addEventListener('abort', abort, { once: true });
@@ -89,7 +90,7 @@ export async function invokePi({ request, worktreePath, runDir, schema, makeProm
   };
   try {
     checkAbort();
-    const activeRegistry = await createReviewTools({ worktreePath, artifacts: request.artifacts, configManifest: request.configManifest, criticId: request.criticId, audience: 'agent', runDir, signal: controller.signal, onCall: call => onEvent({ type: 'artifact.tool.called', ...call }) });
+    const activeRegistry = await createReviewTools({ worktreePath, artifacts: request.artifacts, configManifest: request.configManifest, criticId: request.criticId, audience: 'agent', runDir, signal: controller.signal, onCall: call => onEvent({ type: 'artifact.tool.called', ...call }), onExecution: diagnostic => onEvent({ type: 'artifact.tool.completed', ...diagnostic }) });
     registry = activeRegistry;
     const tools: AgentTool[] = activeRegistry.tools.map(tool => ({
       name: tool.name, label: tool.name, description: tool.description,
@@ -137,6 +138,16 @@ export async function invokePi({ request, worktreePath, runDir, schema, makeProm
       if (message.provider !== model.provider || message.model !== model.id || (message.responseModel !== undefined && message.responseModel !== model.id)) {
         identityMismatch = true;
         agent?.abort();
+        return;
+      }
+      // Pi reports normalized counters. Keep only present numeric fields, never pricing or response content.
+      const usage = Object.fromEntries(['input', 'output', 'cacheRead', 'cacheWrite', 'cacheWrite1h', 'reasoning', 'totalTokens'].flatMap(key => {
+        const value = (message.usage as unknown as Record<string, unknown> | undefined)?.[key];
+        return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? [[key, value]] : [];
+      }));
+      if (Object.keys(usage).length) {
+        usageWrites = usageWrites.then(async () => { await onEvent({ type: 'executor.usage', provider: message.provider, model: message.model, usage }); });
+        void usageWrites.catch(() => {}); // Await the persistence failure at the execution boundary.
       }
     });
     const prompt = makePrompt({ viewer: { listArtifacts: () => structuredClone(request.artifacts) }, tools: activeRegistry.tools });
@@ -169,5 +180,7 @@ export async function invokePi({ request, worktreePath, runDir, schema, makeProm
     signal?.removeEventListener('abort', abort);
     agent?.reset();
     await registry?.close();
+    // Retain completed-message usage even when later Provider execution or verdict parsing fails.
+    await usageWrites;
   }
 }

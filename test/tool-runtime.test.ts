@@ -158,3 +158,19 @@ test('public defineTool infers typed arguments without executing the factory', (
   });
   assert.equal(typeof tool.execute, 'function');
 });
+
+
+for (const fail of [false, true]) test(`tool timing reports a real ${fail ? 'failed' : 'successful'} process without entering observation records`, async t => {
+  const data = await fixture(t, `await new Promise(resolve=>setTimeout(resolve,35));${fail ? "process.stderr.write('PRIVATE_DIAGNOSTIC');process.exit(2);" : "return {content:[{type:'text',text:'observed'}],observation:{kind:'content'}};"}`);
+  const diagnostics: unknown[] = [];
+  const registry = await createReviewTools({ ...data.options, onExecution: diagnostic => { diagnostics.push(diagnostic); } }); t.after(() => registry.close());
+  await assert.rejects(registry.call('unknown')); await assert.rejects(registry.call('inspect_spec', { extra: true }));
+  assert.deepEqual(diagnostics, []);
+  if (fail) await assert.rejects(registry.call('inspect_spec'), /nonzero/); else await registry.call('inspect_spec');
+  assert.equal(diagnostics.length, 1);
+  const diagnostic = diagnostics[0] as { startedAt: string; durationMs: number; outcome: string; name: string };
+  assert.equal(diagnostic.name, 'inspect_spec'); assert.equal(diagnostic.outcome, fail ? 'error' : 'success');
+  assert.ok(Number.isFinite(Date.parse(diagnostic.startedAt))); assert.ok(diagnostic.durationMs >= 35);
+  assert.doesNotMatch(JSON.stringify(registry.toolCalls), /durationMs|startedAt|outcome/);
+  assert.doesNotMatch(JSON.stringify(diagnostics), /PRIVATE_DIAGNOSTIC/);
+});
