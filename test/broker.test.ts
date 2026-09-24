@@ -251,3 +251,115 @@ for (const nonzero of [false, true]) test(`script ${nonzero ? 'nonzero failures 
   await broker.close(); const reopened = createBroker(data); data.cleanup(() => reopened.close());
   assert.deepEqual(reopened.getRun(run.id)!.requests[0].result!.toolCalls, calls);
 });
+
+for (const repaired of [true, false]) test(`final-format repair audit survives reopening and ${repaired ? 'preserves normal reuse' : 'cannot create reusable evidence on failure'}`, async t => {
+  const data = await artifactFixture(t);
+  await data.write('a', { name: 'a', views: fixtureViews(), critics: [{ id: 'review', title: 'Review', profile: agentProfile, payload: { instruction: 'Read {a}.' } }] });
+  let faux: ReturnType<typeof fauxProvider> | undefined, calls = 0;
+  const streamFn: StreamFn = (model, context, options) => {
+    calls++;
+    if (!faux) {
+      faux = fauxProvider({ provider: model.provider, api: model.api });
+      faux.setResponses([
+        fauxAssistantMessage([fauxToolCall('read_a', {})], { stopReason: 'toolUse' }),
+        fauxAssistantMessage('{"verdict":"PRIVATE_VALUE","PRIVATE_KEY":"PRIVATE_TEXT"}'),
+        fauxAssistantMessage(repaired ? JSON.stringify(controlledResult) : '{"verdict":"PRIVATE_VALUE"}'),
+      ]);
+    }
+    return faux.provider.streamSimple(model, context, options);
+  };
+  const broker = createBroker({ ...data, executors: createExecutorRegistry({ streamFn }) }); data.cleanup(() => broker.close());
+  const before = (await inspectProject(data)).snapshot;
+  const submitted = await broker.submitProject({ selection: { kind: 'all' } }); await broker.run(submitted.id);
+  const run = projectRun(data.stateDir, submitted.id)!;
+  assert.equal(run.status, repaired ? 'GREEN' : 'ERROR'); assert.equal(calls, 3);
+  assert.deepEqual(run.events.filter(event => event.type === 'executor.final.repair').map(event => event.data), [{ outcome: 'started' }, { outcome: repaired ? 'succeeded' : 'failed' }]);
+  assert.deepEqual(run.events.filter(event => event.type === 'executor.final.invalid').map(event => event.data), [
+    { attempt: 'initial', category: 'schema_mismatch' }, ...(repaired ? [] : [{ attempt: 'repair', category: 'schema_mismatch' }]),
+  ]);
+  assert.doesNotMatch(JSON.stringify(run), /PRIVATE_/);
+  const after = (await inspectProject(data)).snapshot;
+  assert.deepEqual(after.inputs, before.inputs); assert.deepEqual(after.artifactHashes, before.artifactHashes);
+  if (repaired) {
+    assert.equal(run.requests[0].result!.toolCalls!.length, 1);
+    const reused = await broker.submitProject({ selection: { kind: 'all' } });
+    assert.equal(reused.requests.length, 0); assert.equal(reused.status, 'GREEN');
+    assert.equal(projectRun(data.stateDir, reused.id)!.events.some(event => event.type.startsWith('executor.final.')), false);
+  } else {
+    assert.equal(run.requests[0].result, null);
+    assert.deepEqual(projectHistory(data.stateDir), []);
+  }
+  await broker.close(); assert.deepEqual(projectRun(data.stateDir, submitted.id)!.events, run.events);
+});
+
+test('Broker final-result diagnostics allowlist only bounded categories, attempts and outcomes', async t => {
+  const data = await fixture(t, false, { canExecute: () => ({ ok: true }), async execute(_request, { onEvent }) {
+    await onEvent?.({ type: 'executor.final.invalid', category: 'schema_mismatch', attempt: 'initial', message: 'PRIVATE_MESSAGE', issues: [{ schemaPath: '/PRIVATE_KEY', keyword: 'PRIVATE_KEY' }], name: 'PRIVATE_NAME', response: 'PRIVATE_TEXT' });
+    await onEvent?.({ type: 'executor.final.repair', outcome: 'started', message: 'PRIVATE_MESSAGE', tools: ['PRIVATE_TOOL'], observation: { kind: 'content', artifactId: 'a' } });
+    await onEvent?.({ type: 'executor.final.invalid', category: 'PRIVATE_CATEGORY', attempt: 'initial' });
+    await onEvent?.({ type: 'executor.final.invalid', category: 'empty', attempt: 'PRIVATE_ATTEMPT' });
+    await onEvent?.({ type: 'executor.final.repair', outcome: 'PRIVATE_OUTCOME' });
+    const coercible = (safe: string) => ({ toString() { throw new Error(`PRIVATE_COERCION_${safe}`); } });
+    await onEvent?.({ type: 'executor.final.invalid', category: coercible('empty'), attempt: 'initial' });
+    await onEvent?.({ type: 'executor.final.invalid', category: 'empty', attempt: coercible('initial') });
+    await onEvent?.({ type: 'executor.final.repair', outcome: coercible('started') });
+    throw new Error('Controlled failure');
+  } });
+  const submitted = await data.submit(); await data.broker.run(submitted.id);
+  const events = projectRun(data.stateDir, submitted.id)!.events.filter(event => event.type.startsWith('executor.final.'));
+  assert.deepEqual(events.map(event => event.data), [{ attempt: 'initial', category: 'schema_mismatch' }, { outcome: 'started' }]);
+  assert.doesNotMatch(JSON.stringify(events), /PRIVATE_/);
+});
+
+for (const invalid of [
+  { ...controlledResult, summary: '' }, { ...controlledResult, summary: ' \n\t' },
+  { ...controlledResult, summary: 'x'.repeat(8001) }, { ...controlledResult, evidence: [] },
+  { ...controlledResult, evidence: [' '] }, { ...controlledResult, evidence: ['x'.repeat(8001)] },
+  { ...controlledResult, evidence: Array(101).fill('Observed input') },
+  { ...controlledResult, summary: '\u{1f600}'.repeat(4001) },
+  { ...controlledResult, evidence: [('x\u0301').repeat(4001)] },
+  { ...controlledResult, evidence: [' '.repeat(4000) + 'Observed input'] },
+]) test('actual review result bounds reach format repair before Broker validation', async t => {
+  const data = await artifactFixture(t);
+  await data.write('a', { name: 'a', views: fixtureViews(), critics: [{ id: 'review', title: 'Review', profile: agentProfile, payload: { instruction: 'Read {a}.' } }] });
+  let faux: ReturnType<typeof fauxProvider> | undefined, calls = 0;
+  const streamFn: StreamFn = (model, context, options) => {
+    calls++;
+    if (!faux) {
+      faux = fauxProvider({ provider: model.provider, api: model.api });
+      faux.setResponses([
+        fauxAssistantMessage([fauxToolCall('read_a', {})], { stopReason: 'toolUse' }),
+        fauxAssistantMessage(JSON.stringify(invalid)), fauxAssistantMessage(JSON.stringify(controlledResult)),
+      ]);
+    }
+    return faux.provider.streamSimple(model, context, options);
+  };
+  const broker = createBroker({ ...data, executors: createExecutorRegistry({ streamFn }) }); data.cleanup(() => broker.close());
+  const submitted = await broker.submitProject({ selection: { kind: 'all' } }); await broker.run(submitted.id);
+  const run = projectRun(data.stateDir, submitted.id)!;
+  assert.equal(run.status, 'GREEN'); assert.equal(calls, 3);
+  assert.deepEqual(run.events.find(event => event.type === 'executor.final.invalid')?.data, { attempt: 'initial', category: 'schema_mismatch' });
+});
+
+test('the persisted result envelope size is checked before accepting a final response or repair', async t => {
+  const data = await artifactFixture(t);
+  await data.write('a', { name: 'a', views: fixtureViews(), critics: [{ id: 'review', title: 'Review', profile: agentProfile, payload: { instruction: 'Read {a}.' } }] });
+  let faux: ReturnType<typeof fauxProvider> | undefined;
+  const streamFn: StreamFn = (model, context, options) => {
+    if (!faux) {
+      faux = fauxProvider({ provider: model.provider, api: model.api });
+      const oversized = { ...controlledResult, evidence: Array(65).fill('x'.repeat(4000)) };
+      faux.setResponses([
+        fauxAssistantMessage([fauxToolCall('read_a', {})], { stopReason: 'toolUse' }),
+        fauxAssistantMessage(JSON.stringify(oversized)), fauxAssistantMessage(JSON.stringify(oversized)),
+      ]);
+    }
+    return faux.provider.streamSimple(model, context, options);
+  };
+  const broker = createBroker({ ...data, executors: createExecutorRegistry({ streamFn }) }); data.cleanup(() => broker.close());
+  const submitted = await broker.submitProject({ selection: { kind: 'all' } }); await broker.run(submitted.id);
+  const run = projectRun(data.stateDir, submitted.id)!;
+  assert.equal(run.status, 'ERROR'); assert.match(run.requests[0].error ?? '', /after one format repair: over_size/);
+  assert.deepEqual(run.events.filter(event => event.type === 'executor.final.invalid').map(event => event.data), [{ attempt: 'initial', category: 'over_size' }, { attempt: 'repair', category: 'over_size' }]);
+  assert.deepEqual(run.events.filter(event => event.type === 'executor.final.repair').map(event => event.data), [{ outcome: 'started' }, { outcome: 'failed' }]);
+});
