@@ -7,6 +7,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { prepareReviewRequests } from '../requester/index.js';
 import { readWorkspaceConfig } from './config.js';
 import { createGraphDefinition, type GraphDefinition } from './graph.js';
+import { tokenUsage } from '../executors/telemetry.js';
 import { createReviewTools, type ToolExecutionDiagnostic } from '../tools/runner.js';
 import { createHumanClaims, HUMAN_PREPARATION_LEASE_MS } from './human-claims.js';
 import { prepareHumanReview } from '../executors/human-preparation.js';
@@ -361,7 +362,7 @@ export function createBroker({ repoPath, stateDir, repoId = 'demo', executors, w
       const result = validateResult(await requireExecutors().execute(copy(request), {
         worktreePath: workspace.descriptor.path, workspacePath: workspace.descriptor.path, runDir, signal,
         onEvent(event) {
-          if (closed || closing || signal.aborted || !event || requestData(requestId)?.status !== 'RUNNING' || !['executor.started', 'artifact.tools.ready', 'artifact.tool.called', 'artifact.tool.completed', 'executor.usage', 'executor.completed'].includes(event.type)) return;
+          if (closed || closing || signal.aborted || !event || requestData(requestId)?.status !== 'RUNNING' || !['executor.started', 'artifact.tools.ready', 'artifact.tool.called', 'artifact.tool.completed', 'executor.usage', 'executor.telemetry.failed', 'executor.completed'].includes(event.type)) return;
           const safe: Record<string, unknown> = {};
           for (const key of ['name', 'provider', 'model', 'kind', 'artifactId', 'path']) if (typeof event[key] === 'string') safe[key] = (event[key] as string).slice(0, 1000);
           if (event.type === 'artifact.tool.completed') {
@@ -370,21 +371,18 @@ export function createBroker({ repoPath, stateDir, repoId = 'demo', executors, w
             if (event.outcome === 'success' || event.outcome === 'error') safe.outcome = event.outcome;
             if (typeof event.operation === 'string') safe.operation = event.operation.slice(0, 1000);
           }
-          if (event.type === 'executor.usage' && object(event.usage)) {
-            const usage = Object.fromEntries(['input', 'output', 'cacheRead', 'cacheWrite', 'cacheWrite1h', 'reasoning', 'totalTokens'].flatMap(key => {
-              const value = (event.usage as Record<string, unknown>)[key];
-              return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? [[key, value]] : [];
-            }));
-            if (!Object.keys(usage).length) return;
+          if (event.type === 'executor.usage') {
+            const usage = tokenUsage(event.usage);
+            if (!usage) return;
             safe.usage = usage;
-          } else if (event.type === 'executor.usage') return;
+          }
           if (object(event.observation)) {
             // Persist the same bounded metadata as final results, even if the Provider later fails.
             const observed = storedObservation(event.observation);
             if (observed) safe.observation = observed;
           }
           if (Array.isArray(event.tools)) safe.tools = event.tools.slice(0, 32).map(tool => typeof tool === 'string' ? tool : tool?.name).filter(value => typeof value === 'string');
-          appendEvent(runId, requestId, event.type, String(event.message ?? event.type).slice(0, 2000), safe);
+          appendEvent(runId, requestId, event.type, event.type === 'executor.telemetry.failed' ? 'Some optional execution diagnostics could not be recorded.' : String(event.message ?? event.type).slice(0, 2000), safe);
           changed();
         },
       }));
@@ -604,25 +602,18 @@ export function createBroker({ repoPath, stateDir, repoId = 'demo', executors, w
         try {
           registry.validateArguments(toolName, args);
           assertClaim();
-          let result;
-          try { result = await registry.call(toolName, args); }
-          catch (error) {
-            await workspace.assertUnchanged(); workspace.signal.throwIfAborted(); assertClaim();
-            if (timing) {
-              transaction(() => { assertClaim(); appendEvent(request.runId, requestId, 'human.tool.executed', 'The claimed reviewer attempted a registered Artifact tool.', { ...timing }); });
-              changed();
-            }
-            throw error;
+          const attempt = await registry.call(toolName, args).then(result => ({ ok: true as const, result }), error => ({ ok: false as const, error: error as unknown }));
+          await workspace.assertUnchanged(); workspace.signal.throwIfAborted(); assertClaim();
+          if (timing) {
+            const record = () => transaction(() => {
+              assertClaim();
+              appendEvent(request.runId, requestId, 'human.tool.executed', 'The claimed reviewer attempted a registered Artifact tool.', { ...timing });
+            });
+            if (attempt.ok) record(); else { try { record(); } catch { /* Optional failure diagnostics never replace the original error. */ } }
+            changed();
           }
-          await workspace.assertUnchanged(); workspace.signal.throwIfAborted();
-          assertClaim();
-          const tool = registry.tools.find(tool => tool.name === toolName)!;
-          transaction(() => {
-            assertClaim();
-            appendEvent(request.runId, requestId, 'human.tool.executed', 'The claimed reviewer executed a registered Artifact tool.', { name: tool.name, artifactId: tool.artifactId, operation: tool.operation, ...(timing ? { startedAt: timing.startedAt, durationMs: timing.durationMs, outcome: timing.outcome } : {}) });
-          });
-          changed();
-          return result;
+          if (!attempt.ok) throw attempt.error;
+          return attempt.result;
         } finally { await registry.close(); }
       } catch (error) {
         const failure = workspace?.signal.aborted && !signal?.aborted ? workspace.signal.reason ?? error : error;

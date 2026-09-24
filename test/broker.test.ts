@@ -197,3 +197,18 @@ test('Broker telemetry allowlists counters and retains diagnostics on failed att
   assert.deepEqual(run.events.find(event => event.type === 'artifact.tool.completed')!.data, { name: 'read_a', artifactId: 'a', startedAt: '2026-09-24T12:00:00.000Z', durationMs: 12.25, outcome: 'error', operation: 'read' });
   assert.doesNotMatch(JSON.stringify(run), /SECRET_DIAGNOSTIC|cost/);
 });
+
+
+for (const fail of [false, true]) test(`Human ${fail ? 'failed' : 'successful'} tool diagnostics retain timing only after authority and input checks`, async t => {
+  const data = await fixture(t, true);
+  if (fail) await writeFile(join(data.repoPath, 'a/view.mjs'), "process.stderr.write('PRIVATE_TOOL_FAILURE');process.exit(2);");
+  const run = await data.submit(); await runUntilSettled(data.broker, run.id);
+  const request = data.broker.getRun(run.id)!.requests[0]; await data.broker.claimHuman(request.id, 'reader');
+  const call = data.broker.executeHumanTool(request.id, { reviewerId: 'reader', toolName: 'read_a' });
+  if (fail) await assert.rejects(call, /nonzero/); else await call;
+  const event = projectRun(data.stateDir, run.id)!.events.find(event => event.type === 'human.tool.executed')!;
+  const timing = event.data as { outcome: string; durationMs: number; startedAt: string };
+  assert.equal(timing.outcome, fail ? 'error' : 'success'); assert.ok(timing.durationMs >= 0); assert.ok(Number.isFinite(Date.parse(timing.startedAt)));
+  assert.doesNotMatch(JSON.stringify(event), /PRIVATE_TOOL_FAILURE/);
+  assert.equal(data.broker.getRequest(request.id)!.status, 'WAITING_HUMAN');
+});

@@ -174,3 +174,12 @@ for (const fail of [false, true]) test(`tool timing reports a real ${fail ? 'fai
   assert.doesNotMatch(JSON.stringify(registry.toolCalls), /durationMs|startedAt|outcome/);
   assert.doesNotMatch(JSON.stringify(diagnostics), /PRIVATE_DIAGNOSTIC/);
 });
+
+
+test('failed optional telemetry never withholds successful tool content or its observation', async t => {
+  const data = await fixture(t);
+  const registry = await createReviewTools({ ...data.options, onExecution: () => { throw new Error('Controlled diagnostic write failure'); } }); t.after(() => registry.close());
+  const result = await registry.call('inspect_spec');
+  assert.equal(result.observation?.kind, 'content');
+  assert.equal(registry.toolCalls[0].observation?.kind, 'content');
+});

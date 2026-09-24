@@ -268,3 +268,41 @@ test('completed Pi message usage survives a subsequent invalid final response', 
   const completed = events.find(event => event.type === 'artifact.tool.completed');
   assert.equal(completed?.outcome, 'success'); assert.ok(typeof completed?.durationMs === 'number');
 });
+
+
+
+for (const kind of ['executor.usage', 'artifact.tool.completed']) test(`a rejected ${kind} sink leaves the actual evaluation unchanged and reports a safe warning`, async t => {
+  const data = await fixture(t), events: ExecutionEvent[] = [];
+  let failures = 0;
+  const result = await invokePi({ ...data, streamFn: artifactStream(), onEvent: event => {
+    if (event.type === kind && failures++ === 0) throw new Error('PRIVATE_TELEMETRY_STORAGE');
+    events.push(event);
+  } });
+  assert.equal((result.final as { verdict: string }).verdict, 'GREEN');
+  assert.equal(result.toolCalls[0].observation?.kind, 'content');
+  assert.equal(events.filter(event => event.type === 'executor.telemetry.failed').length, 1);
+  if (kind === 'executor.usage') assert.equal(events.filter(event => event.type === kind).length, 1);
+  assert.doesNotMatch(JSON.stringify(events), /PRIVATE_TELEMETRY_STORAGE/);
+});
+
+for (const cancel of [false, true]) test(`pending optional usage persistence ${cancel ? 'does not disable user cancellation' : 'cannot time out a completed evaluation'}`, async t => {
+  const data = await fixture(t), controller = new AbortController();
+  data.request.profile = { ...profile, timeoutMs: 75 };
+  const started = performance.now();
+  const call = invokePi({ ...data, signal: controller.signal, streamFn: artifactStream({ mode: 'no-tools' }), onEvent: event => {
+    if (event.type !== 'executor.usage') return;
+    if (cancel) setTimeout(() => controller.abort(), 10);
+    return new Promise<void>(() => {});
+  } });
+  if (cancel) await assert.rejects(call, { code: 'ABORTED' });
+  else assert.equal(((await call).final as { verdict: string }).verdict, 'GREEN');
+  assert.ok(performance.now() - started < 1500);
+});
+
+
+test('optional diagnostic failures never replace a real Provider result error', async t => {
+  const data = await fixture(t);
+  await assert.rejects(invokePi({ ...data, streamFn: artifactStream({ mode: 'malformed' }), onEvent: event => {
+    if (event.type === 'executor.usage' || event.type === 'executor.telemetry.failed') throw new Error('PRIVATE_STORAGE_FAILURE');
+  } }), error => { assert.equal((error as { code: string }).code, 'PROVIDER_RESULT_INVALID'); assert.doesNotMatch(String(error), /PRIVATE_STORAGE_FAILURE/); return true; });
+});

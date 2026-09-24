@@ -309,3 +309,14 @@ Telemetry is never added to Artifact/SCC hashes, ValidationInput, reuse keys,
 It adds only event types and JSON payload fields in existing SQLite storage;
 no schema/identity version or data migration is needed. Existing stored state and
 its evidence remain valid under the existing executor-version identity rules.
+
+Telemetry persistence is best-effort, independent of successful observation delivery.
+Rejected or unresponsive optional sinks do not change the evaluation verdict,
+status or evidence reuse. Writes have a separate 100 ms bound, run independently,
+and do not consume a completed evaluation's deadline. One fixed-text
+`executor.telemetry.failed` event reports incomplete diagnostics when storage is
+still available; no system can guarantee that warning if its event store itself
+is unavailable. Underlying callbacks cannot be forcibly canceled, so consumers
+must also bound their own I/O. User cancellation still applies during the bounded
+drain. Existing mandatory observation/Human execution audit failures remain
+operational failures; that preexisting evidence requirement is not telemetry.

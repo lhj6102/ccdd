@@ -5,6 +5,7 @@ import { Compile } from 'typebox/compile';
 import type { ArtifactReference } from '../artifacts/index.js';
 import { createReviewTools, toToolContent, type ReviewToolRegistry, type ReviewToolDefinition } from '../tools/runner.js';
 import type { AgentProfile, CriticProfile, ExecutionEvent, ReviewEnvelope, ReviewToolCall } from '../contracts.js';
+import { bestEffortDiagnostic, tokenUsage } from './telemetry.js';
 import { createPiCredentialStore, PiAuthError, validatePiOptions, type PiOptions } from './auth.js';
 import { diagnosticError as createDiagnosticError } from './errors.js';
 
@@ -78,19 +79,30 @@ export async function invokePi({ request, worktreePath, runDir, schema, makeProm
   let identityMismatch = false;
   let registry: ReviewToolRegistry | undefined;
   let toolFailure: Error | undefined;
-  let usageWrites = Promise.resolve();
+  const telemetryWrites = new Set<Promise<void>>();
+  let telemetryWarning = false;
   const abort = () => { controller.abort(); agent?.abort(); };
   if (signal?.aborted) abort();
   signal?.addEventListener('abort', abort, { once: true });
   const timer = setTimeout(() => { timedOut = true; abort(); }, profile.timeoutMs ?? 240_000);
   const checkAbort = () => {
+    if (toolFailure) throw toolFailure;
     if (!controller.signal.aborted) return;
     if (timedOut) throw diagnosticError('PROVIDER_TIMEOUT', 'Pi Agent execution timed out.', 'Check the Provider connection or adjust the Critic timeoutMs setting.');
     throw diagnosticError('ABORTED', 'Pi Agent execution aborted.', 'The review or diagnostic was cancelled. Run it again if needed.');
   };
+  const emitTelemetry = (event: ExecutionEvent): void => {
+    const write = bestEffortDiagnostic(() => onEvent(event)).then(async saved => {
+      if (saved || telemetryWarning) return;
+      telemetryWarning = true;
+      await bestEffortDiagnostic(() => onEvent({ type: 'executor.telemetry.failed' }));
+    });
+    telemetryWrites.add(write);
+    void write.finally(() => telemetryWrites.delete(write));
+  };
   try {
     checkAbort();
-    const activeRegistry = await createReviewTools({ worktreePath, artifacts: request.artifacts, configManifest: request.configManifest, criticId: request.criticId, audience: 'agent', runDir, signal: controller.signal, onCall: call => onEvent({ type: 'artifact.tool.called', ...call }), onExecution: diagnostic => onEvent({ type: 'artifact.tool.completed', ...diagnostic }) });
+    const activeRegistry = await createReviewTools({ worktreePath, artifacts: request.artifacts, configManifest: request.configManifest, criticId: request.criticId, audience: 'agent', runDir, signal: controller.signal, onCall: call => onEvent({ type: 'artifact.tool.called', ...call }), onExecution: diagnostic => emitTelemetry({ type: 'artifact.tool.completed', ...diagnostic }) });
     registry = activeRegistry;
     const tools: AgentTool[] = activeRegistry.tools.map(tool => ({
       name: tool.name, label: tool.name, description: tool.description,
@@ -141,13 +153,11 @@ export async function invokePi({ request, worktreePath, runDir, schema, makeProm
         return;
       }
       // Pi reports normalized counters. Keep only present numeric fields, never pricing or response content.
-      const usage = Object.fromEntries(['input', 'output', 'cacheRead', 'cacheWrite', 'cacheWrite1h', 'reasoning', 'totalTokens'].flatMap(key => {
-        const value = (message.usage as unknown as Record<string, unknown> | undefined)?.[key];
-        return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? [[key, value]] : [];
-      }));
-      if (Object.keys(usage).length) {
-        usageWrites = usageWrites.then(async () => { await onEvent({ type: 'executor.usage', provider: message.provider, model: message.model, usage }); });
-        void usageWrites.catch(() => {}); // Await the persistence failure at the execution boundary.
+      const usage = tokenUsage(message.usage);
+      if (usage) {
+        const event = { type: 'executor.usage', provider: message.provider, model: message.model, usage };
+        // Writes are independent and retain only bounded telemetry, never the message.
+        emitTelemetry(event);
       }
     });
     const prompt = makePrompt({ viewer: { listArtifacts: () => structuredClone(request.artifacts) }, tools: activeRegistry.tools });
@@ -169,6 +179,10 @@ export async function invokePi({ request, worktreePath, runDir, schema, makeProm
       final = JSON.parse(content);
       if (!finalValidator.Check(final)) throw new Error();
     } catch { throw diagnosticError('PROVIDER_RESULT_INVALID', 'The Provider did not return a valid final JSON schema result.', 'Check the requested model support for structured responses and the Critic instruction.'); }
+    // Evaluation has finished: diagnostic latency must not consume its execution deadline.
+    clearTimeout(timer);
+    await Promise.all(telemetryWrites);
+    checkAbort();
     return { final, toolCalls: registry.toolCalls };
   } catch (error) {
     checkAbort();
@@ -177,10 +191,10 @@ export async function invokePi({ request, worktreePath, runDir, schema, makeProm
     throw providerFailure(error);
   } finally {
     clearTimeout(timer);
+    // Each optional write has its own short bound and cannot replace a primary failure.
+    await Promise.all(telemetryWrites);
     signal?.removeEventListener('abort', abort);
     agent?.reset();
     await registry?.close();
-    // Retain completed-message usage even when later Provider execution or verdict parsing fails.
-    await usageWrites;
   }
 }
