@@ -61,6 +61,34 @@ Stdout must contain one existing `ToolResult` JSON value. Stderr is diagnostic o
 
 Supported blocks are text, JSON, PNG/JPEG/WebP images and launch receipts. Actual result kinds must match metadata. Text/JSON output is bounded; images must contain valid supported bytes, at most 4 MiB. File image outputs must be regular files inside the external output directory, without symlink traversal; normalized results embed their bytes. A launch alone cannot claim a content observation. Successful normalization and observation persistence precede returning the result. Failed execution, malformed output or audit failure records no successful observation.
 
+A script can explicitly return an author-controlled domain error on stdout **with exit 0**:
+
+```json
+{"isError":true,"content":[{"type":"text","text":"Unknown skill 16145"}]}
+```
+
+This opt-in result has exactly one nonblank text block (at most 64 KiB in UTF-8),
+no observation and no extra fields. Error text is independent of successful
+`resultKinds`, so even an image-only tool can report a domain error. Pi and MCP
+receive it as a tool error, not an observation; it cannot satisfy required content
+inspection. Audited calls and stored evaluation tool calls carry `isError: true`
+without storing the error text. Human tools expose the same result and audit flag;
+`tools check --execute` reports the domain error as a failed check.
+
+Authors must deliberately choose safe public text. Never forward caught exception
+text, stderr, credentials or environment values into this result. Nonzero exits,
+crashes, malformed results and arbitrary stderr still use credential-safe generic
+diagnostics, even if stdout contains an error-shaped value. Audit persistence
+must succeed before an authored error can reach a reviewer.
+
+This is an additive stdout/result contract, not a config or stdin schema change.
+Existing success results, manifests and SQLite records need no migration. Changing
+a script to opt in changes its mandatory execution input hash (and its consumers'
+ValidationInput keys); no timing, error message or result flag enters content
+identity. ValidationInput remains version 2; historical input versions remain
+result-only. Coordinated releases already include the executor package version in
+ValidationInput, so deployment changes do not silently reuse different executors.
+
 Each invocation gets private external output, temporary, home and cache directories. Provider secrets and Node preload hooks are not inherited. Timeouts, cancellation, output limits and process-group cleanup remain mandatory. Main-process exit also cleans surviving descendants. Desktop launchers deliberately hand an application session to the reviewer; launch is not a verdict. Custom scripts are trusted workspace code, not an OS sandbox, and must honor their scope and keep input unchanged.
 
 Stored manifests contain only serializable metadata and declarations. Execution rediscovers static config from the recorded workspace and requires an exact manifest/scope match. Static preflight lists definitions without invoking user scripts. Explicit `tools check --execute` exercises a real process. Blind A/B comparison is a user-script procedure, demonstrated in the [folder example](../examples/artifact-folders/README.md), not a presentation setting or special Executor.

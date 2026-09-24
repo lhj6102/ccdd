@@ -18,7 +18,7 @@ export interface ReviewEnvelope {
 export type ReviewStatus = 'BLOCKED' | 'QUEUED' | 'RUNNING' | 'WAITING_HUMAN' | 'GREEN' | 'RED' | 'ERROR';
 export type RunStatus = ReviewStatus | 'INCOMPLETE';
 export interface ReviewToolCall {
-  name: string; arguments?: unknown; at?: string;
+  name: string; arguments?: unknown; at?: string; isError?: true;
   observation?: { artifactId: string; operation: string; kind?: 'content' | 'empty'; detail?: string; startLine?: number | null; endLine?: number | null; lineCount?: number | null; totalLines?: number | null };
 }
 export interface ReviewResult {

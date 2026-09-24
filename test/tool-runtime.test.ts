@@ -158,3 +158,30 @@ test('public defineTool infers typed arguments without executing the factory', (
   });
   assert.equal(typeof tool.execute, 'function');
 });
+
+
+test('explicit script errors are bounded UTF-8 text, audited without observations, and require audit persistence', async t => {
+  const data = await fixture(t, "process.stderr.write('PRIVATE_STDERR');return {isError:true,content:[{type:'text',text:'Unknown skill 16145'}]};", { ...metadata, resultKinds: ['image'] });
+  const registry = await data.registry(); t.after(() => registry.close());
+  assert.deepEqual(await registry.call('inspect_spec'), { isError: true, content: [{ type: 'text', text: 'Unknown skill 16145' }] });
+  assert.equal(registry.toolCalls[0].isError, true);
+  assert.deepEqual(registry.toolCalls[0].observation, { artifactId: 'spec', operation: 'inspect' });
+  assert.doesNotMatch(JSON.stringify(registry.toolCalls), /Unknown skill|PRIVATE_STDERR/);
+  const failingAudit = await createReviewTools({ ...data.options, onCall: () => { throw new Error('audit failed'); } }); t.after(() => failingAudit.close());
+  await assert.rejects(failingAudit.call('inspect_spec'), /audit failed/);
+  assert.deepEqual(failingAudit.toolCalls, []);
+  const report = await diagnoseArtifactTools({ repoPath: data.repoPath, stateDir: data.stateDir, artifactId: 'spec', audience: 'human', toolName: 'inspect', execute: true });
+  assert.equal(report.ok, false); assert.ok(report.checks.some(check => check.code === 'ARTIFACT_TOOL_DOMAIN_ERROR'));
+});
+
+for (const value of [
+  { isError: true, content: [{ type: 'text', text: 'domain error' }], observation: { kind: 'content' } },
+  { isError: true, content: [{ type: 'text', text: 'domain error' }], extra: 'private' },
+  { isError: true, content: [{ type: 'json', data: 'error' }] },
+  { isError: true, content: [{ type: 'text', text: ' ' }] },
+  { isError: true, content: [{ type: 'text', text: '\u00e9'.repeat(32769) }] },
+]) test('malformed or oversized author errors never record an observation', async t => {
+  const data = await fixture(t, `return ${JSON.stringify(value)};`), registry = await data.registry(); t.after(() => registry.close());
+  await assert.rejects(registry.call('inspect_spec'), /author-controlled tool error/);
+  assert.deepEqual(registry.toolCalls, []);
+});

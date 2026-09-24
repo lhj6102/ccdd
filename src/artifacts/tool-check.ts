@@ -101,7 +101,7 @@ export async function diagnoseArtifactTools({ repoPath, stateDir, artifactId, au
           stage = 'input-integrity';
           await workspace.assertUnchanged();
           report.result = result;
-          report.checks.push({ artifactId, audience, toolName: definitions[0].name, stage: 'execute', ok: true, message: 'The selected registered tool completed successfully. No review result was created.' });
+          report.checks.push({ artifactId, audience, toolName: definitions[0].name, stage: 'execute', ok: !result.isError, ...(result.isError ? { code: 'ARTIFACT_TOOL_DOMAIN_ERROR' } : {}), message: result.isError ? 'The selected registered tool returned an author-controlled error. No review result was created.' : 'The selected registered tool completed successfully. No review result was created.' });
         }
       } finally {
         try { await registry.close(); }

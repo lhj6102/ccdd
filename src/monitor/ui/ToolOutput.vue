@@ -19,6 +19,7 @@ const lines = computed(() => { const values = read.value?.content.split('\n') ??
 
 <template>
   <div class="tool-output" aria-live="polite">
+    <p v-if="result?.isError === true" class="inline-error">The tool returned an author-controlled error.</p>
     <template v-if="content">
       <p v-if="!content.length" class="tool-notice">The tool finished without returning content.</p>
       <template v-for="(item, index) in content" :key="index">

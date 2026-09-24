@@ -60,7 +60,7 @@ export async function serveArtifactMcp({ manifestPath, input = process.stdin, ou
             if (typeof params.name !== 'string') throw new Error('Unknown artifact tool');
             const args = params.arguments === undefined ? {} : params.arguments;
             const data = await registry.call(params.name, args);
-            result = { content: await toToolContent(data), isError: false };
+            result = { content: await toToolContent(data), isError: data.isError === true };
           } catch (error) { result = { content: [{ type: 'text', text: errorMessage(error) }], isError: true }; }
         } else {
           output.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, error: { code: -32601, message: 'Method not found' } })}\n`);

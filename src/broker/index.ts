@@ -76,7 +76,10 @@ function validateResult(value: unknown): ReviewResult {
   if (Array.isArray(value.toolCalls)) result.toolCalls = value.toolCalls.slice(0, 100).filter((item): item is Record<string, unknown> & { name: string } => object(item) && typeof item.name === 'string').map(item => {
     const call: ReviewToolCall = { name: item.name, ...(item.arguments === undefined ? {} : { arguments: copy(item.arguments) }) };
     const observation = storedObservation(item.observation);
-    if (observation) call.observation = observation;
+    if (item.isError === true) {
+      call.isError = true;
+      if (observation) call.observation = { artifactId: observation.artifactId, operation: observation.operation };
+    } else if (observation) call.observation = observation;
     return call;
   });
   if (JSON.stringify(result).length > 256_000) throw new Error('Review result exceeds the supported size.');
@@ -364,10 +367,11 @@ export function createBroker({ repoPath, stateDir, repoId = 'demo', executors, w
           if (closed || closing || signal.aborted || !event || requestData(requestId)?.status !== 'RUNNING' || !['executor.started', 'artifact.tools.ready', 'artifact.tool.called', 'executor.completed'].includes(event.type)) return;
           const safe: Record<string, unknown> = {};
           for (const key of ['name', 'provider', 'model', 'kind', 'artifactId', 'path']) if (typeof event[key] === 'string') safe[key] = (event[key] as string).slice(0, 1000);
+          if (event.isError === true) safe.isError = true;
           if (object(event.observation)) {
             // Persist the same bounded metadata as final results, even if the Provider later fails.
             const observed = storedObservation(event.observation);
-            if (observed) safe.observation = observed;
+            if (observed) safe.observation = event.isError === true ? { artifactId: observed.artifactId, operation: observed.operation } : observed;
           }
           if (Array.isArray(event.tools)) safe.tools = event.tools.slice(0, 32).map(tool => typeof tool === 'string' ? tool : tool?.name).filter(value => typeof value === 'string');
           appendEvent(runId, requestId, event.type, String(event.message ?? event.type).slice(0, 2000), safe);
@@ -594,7 +598,7 @@ export function createBroker({ repoPath, stateDir, repoId = 'demo', executors, w
           const tool = registry.tools.find(tool => tool.name === toolName)!;
           transaction(() => {
             assertClaim();
-            appendEvent(request.runId, requestId, 'human.tool.executed', 'The claimed reviewer executed a registered Artifact tool.', { name: tool.name, artifactId: tool.artifactId, operation: tool.operation });
+            appendEvent(request.runId, requestId, 'human.tool.executed', 'The claimed reviewer executed a registered Artifact tool.', { name: tool.name, artifactId: tool.artifactId, operation: tool.operation, ...(result.isError ? { isError: true } : {}) });
           });
           changed();
           return result;
