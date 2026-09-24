@@ -5,6 +5,7 @@ import { Compile } from 'typebox/compile';
 import type { ArtifactReference } from '../artifacts/index.js';
 import { createReviewTools, toToolContent, type ReviewToolRegistry, type ReviewToolDefinition } from '../tools/runner.js';
 import type { AgentProfile, CriticProfile, ExecutionEvent, ReviewEnvelope, ReviewToolCall } from '../contracts.js';
+import { safeToolFailure } from '../tools/diagnostics.js';
 import { createPiCredentialStore, PiAuthError, validatePiOptions, type PiOptions } from './auth.js';
 import { diagnosticError as createDiagnosticError } from './errors.js';
 
@@ -97,8 +98,10 @@ export async function invokePi({ request, worktreePath, runDir, schema, makeProm
       prepareArguments: args => activeRegistry.validateArguments(tool.name, args),
       async execute(_id, args, toolSignal) {
         checkAbort(); toolSignal?.throwIfAborted();
-        const result = await activeRegistry.call(tool.name, args);
+        const result = await activeRegistry.call(tool.name, args).catch(error => { throw new Error(safeToolFailure(error).message); });
         checkAbort(); toolSignal?.throwIfAborted();
+        // Pi marks thrown tool executions as errors; only validated stdout opts in.
+        if (result.isError) throw new Error(result.content[0].text);
         const content = await toToolContent(result);
         if (content.some(block => block.type === 'image') && !model.input.includes('image')) {
           toolFailure = diagnosticError('ARTIFACT_IMAGE_UNSUPPORTED', 'The requested model cannot accept image results from Artifact tools.', 'Specify a model that supports images or a tool that observes text.');

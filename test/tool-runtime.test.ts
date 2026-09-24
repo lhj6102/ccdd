@@ -158,3 +158,54 @@ test('public defineTool infers typed arguments without executing the factory', (
   });
   assert.equal(typeof tool.execute, 'function');
 });
+
+
+test('explicit script errors are bounded UTF-8 text, audited without observations, and require audit persistence', async t => {
+  const data = await fixture(t, "process.stderr.write('PRIVATE_STDERR');return {isError:true,content:[{type:'text',text:'Unknown skill 16145'}]};", { ...metadata, resultKinds: ['image'] });
+  const registry = await data.registry(); t.after(() => registry.close());
+  assert.deepEqual(await registry.call('inspect_spec'), { isError: true, content: [{ type: 'text', text: 'Unknown skill 16145' }] });
+  assert.equal(registry.toolCalls[0].isError, true);
+  assert.deepEqual(registry.toolCalls[0].observation, { artifactId: 'spec', operation: 'inspect' });
+  assert.doesNotMatch(JSON.stringify(registry.toolCalls), /Unknown skill|PRIVATE_STDERR/);
+  const failingAudit = await createReviewTools({ ...data.options, onCall: () => { throw new Error('audit failed'); } }); t.after(() => failingAudit.close());
+  await assert.rejects(failingAudit.call('inspect_spec'), /audit failed/);
+  assert.deepEqual(failingAudit.toolCalls, []);
+  const report = await diagnoseArtifactTools({ repoPath: data.repoPath, stateDir: data.stateDir, artifactId: 'spec', audience: 'human', toolName: 'inspect', execute: true });
+  assert.equal(report.ok, false); assert.ok(report.checks.some(check => check.code === 'ARTIFACT_TOOL_DOMAIN_ERROR'));
+  assert.equal(report.result?.isError, true); assert.deepEqual(report.result?.content, [{ type: 'text', text: 'Unknown skill 16145' }]);
+});
+
+for (const value of [
+  { isError: true, content: [{ type: 'text', text: 'domain error' }], observation: { kind: 'content' } },
+  { isError: true, content: [{ type: 'text', text: 'domain error' }], extra: 'private' },
+  { isError: true, content: [{ type: 'json', data: 'error' }] },
+  { isError: true, content: [{ type: 'text', text: ' ' }] },
+  { isError: true, content: [{ type: 'text', text: '\u00e9'.repeat(32769) }] },
+]) test('malformed or oversized author errors never record an observation', async t => {
+  const data = await fixture(t, `return ${JSON.stringify(value)};`), registry = await data.registry(); t.after(() => registry.close());
+  await assert.rejects(registry.call('inspect_spec'), /author-controlled tool error/);
+  assert.deepEqual(registry.toolCalls, []);
+});
+
+
+for (const malformed of [false, true]) test(`MCP ${malformed ? 'withholds malformed stdout' : 'preserves explicit domain error text'}`, async t => {
+  const data = await fixture(t, malformed ? "process.stdout.write('PRIVATE_STDOUT_CREDENTIAL');return {};" : "return {isError:true,content:[{type:'text',text:'Unknown skill 16145'}]};");
+  await data.edit('spec', m => { m.views!.agentTools = m.views!.humanTools; m.critics![0].profile = { kind: 'agent', provider: 'openai-codex', model: 'gpt-6-astra', reasoning: 'medium' }; });
+  const request = (await data.requests())[0], manifestPath = join(data.root, 'mcp-errors.json'), input = new PassThrough(), output = new PassThrough(); let messages = '';
+  output.on('data', chunk => { messages += chunk; });
+  await writeFile(manifestPath, JSON.stringify({ ...request, worktreePath: data.repoPath, runDir: join(data.root, 'mcp-errors') }));
+  const serving = serveArtifactMcp({ manifestPath, input, output });
+  input.end(JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'inspect_spec' } }) + '\n');
+  await serving; const result = JSON.parse(messages).result;
+  assert.equal(result.isError, true); assert.doesNotMatch(messages, /PRIVATE_STDOUT_CREDENTIAL/);
+  if (!malformed) assert.equal(result.content[0].text, 'Unknown skill 16145');
+});
+
+test('authored error text preserves UTF-8 characters split across subprocess chunks at the byte limit', async t => {
+  const data = await fixture(t);
+  await writeFile(join(data.repoPath, 'spec/inspect.mjs'), `const text='x'.repeat(65532)+'\\u{1f600}';const bytes=Buffer.from(JSON.stringify({isError:true,content:[{type:'text',text}]}));const split=bytes.indexOf(Buffer.from('\\u{1f600}'))+1;process.stdout.write(bytes.subarray(0,split));await new Promise(resolve=>setTimeout(resolve,40));process.stdout.write(bytes.subarray(split));`);
+  const request = (await data.requests())[0], registry = await createReviewTools({ ...data.options, ...request }); t.after(() => registry.close());
+  const result = await registry.call('inspect_spec');
+  assert.equal(result.isError, true); assert.equal(result.content[0].type, 'text');
+  if (result.content[0].type === 'text') assert.equal(result.content[0].text, 'x'.repeat(65532) + '\u{1f600}');
+});

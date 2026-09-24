@@ -11,7 +11,8 @@ export function runProcess(command: string, args: string[], { cwd, env, input, s
     let child: ChildProcessWithoutNullStreams;
     try { child = spawnImpl(command, args, { cwd, env, stdio: ['pipe', 'pipe', 'pipe'], detached: process.platform !== 'win32', windowsHide: true }); }
     catch (error) { reject(error); return; }
-    let stdout = '', stderr = '', outputTruncated = false;
+    const output = { stdout: { chunks: [] as Buffer[], size: 0 }, stderr: { chunks: [] as Buffer[], size: 0 } };
+    let outputTruncated = false;
     let failure: Error | undefined, killTimer: NodeJS.Timeout | undefined;
     const stop = (reason: string) => {
       if (failure) return;
@@ -30,12 +31,10 @@ export function runProcess(command: string, args: string[], { cwd, env, input, s
     const collect = (key: 'stdout'|'stderr') => (chunk: Buffer) => {
       onOutput?.(key, chunk);
       if (!capture) return;
-      const text = chunk.toString('utf8');
-      const current = key === 'stdout' ? stdout : stderr;
-      const remaining = Math.max(0, maxOutputBytes - Buffer.byteLength(current));
-      if (Buffer.byteLength(text) > remaining) outputTruncated = true;
-      const bounded = Buffer.from(text).subarray(0, remaining).toString('utf8');
-      if (key === 'stdout') stdout += bounded; else stderr += bounded;
+      const current = output[key], remaining = Math.max(0, maxOutputBytes - current.size);
+      if (chunk.length > remaining) outputTruncated = true;
+      const bounded = chunk.subarray(0, remaining);
+      if (bounded.length) { current.chunks.push(Buffer.from(bounded)); current.size += bounded.length; }
     };
     child.stdout.on('data', collect('stdout'));
     child.stderr.on('data', collect('stderr'));
@@ -49,7 +48,7 @@ export function runProcess(command: string, args: string[], { cwd, env, input, s
     child.on('close', (exitCode, exitSignal) => {
       cleanup();
       if (failure) reject(failure);
-      else resolve({ exitCode, exitSignal, stdout, stderr, outputTruncated });
+      else resolve({ exitCode, exitSignal, stdout: Buffer.concat(output.stdout.chunks).toString('utf8'), stderr: Buffer.concat(output.stderr.chunks).toString('utf8'), outputTruncated });
     });
     child.stdin.end(input ?? '');
   });

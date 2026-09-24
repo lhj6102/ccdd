@@ -16,7 +16,9 @@ export type ToolContent = { type: 'text'; text: string } | { type: 'json'; data:
   | { type: 'image'; path: string; mimeType: 'image/png' | 'image/jpeg' | 'image/webp' }
   | { type: 'image'; data: string; mimeType: 'image/png' | 'image/jpeg' | 'image/webp' }
   | { type: 'launch'; launched: true };
-export interface ToolResult { content: ToolContent[]; observation?: { kind: 'content' | 'empty'; detail?: string } }
+export type ToolResult =
+  | { content: ToolContent[]; observation?: { kind: 'content' | 'empty'; detail?: string }; isError?: never }
+  | { isError: true; content: [{ type: 'text'; text: string }]; observation?: never };
 export interface ScriptToolContext {
   artifactId: string; artifactPath: string; outputDir: string; tmpDir: string;
   /** Canonical paths and logical connections for this review's allowed scope. */

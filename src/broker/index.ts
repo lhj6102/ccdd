@@ -53,9 +53,10 @@ const fatalExecutionError = (error: unknown): boolean => {
   return Boolean(code?.startsWith('WORKSPACE_') || ['RUN_OWNERSHIP_LOST', 'REVIEW_CANCELED', 'WORKER_STOPPED', 'WORKER_EXITED', 'REVIEW_GRAPH_INVALID'].includes(code ?? ''));
 };
 
-function storedObservation(value: unknown): ReviewToolCall['observation'] {
+function storedObservation(value: unknown, isError = false): ReviewToolCall['observation'] {
   if (!object(value) || typeof value.artifactId !== 'string' || typeof value.operation !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(value.operation)) return undefined;
   const observation: NonNullable<ReviewToolCall['observation']> = { artifactId: value.artifactId.slice(0, 64), operation: value.operation };
+  if (isError) return observation;
   if (value.kind === 'content' || value.kind === 'empty') observation.kind = value.kind;
   if (typeof value.detail === 'string') observation.detail = value.detail.slice(0, 2000);
   for (const key of ['startLine', 'endLine', 'lineCount', 'totalLines'] as const) {
@@ -75,7 +76,8 @@ function validateResult(value: unknown): ReviewResult {
   for (const key of ['durationMs', 'exitCode'] as const) { const field = value[key]; if (typeof field === 'number' && Number.isFinite(field)) result[key] = field; }
   if (Array.isArray(value.toolCalls)) result.toolCalls = value.toolCalls.slice(0, 100).filter((item): item is Record<string, unknown> & { name: string } => object(item) && typeof item.name === 'string').map(item => {
     const call: ReviewToolCall = { name: item.name, ...(item.arguments === undefined ? {} : { arguments: copy(item.arguments) }) };
-    const observation = storedObservation(item.observation);
+    const observation = storedObservation(item.observation, item.isError === true);
+    if (item.isError === true) call.isError = true;
     if (observation) call.observation = observation;
     return call;
   });
@@ -364,9 +366,10 @@ export function createBroker({ repoPath, stateDir, repoId = 'demo', executors, w
           if (closed || closing || signal.aborted || !event || requestData(requestId)?.status !== 'RUNNING' || !['executor.started', 'artifact.tools.ready', 'artifact.tool.called', 'executor.completed'].includes(event.type)) return;
           const safe: Record<string, unknown> = {};
           for (const key of ['name', 'provider', 'model', 'kind', 'artifactId', 'path']) if (typeof event[key] === 'string') safe[key] = (event[key] as string).slice(0, 1000);
+          if (event.isError === true) safe.isError = true;
           if (object(event.observation)) {
             // Persist the same bounded metadata as final results, even if the Provider later fails.
-            const observed = storedObservation(event.observation);
+            const observed = storedObservation(event.observation, event.isError === true);
             if (observed) safe.observation = observed;
           }
           if (Array.isArray(event.tools)) safe.tools = event.tools.slice(0, 32).map(tool => typeof tool === 'string' ? tool : tool?.name).filter(value => typeof value === 'string');
@@ -594,7 +597,7 @@ export function createBroker({ repoPath, stateDir, repoId = 'demo', executors, w
           const tool = registry.tools.find(tool => tool.name === toolName)!;
           transaction(() => {
             assertClaim();
-            appendEvent(request.runId, requestId, 'human.tool.executed', 'The claimed reviewer executed a registered Artifact tool.', { name: tool.name, artifactId: tool.artifactId, operation: tool.operation });
+            appendEvent(request.runId, requestId, 'human.tool.executed', 'The claimed reviewer executed a registered Artifact tool.', { name: tool.name, artifactId: tool.artifactId, operation: tool.operation, ...(result.isError ? { isError: true } : {}) });
           });
           changed();
           return result;
