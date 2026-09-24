@@ -97,6 +97,12 @@ function toolEnvironment(outputDir: string, temporary: string): NodeJS.ProcessEn
 }
 
 async function normalizeResult(value:unknown,meta:ToolMetadata,outputDir:string):Promise<ToolResult>{
+  if (object(value) && value.isError === true) {
+    if (Object.keys(value).some(key => !['isError', 'content'].includes(key)) || !Array.isArray(value.content) || value.content.length !== 1) throw new Error('Invalid author-controlled tool error.');
+    const block = value.content[0];
+    if (!object(block) || Object.keys(block).some(key => !['type', 'text'].includes(key)) || block.type !== 'text' || typeof block.text !== 'string' || !block.text.trim() || Buffer.byteLength(block.text) > 65536) throw new Error('Invalid author-controlled tool error.');
+    return { isError: true, content: [{ type: 'text', text: block.text }] };
+  }
   if(!object(value)||Object.keys(value).some(key=>!['content','observation'].includes(key))||!Array.isArray(value.content)||!value.content.length||value.content.length>32)throw new Error('Tool result must contain bounded content blocks.');
   const result:ToolResult={content:[]};
   for(const block of value.content){
@@ -193,7 +199,7 @@ export async function createReviewTools(options: ReviewToolsOptions): Promise<Re
       result = await normalizeResult(JSON.parse(processResult.stdout), tool.metadata, callDir);
     } catch (error) { throw new ToolResultError(error); }
     controller.signal.throwIfAborted();
-    const call: ReviewToolCall = { name: tool.name, arguments: actual, at: new Date().toISOString(), observation: { artifactId: tool.artifactId, operation: tool.operation, ...result.observation } };
+    const call: ReviewToolCall = { name: tool.name, arguments: actual, at: new Date().toISOString(), ...(result.isError ? { isError: true } : {}), observation: { artifactId: tool.artifactId, operation: tool.operation, ...result.observation } };
     await onCall?.(structuredClone(call));
     return { result, call };
   };
@@ -204,7 +210,7 @@ export async function createReviewTools(options: ReviewToolsOptions): Promise<Re
       const startedAt = new Date().toISOString(), started = performance.now();
       const task = (async () => {
         const attempt = await invoke(tool, actual).then(value => ({ ok: true as const, ...value }), error => ({ ok: false as const, error: error as unknown }));
-        const diagnostic: ToolExecutionDiagnostic = { name: tool.name, artifactId: tool.artifactId, operation: tool.operation, startedAt, durationMs: performance.now() - started, outcome: attempt.ok ? 'success' : 'error' };
+        const diagnostic: ToolExecutionDiagnostic = { name: tool.name, artifactId: tool.artifactId, operation: tool.operation, startedAt, durationMs: performance.now() - started, outcome: attempt.ok && !attempt.result.isError ? 'success' : 'error' };
         if (options.onExecution) await bestEffortDiagnostic(() => options.onExecution!(diagnostic));
         if (!attempt.ok) throw attempt.error;
         // Optional telemetry cannot withhold successfully observed content.

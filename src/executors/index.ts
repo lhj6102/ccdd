@@ -231,7 +231,7 @@ export function createExecutorRegistry({ piOptions, streamFn, alarmMethods = [],
         ].join('\n') });
         const verdict = validateResult(final);
         for (const id of request.requiredObservations) {
-          if (!toolCalls.some(call => call.observation?.artifactId === id && ['content', 'empty'].includes(call.observation.kind ?? ''))) throw new Error(`Provider did not inspect required artifact: ${id}`);
+          if (!toolCalls.some(call => !call.isError && call.observation?.artifactId === id && ['content', 'empty'].includes(call.observation.kind ?? ''))) throw new Error(`Provider did not inspect required artifact: ${id}`);
         }
         result = { ...verdict, provider: request.profile.kind === 'agent' ? request.profile.provider : undefined, model: request.profile.model, toolCalls };
       }

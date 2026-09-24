@@ -10,6 +10,9 @@ import { runUntilSettled } from './helpers/run.js';
 import { inspectProject, projectHistory, projectRun } from '../src/project/index.js';
 import { artifactStream } from './pi-fixture.js';
 import { agentProfile } from './helpers/artifacts.js';
+
+import { fauxProvider, fauxAssistantMessage, fauxToolCall } from '@earendil-works/pi-ai';
+import type { StreamFn } from '../src/executors/pi.js';
 import { DatabaseSync } from 'node:sqlite';
 
 const controlledResult = { verdict: 'GREEN' as const, summary: 'Controlled executor fixture', evidence: ['Controlled unit-test response, not Provider evaluation.'] };
@@ -211,4 +214,40 @@ for (const fail of [false, true]) test(`Human ${fail ? 'failed' : 'successful'} 
   assert.equal(timing.outcome, fail ? 'error' : 'success'); assert.ok(timing.durationMs >= 0); assert.ok(Number.isFinite(Date.parse(timing.startedAt)));
   assert.doesNotMatch(JSON.stringify(event), /PRIVATE_TOOL_FAILURE/);
   assert.equal(data.broker.getRequest(request.id)!.status, 'WAITING_HUMAN');
+});
+
+for (const nonzero of [false, true]) test(`script ${nonzero ? 'nonzero failures withhold stdout and stderr' : 'authored errors reach Pi as tool errors and survive stored evaluations'}`, async t => {
+  const data = await artifactFixture(t), views = fixtureViews();
+  views.agentTools!.reject = { ...views.agentTools!.read, script: { command: 'node', args: ['reject.mjs'] } };
+  await data.write('a', { name: 'a', views, critics: [{ id: 'review', title: 'Review', profile: agentProfile, payload: { instruction: 'Read {a} and test rejection.' } }] }, {
+    'reject.mjs': `process.stderr.write('PRIVATE_STDERR_CREDENTIAL');console.log(JSON.stringify({isError:true,content:[{type:'text',text:'Unknown skill 16145'}]}));${nonzero ? 'process.exit(3);' : ''}`,
+  });
+  let faux: ReturnType<typeof fauxProvider> | undefined, received = false;
+  const streamFn: StreamFn = (model, context, options) => {
+    faux ??= fauxProvider({ provider: model.provider, api: model.api });
+    const errors = context.messages.filter(message => message.role === 'toolResult' && message.toolName === 'reject_a');
+    if (errors.length) {
+      received = true;
+      assert.equal(errors[0].role === 'toolResult' && errors[0].isError, true);
+      const text = JSON.stringify(errors[0]);
+      assert.doesNotMatch(text, /PRIVATE_STDERR/);
+      if (nonzero) { assert.doesNotMatch(text, /Unknown skill/); assert.match(text, /Custom error text is withheld/); }
+      else assert.match(text, /Unknown skill 16145/);
+    }
+    faux.appendResponses([fauxAssistantMessage(errors.length ? JSON.stringify(controlledResult) : [fauxToolCall('reject_a', {}), fauxToolCall('read_a', {})], errors.length ? {} : { stopReason: 'toolUse' })]);
+    return faux.provider.streamSimple(model, context, options);
+  };
+  const broker = createBroker({ ...data, executors: createExecutorRegistry({ streamFn }) }); data.cleanup(() => broker.close());
+  const submitted = await broker.submitProject({ selection: { kind: 'all' } }), run = (await broker.run(submitted.id))!;
+  assert.equal(received, true); assert.equal(run.status, 'GREEN');
+  const calls = run.requests[0].result!.toolCalls!;
+  const rejected = calls.find(call => call.name === 'reject_a');
+  if (nonzero) assert.equal(rejected, undefined);
+  else { assert.equal(rejected?.isError, true); assert.equal(rejected?.observation?.kind, undefined); }
+  assert.equal(calls.find(call => call.name === 'read_a')?.observation?.kind, 'content');
+  const events = projectRun(data.stateDir, run.id)!.events.filter(event => event.type === 'artifact.tool.called');
+  assert.equal(events.some(event => (event.data as { isError?: boolean }).isError), !nonzero);
+  assert.doesNotMatch(JSON.stringify(run), /PRIVATE_STDERR|Unknown skill/);
+  await broker.close(); const reopened = createBroker(data); data.cleanup(() => reopened.close());
+  assert.deepEqual(reopened.getRun(run.id)!.requests[0].result!.toolCalls, calls);
 });

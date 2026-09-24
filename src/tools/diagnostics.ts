@@ -34,6 +34,7 @@ const resultMessages = new Set([
   'Tool declarations and results must contain only JSON values.',
   'Tool JSON exceeds the supported size.',
   'Invalid launcher result.',
+  'Invalid author-controlled tool error.',
   'Unsupported image MIME type.',
   'Image is outside the tool output directory.',
   'Artifact path must be relative to its declared root.',
