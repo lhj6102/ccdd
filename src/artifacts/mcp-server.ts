@@ -5,10 +5,10 @@ import { pathToFileURL } from 'node:url';
 import type { ArtifactReference } from './index.js';
 import type { ConfigManifest } from '../tools/contracts.js';
 import { createReviewTools, toToolContent, type ReviewToolsOptions } from '../tools/runner.js';
+import { safeToolFailure } from '../tools/diagnostics.js';
 import { packageVersion } from '../runtime-paths.js';
 
 const object = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === 'object' && !Array.isArray(value);
-const errorMessage = (error: unknown): string => error instanceof Error ? error.message : 'Artifact viewer unavailable';
 interface ArtifactManifest extends Omit<ReviewToolsOptions, 'audience' | 'onCall'> { auditPath?: string }
 interface McpRequest { jsonrpc: '2.0'; id?: unknown; method: string; params?: unknown }
 function artifactReference(value: unknown): value is ArtifactReference {
@@ -61,7 +61,7 @@ export async function serveArtifactMcp({ manifestPath, input = process.stdin, ou
             const args = params.arguments === undefined ? {} : params.arguments;
             const data = await registry.call(params.name, args);
             result = { content: await toToolContent(data), isError: data.isError === true };
-          } catch (error) { result = { content: [{ type: 'text', text: errorMessage(error) }], isError: true }; }
+          } catch (error) { result = { content: [{ type: 'text', text: safeToolFailure(error).message }], isError: true }; }
         } else {
           output.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, error: { code: -32601, message: 'Method not found' } })}\n`);
           continue;

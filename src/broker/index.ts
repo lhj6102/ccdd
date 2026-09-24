@@ -53,9 +53,10 @@ const fatalExecutionError = (error: unknown): boolean => {
   return Boolean(code?.startsWith('WORKSPACE_') || ['RUN_OWNERSHIP_LOST', 'REVIEW_CANCELED', 'WORKER_STOPPED', 'WORKER_EXITED', 'REVIEW_GRAPH_INVALID'].includes(code ?? ''));
 };
 
-function storedObservation(value: unknown): ReviewToolCall['observation'] {
+function storedObservation(value: unknown, isError = false): ReviewToolCall['observation'] {
   if (!object(value) || typeof value.artifactId !== 'string' || typeof value.operation !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(value.operation)) return undefined;
   const observation: NonNullable<ReviewToolCall['observation']> = { artifactId: value.artifactId.slice(0, 64), operation: value.operation };
+  if (isError) return observation;
   if (value.kind === 'content' || value.kind === 'empty') observation.kind = value.kind;
   if (typeof value.detail === 'string') observation.detail = value.detail.slice(0, 2000);
   for (const key of ['startLine', 'endLine', 'lineCount', 'totalLines'] as const) {
@@ -75,11 +76,9 @@ function validateResult(value: unknown): ReviewResult {
   for (const key of ['durationMs', 'exitCode'] as const) { const field = value[key]; if (typeof field === 'number' && Number.isFinite(field)) result[key] = field; }
   if (Array.isArray(value.toolCalls)) result.toolCalls = value.toolCalls.slice(0, 100).filter((item): item is Record<string, unknown> & { name: string } => object(item) && typeof item.name === 'string').map(item => {
     const call: ReviewToolCall = { name: item.name, ...(item.arguments === undefined ? {} : { arguments: copy(item.arguments) }) };
-    const observation = storedObservation(item.observation);
-    if (item.isError === true) {
-      call.isError = true;
-      if (observation) call.observation = { artifactId: observation.artifactId, operation: observation.operation };
-    } else if (observation) call.observation = observation;
+    const observation = storedObservation(item.observation, item.isError === true);
+    if (item.isError === true) call.isError = true;
+    if (observation) call.observation = observation;
     return call;
   });
   if (JSON.stringify(result).length > 256_000) throw new Error('Review result exceeds the supported size.');
@@ -370,8 +369,8 @@ export function createBroker({ repoPath, stateDir, repoId = 'demo', executors, w
           if (event.isError === true) safe.isError = true;
           if (object(event.observation)) {
             // Persist the same bounded metadata as final results, even if the Provider later fails.
-            const observed = storedObservation(event.observation);
-            if (observed) safe.observation = event.isError === true ? { artifactId: observed.artifactId, operation: observed.operation } : observed;
+            const observed = storedObservation(event.observation, event.isError === true);
+            if (observed) safe.observation = observed;
           }
           if (Array.isArray(event.tools)) safe.tools = event.tools.slice(0, 32).map(tool => typeof tool === 'string' ? tool : tool?.name).filter(value => typeof value === 'string');
           appendEvent(runId, requestId, event.type, String(event.message ?? event.type).slice(0, 2000), safe);

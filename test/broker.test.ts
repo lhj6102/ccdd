@@ -8,6 +8,7 @@ import { createExecutorRegistry } from '../src/executors/index.js';
 import { artifactFixture, runtimeCritic, fixtureViews } from './helpers/artifacts.js';
 import { runUntilSettled } from './helpers/run.js';
 import { fauxProvider, fauxAssistantMessage, fauxToolCall } from '@earendil-works/pi-ai';
+import { projectRun } from '../src/project/store.js';
 import { agentProfile } from './helpers/artifacts.js';
 import type { StreamFn } from '../src/executors/pi.js';
 import { DatabaseSync } from 'node:sqlite';
@@ -189,7 +190,7 @@ for (const nonzero of [false, true]) test(`script ${nonzero ? 'nonzero failures 
   if (nonzero) assert.equal(rejected, undefined);
   else { assert.equal(rejected?.isError, true); assert.equal(rejected?.observation?.kind, undefined); }
   assert.equal(calls.find(call => call.name === 'read_a')?.observation?.kind, 'content');
-  const events = broker.getRun(run.id)!.events.filter(event => event.type === 'artifact.tool.called');
+  const events = projectRun(data.stateDir, run.id)!.events.filter(event => event.type === 'artifact.tool.called');
   assert.equal(events.some(event => (event.data as { isError?: boolean }).isError), !nonzero);
   assert.doesNotMatch(JSON.stringify(run), /PRIVATE_STDERR|Unknown skill/);
   await broker.close(); const reopened = createBroker(data); data.cleanup(() => reopened.close());

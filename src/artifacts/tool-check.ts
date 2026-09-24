@@ -120,7 +120,7 @@ export async function diagnoseArtifactTools({ repoPath, stateDir, artifactId, au
     try { await workspace?.close(); }
     catch { report.checks.push({ stage: 'input-integrity', ok: false, code: 'WORKSPACE_CLEANUP_FAILED', message: 'Could not finish workspace observation cleanup.' }); }
     report.ok = report.checks.length > 0 && report.checks.every(check => check.ok);
-    if (!report.ok) delete report.result;
+    if (!report.ok && (!report.result?.isError || report.checks.some(check => !check.ok && check.code !== 'ARTIFACT_TOOL_DOMAIN_ERROR'))) delete report.result;
     report.status = report.ok ? 'READY' : 'NOT_READY';
     report.checkedAt = new Date().toISOString();
   }
