@@ -18,8 +18,10 @@ backward compatible.
 The feature PR does not bump versions or publish. The release commit must align
 all package versions/peer ranges and lockfile entries for 5.0.0 and add the
 versioned release notes before tagging. Do not publish this default change as
-4.x. The existing package-version input to Critic identity means the eventual
-upgrade causes one re-review, independently of result projection.
+4.x. Start with a fresh state directory: 5.0 rejects 4.x state without reading
+or migrating it. Version 3 validation keys make a one-time transition; future
+package/runtime version changes alone no longer invalidate evidence. See
+[migration to 5.0](migration-v5.md).
 
 ## Installing and upgrading
 

@@ -17,19 +17,19 @@ Common options are `--repo PATH`, external `--state-dir PATH`, and `--json`. Rev
 
 ## Compact review results (unreleased 5.0)
 
-**Breaking change:** requester results now default to a compact projection,
-not the full audit payload. Use `result.reason` instead of `result.summary`,
-`inputKey` instead of inspecting the full ValidationInput, and
-`result.reference` to locate the original stored evidence. Verdict and evidence
-text are unchanged. Plain-text verification, status and planning include the
-Critic's reason, evidence and reference, including reused evidence.
+**Breaking change:** requester results default to `{verdict, ...ownerFields,
+reference, reusedFrom?}`, not the full audit. There is no built-in reason,
+summary or evidence. Runs/plans emit each result once in top-level `results`;
+requests, Critics and plan items refer to it with `{requestId}`. Standalone
+requests contain the compact result directly. `inputKey` stays on its wrapper.
+Plain-text output shows owner result JSON and its audit reference.
 
 ```sh
-# Normal requester result: verdict, reason, evidence, identity and reference.
+# Normal requester result: verdict, owner fields and audit reference.
 ccdd-project verify --all --wait --json
 ccdd-project request show REQUEST_ID --json
 
-# Explicit old/full payload and complete audit lookup.
+# Explicit full payload and complete audit lookup.
 ccdd-project verify --all --wait --json --full
 ccdd-project request show REQUEST_ID --json --full
 ccdd-project run show RUN_ID --state-dir /external/state --json
@@ -50,14 +50,14 @@ add `detail: "full"` if you need its prepared snapshot. Pure `queryProject` and
 history from `projectHistory(stateDir, {detail: "full"})`. See the
 [complete surface contract](contracts.md#requester-results-and-audit-lookup).
 
-Nothing is removed from stored evidence. The change does not relax required
-observations, alter same-version input identities, or change reuse. Separately,
-upgrading to 5.0.0 changes package-version-based Critic keys, as every release
-does, so plan for one re-review after upgrading.
+Stored audit is not removed, and required observation checks are unchanged.
+Start with a fresh state directory for 5.0: 4.x state is rejected, not migrated.
+ValidationInput version 3 is a one-time transition. Package and runtime upgrades
+alone no longer invalidate review keys. See [migration](migration-v5.md).
 
 ## Selection and evidence
 
-Selecting a Critic executes only that Critic; selecting an Artifact executes its owned Critics. Input-ready Critics do not wait for dependencies to PASS. `--recursive` includes all Critics in the required child/mount/instruction dependency closure. `--all` includes every Artifact. `--force` requests fresh evidence for selected Critics, while applicable dependency evidence remains reusable.
+Selecting a Critic executes only that Critic; selecting an Artifact executes its owned Critics. Input-ready Critics do not wait for dependencies to PASS. `--recursive` includes all Critics in the required child/mount/instruction dependency closure. `--all` includes every Artifact. `--force` requests fresh evidence for selected Critics, while applicable dependency evidence remains reusable. Matching GREEN and RED are both reused; RED still fails satisfaction. Identical active requests across Runs in one state directory coalesce and share the original review result. Force bypasses coalescing. Follower cancellation leaves the source running; source cancellation or error fails the waiting follower without a semantic verdict.
 
 Final satisfaction still requires the selected Artifact's complete criteria and its required dependency scope. Selected GREEN results remain evidence when the Run is INCOMPLETE. For a cycle A ↔ B, verifying A alone runs A and reports INCOMPLETE until B has matching evidence. Verifying B next can complete the required scope; recursive verification can run both concurrently. A cycle is never treated as a PASS.
 
@@ -78,7 +78,7 @@ An explicit `basis: true` has no Critics. Other no-Critic Artifacts are UNREVIEW
 
 The script returns an opaque string of 1–128 characters from `[A-Za-z0-9._:-]`, with at most one trailing LF newline. CCDD does not interpret it. A repeated `verify` reuses matching prior actual evidence when the value and other identity conditions are unchanged, even after material or shared runtime changes. Add `--force` to require a new review of the selected Critics despite an unchanged value.
 
-The entry file and optional declared `inputs` are owner-relative and hashed: changing the equivalence rule invalidates evidence even when its output stays the same. The Artifact definition and tool metadata, environment inputs, dependencies, Critic conditions and execution integrity are still checked. The owner takes responsibility for which material/runtime differences the function treats as equivalent; no replay validation is implied. Existing projects without this strategy retain exactly the same identities.
+The entry file and declared `inputs` remain owner-relative and scoped, but are not automatically hashed. Only the returned value and Artifact ID define local owner identity. The owner must encode relevant script, criteria, tool/profile, environment and integrity differences in that value. Dependency identities still propagate. Default Artifacts retain automatic definition/material/execution/environment/integrity coverage. No package/runtime version salt is added in either mode.
 
 Use `node` with the entry file first in `args`, followed by any script arguments, or an owner-relative executable as `command`. Inline Node programs, flags before the entry, absolute commands and PATH interpreter lookup are unsupported. Scripts use owner cwd and the environment-check executor with read-only workspace obligations, cancellation and disposable external output. Optional `timeoutMs` defaults to 30000 (range 1–900000). Optional `inputs` accepts up to 64 unique literal files/directories; unknown fields fail validation. Invalid/empty stdout, nonzero exit, timeout or workspace mutation fails validation, never falling back to ordinary file hashing.
 
@@ -88,7 +88,7 @@ Use `node` with the entry file first in `args`, followed by any script arguments
 
 Supply an unchanged workspace; CCDD does not create a worktree, copy or virtual mount directory. A detached worker owns the Run and monitors all input, including ignored files, installed dependencies and Human waiting. State and output remain external. A wait timeout leaves that worker running.
 
-`--integrity content|metadata` is available on verify/status/plan. Content is the default. Metadata is an explicit weaker filesystem assumption after an initial full capture; its evidence cannot satisfy a content-policy query. See [the policy](contracts.md#optional-metadata-integrity).
+`--integrity content|metadata` is available on verify/status/plan. Content is the default. Metadata is an explicit weaker filesystem assumption after an initial full capture; default identity distinguishes it from content-policy evidence; owner identity must encode that distinction itself when desired. See [the policy](contracts.md#optional-metadata-integrity).
 
 ## Saved results and Human actions
 
@@ -104,7 +104,7 @@ ccdd-project request tool REQUEST_ID --reviewer ID --tool NAME --args JSON
 ccdd-project request submit REQUEST_ID --reviewer ID --result-file /external/result.json
 ```
 
-Queries of stored runs/requests do not need current source or reconcile ownership. Historical input versions support result lookup only, never reuse, tools, claims or resume. A terminal INCOMPLETE Run keeps its original scope; submit a new verification to add missing evaluations. Completed Runs retain references to the evidence they consumed.
+Queries of stored runs/requests do not need current source or reconcile ownership. Only current-major state is accepted; 4.x directories fail closed with an instruction to use a fresh directory. A terminal INCOMPLETE Run keeps its original scope; submit a new verification to add missing evaluations. Completed Runs retain references to the evidence they consumed.
 
 Human preparation checks admitted environment requirements and static tool definitions before confirming a claim. Only the claimant may call tools and submit a result; the worker must remain alive. See [reviewers](reviewers.md).
 

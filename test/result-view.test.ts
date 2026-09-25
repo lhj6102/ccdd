@@ -67,7 +67,13 @@ test('requester defaults reference unchanged stored audit evidence and full API 
   const inspected = await inspectProject({ ...data, detail: 'full' });
   const history = projectHistory(stateDir, { detail: 'full' });
   compact(queryProject(inspected.snapshot, history, { stateDir }));
-  compact(planProject(inspected.snapshot, history, { stateDir }));
+  const standalonePlan = planProject(inspected.snapshot, history, { stateDir });
+  compact(standalonePlan);
+  assert.equal(standalonePlan.results.length, 1);
+  assert.deepEqual(standalonePlan.critics[0].result, { requestId: request.id });
+  assert.deepEqual(standalonePlan.items[0].result, { requestId: request.id });
+  assert.equal(JSON.stringify(standalonePlan).split(audit.evidence[0]).length - 1, 1);
+  assert.equal(Object.hasOwn(completed.validation!, 'results'), false);
   assert.deepEqual(bytes(), before, 'Request JSON bytes are identical before and after all projections'); db.close();
   const reused = await broker.submitProject({ selection: { kind: 'all' } });
   assert.equal(reused.status, 'GREEN'); assert.equal(reused.requests.length, 0);
