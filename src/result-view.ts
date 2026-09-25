@@ -57,7 +57,7 @@ export function requesterRun(run: Pick<RunView, 'id' | 'status' | 'workspace' | 
   const { results: validationResults = [], ...validation } = plan ?? {};
   return { id: run.id, status: run.status, workspaceIntegrity: run.workspace?.integrity ?? 'content',
     reference: reviewReference(stateDir, run.id, null), error: run.error,
-    results: uniqueResults([...requests.flatMap(request => request.result ? [request.result] : []), ...validationResults]),
+    results: uniqueResults([...requests.flatMap(request => request.result ? [request.result] : []), ...validationResults]).map(result => result.reference.runId === run.id ? result : { ...result, reusedFrom: result.reference }),
     requests: requests.map(({ result, ...request }) => ({ ...request, result: result ? { requestId: request.id } : null })),
     ...(plan ? { validation: validation as Omit<RequesterPlan, 'results'> } : {}) };
 }

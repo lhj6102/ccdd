@@ -27,6 +27,8 @@ export interface ProjectRunDefinition {
   templates: ReviewEnvelope[];
   /** Original evidence consumed by a completed execution; never a cached stale flag. */
   evidenceRequestIds?: string[];
+  /** Existing active requests adopted by this Run; never duplicate executions. */
+  coalescedRequestIds?: string[];
 }
 export type ValidationStatus = 'PASS' | 'BASIS' | 'UNREVIEWED' | 'STALE' | 'RED' | 'ERROR' | 'INCOMPLETE' | 'QUEUED' | 'RUNNING' | 'WAITING_HUMAN';
 export interface CriticValidation {
@@ -52,5 +54,5 @@ export interface ProjectPlan extends ProjectQuery {
 }
 export interface QueryOptions {
   selection?: ProjectSelection; forceCriticIds?: readonly string[];
-  runId?: string; attempts?: readonly ReviewRequest[];
+  runId?: string; coalescedRequestIds?: readonly string[]; attempts?: readonly ReviewRequest[];
 }

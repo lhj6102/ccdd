@@ -174,6 +174,8 @@ export function createBroker<D extends ResultDetail = 'compact'>({ detail, repoP
   };
   const ownerData = (id: string): OwnerRecord | undefined => db.prepare('SELECT * FROM run_owners WHERE run_id = ?').get(id) as OwnerRecord | undefined;
   const runRequests = (id: string): ReviewRequest[] => db.prepare('SELECT data FROM requests WHERE run_id = ? ORDER BY ordinal').all(id).map(row => parseStored<ReviewRequest>(row.data));
+  const sharedRequests = (run: RunRecord): ReviewRequest[] => (run.project?.coalescedRequestIds ?? []).map(id => required(requestData(id), 'Shared Request'));
+  const attemptsFor = (run: RunRecord): ReviewRequest[] => [...runRequests(run.id), ...sharedRequests(run)];
   const saveRequest = (request: ReviewRequest) => db.prepare('UPDATE requests SET status = ?, data = ? WHERE id = ?').run(request.status, JSON.stringify(request), request.id);
   const saveRun = (run: RunRecord) => db.prepare('UPDATE runs SET status = ?, data = ? WHERE id = ?').run(run.status, JSON.stringify(run), run.id);
   const appendEvent = (runId: string, requestId: string | null, type: string, message: string, data: unknown = null) => {
@@ -193,8 +195,19 @@ export function createBroker<D extends ResultDetail = 'compact'>({ detail, repoP
     const run = required(runData(runId), 'Run'), requests = runRequests(runId);
     if (run.project?.version === 3) {
       if (terminal.has(run.status)) return;
-      const plan = planProject(run.project.snapshot, readEvidence(db), { selection: run.project.selection, recursive: run.project.recursive, force: run.project.force, runId, attempts: requests });
+      for (const shared of sharedRequests(run)) reconcileWithin(shared.runId);
+      const plan = planProject(run.project.snapshot, readEvidence(db), { selection: run.project.selection, recursive: run.project.recursive, force: run.project.force, runId, coalescedRequestIds: run.project.coalescedRequestIds, attempts: [...requests, ...sharedRequests(run)] });
       for (const item of plan.items.filter(item => item.action === 'EXECUTE')) {
+        if (!run.project.force) {
+          const row = db.prepare("SELECT data FROM requests WHERE status IN ('QUEUED','RUNNING','WAITING_HUMAN') AND json_extract(data, '$.criticId') = ? AND json_extract(data, '$.validationInput.key') = ? AND json_extract(data, '$.validationInput.version') = 3 ORDER BY rowid LIMIT 1").get(item.id, item.input.key);
+          if (row) {
+            const shared = parseStored<ReviewRequest>(row.data);
+            run.project.coalescedRequestIds = [...new Set([...(run.project.coalescedRequestIds ?? []), shared.id])];
+            saveRun(run);
+            appendEvent(runId, shared.id, 'request.coalesced', 'Waiting for an identical active review in another Run.', { sourceRunId: shared.runId });
+            continue;
+          }
+        }
         const envelope = run.project.templates.find(template => template.criticId === item.id);
         if (!envelope) throw codedError(`Missing prepared Critic ${item.id}.`, 'REVIEW_GRAPH_INVALID');
         const request: ReviewRequest = { ...copy(envelope), validationInput: copy(item.input), id: randomUUID(), runId,
@@ -209,13 +222,13 @@ export function createBroker<D extends ResultDetail = 'compact'>({ detail, repoP
     throw new Error('Historical Runs cannot be resumed; submit a new validation request.');
   }
   const updateRunStatus = (runId: string) => {
-    const states = runRequests(runId).map(request => request.status);
     const run = required(runData(runId), 'Run');
+    const states = attemptsFor(run).map(request => request.status);
     if (run.project?.version === 3) {
       if (terminal.has(run.status)) return;
-      const plan = planProject(run.project.snapshot, readEvidence(db), { selection: run.project.selection, recursive: run.project.recursive, force: run.project.force, runId, attempts: runRequests(runId) });
+      const plan = planProject(run.project.snapshot, readEvidence(db), { selection: run.project.selection, recursive: run.project.recursive, force: run.project.force, runId, coalescedRequestIds: run.project.coalescedRequestIds, attempts: attemptsFor(run) });
       const status: RunStatus = states.includes('RUNNING') ? 'RUNNING' : states.includes('QUEUED') ? 'QUEUED' : states.includes('WAITING_HUMAN') ? 'WAITING_HUMAN' :
-        states.includes('ERROR') ? 'ERROR' : states.includes('RED') ? 'RED' : plan.satisfied ? 'GREEN' : 'INCOMPLETE';
+        states.includes('ERROR') ? 'ERROR' : states.includes('RED') || plan.critics.some(critic => critic.status === 'RED') ? 'RED' : plan.satisfied ? 'GREEN' : 'INCOMPLETE';
       if (run.status !== status) {
         run.status = status;
         if (terminal.has(status)) {
@@ -255,7 +268,7 @@ export function createBroker<D extends ResultDetail = 'compact'>({ detail, repoP
       appendEvent(runId, request.id, 'request.error', request.error, { status: request.status, ...(request.errorCode ? { code: request.errorCode } : {}) });
     }
     if (run.project?.version === 3) {
-      const plan = planProject(run.project.snapshot, readEvidence(db), { selection: run.project.selection, recursive: run.project.recursive, force: run.project.force, runId, attempts: runRequests(runId) });
+      const plan = planProject(run.project.snapshot, readEvidence(db), { selection: run.project.selection, recursive: run.project.recursive, force: run.project.force, runId, coalescedRequestIds: run.project.coalescedRequestIds, attempts: attemptsFor(run) });
       run.project.evidenceRequestIds = [...new Set(plan.critics.flatMap(c => c.result ? [c.result.requestId] : []))];
     }
     run.status = 'ERROR'; run.error = errorText(error); run.completedAt = now(); saveRun(run);
@@ -439,6 +452,10 @@ export function createBroker<D extends ResultDetail = 'compact'>({ detail, repoP
           if (inFlight.size) {
             // Human alarms and independent evaluations progress together.
             await Promise.race([...inFlight.values()].map(item => item.promise).concat(delay(50, undefined, { signal: reviewSignal })));
+            continue;
+          }
+          if (sharedRequests(required(runData(runId), 'Run')).some(request => !terminal.has(request.status))) {
+            await delay(100, undefined, { signal: reviewSignal });
             continue;
           }
           const waiting = requests.filter(request => request.status === 'WAITING_HUMAN');
