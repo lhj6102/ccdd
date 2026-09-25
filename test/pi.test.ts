@@ -20,7 +20,7 @@ async function fixture(t: TestContext): Promise<InvokePiOptions & { dir: string 
   const data = await artifactFixture(t), dir = data.root, worktreePath = data.repoPath;
   await data.write('', { name: 'spec', views: fixtureViews(), critics: [{ id: 'review', title: 'Review Spec', profile: { ...profile }, payload: { instruction: 'Inspect Spec.' } }] }, { 'content.txt': '\uccab\uc9f8 \uc904\r\n\ub458\uc9f8 \uc904\r\n\uc14b\uc9f8 \uc904\n' });
   const [request] = await data.requests();
-  return { dir, request, worktreePath, runDir: join(dir, 'run'), schema, makePrompt: ({ viewer, tools }) => `Review payload: ${JSON.stringify(request.payload)}\nArtifacts: ${JSON.stringify(viewer.listArtifacts())}\nTools: ${JSON.stringify(tools)}` };
+  return { dir, request: { ...request, id: 'stable-review-request-id' }, worktreePath, runDir: join(dir, 'run'), schema, makePrompt: ({ viewer, tools }) => `Review payload: ${JSON.stringify(request.payload)}\nArtifacts: ${JSON.stringify(viewer.listArtifacts())}\nTools: ${JSON.stringify(tools)}` };
 }
 
 function scripted(calls: unknown[]): StreamFn {
@@ -45,6 +45,7 @@ test('Pi Agent loop receives exact provider/model/reasoning and scoped tools acr
       assert.equal(model.provider, settings.provider);
       assert.equal(model.id, settings.model);
       assert.equal(options?.reasoning, settings.reasoning);
+      assert.equal(options?.sessionId, data.request.id);
       assert.deepEqual(context.tools?.map(tool => tool.name), ['read_spec']);
       assert.equal(context.tools?.[0]?.description, 'Read content from spec by line.');
       assert.equal((context.tools?.[0]?.parameters as { additionalProperties?: unknown }).additionalProperties, false);
@@ -362,6 +363,7 @@ for (const [name, initial, category] of [
   let calls = 0;
   const result = await invokePi({ ...data, onEvent: event => { events.push(event); }, streamFn: (model, context, options) => {
     calls++;
+    assert.equal(options?.sessionId, data.request.id);
     if (calls === 3) {
       assert.deepEqual(context.tools, []); assert.equal(options?.toolChoice, 'none');
       assert.equal(model.id, profile.model); assert.equal(options?.reasoning, profile.reasoning);
@@ -537,6 +539,7 @@ test('Anthropic repair preserves historical tool definitions on the wire but dis
   let calls = 0, payloadCheck: Promise<void> | undefined;
   await assert.rejects(invokePi({ ...data, request: { ...data.request, profile: anthropic }, onEvent: event => { events.push(event); }, streamFn: (model, context, options) => {
     calls++;
+    assert.equal(options?.sessionId, data.request.id);
     if (calls === 3) {
       assert.equal(options?.toolChoice, 'none');
       assert.deepEqual(context.tools?.map(tool => tool.name), ['read_spec']);
@@ -589,6 +592,7 @@ test('Bedrock repair retains the wire tool configuration required by its history
   let calls = 0, payloadCheck: Promise<void> | undefined;
   await assert.rejects(invokePi({ ...data, request: { ...data.request, profile: bedrock }, onEvent: event => { events.push(event); }, streamFn: (model, context, options) => {
     calls++;
+    assert.equal(options?.sessionId, data.request.id);
     if (calls === 3) {
       assert.deepEqual(context.tools?.map(tool => tool.name), ['read_spec']); assert.equal(options?.toolChoice, 'auto');
       assert.ok(hasApi(model, 'bedrock-converse-stream'));

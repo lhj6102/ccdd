@@ -26,3 +26,5 @@ and two-process lease-expiry races.
 - R5: Critic prompts include only Artifact ids, paths, target/dependency/basis roles,
   included folders and mounts. Tool descriptions and schemas appear only in the
   provider tool channel; all review security and observation instructions remain.
+- R6: Each Pi request uses its review request id as the stable provider session
+  cache key, including tool continuations and the one format-only repair turn.

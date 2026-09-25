@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { Agent, type AgentTool, type StreamFn } from '@earendil-works/pi-agent-core';
 import { Type, getSupportedThinkingLevels, hasApi, type Api, type Model, type TSchema } from '@earendil-works/pi-ai';
 import { builtinModels } from '@earendil-works/pi-ai/providers/all';
@@ -59,7 +60,7 @@ function providerFailure(value: unknown): Error {
 }
 
 export interface InvokePiOptions {
-  request: ReviewEnvelope;
+  request: ReviewEnvelope & { id?: string };
   worktreePath: string;
   runDir: string;
   signal?: AbortSignal;
@@ -145,6 +146,7 @@ export async function invokePi({ request, worktreePath, runDir, schema, inspectR
     checkAbort();
     const inspectFinal = createFinalResultInspector(schema);
     agent = new Agent({
+      sessionId: request.id ?? randomUUID(),
       streamFn: (selectedModel, context, options) => invoke!(selectedModel,
         // Anthropic requires definitions for historical tool-use messages. Keep only
         // the wire definitions there; the Agent has no executable tools during repair.
