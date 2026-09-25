@@ -175,7 +175,7 @@ test('failed custom observation persistence cannot satisfy the Agent required Ar
 
 test('Broker persists custom operation and observation kind through completion and restart', async t => {
   const data = await fixture(t);
-  const broker = createBroker({ repoPath: data.repoPath, stateDir: data.stateDir, executors: createExecutorRegistry({ streamFn: frameStream() }) });
+  const broker = createBroker({ detail: 'full', repoPath: data.repoPath, stateDir: data.stateDir, executors: createExecutorRegistry({ streamFn: frameStream() }) });
   t.after(() => broker.close());
   const submitted = await broker.submitProject({ selection: { kind: 'critic', criticId: 'clip/frame-review' }, requesterId: 'integration-test' });
   const completed = await broker.run(submitted.id);
@@ -186,7 +186,7 @@ test('Broker persists custom operation and observation kind through completion a
   assert.deepEqual(completed.requests[0].result?.toolCalls?.[0].observation, observation);
   assert.deepEqual((broker.getRun(submitted.id)!.events.find(event => event.type === 'artifact.tool.called')?.data as { observation?: unknown }).observation, observation);
   await broker.close();
-  const reopened = createBroker({ repoPath: data.repoPath, stateDir: data.stateDir });
+  const reopened = createBroker({ detail: 'full', repoPath: data.repoPath, stateDir: data.stateDir });
   try { assert.deepEqual(reopened.getRun(submitted.id)!.requests[0].result?.toolCalls?.[0].observation, observation); }
   finally { await reopened.close(); }
 });

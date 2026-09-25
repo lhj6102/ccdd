@@ -99,3 +99,5 @@ See [Contributing](CONTRIBUTING.md), [the context map](CONTEXT-MAP.md), [detaile
 ## License
 
 [MIT](LICENSE).
+
+Unreleased development: requester results default to a compact projection in the upcoming **5.0 breaking release**. See [migration and audit lookup](docs/project-validation.md#compact-review-results-unreleased-50) and [unreleased notes](docs/releases/unreleased.md).

@@ -1,3 +1,4 @@
+import { requesterRun, requesterRequest, requesterEvidence, resultView, type ResultDetail, type ResultOptions } from '../result-view.js';
 import { DatabaseSync } from 'node:sqlite';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
@@ -25,7 +26,7 @@ export function withProjectStore<T>(stateDir: string, read: (database: DatabaseS
   finally { database.close(); }
 }
 
-export function projectHistory(stateDir: string): ValidationEvidence[] { return withProjectStore(stateDir, readEvidence, []); }
+export function projectHistory<D extends ResultDetail = 'compact'>(stateDir: string, options: ResultOptions<D> = {}) { return withProjectStore(stateDir, db => readEvidence(db).map(evidence => resultView(options, evidence, () => requesterEvidence(evidence, stateDir))), []); }
 
 export type ProjectRunView = RunView & { validation?: ProjectPlan };
 export function storedRun(database: DatabaseSync, id: string): ProjectRunView | null {
@@ -39,7 +40,7 @@ export function storedRun(database: DatabaseSync, id: string): ProjectRunView | 
     ...(run.project?.version === 2 ? { validation: planProject(run.project.snapshot, readEvidence(database).filter(e => !run.project!.evidenceRequestIds || run.project!.evidenceRequestIds.includes(e.requestId)), { selection: run.project.selection, recursive: run.project.recursive, force: run.project.force, runId: id, attempts: requests }) } : {}) };
 }
 export function projectRun(stateDir: string, id: string): ProjectRunView | null { return withProjectStore(stateDir, db => storedRun(db, id), null); }
-export function projectRuns(stateDir: string): ProjectRunView[] { return withProjectStore(stateDir, db => db.prepare('SELECT id FROM runs ORDER BY created_at DESC, rowid DESC').all().map(row => storedRun(db, String(row.id))!), []); }
-export function projectRequests(stateDir: string, runId?: string): ReviewRequest[] {
-  return withProjectStore(stateDir, db => (runId ? db.prepare('SELECT data FROM requests WHERE run_id = ? ORDER BY ordinal').all(runId) : db.prepare("SELECT data FROM requests ORDER BY json_extract(data, '$.createdAt') DESC, rowid DESC").all()).map(row => JSON.parse(String(row.data)) as ReviewRequest), []);
+export function projectRuns<D extends ResultDetail = 'compact'>(stateDir: string, options: ResultOptions<D> = {}) { return withProjectStore(stateDir, db => db.prepare('SELECT id FROM runs ORDER BY created_at DESC, rowid DESC').all().map(row => { const run = storedRun(db, String(row.id))!; return resultView(options, run, () => requesterRun(run, stateDir)); }), []); }
+export function projectRequests<D extends ResultDetail = 'compact'>(stateDir: string, runId?: string, options: ResultOptions<D> = {}) {
+  return withProjectStore(stateDir, db => (runId ? db.prepare('SELECT data FROM requests WHERE run_id = ? ORDER BY ordinal').all(runId) : db.prepare("SELECT data FROM requests ORDER BY json_extract(data, '$.createdAt') DESC, rowid DESC").all()).map(row => { const request = JSON.parse(String(row.data)) as ReviewRequest; return resultView(options, request, () => requesterRequest(request, stateDir)); }), []);
 }

@@ -34,7 +34,7 @@ function available(record: MonitorStoredRequest, reviewerId: string, requireClai
 export async function claimReview(record: MonitorStoredRequest, reviewerId: string, signal?: AbortSignal): Promise<void> {
   available(record, reviewerId, false);
   await authorizeWorkspace(record);
-  const broker = createBroker(record);
+  const broker = createBroker({ ...record, detail: 'full' });
   try { await broker.claimHuman(record.request.id, reviewerId, { signal }); }
   finally { await broker.close(); }
 }
@@ -42,7 +42,7 @@ export async function claimReview(record: MonitorStoredRequest, reviewerId: stri
 export async function completeReview(record: MonitorStoredRequest, reviewerId: string, result: Pick<ReviewResult, 'verdict' | 'summary' | 'evidence'>): Promise<void> {
   available(record, reviewerId, true);
   await authorizeWorkspace(record);
-  const broker = createBroker(record);
+  const broker = createBroker({ ...record, detail: 'full' });
   try {
     await broker.completeHuman(record.request.id, { reviewerId, result });
     const run = broker.getRun(record.request.runId);
@@ -54,7 +54,7 @@ export async function executeReviewTool(record: MonitorStoredRequest, reviewerId
   available(record, reviewerId, true);
   await authorizeWorkspace(record);
   signal.throwIfAborted();
-  const broker = createBroker(record);
+  const broker = createBroker({ ...record, detail: 'full' });
   try { return await broker.executeHumanTool(record.request.id, { reviewerId, toolName, arguments: args, signal }); }
   finally { await broker.close(); }
 }

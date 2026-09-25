@@ -15,7 +15,7 @@ async function fixture(t: Parameters<typeof artifactFixture>[0], waiting = false
   await data.write('a', { name: 'a', views: fixtureViews(), ...(cycle ? { mounts: { peer: 'b' } } : {}), critics: [{ id: 'human', title: 'Human review', profile: { kind: 'human' }, payload: { instruction: cycle ? 'Inspect {a} and {peer}.' : 'Inspect {a}.', authFile: 'DO_NOT_EXPOSE_AUTH' } }] });
   if (cycle) await data.write('b', { name: 'b', basis: true, views: fixtureViews(), mounts: { peer: 'a' } });
   await writeFile(join(data.repoPath, 'ccdd.config.ts'), `import {writeFileSync} from 'node:fs';writeFileSync(${JSON.stringify(marker)},'executed');`);
-  const broker = createBroker({ ...data, executors: createExecutorRegistry({ alarmMethods: [async () => {}] }) }); data.cleanup(() => broker.close());
+  const broker = createBroker({ detail: 'full', ...data, executors: createExecutorRegistry({ alarmMethods: [async () => {}] }) }); data.cleanup(() => broker.close());
   const run = await broker.submitProject({ selection: { kind: 'all' } }); if (waiting) await runUntilSettled(broker, run.id);
   const monitor = await startMonitor({ stateDirs: [data.stateDir], port: 0 }); data.cleanup(() => monitor.close());
   const overview = await (await fetch(`${monitor.url}/api/requests`)).json() as MonitorOverview, request = overview.requests[0];

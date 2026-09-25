@@ -28,7 +28,7 @@ async function fixture(t: Parameters<typeof artifactFixture>[0], { human = false
   const args = ['--repo', data.repoPath, '--state-dir', data.stateDir, '--json'];
   data.cleanup(async () => {
     if (!(await readFile(join(data.stateDir, 'broker.sqlite')).catch(() => null))) return;
-    const broker = createBroker({ ...data, repoId: 'local' });
+    const broker = createBroker({ detail: 'full', ...data, repoId: 'local' });
     try { for (const run of broker.listRuns()) if (!['GREEN', 'RED', 'ERROR', 'INCOMPLETE'].includes(run.status)) broker.cancel(run.id); await until(() => broker.listRuns(), runs => runs.every(run => !run.owner)); } finally { await broker.close(); }
   });
   return { ...data, args };
@@ -49,7 +49,7 @@ test('real detached Runtime verification returns GREEN and RED without Git or a 
   for (const red of [false, true]) {
     const data = await fixture(t, { red }), result = await separate(['verify', '--all', '--wait', ...data.args]);
     assert.equal(result.code, red ? 1 : 0, JSON.stringify(result.data)); assert.equal(result.data.status, red ? 'RED' : 'GREEN');
-    assert.equal(result.data.requests[0].criticId, 'a/check'); assert.equal(result.data.requests[0].validationInput.version, 2);
+    assert.equal(result.data.requests[0].criticId, 'a/check'); assert.match(result.data.requests[0].inputKey, /^[a-f0-9]{64}$/); assert.equal(result.data.requests[0].validationInput, undefined);
   }
 });
 
@@ -89,8 +89,8 @@ test('Human claim, tool execution and submission work across fresh CLI processes
 });
 
 test('cancel and live resume retain single worker ownership', async t => {
-  const data = await fixture(t, { slow: 2000 }), submitted = await separate(['verify', '--all', ...data.args]);
-  const resumed = await separate(['run', 'resume', submitted.data.id, ...data.args]); assert.equal(resumed.data.owner.pid, submitted.data.owner.pid);
+  const data = await fixture(t, { slow: 2000 }), submitted = await separate(['verify', '--all', '--full', ...data.args]);
+  const resumed = await separate(['run', 'resume', submitted.data.id, '--full', ...data.args]); assert.equal(resumed.data.owner.pid, submitted.data.owner.pid);
   const cancelled = await separate(['run', 'cancel', submitted.data.id, ...data.args]); assert.equal(cancelled.data.status, 'ERROR');
 });
 

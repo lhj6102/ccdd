@@ -13,7 +13,47 @@ ccdd-project graph [ARTIFACT]
 ccdd-project history [ARTIFACT | --critic ARTIFACT/CRITIC]
 ```
 
-Common options are `--repo PATH`, external `--state-dir PATH`, and `--json`. `ccdd` is an alias for this same command set; old `ccdd run --critic` and demo selectors are removed.
+Common options are `--repo PATH`, external `--state-dir PATH`, and `--json`. Review-result commands also accept `--full`. `ccdd` is an alias for this same command set; old `ccdd run --critic` and demo selectors are removed.
+
+## Compact review results (unreleased 5.0)
+
+**Breaking change:** requester results now default to a compact projection,
+not the full audit payload. Use `result.reason` instead of `result.summary`,
+`inputKey` instead of inspecting the full ValidationInput, and
+`result.reference` to locate the original stored evidence. Verdict and evidence
+text are unchanged. Plain-text verification, status and planning include the
+Critic's reason, evidence and reference, including reused evidence.
+
+```sh
+# Normal requester result: verdict, reason, evidence, identity and reference.
+ccdd-project verify --all --wait --json
+ccdd-project request show REQUEST_ID --json
+
+# Explicit old/full payload and complete audit lookup.
+ccdd-project verify --all --wait --json --full
+ccdd-project request show REQUEST_ID --json --full
+ccdd-project run show RUN_ID --state-dir /external/state --json
+```
+
+`reference` contains `{runId, requestId, stateDir}`. `run show` always returns the
+full stored Run (also without `--json`), including request tool calls/arguments,
+observation receipts, criteria snapshots and event telemetry. A reused result
+references the original review. A Run reference without a particular review has
+`requestId: null`. Readonly lookups continue working if the original workspace
+was removed. State is still local; no new remote endpoint or upload is involved.
+
+Programmatic callers can create a full-detail Broker with
+`createBroker({repoPath, stateDir, detail: "full", executors})`. Stored lookup is
+`projectRun(stateDir, runId)`. `inspectProject` returns only `{plan}` by default;
+add `detail: "full"` if you need its prepared snapshot. Pure `queryProject` and
+`planProject` now require `stateDir` in their options and consume full semantic
+history from `projectHistory(stateDir, {detail: "full"})`. See the
+[complete surface contract](contracts.md#requester-results-and-audit-lookup).
+
+Nothing is removed from stored evidence. The change does not relax required
+observations, alter same-version input identities, or change reuse. Separately,
+upgrading to 5.0.0 changes package-version-based Critic keys, as every release
+does, so plan for one re-review after upgrading.
 
 ## Selection and evidence
 

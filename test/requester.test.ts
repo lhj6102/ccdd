@@ -117,7 +117,7 @@ test('invalid configuration is rejected before tickets or Provider readiness che
   const data = await artifactFixture(t); await data.write('a', { name: 'a', critics: [runtimeCritic()] });
   await data.edit('a', m => { Reflect.set(m, 'sources', {}); });
   let readiness = 0;
-  const broker = createBroker({ ...data, executors: { canExecute: () => { readiness++; return { ok: true }; }, execute: async () => { throw new Error('Must not execute.'); } } });
+  const broker = createBroker({ detail: 'full', ...data, executors: { canExecute: () => { readiness++; return { ok: true }; }, execute: async () => { throw new Error('Must not execute.'); } } });
   data.cleanup(() => broker.close());
   await assert.rejects(broker.submitProject({ selection: { kind: 'all' } }), /Unknown Artifact field/);
   assert.equal(readiness, 0); assert.deepEqual(broker.listRuns(), []);

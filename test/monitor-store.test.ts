@@ -247,7 +247,7 @@ test('public summaries whitelist fields while the internal Artifact lookup retai
   const detail = present(await store.detail(source.id, request.id));
   assert.deepEqual(detail.profile, request.profile);
   assert.deepEqual(detail.artifacts, request.artifacts.map(({ id, path }) => ({ id, path })));
-  assert.deepEqual(detail.result, { summary: 'Fits the stated requirement.', evidence: ['spec.md:2'] });
+  assert.deepEqual(detail.result, { verdict: 'GREEN', reason: 'Fits the stated requirement.', evidence: ['spec.md:2'], inputKey: null, target: request.target ?? '', criticId: request.criticId, reference: { stateDir: source.stateDir, runId: request.runId, requestId: request.id } });
   assert.equal(detail.instruction, request.payload.instruction);
   assert.ok(!JSON.stringify(detail).includes('secret'));
   const internal = present(await store.request(source.id, request.id));

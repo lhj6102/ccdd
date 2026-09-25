@@ -1,7 +1,7 @@
 import type { CriticProfile, ReviewStatus, RunStatus } from '../contracts.js';
 import type { ArtifactReferenceMetadata } from '../artifacts/index.js';
 import type { GraphProjection } from '../broker/graph.js';
-import type { ProjectPlan } from '../project/types.js';
+import type { RequesterPlan, RequesterResult } from '../result-view.js';
 import type { HumanPreparationAttempt } from '../broker/human-claims.js';
 
 export type MonitorLane = 'requested' | 'running' | 'success' | 'failure';
@@ -23,7 +23,7 @@ export interface MonitorOverview {
   hasMore: boolean; observedAt: string;
 }
 export interface MonitorSession { reviewerId: string; csrfToken: string }
-export interface MonitorValidation { plan: ProjectPlan; observedAt: string }
+export interface MonitorValidation { plan: RequesterPlan; observedAt: string }
 export interface MonitorHumanState {
   canClaim: boolean; canComplete: boolean; claimedByMe: boolean;
   tryClaim?: { id: string; reviewerId: string; expiresAt: string; preparingByMe: boolean };
@@ -43,7 +43,7 @@ export interface MonitorToolResponse { result: unknown }
 export interface MonitorDetail {
   request: MonitorRequest;
   instruction: string; profile: CriticProfile;
-  result: { summary: string; evidence: string[] } | null;
+  result: RequesterResult | null;
   error: string | null;
   timeline: { label: string; at: string }[];
   artifacts: ArtifactReferenceMetadata[];

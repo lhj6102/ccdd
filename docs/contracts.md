@@ -115,6 +115,71 @@ Each invocation gets private external output, temporary, home and cache director
 
 Stored manifests contain only serializable metadata and declarations. Execution rediscovers static config from the recorded workspace and requires an exact manifest/scope match. Static preflight lists definitions without invoking user scripts. Explicit `tools check --execute` exercises a real process. Blind A/B comparison is a user-script procedure, demonstrated in the [folder example](../examples/artifact-folders/README.md), not a presentation setting or special Executor.
 
+## Requester results and audit lookup
+
+**Unreleased, for the 5.0 line: breaking default output change.** Requester
+results are compact by default. This is not a 4.x-compatible change; existing
+callers that consume audit fields must explicitly request full detail.
+
+A completed requester result contains only `verdict`, `reason` (the stored
+`summary`, unchanged), `evidence`, `inputKey`, `target`, `criticId`, and
+`reference: {runId, requestId, stateDir}`. `stateDir` is an absolute local state
+location, not a URL or credential. `inputKey` is null when a historical request
+has no ValidationInput; its recorded key is otherwise returned verbatim. Request
+wrappers retain IDs, status and operational errors; Run wrappers retain status,
+workspace integrity, requests and projected validation. An unfinished request
+has `result: null`. Run-level references use `requestId: null`.
+
+The reference resolves with `projectRun(reference.stateDir, reference.runId)` or
+`ccdd-project run show RUN_ID --state-dir STATE_DIR --json`; find the referenced
+request by ID in `requests`. These are explicit, readonly stored-audit queries
+and always return full detail, without the current source or an Executor.
+Evidence reused by a new Run points to the original Run/request, not to a
+nonexistent ticket in the reuse-only Run. Historical runs remain readable but
+cannot become executable or reusable because of this projection.
+
+`toolCalls` (including arguments and observation receipts), criteria/payload,
+config and input snapshots, timestamps, process ownership, stdout/stderr and
+telemetry remain in the existing stored representation. The projection neither
+rewrites SQLite records nor changes normalization, observation requirements,
+Executor/Human result submission (`summary` remains the input field),
+ValidationInput version, hash computation, or reuse decisions. Auditing happens
+before projection; missing required observations still fail rather than become
+GREEN/RED results. Telemetry remains in stored Run events, not semantic evidence.
+
+Public requester surfaces:
+
+- `createBroker({repoPath, stateDir, ...})`: compact results from submission,
+  execution, Run/request reads and lists, cancellation/failure, and Human
+  claim/completion. Set `detail: "full"` on the Broker for its previous full
+  execution envelopes. Workers and Human-action adapters opt into this mode.
+- `inspectProject(...)`: `{plan}` by default; `detail: "full"` returns
+  `{snapshot, plan}` with the full internal semantic evidence projection.
+- Public `queryProject` / `planProject` require `{stateDir, ...options}` to make
+  evidence references resolvable; `detail: "full"` preserves the internal query
+  shape. Their history input is `projectHistory(stateDir, {detail: "full"})`, not
+  compact requester history. Internal Project Validation queries remain full.
+- `projectHistory(stateDir, options?)`, `projectRuns(stateDir, options?)`, and
+  `projectRequests(stateDir, runId?, options?)` default to compact; pass
+  `{detail: "full"}` to restore their stored/semantic views. `projectRun` is the
+  full-audit lookup and does not need an option.
+- CLI `verify`, `status`, `plan`, `history`, `request`, Run lists and actions use
+  compact output, including plain text. `--full` restores the detailed payload;
+  `run show` always displays full JSON even without `--json`. Full status/plan
+  and history retain their existing semantic evidence shapes, not inline tool
+  traces: use the referenced Run for complete audit details.
+- Monitor current-input queries and verdicts use compact results; explicit
+  request-detail pages still include reviewer instructions and operational UI
+  metadata. Their results carry the same audit references. Artifact MCP serves
+  observation tools only, not requester review results; its tool protocol and
+  audit recording are unchanged.
+
+This unreleased change leaves package metadata unchanged. Separately, the future
+5.0.0 release, like every release, changes `criticHash` reuse keys through
+`executorVersion: packageVersion` in `src/project/identity.ts`. Expect one
+re-review after upgrading. At the same package version, projecting a result has
+no effect on any identity or reuse key.
+
 ## Input identity and evidence
 
 Local material identity hashes content, names, entry types, executable bits and empty directories. Separate child Artifacts are hashed through their relations rather than twice as parent material. `.git` and installed `node_modules` are excluded from default Artifact material; the complete workspace still has its independent integrity proof. Declare used installed runtimes in `executionPaths`.

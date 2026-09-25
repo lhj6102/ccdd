@@ -6,7 +6,7 @@ import type { PiOptions } from './executors/pi.js';
 import type { createBroker } from './broker/index.js';
 import { errorCode } from './executors/errors.js';
 
-type Broker = ReturnType<typeof createBroker>;
+type Broker = ReturnType<typeof createBroker<'full'>>;
 type Run = NonNullable<ReturnType<Broker['getRun']>>;
 export interface WorkerConfiguration { piOptions?: PiOptions; humanInbox: boolean }
 export interface WorkerContext { repoPath: string; repoId: string; stateDir: string }

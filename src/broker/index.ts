@@ -1,3 +1,4 @@
+import { requesterRun, requesterRequest, resultView, type ResultDetail, type ResultOptions } from '../result-view.js';
 import { DatabaseSync } from 'node:sqlite';
 import { randomUUID } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
@@ -16,7 +17,7 @@ import { prepareHumanReview } from '../executors/human-preparation.js';
 import { prepareWorkspace, reopenWorkspace, type WorkspaceDescriptor, type WorkspaceHandle, type WorkspaceIntegrity } from '../workspaces/index.js';
 import { createProjectSnapshot } from '../project/identity.js';
 import { includedCritics, planProject } from '../project/query.js';
-import { readEvidence } from '../project/store.js';
+import { readEvidence, storedRun } from '../project/store.js';
 import type { ProjectRunDefinition, ProjectSelection } from '../project/types.js';
 import type { RunStatus } from '../contracts.js';
 import type { ReviewEnvelope, ReviewRequest, ReviewResult, ReviewStatus, ReviewToolCall, ExecutionContext, ExecutorReadiness } from '../contracts.js';
@@ -115,7 +116,8 @@ function prepareStateDirectory(repoPath: string, stateDir: string) {
 }
 
 /** Durable broker operations. Merely opening the store never starts a worker. */
-export function createBroker({ repoPath, stateDir, repoId = 'demo', executors, workspaceIntegrity = 'content', workspaceAdapter = { prepareWorkspace, reopenWorkspace } }: BrokerOptions) {
+export function createBroker<D extends ResultDetail = 'compact'>({ detail, repoPath, stateDir, repoId = 'demo', executors, workspaceIntegrity = 'content', workspaceAdapter = { prepareWorkspace, reopenWorkspace } }: BrokerOptions & ResultOptions<D>) {
+  if (detail !== undefined && detail !== 'compact' && detail !== 'full') throw new Error('detail must be compact or full.');
   if (!['content', 'metadata'].includes(workspaceIntegrity)) throw new Error('Workspace integrity must be content or metadata.');
   try {
     repoPath = fs.realpathSync(repoPath);
@@ -472,7 +474,7 @@ export function createBroker({ repoPath, stateDir, repoId = 'demo', executors, w
     return entry.promise;
   }
 
-  return {
+  const broker = {
     async submitProject({ requesterId = 'cli', selection, recursive = false, force = false, signal, ...removed }: { requesterId?: string; selection: ProjectSelection; recursive?: boolean; force?: boolean; signal?: AbortSignal }) {
       ensureOpen(); requireExecutors();
       if ('mode' in removed) throw new Error('Workspace modes are no longer supported; supply an unchanged workspace.');
@@ -503,7 +505,7 @@ export function createBroker({ repoPath, stateDir, repoId = 'demo', executors, w
       ensureOpen();
       return db.prepare('SELECT id FROM runs ORDER BY created_at DESC, rowid DESC').all().map(row => {
         const record = required(getRun(String(row.id)), 'Run');
-        return { ...record, events: undefined, requests: record.requests.map(({ result, ...request }) => ({ ...request, result: result ? { verdict: result.verdict, summary: result.summary } : null })) };
+        return record;
       });
     },
     getRun,
@@ -674,6 +676,20 @@ export function createBroker({ repoPath, stateDir, repoId = 'demo', executors, w
       listeners.clear(); db.close(); closed = true;
     },
   };
+  const viewRun = <T extends Parameters<typeof requesterRun>[0] | null>(value: T) => resultView({ detail }, value, () => value ? requesterRun(storedRun(db, value.id) ?? value, stateDir) : null);
+  const viewRequest = (value: ReviewRequest | null) => resultView({ detail }, value, () => value ? requesterRequest(value, stateDir) : null);
+  return {
+    ...broker,
+    submitProject: async (...args: Parameters<typeof broker.submitProject>) => viewRun(await broker.submitProject(...args))!,
+    run: async (...args: Parameters<typeof broker.run>) => viewRun(await broker.run(...args)),
+    getRun: (id: string) => viewRun(broker.getRun(id)),
+    listRuns: () => broker.listRuns().map(value => viewRun(value)!),
+    getRequest: (id: string) => viewRequest(broker.getRequest(id)),
+    claimHuman: async (...args: Parameters<typeof broker.claimHuman>) => viewRequest(await broker.claimHuman(...args))!,
+    completeHuman: async (...args: Parameters<typeof broker.completeHuman>) => viewRequest(await broker.completeHuman(...args)),
+    failRun: (...args: Parameters<typeof broker.failRun>) => viewRun(broker.failRun(...args)),
+    cancel: (...args: Parameters<typeof broker.cancel>) => viewRun(broker.cancel(...args)),
+  };
 }
 
-export type Broker = ReturnType<typeof createBroker>;
+export type Broker<D extends ResultDetail = 'compact'> = ReturnType<typeof createBroker<D>>;

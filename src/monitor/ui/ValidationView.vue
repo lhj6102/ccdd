@@ -44,7 +44,7 @@ const actionLabels = { REUSE: 'Reuse verdict', EXECUTE: 'Ready to review', WAIT:
         <tbody><tr v-for="critic in result.plan.items" :key="critic.id">
           <th scope="row">{{ critic.title }}<small>{{ critic.id }} → {{ critic.target }}</small></th>
           <td><span :class="['validation-status', { passed: critic.status === 'PASS' }]">{{ critic.status }}</span></td>
-          <td><strong>{{ actionLabels[critic.action] }}</strong><p>{{ critic.reason }}</p><p v-if="critic.blockedBy.length">Final validation still needs: {{ critic.blockedBy.join(', ') }}. This does not delay this Critic's execution.</p><button v-if="critic.result" type="button" class="text-button" @click="emit('open-request', { projectId, id: critic.result.requestId })">View recorded verdict · {{ dateLabel(critic.result.completedAt) }}</button></td>
+          <td><strong>{{ actionLabels[critic.action] }}</strong><p>{{ critic.reason }}</p><p v-if="critic.blockedBy.length">Final validation still needs: {{ critic.blockedBy.join(', ') }}. This does not delay this Critic's execution.</p><p v-if="critic.result">{{ result.plan.results.find(review => review.reference.requestId === critic.result?.requestId)?.reason }}</p><button v-if="critic.result?.requestId" type="button" class="text-button" @click="emit('open-request', { projectId, id: critic.result.requestId })">View recorded verdict</button></td>
         </tr></tbody>
       </table></div>
     </template>

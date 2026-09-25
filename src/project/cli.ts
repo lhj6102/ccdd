@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { requesterRun, requesterRequest, requesterPlan, requesterEvidence, type RequesterPlan } from '../result-view.js';
 import { existsSync, realpathSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { resolve, join } from 'node:path';
@@ -22,7 +23,7 @@ import { claimHumanFromCli } from '../review/local-claim.js';
 
 type Output = { write(value: string): unknown };
 const terminal = new Set(['GREEN', 'RED', 'ERROR', 'INCOMPLETE']);
-const flags = new Set(['--all', '--recursive', '--force', '--wait', '--json', '--help', '--human-inbox']);
+const flags = new Set(['--all', '--recursive', '--force', '--wait', '--json', '--full', '--help', '--human-inbox']);
 const values = new Set(['--repo', '--state-dir', '--critic', '--timeout-ms', '--requester', '--reviewer', '--result-file', '--tool', '--args', '--run', '--pi-auth-file', '--codex-auth-file', '--integrity']);
 const help = `CCDD Project — pull validation and explicit review execution
 
@@ -53,6 +54,7 @@ verify/status/plan accept --integrity content|metadata (default: content).
 metadata trusts unchanged filesystem metadata to reuse captured content identity;
 it is opt-in, weaker than full content checks, and its evidence cannot satisfy content verification.
 Common options: --repo PATH, --state-dir PATH, --json.
+Results are compact by default; --full includes the audit payload. run show always includes full detail.
 Execution: --human-inbox, --pi-auth-file PATH, --codex-auth-file PATH.
 --wait: 0=fulfilled, 1=RED, 2=ERROR, 3=timeout, 4=incomplete. Timeout does not cancel.
 Without --wait, 0 means accepted or already fulfilled; inspect the reported outcome.
@@ -73,18 +75,20 @@ function parse(argv: string[]) {
 }
 
 const exitFor = (run: ProjectRunView) => run.status === 'GREEN' ? 0 : run.status === 'RED' ? 1 : run.status === 'INCOMPLETE' ? 4 : 2;
-const publicRun = ({ project, ...run }: ProjectRunView) => ({ ...run, workspaceIntegrity: run.workspace?.integrity ?? 'content' });
-function planText(plan: ProjectPlan): string {
+function planText(plan: RequesterPlan): string {
   const target = plan.selection.kind === 'artifact' ? plan.selection.artifactId : plan.selection.kind === 'critic' ? plan.selection.criticId : 'Project';
   // Project queries expose only the selection's required dependency closure.
   const artifacts = plan.artifacts;
-  return `${target}: ${plan.satisfied ? 'SATISFIED' : 'NOT SATISFIED'}\nSnapshot: ${plan.snapshotHash}\nIntegrity: ${plan.workspaceIntegrity ?? 'content'}\n` + artifacts.map(a => `  Artifact ${a.id}: ${a.status} (${a.passed}/${a.total} Critics)${a.identity ? ` · identity: ${a.identity} · value: ${a.value}` : ''}\n`).join('') + plan.items.map(c => `  ${c.id}: ${c.action} · ${c.status}\n    ${c.reason}`).join('\n') +
-    `\nReuse ${plan.counts.reuse} · Ready ${plan.counts.execute} · Waiting ${plan.counts.wait} · Active ${plan.counts.active} · Failed ${plan.counts.failed}`;
+  const results = new Map(plan.results.map(result => [result.reference.requestId, result]));
+  return `${target}: ${plan.satisfied ? 'SATISFIED' : 'NOT SATISFIED'}\nSnapshot: ${plan.snapshotHash}\nIntegrity: ${plan.workspaceIntegrity ?? 'content'}\n` + artifacts.map(a => `  Artifact ${a.id}: ${a.status} (${a.passed}/${a.total} Critics)${a.identity ? ` · identity: ${a.identity} · value: ${a.value}` : ''}\n`).join('') + plan.items.map(c => {
+    const result = c.result ? results.get(c.result.requestId) : undefined;
+    return `  ${c.id}: ${c.action} · ${c.status}\n    ${c.reason}${result ? `\n    Critic reason: ${result.reason}\n    Evidence: ${result.evidence.join('; ')}\n    Reference: ${JSON.stringify(result.reference)}` : ''}`;
+  }).join('\n') + `\nReuse ${plan.counts.reuse} · Ready ${plan.counts.execute} · Waiting ${plan.counts.wait} · Active ${plan.counts.active} · Failed ${plan.counts.failed}`;
 }
 
 export async function main(argv = process.argv.slice(2), { stdout = process.stdout, stderr = process.stderr }: { stdout?: Output; stderr?: Output } = {}): Promise<number> {
   let json = argv.includes('--json');
-  let broker: ReturnType<typeof createBroker> | undefined;
+  let broker: ReturnType<typeof createBroker<'full'>> | undefined;
   const print = (value: unknown, plain?: string) => stdout.write((!json && plain !== undefined ? plain : JSON.stringify(value, null, 2)) + '\n');
   try {
     const command = argv[0] ?? 'help';
@@ -94,7 +98,8 @@ export async function main(argv = process.argv.slice(2), { stdout = process.stdo
     if (['help', '--help'].includes(command) || options['--help']) { stdout.write(help); return 0; }
     if (!['status', 'plan', 'verify', 'history', 'graph', 'config', 'run', 'request'].includes(command)) throw new Error(`Unknown command: ${command}`);
     const common = ['--repo', '--state-dir', '--json'];
-    const permitted = new Set([...common, ...(['status', 'plan', 'verify', 'history'].includes(command) ? ['--critic', '--all'] : []),
+    const full = Boolean(options['--full']) || command === 'run' && positional[0] === 'show';
+    const permitted = new Set([...common, ...(['status', 'plan', 'verify', 'history', 'run', 'request'].includes(command) ? ['--full'] : []), ...(['status', 'plan', 'verify', 'history'].includes(command) ? ['--critic', '--all'] : []),
       ...(['status', 'plan', 'verify'].includes(command) ? ['--integrity'] : []),
       ...(['plan', 'verify'].includes(command) ? ['--recursive', '--force'] : []),
       ...(command === 'verify' ? ['--wait', '--timeout-ms', '--requester', '--human-inbox', '--pi-auth-file', '--codex-auth-file'] : []),
@@ -126,14 +131,15 @@ export async function main(argv = process.argv.slice(2), { stdout = process.stdo
       return { kind: 'all' };
     };
     const verifySelection = command === 'verify' ? select(true) : undefined;
-    const printRun = (run: ProjectRunView) => print(publicRun(run), `Run: ${run.id}\nExecution: ${run.status}\nIntegrity: ${run.workspace?.integrity ?? 'content'}${run.validation ? `\n${planText(run.validation)}` : ''}`);
+    const runOutput = (run: ProjectRunView) => full ? { ...run, workspaceIntegrity: run.workspace?.integrity ?? 'content' } : requesterRun(run, context.stateDir);
+    const printRun = (run: ProjectRunView) => print(runOutput(run), full ? undefined : `Run: ${run.id}\nExecution: ${run.status}\nIntegrity: ${run.workspace?.integrity ?? 'content'}${run.validation ? `\n${planText(requesterPlan(run.validation, context.stateDir))}` : ''}`);
     const wait = async (id: string): Promise<number> => {
       const deadline = Date.now() + timeoutMs;
       for (;;) {
         const run = projectRun(context.stateDir, id);
         if (!run) throw new Error('Review handle not found.');
         if (terminal.has(run.status)) { printRun(run); return exitFor(run); }
-        if (Date.now() >= deadline) { print({ ...publicRun(run), wait: { completed: false, reason: 'timeout' } }, `Run ${id}: waiting timed out; execution continues.`); return 3; }
+        if (Date.now() >= deadline) { print({ ...runOutput(run), wait: { completed: false, reason: 'timeout' } }, `Run ${id}: waiting timed out; execution continues.`); return 3; }
         await delay(Math.min(100, Math.max(1, deadline - Date.now())));
       }
     };
@@ -159,23 +165,24 @@ export async function main(argv = process.argv.slice(2), { stdout = process.stdo
     }
     if (command === 'status' || command === 'plan') {
       const selection = select(command === 'plan');
-      const { plan } = await withCliCancellation('Project validation cancelled.', signal => inspectProject({ ...context, selection, recursive: Boolean(options['--recursive']), force: Boolean(options['--force']), workspaceIntegrity, signal }));
-      print(plan, planText(plan)); return command === 'plan' || plan.satisfied ? 0 : 1;
+      const { plan } = await withCliCancellation('Project validation cancelled.', signal => inspectProject({ detail: 'full', ...context, selection, recursive: Boolean(options['--recursive']), force: Boolean(options['--force']), workspaceIntegrity, signal }));
+      const output = full ? plan : requesterPlan(plan, context.stateDir);
+      print(output, full ? undefined : planText(requesterPlan(plan, context.stateDir))); return command === 'plan' || plan.satisfied ? 0 : 1;
     }
     if (command === 'history') {
       const selection = select();
-      const entries = projectHistory(context.stateDir).filter(e => selection.kind === 'all' || selection.kind === 'critic' && e.criticId === selection.criticId || selection.kind === 'artifact' && e.input.target.id === selection.artifactId);
-      print(entries, entries.map(e => `${e.completedAt} ${e.criticId} ${e.verdict} · ${e.requestId}\n  ${e.summary}`).join('\n') || 'No recorded validation evidence.'); return 0;
+      const entries = projectHistory(context.stateDir, { detail: 'full' }).filter(e => selection.kind === 'all' || selection.kind === 'critic' && e.criticId === selection.criticId || selection.kind === 'artifact' && e.input.target.id === selection.artifactId);
+      print(full ? entries : entries.map(e => requesterEvidence(e, context.stateDir)), full ? undefined : entries.map(e => `${e.completedAt} ${e.criticId} ${e.verdict} · ${e.requestId}\n  ${e.summary}`).join('\n') || 'No recorded validation evidence.'); return 0;
     }
     if (command === 'run' || command === 'request') {
       const [action, id] = positional;
       const actions = command === 'run' ? ['list', 'show', 'resume', 'cancel'] : ['list', 'show', 'claim', 'tool', 'submit'];
       if (!actions.includes(action) || positional.length !== (action === 'list' ? 1 : 2)) throw new Error(`Use ${command} ${actions.join('|')} with the appropriate ID.`);
       if (command === 'run' && options['--wait'] && !['show', 'resume'].includes(action)) throw new Error('--wait requires run show or run resume.');
-      if (action === 'list') { print(command === 'run' ? projectRuns(context.stateDir).map(publicRun) : projectRequests(context.stateDir, get('--run'))); return 0; }
+      if (action === 'list') { print(command === 'run' ? projectRuns(context.stateDir, { detail: full ? 'full' : 'compact' }) : projectRequests(context.stateDir, get('--run'), { detail: full ? 'full' : 'compact' })); return 0; }
       if (action === 'show') {
         if (command === 'run') { if (options['--wait']) return await wait(id); const run = projectRun(context.stateDir, id); if (!run) throw new Error('Review handle not found.'); printRun(run); }
-        else { const request = projectRequests(context.stateDir).find(r => r.id === id); if (!request) throw new Error('Review request not found.'); print(request); }
+        else { const request = projectRequests(context.stateDir, undefined, { detail: 'full' }).find(r => r.id === id); if (!request) throw new Error('Review request not found.'); print(full ? request : requesterRequest(request, context.stateDir)); }
         return 0;
       }
     }
@@ -186,7 +193,7 @@ export async function main(argv = process.argv.slice(2), { stdout = process.stdo
     if (codexFile) piOptions.codexAuthFile = resolve(codexFile);
     const humanInbox = Boolean(options['--human-inbox']);
     const executors = createExecutorRegistry({ piOptions, alarmMethods: createLocalAlarmMethods({ ...context, humanInbox }) });
-    broker = createBroker({ ...context, executors, workspaceIntegrity });
+    broker = createBroker({ detail: 'full', ...context, executors, workspaceIntegrity });
     if (command === 'verify') {
       const run = await withCliCancellation('Project validation cancelled.', signal => broker!.submitProject({ selection: verifySelection!, recursive: Boolean(options['--recursive']), force: Boolean(options['--force']), requesterId: get('--requester') ?? 'cli', signal }));
       if (!terminal.has(run.status)) await ensureRunWorker({ broker, context, run, initialConfig: { piOptions, humanInbox } });
@@ -205,7 +212,7 @@ export async function main(argv = process.argv.slice(2), { stdout = process.stdo
     }
     const reviewerId = get('--reviewer'); if (!reviewerId) throw new Error('--reviewer is required for Human actions.');
     const request = broker.getRequest(id); if (!request) throw new Error('Review request not found.');
-    if (action === 'claim') print(await claimHumanFromCli(broker, id, reviewerId, stderr));
+    if (action === 'claim') { const claimed = await claimHumanFromCli(broker, id, reviewerId, stderr); print(full ? claimed : requesterRequest(claimed, context.stateDir)); }
     else if (action === 'tool') {
       const toolName = get('--tool'); if (!toolName) throw new Error('--tool is required.');
       print(await broker.executeHumanTool(id, { reviewerId, toolName, arguments: JSON.parse(get('--args') ?? '{}') }));

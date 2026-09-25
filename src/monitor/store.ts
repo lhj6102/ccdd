@@ -1,3 +1,4 @@
+import { reviewReference } from '../result-view.js';
 import type { ArtifactReferenceMetadata } from '../artifacts/index.js';
 import { createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
@@ -409,8 +410,11 @@ export function createMonitorStore(options: MonitorSources = {}) {
       try {
         const raw = snapshot.target;
         if (!object(raw.payload)) throw storageError();
-        const outcome = object(raw.result) && typeof raw.result.summary === 'string' && Array.isArray(raw.result.evidence) && raw.result.evidence.every(item => typeof item === 'string')
-          ? { summary: text(raw.result.summary, 12_000), evidence: (raw.result.evidence as string[]).slice(0, 100).map(item => text(item, 4_000)) } : null;
+        const outcome: MonitorDetail['result'] = object(raw.result) && typeof raw.result.summary === 'string' && Array.isArray(raw.result.evidence) && raw.result.evidence.every(item => typeof item === 'string')
+          && (raw.result.verdict === 'GREEN' || raw.result.verdict === 'RED')
+          ? { verdict: raw.result.verdict, reason: text(raw.result.summary, 12_000),
+            inputKey: object(raw.validationInput) && typeof raw.validationInput.key === 'string' ? raw.validationInput.key : null,
+            target: header.target ?? '', criticId: header.criticId, reference: reviewReference(snapshot.source.stateDir, header.runId, header.id), evidence: (raw.result.evidence as string[]).slice(0, 100).map(item => text(item, 4_000)) } : null;
         const request = (await projectRequests(snapshot, new Map(), requestId))[0];
         const artifacts = artifactReferences(raw.artifacts);
         return {

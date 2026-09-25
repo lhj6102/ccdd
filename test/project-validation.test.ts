@@ -15,7 +15,7 @@ async function fixture(t: TestContext, cycle = false) {
   await data.write('a', { name: 'a', critics: [runtimeCritic('check', 'Check {b}.')] });
   await data.write('b', { name: 'b', critics: [runtimeCritic('check', cycle ? 'Check {a}.' : 'Check this Artifact.')] });
   await data.write('independent', { name: 'independent', critics: [runtimeCritic()] });
-  const broker = createBroker({ ...data, executors: createExecutorRegistry() }); data.cleanup(() => broker.close());
+  const broker = createBroker({ detail: 'full', ...data, executors: createExecutorRegistry() }); data.cleanup(() => broker.close());
   const verify = async (options: Parameters<typeof broker.submitProject>[0]) => { const run = await broker.submitProject(options); if (!['GREEN', 'INCOMPLETE'].includes(run.status)) await broker.run(run.id); return projectRun(data.stateDir, run.id)!; };
   return { ...data, broker, verify };
 }
@@ -24,7 +24,7 @@ test('current queries read only JSON and material and never create a store or ex
   const data = await artifactFixture(t), marker = join(data.root, 'executed');
   await data.write('', { name: 'root', views: fixtureViews(), critics: [runtimeCritic()] }, { 'view.mjs': `import {writeFileSync} from 'node:fs';writeFileSync(${JSON.stringify(marker)},'x');` });
   const before = await readdir(data.root);
-  const { plan } = await inspectProject(data);
+  const { plan } = await inspectProject({ ...data, detail: 'full' });
   assert.equal(plan.satisfied, false); assert.equal(plan.items[0].action, 'EXECUTE');
   assert.deepEqual(await readdir(data.root), before); await assert.rejects(readFile(marker), { code: 'ENOENT' });
 });
@@ -36,11 +36,11 @@ test('individual verification executes selected inputs immediately and preserves
   assert.equal(first.validation!.critics.find(c => c.id === 'a/check')!.status, 'PASS');
   const second = await data.verify({ selection: { kind: 'artifact', artifactId: 'b' } });
   assert.equal(second.status, 'GREEN'); assert.equal(second.requests.length, 1);
-  const current = await inspectProject({ ...data, selection: { kind: 'artifact', artifactId: 'a' } });
+  const current = await inspectProject({ detail: 'full', ...data, selection: { kind: 'artifact', artifactId: 'a' } });
   assert.equal(current.plan.satisfied, true);
   assert.deepEqual(current.plan.critics.map(c => c.id), ['a/check', 'b/check']);
   assert.deepEqual(current.plan.artifacts.map(a => a.id), ['a', 'b']);
-  const whole = await inspectProject(data);
+  const whole = await inspectProject({ ...data, detail: 'full' });
   assert.equal(whole.plan.critics.find(c => c.id === 'independent/check')!.status, 'UNREVIEWED');
 });
 
@@ -60,17 +60,17 @@ test('folder, mount and instruction inputs invalidate consumers while unrelated 
   await data.write('reference', { name: 'reference', basis: true });
   await data.edit('a', m => { m.mounts = { mounted: 'reference', alias: 'reference' }; });
   await data.verify({ selection: { kind: 'all' }, recursive: true });
-  const before = (await inspectProject(data)).snapshot;
+  const before = (await inspectProject({ ...data, detail: 'full' })).snapshot;
   await writeFile(join(data.repoPath, 'independent/content.txt'), 'unrelated change');
-  let current = (await inspectProject(data)).snapshot;
+  let current = (await inspectProject({ ...data, detail: 'full' })).snapshot;
   assert.equal(current.inputs['a/check'].key, before.inputs['a/check'].key);
   for (const path of ['a/child/content.txt', 'reference/content.txt', 'b/content.txt']) {
     const old = current;
     await writeFile(join(data.repoPath, path), `change ${path}`);
-    current = (await inspectProject(data)).snapshot;
+    current = (await inspectProject({ ...data, detail: 'full' })).snapshot;
     assert.notEqual(current.inputs['a/check'].key, old.inputs['a/check'].key);
   }
-  assert.equal(queryProject(current, projectHistory(data.stateDir)).critics.find(c => c.id === 'a/check')!.status, 'STALE');
+  assert.equal(queryProject(current, projectHistory(data.stateDir, { detail: 'full' }), { stateDir: data.stateDir, detail: 'full' }).critics.find(c => c.id === 'a/check')!.status, 'STALE');
 });
 
 test('SCC identity is finite and independent of evidence IDs, completion times and definition discovery order', async t => {
@@ -92,23 +92,23 @@ test('no-Critic Artifacts remain UNREVIEWED except explicit basis, including rec
   const data = await artifactFixture(t);
   await data.write('empty', { name: 'empty' }); await data.write('basis', { name: 'basis', basis: true });
   await data.write('parent', { name: 'parent', basis: true, mounts: { input: 'empty' } });
-  const { plan } = await inspectProject(data);
+  const { plan } = await inspectProject({ ...data, detail: 'full' });
   assert.equal(plan.satisfied, false);
   assert.deepEqual(Object.fromEntries(plan.artifacts.map(a => [a.id, a.status])), { basis: 'BASIS', empty: 'UNREVIEWED', parent: 'INCOMPLETE' });
-  assert.equal((await inspectProject({ ...data, selection: { kind: 'artifact', artifactId: 'basis' } })).plan.satisfied, true);
+  assert.equal((await inspectProject({ detail: 'full', ...data, selection: { kind: 'artifact', artifactId: 'basis' } })).plan.satisfied, true);
 });
 
 test('narrow material selection still fingerprints the manifest and script entry implementation', async t => {
   const data = await artifactFixture(t);
   await data.write('a', { name: 'a', stale: { kind: 'file-hash', paths: ['content.txt'] }, views: fixtureViews(), critics: [runtimeCritic()] });
-  const before = (await inspectProject(data)).snapshot;
+  const before = (await inspectProject({ ...data, detail: 'full' })).snapshot;
   await writeFile(join(data.repoPath, 'a/view.mjs'), '// changed implementation');
-  const changed = (await inspectProject(data)).snapshot;
+  const changed = (await inspectProject({ ...data, detail: 'full' })).snapshot;
   assert.notEqual(changed.inputs['a/check'].key, before.inputs['a/check'].key);
   await writeFile(join(data.repoPath, 'a/unrelated.txt'), 'not declared');
-  assert.equal((await inspectProject(data)).snapshot.inputs['a/check'].key, changed.inputs['a/check'].key);
+  assert.equal((await inspectProject({ ...data, detail: 'full' })).snapshot.inputs['a/check'].key, changed.inputs['a/check'].key);
   await writeFile(join(data.repoPath, 'a/check.test.mjs'), '// changed runtime entry');
-  assert.notEqual((await inspectProject(data)).snapshot.inputs['a/check'].key, changed.inputs['a/check'].key);
+  assert.notEqual((await inspectProject({ ...data, detail: 'full' })).snapshot.inputs['a/check'].key, changed.inputs['a/check'].key);
 });
 
 test('force replaces evidence only for selected Critics and a later actual RED supersedes old PASS', async t => {
@@ -140,9 +140,9 @@ test('historical evidence is result-only and old unfinished runs cannot resume',
   db.prepare('UPDATE runs SET data=? WHERE id=?').run(JSON.stringify(saved), run.id); db.close();
   assert.ok(projectRun(data.stateDir, run.id)); assert.equal(projectRun(data.stateDir, run.id)!.validation, undefined);
   await assert.rejects(data.broker.run(run.id), /Historical Runs cannot be resumed/);
-  const snapshot = (await inspectProject(data)).snapshot;
+  const snapshot = (await inspectProject({ ...data, detail: 'full' })).snapshot;
   const history = [{ requestId: 'old', runId: 'old', criticId: 'a/check', input: { ...snapshot.inputs['a/check'], version: 1 }, completedAt: new Date().toISOString(), verdict: 'GREEN', summary: 'Controlled historical fixture', evidence: ['Fixture'] }] as any;
-  assert.equal(queryProject(snapshot, history).critics.find(c => c.id === 'a/check')!.result, null);
+  assert.equal(queryProject(snapshot, history, { stateDir: data.stateDir, detail: 'full' }).critics.find(c => c.id === 'a/check')!.result, null);
 });
 
 test('CLI config and graph queries expose qualified owners and cyclic relation types without executing', async t => {
@@ -150,5 +150,5 @@ test('CLI config and graph queries expose qualified owners and cyclic relation t
   const code = await main(['graph', 'a', '--repo', data.repoPath, '--state-dir', data.stateDir, '--json'], { stdout: { write: text => { output += text; } }, stderr: { write: text => { throw new Error(text); } } });
   assert.equal(code, 0); const graph = JSON.parse(output); assert.equal(graph.version, 2); assert.equal(graph.critics.length, 2); assert.ok(graph.relations.every((edge: any) => edge.kind === 'instruction'));
   const bytes = await readFile(join(data.stateDir, 'broker.sqlite'));
-  await inspectProject(data); assert.deepEqual(await readFile(join(data.stateDir, 'broker.sqlite')), bytes);
+  await inspectProject({ ...data, detail: 'full' }); assert.deepEqual(await readFile(join(data.stateDir, 'broker.sqlite')), bytes);
 });

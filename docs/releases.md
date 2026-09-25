@@ -4,6 +4,23 @@ CCDD packages are distributed through npm. GitHub Releases announce each version
 
 See [getting started](getting-started.md) for setup and [v4.3.0 release notes](releases/v4.3.0.md) for the current changes.
 
+## Compatibility of unreleased requester results
+
+[Unreleased notes](releases/unreleased.md) target the **5.0 line**: compact
+requester results change the default CLI JSON and programmatic API shapes.
+Treat removal of previously returned fields as breaking, consistent with the
+[breaking SDK change in v3](releases/v3.0.0.md#breaking-sdk-change-and-upgrade) and
+[breaking API transition in v4](migration-v4.md). This release guide provides no
+4.x exception for removing public result fields. Audit lookup and explicit full
+detail remain available; their availability does not make the default change
+backward compatible.
+
+The feature PR does not bump versions or publish. The release commit must align
+all package versions/peer ranges and lockfile entries for 5.0.0 and add the
+versioned release notes before tagging. Do not publish this default change as
+4.x. The existing package-version input to Critic identity means the eventual
+upgrade causes one re-review, independently of result projection.
+
 ## Installing and upgrading
 
 CCDD 4.3.0 supports Node.js 22 LTS (22.19.0 or later). Install matching versions of the three packages:
