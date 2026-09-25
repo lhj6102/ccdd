@@ -1,5 +1,3 @@
-import { join } from 'node:path';
-import { randomUUID } from 'node:crypto';
 import { localContext } from '../local.js';
 import { readWorkspaceConfig } from '../broker/config.js';
 import { prepareWorkspace, type WorkspaceHandle } from '../workspaces/index.js';
@@ -75,7 +73,7 @@ export async function diagnoseArtifactTools({ repoPath, stateDir, artifactId, au
     }
     for (const targetAudience of audience ? [audience] : ['agent', 'human'] as const) {
       stage = 'preflight';
-      const registry = await createReviewTools({ worktreePath, ...selectedScope, configManifest, audience: targetAudience, runDir: join(context.stateDir, 'tool-check', randomUUID()), signal: workspace.signal });
+      const registry = await createReviewTools({ worktreePath, ...selectedScope, configManifest, audience: targetAudience, signal: workspace.signal });
       if (execute && targetAudience === audience && registry.outputDir) report.outputDir = registry.outputDir;
       try {
         // Explicit Artifact selection makes the short operation name unambiguous; published names win.

@@ -30,3 +30,8 @@ and two-process lease-expiry races.
   cache key, including tool continuations and the one format-only repair turn.
 - R7: Tool completion diagnostics include total and per-kind response payload
   bytes, without retaining response content or changing identity/reuse/verdicts.
+- R8: Closing or aborting an Artifact tool registry removes its owned temporary
+  root and output tree, including construction failures. Caller-supplied roots
+  are retained. Explicit SDK `pruneProject(stateDir)` and CLI `ccdd-project prune`
+  remove only known scratch directories of completed, unowned runs; automatic
+  pruning remains off and all audit evidence stays intact.

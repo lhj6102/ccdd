@@ -610,3 +610,23 @@ binary bytes (not base64 transport overhead); launch uses the serialized
 exclude protocol framing and observation metadata. Author-controlled errors count
 their returned text; failures with no validated response count zero. These are
 optional operational diagnostics only, never identity, reuse keys, or verdicts.
+
+### Temporary output and explicit pruning
+
+Artifact tool registries own their `tool-output-*` directory and, when no run
+root is supplied, the enclosing `ccdd-tools-*` temporary root. They remove these
+on close, abort, and failed initialization. Callers must close registries in a
+`finally` block after successful or failed calls. Output files remain usable
+until that close; normalized image responses have already loaded their bytes.
+Caller-supplied run roots are never removed by registry cleanup.
+
+Automatic history pruning is **off**. Invoke `pruneProject(stateDir)` from
+`@ccdd/project`, or `ccdd-project prune --state-dir PATH [--json]`, to remove
+transient output explicitly. Only terminal requests in terminal runs with no
+worker owner are eligible. The operation removes these known request subtrees:
+`output`, `tmp`, `home`, `cache`, `human-tools`, `preparation`, and `tool-output-*`.
+It skips active, waiting, queued, and owned runs, does not traverse directory
+symlinks, and never scans unrelated system temporary directories. Unknown paths,
+worker files, stored results, request records, events, and tool-call audit remain
+untouched. The SQLite store is never vacuumed or truncated. Keep an application
+file outside these declared scratch subtrees if it must remain as audit evidence.
