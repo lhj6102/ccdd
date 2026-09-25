@@ -190,7 +190,7 @@ export function createBroker<D extends ResultDetail = 'compact'>({ detail, repoP
   });
   function refreshReadinessWithin(runId: string): void {
     const run = required(runData(runId), 'Run'), requests = runRequests(runId);
-    if (run.project?.version === 2) {
+    if (run.project?.version === 3) {
       if (terminal.has(run.status)) return;
       const plan = planProject(run.project.snapshot, readEvidence(db), { selection: run.project.selection, recursive: run.project.recursive, force: run.project.force, runId, attempts: requests });
       for (const item of plan.items.filter(item => item.action === 'EXECUTE')) {
@@ -210,7 +210,7 @@ export function createBroker<D extends ResultDetail = 'compact'>({ detail, repoP
   const updateRunStatus = (runId: string) => {
     const states = runRequests(runId).map(request => request.status);
     const run = required(runData(runId), 'Run');
-    if (run.project?.version === 2) {
+    if (run.project?.version === 3) {
       if (terminal.has(run.status)) return;
       const plan = planProject(run.project.snapshot, readEvidence(db), { selection: run.project.selection, recursive: run.project.recursive, force: run.project.force, runId, attempts: runRequests(runId) });
       const status: RunStatus = states.includes('RUNNING') ? 'RUNNING' : states.includes('QUEUED') ? 'QUEUED' : states.includes('WAITING_HUMAN') ? 'WAITING_HUMAN' :
@@ -253,7 +253,7 @@ export function createBroker<D extends ResultDetail = 'compact'>({ detail, repoP
       request.completedAt = now(); request.blockedReason = null; saveRequest(request);
       appendEvent(runId, request.id, 'request.error', request.error, { status: request.status, ...(request.errorCode ? { code: request.errorCode } : {}) });
     }
-    if (run.project?.version === 2) {
+    if (run.project?.version === 3) {
       const plan = planProject(run.project.snapshot, readEvidence(db), { selection: run.project.selection, recursive: run.project.recursive, force: run.project.force, runId, attempts: runRequests(runId) });
       run.project.evidenceRequestIds = [...new Set(plan.critics.flatMap(c => c.result ? [c.result.requestId] : []))];
     }
@@ -388,7 +388,7 @@ export function createBroker<D extends ResultDetail = 'compact'>({ detail, repoP
       reconcileWithin(runId);
       stored = runData(runId);
       if (!stored) throw new Error('Unknown Run.');
-      if (stored.project?.version !== 2) throw new Error('Historical Runs cannot be resumed; submit a new validation request.');
+      if (stored.project?.version !== 3) throw new Error('Historical Runs cannot be resumed; submit a new validation request.');
       if (terminal.has(stored.status)) return false;
       if (!stored.workspace) throw new Error('This legacy Run has no workspace descriptor; submit a new review.');
       if (ownerData(runId)) throw codedError('Another process already owns this review Run.', 'RUN_ALREADY_OWNED');
@@ -489,7 +489,7 @@ export function createBroker<D extends ResultDetail = 'compact'>({ detail, repoP
         for (const id of ids) templates.push(...await prepareReviewRequests({ repoPath: workspace.descriptor.path, repoId, snapshotHash: workspace.descriptor.hash, criticId: id, preparedConfig: config }));
         const id = randomUUID(), createdAt = now();
         const record: RunRecord = { id, repoId, snapshotHash: workspace.descriptor.hash, workspace: workspace.descriptor, requesterId,
-          scope: { kind: 'project' }, graph: createGraphDefinition(config), project: { version: 2, snapshot, selection, recursive, force, templates }, status: 'QUEUED', createdAt };
+          scope: { kind: 'project' }, graph: createGraphDefinition(config), project: { version: 3, snapshot, selection, recursive, force, templates }, status: 'QUEUED', createdAt };
         await workspace.assertUnchanged(); workspace.signal.throwIfAborted();
         transaction(() => {
           db.prepare('INSERT INTO runs(id,created_at,status,data) VALUES (?,?,?,?)').run(id, createdAt, record.status, JSON.stringify(record));

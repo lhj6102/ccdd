@@ -2,7 +2,7 @@ import type { RepoConfig, ReviewEnvelope, ReviewResult, ReviewRequest, Workspace
 
 export type ProjectSelection = { kind: 'all' } | { kind: 'artifact'; artifactId: string } | { kind: 'critic'; criticId: string };
 export interface ValidationInput {
-  version: 2; key: string; criticHash: string;
+  version: 3; key: string; criticHash: string;
   target: { id: string; hash: string }; deps: { id: string; hash: string }[];
   reusable: boolean;
   /** Omitted for historical/default content verification. Part of the effective Critic identity when nondefault. */
@@ -10,7 +10,7 @@ export interface ValidationInput {
 }
 export interface ArtifactIdentity { identity: 'script'; value: string }
 export interface ProjectSnapshot {
-  version: 2; config: RepoConfig; snapshotHash: string;
+  version: 3; config: RepoConfig; snapshotHash: string;
   artifactIdentities?: Record<string, ArtifactIdentity>;
   /** Prepared only for the selected dependency closure; config retains the full static graph. */
   artifactHashes: Record<string, string>; inputs: Record<string, ValidationInput>;
@@ -21,7 +21,7 @@ export interface ValidationEvidence {
   completedAt: string; verdict: ReviewResult['verdict']; summary: string; evidence: string[];
 }
 export interface ProjectRunDefinition {
-  version: 2; snapshot: ProjectSnapshot; selection: ProjectSelection;
+  version: 3; snapshot: ProjectSnapshot; selection: ProjectSelection;
   recursive: boolean; force: boolean;
   /** Prepared definitions, not tickets or persisted stale states. */
   templates: ReviewEnvelope[];

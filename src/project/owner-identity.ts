@@ -4,7 +4,6 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { StaleStrategy } from '../definitions.js';
 import { environmentOutputDirectory, runEnvironmentScript } from '../tools/environment.js';
-import { hashExecutionInputs } from '../tools/inputs.js';
 import { scopedPath } from '../tools/paths.js';
 
 /** Identity scripts use the readiness executor; the snapshot caller owns the read-only workspace lease. */
@@ -14,7 +13,7 @@ export async function ownerIdentity(root: string, owner: string, id: string, str
   const entry = strategy.script.command === 'node' ? strategy.script.args[0] : strategy.script.command;
   const script = await scopedPath(cwd, entry);
   if (!(await lstat(script)).isFile()) throw new Error(`${label} requires a regular entry file.`);
-  const inputs = await hashExecutionInputs(cwd, [entry, ...strategy.inputs ?? []], signal);
+  for (const input of strategy.inputs ?? []) { signal?.throwIfAborted(); await lstat(await scopedPath(cwd, input)); }
   // Temporary output is never state and is removed even on invalid output, timeout or cancellation.
   const base = await environmentOutputDirectory(root, tmpdir());
   const outputDir = await mkdtemp(join(base, 'ccdd-identity-'));
@@ -31,6 +30,6 @@ export async function ownerIdentity(root: string, owner: string, id: string, str
     // Do not trim: whitespace, extra lines, carriage returns and invalid bytes are authoring errors.
     const value = result.stdout.endsWith('\n') ? result.stdout.slice(0, -1) : result.stdout;
     if (value.length < 1 || value.length > 128 || /[^A-Za-z0-9._:-]/.test(value)) throw new Error(`${label} stdout must be one line of 1–128 characters from [A-Za-z0-9._:-], with only one optional trailing newline.`);
-    return { inputs, value };
+    return { value };
   } finally { await rm(outputDir, { recursive: true, force: true }); }
 }

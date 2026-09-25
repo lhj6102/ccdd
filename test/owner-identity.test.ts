@@ -12,7 +12,6 @@ import { createExecutorRegistry } from '../src/executors/index.js';
 import { projectRun } from '../src/project/store.js';
 import { main } from '../src/project/cli.js';
 import { inputHash } from '../src/project/identity.js';
-import { packageVersion } from '../src/runtime-paths.js';
 
 async function fixture(t: Parameters<typeof artifactFixture>[0], script = 'import {readFileSync} from "node:fs";process.stdout.write(readFileSync("value.txt"));') {
   const data = await artifactFixture(t), views = fixtureViews();
@@ -65,7 +64,7 @@ test('owner identity reuses actual evidence across runtime and material changes,
   assert.equal(changed.requests[0].validationInput!.criticHash, initial.criticHash);
 });
 
-test('identity entry, declared inputs, definitions, environment inputs and dependency components still invalidate', async t => {
+test('owner values ignore entry, definitions and environment changes but retain dependency identities', async t => {
   const data = await fixture(t);
   await data.write('basis', { name: 'basis', basis: true });
   await data.edit('a', manifest => { manifest.mounts = { basis: 'basis' }; manifest.envRequirements = { ready: { description: 'Ready', script: 'ready.mjs' } }; });
@@ -74,11 +73,12 @@ test('identity entry, declared inputs, definitions, environment inputs and depen
   for (const [path, contents] of [['a/identity.mjs', 'console.log("equivalent-v1");'], ['a/rule.txt', 'rule two'], ['a/ready.mjs', '// changed environment'], ['basis/content.txt', 'dependency change']]) {
     await writeFile(join(data.repoPath, path), contents);
     const after = (await inspectProject({ ...data, detail: 'full' })).snapshot;
-    assert.notEqual(after.inputs['a/check'].key, before.inputs['a/check'].key, path);
+    if (path.startsWith('basis/')) assert.notEqual(after.inputs['a/check'].key, before.inputs['a/check'].key, path);
+    else assert.equal(after.inputs['a/check'].key, before.inputs['a/check'].key, path);
     before = after;
   }
   await data.edit('a', manifest => { manifest.views!.agentTools!.read.metadata.description = 'Changed tool contract'; });
-  assert.notEqual((await inspectProject({ ...data, detail: 'full' })).snapshot.inputs['a/check'].key, before.inputs['a/check'].key);
+  assert.equal((await inspectProject({ ...data, detail: 'full' })).snapshot.inputs['a/check'].key, before.inputs['a/check'].key);
 });
 
 test('identity discovery is inert, while invalid output and exits fail queries without fallback or leaked diagnostics', async t => {
@@ -253,23 +253,22 @@ test('identity schema rejects unknown fields, unsafe paths, inline commands and 
   }
 });
 
-test('default, file-hash and always identities match the pre-feature byte-for-byte baselines', async t => {
+test('default identities use the new format without package or runtime version signals', async t => {
   const data = await artifactFixture(t);
-  for (const name of ['default', 'narrow', 'always']) {
-    await data.write(name, { name, critics: [runtimeCritic()], ...(name === 'narrow' ? { stale: { kind: 'file-hash' as const, paths: ['content.txt'] } } : name === 'always' ? { stale: { kind: 'always' as const } } : {}) }, { 'view.mjs': 'fixed entry' });
-  }
-  const config = await data.config(), snapshot = await createProjectSnapshot(config, data.repoPath, 'a'.repeat(64));
-  // Captured with origin/main (89384fa) identity.ts against this exact fixture.
-  const hashes = {
-    always: '632fb55d9f199e7e342207fbbb46cfebdff63b13dc2e26fc857148e07ca3e7b4',
-    default: 'fa548bfffb4c8e721f23ce26367749ae4d123a5a70ed5343b90bb1cf74c62fbe',
-    narrow: 'b2d25300564240f21264c45f315a3247f6ac381020cd6c786695a532176cfc26',
-  };
-  assert.deepEqual(snapshot.artifactHashes, hashes);
-  assert.equal(snapshot.artifactIdentities, undefined);
+  for (const name of ['default', 'narrow', 'always']) await data.write(name, { name, critics: [runtimeCritic()], ...(name === 'narrow' ? { stale: { kind: 'file-hash' as const, paths: ['content.txt'] } } : name === 'always' ? { stale: { kind: 'always' as const } } : {}) });
+  const config = await data.config(), before = await createProjectSnapshot(config, data.repoPath, 'a'.repeat(64));
+  const node = Object.getOwnPropertyDescriptor(process.versions, 'node')!;
+  try {
+    Object.defineProperty(process.versions, 'node', { ...node, value: '99.0.0' });
+    const after = await createProjectSnapshot(config, data.repoPath, 'b'.repeat(64));
+    assert.deepEqual(after.inputs, before.inputs);
+  } finally { Object.defineProperty(process.versions, 'node', node); }
+  // CCDD package metadata is external to these Artifact roots and is not an identity signal.
+  await writeFile(join(data.repoPath, 'package.json'), JSON.stringify({ version: '999.0.0' }));
+  assert.deepEqual((await createProjectSnapshot(config, data.repoPath, 'c'.repeat(64))).inputs, before.inputs);
   for (const critic of config.critics) {
-    const criticHash = inputHash({ version: 2, executorVersion: packageVersion, critic, workspaceIntegrity: 'content', runtime: { node: process.versions.node, platform: process.platform, arch: process.arch } });
-    const target = { id: critic.target, hash: hashes[critic.target as keyof typeof hashes] };
-    assert.deepEqual(snapshot.inputs[critic.id], { version: 2, key: inputHash({ criticHash, target, deps: [] }), criticHash, target, deps: [], reusable: critic.target !== 'always', workspaceIntegrity: 'content' });
+    const target = { id: critic.target, hash: before.artifactHashes[critic.target] };
+    assert.equal(before.inputs[critic.id].version, 3);
+    assert.equal(before.inputs[critic.id].key, inputHash({ version: 3, criticId: critic.id, target, deps: [] }));
   }
 });

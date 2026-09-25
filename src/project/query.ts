@@ -28,11 +28,11 @@ export function includedCritics(snapshot: Pick<ProjectSnapshot, 'config'>, selec
 
 /** Pull actual evidence once; dependency traversal never calls back into Critic evaluation. */
 export function queryProject(snapshot: ProjectSnapshot, history: readonly ValidationEvidence[], options: QueryOptions = {}): ProjectQuery {
-  if (snapshot.version !== 2) throw new Error('Historical validation inputs are available for result lookup only.');
+  if (snapshot.version !== 3) throw new Error('Historical validation inputs are available for result lookup only.');
   createGraphDefinition(snapshot.config);
   const selection = options.selection ?? { kind: 'all' }, required = requiredArtifacts(snapshot, selection);
   const byKey = new Map<string, ValidationEvidence>(), byRunKey = new Map<string, ValidationEvidence>(), byCritic = new Map<string, ValidationEvidence>();
-  for (const evidence of [...history].filter(e => e.input.version === 2).sort((a, b) => a.completedAt.localeCompare(b.completedAt))) {
+  for (const evidence of [...history].filter(e => e.input.version === 3).sort((a, b) => a.completedAt.localeCompare(b.completedAt))) {
     const key = `${evidence.criticId}:${evidence.input.key}`;
     byKey.set(key, evidence); byCritic.set(evidence.criticId, evidence);
     if (evidence.runId === options.runId) byRunKey.set(key, evidence);
@@ -41,7 +41,7 @@ export function queryProject(snapshot: ProjectSnapshot, history: readonly Valida
   const requiredSet = new Set(required);
   const critics: CriticValidation[] = snapshot.config.critics.filter(definition => requiredSet.has(definition.target)).map(definition => {
     const id = definition.id, input = snapshot.inputs[id];
-    if (!input || input.version !== 2) throw new Error(`Missing current validation input: ${id}`);
+    if (!input || input.version !== 3) throw new Error(`Missing current validation input: ${id}`);
     const key = `${id}:${input.key}`, evidence = (input.reusable && !forced.has(id) ? byKey : byRunKey).get(key) ?? null;
     const attempt = attempts.get(id), ownPass = evidence?.verdict === 'GREEN';
     let status: ValidationStatus, reason: string;

@@ -48,7 +48,7 @@ test('recursive verification of a cycle runs real processes without PASS gates a
   const data = await fixture(t, true);
   const run = await data.verify({ selection: { kind: 'artifact', artifactId: 'a' }, recursive: true });
   assert.equal(run.status, 'GREEN'); assert.deepEqual(run.requests.map(r => r.criticId).sort(), ['a/check', 'b/check']);
-  assert.ok(run.requests.every(r => r.result?.exitCode === 0 && r.validationInput?.version === 2));
+  assert.ok(run.requests.every(r => r.result?.exitCode === 0 && r.validationInput?.version === 3));
   const again = await data.verify({ selection: { kind: 'artifact', artifactId: 'b' }, recursive: true });
   assert.equal(again.status, 'GREEN'); assert.equal(again.requests.length, 0);
   assert.deepEqual(again.validation!.items.map(c => c.action), ['REUSE', 'REUSE']);
