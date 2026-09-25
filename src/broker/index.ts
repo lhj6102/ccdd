@@ -459,7 +459,18 @@ export function createBroker<D extends ResultDetail = 'compact'>({ detail, repoP
             await Promise.race([...inFlight.values()].map(item => item.promise).concat(delay(50, undefined, { signal: reviewSignal })));
             continue;
           }
-          if (sharedRequests(required(runData(runId), 'Run')).some(request => !terminal.has(request.status))) {
+          const pendingSources = sharedRequests(required(runData(runId), 'Run')).filter(request => !terminal.has(request.status));
+          if (pendingSources.length) {
+            // Submission is durable before a worker claims ownership. A follower must
+            // not depend on the submitter ever starting: run() atomically claims the
+            // original Run, or loses to another worker, using the normal PID/token
+            // lifecycle. Do not link this execution to the follower's cancellation.
+            for (const sourceRunId of new Set(pendingSources.map(request => request.runId))) {
+              if (ownerData(sourceRunId)) continue;
+              void run(sourceRunId).catch(error => {
+                if (errorCode(error) !== 'RUN_ALREADY_OWNED') abort.abort(error);
+              });
+            }
             await delay(100, undefined, { signal: reviewSignal });
             continue;
           }
