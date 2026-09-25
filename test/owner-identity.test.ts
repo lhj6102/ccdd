@@ -1,7 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { chmod, readFile, readdir, writeFile } from 'node:fs/promises';
+import { chmod, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { spawn } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+import { setTimeout as delay } from 'node:timers/promises';
 import { artifactFixture, fixtureViews, runtimeCritic } from './helpers/artifacts.js';
 import { inspectProject, createProjectSnapshot } from '../src/project/index.js';
 import { createBroker } from '../src/broker/index.js';
@@ -121,6 +124,117 @@ test('identity scripts use owner cwd, entry arguments, safe environment and opti
     assert.equal((await inspectProject(data)).plan.artifacts[0].value, 'executable-value');
   }
 });
+
+
+test('selected queries and verification never execute or display unrelated identities, but include every dependency', async t => {
+  const data = await fixture(t), marker = join(data.root, 'b-ran');
+  await data.write('b', { name: 'b', stale: { kind: 'identity', script: { command: 'node', args: ['identity.mjs'] } }, critics: [runtimeCritic()] }, {
+    'identity.mjs': `import {writeFileSync} from 'node:fs';writeFileSync(${JSON.stringify(marker)}, 'ran');process.exit(7);`,
+  });
+  for (const command of ['verify', 'plan', 'status']) {
+    await rm(marker, { force: true });
+    for (const selection of [['a'], ['--critic', 'a/check']]) {
+      for (const format of [[], ['--json']]) {
+        const result = await cli(data, [command, ...selection, ...(command === 'verify' ? ['--wait'] : []), ...format]);
+        assert.equal(result.code, 0, result.error || result.output);
+        if (format.length) {
+          const value = JSON.parse(result.output), plan = value.validation ?? value;
+          assert.deepEqual(plan.artifacts.map((artifact: { id: string }) => artifact.id), ['a']);
+          assert.deepEqual(plan.critics.map((critic: { id: string }) => critic.id), ['a/check']);
+          assert.equal(plan.artifacts[0].value, 'equivalent-v1');
+        } else {
+          assert.match(result.output, /Artifact a:.*identity: script · value: equivalent-v1/);
+          assert.doesNotMatch(result.output, /Artifact b:|b\/check/);
+        }
+        await assert.rejects(readFile(marker), { code: 'ENOENT' });
+      }
+    }
+    for (const selection of [['b'], ['--critic', 'b/check'], ['--all']]) {
+      const result = await cli(data, [command, ...selection]);
+      assert.equal(result.code, 2);
+      assert.match(result.error, /Identity script for Artifact b failed \(exit 7\)/);
+    }
+  }
+  await data.edit('a', manifest => { manifest.mounts = { dependency: 'b' }; });
+  for (const command of ['plan', 'status', 'verify']) {
+    const result = await cli(data, [command, 'a']);
+    assert.equal(result.code, 2);
+    assert.match(result.error, /Identity script for Artifact b failed \(exit 7\)/);
+  }
+});
+
+test('scoped snapshots preserve whole-project hashes, including dependency cycles and legacy identities', async t => {
+  const data = await fixture(t);
+  await data.write('b', { name: 'b', mounts: { a: 'a' }, stale: { kind: 'identity', script: { command: 'node', args: ['identity.mjs'] } }, critics: [runtimeCritic()] }, { 'identity.mjs': 'console.log("b-value");' });
+  await data.write('unrelated', { name: 'unrelated', critics: [runtimeCritic()] });
+  await data.write('basis', { name: 'basis', basis: true, stale: { kind: 'file-hash', paths: ['content.txt'] } });
+  await data.edit('a', manifest => { manifest.mounts = { b: 'b', basis: 'basis' }; });
+  const whole = (await inspectProject(data)).snapshot;
+  for (const selection of [{ kind: 'artifact', artifactId: 'a' }, { kind: 'critic', criticId: 'a/check' }] as const) {
+    const scoped = (await inspectProject({ ...data, selection })).snapshot;
+    assert.deepEqual(scoped.config, whole.config);
+    assert.equal(scoped.snapshotHash, whole.snapshotHash);
+    assert.deepEqual(Object.keys(scoped.artifactHashes).sort(), ['a', 'b', 'basis']);
+    assert.deepEqual(Object.keys(scoped.inputs).sort(), ['a/check', 'b/check']);
+    for (const [id, hash] of Object.entries(scoped.artifactHashes)) assert.equal(hash, whole.artifactHashes[id]);
+    for (const [id, input] of Object.entries(scoped.inputs)) assert.deepEqual(input, whole.inputs[id]);
+    assert.deepEqual(scoped.artifactIdentities, whole.artifactIdentities);
+  }
+});
+
+for (const entrypoint of ['../src/project/cli.js', '../src/cli.js']) {
+  for (const command of ['plan', 'status', 'verify']) {
+    for (const signal of ['SIGINT', 'SIGTERM'] as const) {
+      test(`${entrypoint} ${command} cleans up identity processes and output on ${signal}`, { skip: process.platform === 'win32', timeout: 20000 }, async t => {
+        await interruptedIdentity(t, entrypoint, command, signal);
+      });
+    }
+  }
+}
+test('foreground identity timeout still terminates the child and removes temporary output', { skip: process.platform === 'win32', timeout: 20000 }, async t => {
+  await interruptedIdentity(t, '../src/project/cli.js', 'plan');
+});
+
+async function interruptedIdentity(t: Parameters<typeof fixture>[0], entrypoint: string, command: string, signal?: 'SIGINT' | 'SIGTERM') {
+  const data = await fixture(t), marker = join(data.root, 'identity-started');
+  await writeFile(join(data.repoPath, 'a/identity.mjs'), `import {writeFileSync} from 'node:fs';import {spawn} from 'node:child_process';
+process.on('SIGTERM',()=>{});
+const child=spawn(process.execPath,['-e','console.log("ready");setInterval(()=>{},1000);'],{stdio:['ignore','pipe','ignore']});
+child.stdout.once('data',()=>writeFileSync(${JSON.stringify(marker)}, JSON.stringify({pid:process.pid,childPid:child.pid,outputDir:process.env.CCDD_OUTPUT_DIR})));
+setInterval(()=>{},1000);`);
+  await data.edit('a', manifest => { if (manifest.stale?.kind === 'identity') manifest.stale.timeoutMs = signal ? 15000 : 1000; });
+  const child = spawn(process.execPath, [fileURLToPath(new URL(entrypoint, import.meta.url)), command, 'a', '--repo', data.repoPath, '--state-dir', data.stateDir], { stdio: ['ignore', 'pipe', 'pipe'] });
+  let stderr = ''; child.stdout.resume(); child.stderr.on('data', chunk => { stderr += chunk; });
+  const exited = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve, reject) => {
+    child.once('error', reject); child.once('close', (code, signal) => resolve({ code, signal }));
+  });
+  let identity: { pid: number; childPid: number; outputDir: string } | undefined;
+  try {
+    const deadline = Date.now() + 10000;
+    while (!identity && Date.now() < deadline && child.exitCode === null && child.signalCode === null) {
+      const contents = await readFile(marker, 'utf8').catch(() => '');
+      if (contents) identity = JSON.parse(contents);
+      else await delay(20);
+    }
+    assert.ok(identity, stderr || 'Identity did not start.');
+    assert.match(identity.outputDir, /ccdd-identity-/);
+    await readdir(identity.outputDir);
+    if (signal) child.kill(signal);
+    const result = await Promise.race([exited, delay(5000, undefined, { ref: false }).then(() => { throw new Error('Identity cancellation or timeout did not finish.'); })]);
+    assert.deepEqual(result, { code: 2, signal: null }, stderr);
+    assert.match(stderr, signal ? /Project validation cancelled\./ : /Identity script for Artifact a timed out after 1000 ms/);
+    assert.throws(() => process.kill(identity!.pid, 0), { code: 'ESRCH' });
+    assert.throws(() => process.kill(identity!.childPid, 0), { code: 'ESRCH' });
+    await assert.rejects(readdir(identity.outputDir), { code: 'ENOENT' });
+  } finally {
+    if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+    if (identity) {
+      try { process.kill(-identity.pid, 'SIGKILL'); } catch { /* Already cleaned up. */ }
+      await rm(identity.outputDir, { recursive: true, force: true });
+    }
+    await exited;
+  }
+}
 
 test('identity schema rejects unknown fields, unsafe paths, inline commands and invalid timeouts', async t => {
   const data = await fixture(t);

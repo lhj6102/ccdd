@@ -2,7 +2,7 @@ import { createGraphDefinition } from '../broker/graph.js';
 import { dependencyClosure } from '../artifacts/scope.js';
 import type { ProjectSnapshot, ProjectSelection, QueryOptions, ValidationEvidence, ArtifactValidation, CriticValidation, ProjectQuery, ProjectPlan, ValidationStatus } from './types.js';
 
-export function selectedCritics(snapshot: ProjectSnapshot, selection: ProjectSelection): string[] {
+export function selectedCritics(snapshot: Pick<ProjectSnapshot, 'config'>, selection: ProjectSelection): string[] {
   const config = snapshot.config;
   if (selection.kind === 'all') return config.critics.map(c => c.id);
   if (selection.kind === 'critic') {
@@ -13,13 +13,13 @@ export function selectedCritics(snapshot: ProjectSnapshot, selection: ProjectSel
   return config.critics.filter(c => c.target === selection.artifactId).map(c => c.id);
 }
 
-export function requiredArtifacts(snapshot: ProjectSnapshot, selection: ProjectSelection): string[] {
+export function requiredArtifacts(snapshot: Pick<ProjectSnapshot, 'config'>, selection: ProjectSelection): string[] {
   selectedCritics(snapshot, selection);
   const roots = selection.kind === 'all' ? Object.keys(snapshot.config.artifacts) : selection.kind === 'artifact' ? [selection.artifactId] : [snapshot.config.critics.find(c => c.id === selection.criticId)!.target];
   return dependencyClosure(snapshot.config.relations, roots);
 }
 
-export function includedCritics(snapshot: ProjectSnapshot, selection: ProjectSelection, recursive: boolean): string[] {
+export function includedCritics(snapshot: Pick<ProjectSnapshot, 'config'>, selection: ProjectSelection, recursive: boolean): string[] {
   const selected = selectedCritics(snapshot, selection);
   if (!recursive && selection.kind !== 'all') return selected;
   const scope = new Set(requiredArtifacts(snapshot, selection));
@@ -38,7 +38,8 @@ export function queryProject(snapshot: ProjectSnapshot, history: readonly Valida
     if (evidence.runId === options.runId) byRunKey.set(key, evidence);
   }
   const attempts = new Map(options.attempts?.map(request => [request.criticId, request])), forced = new Set(options.forceCriticIds ?? []);
-  const critics: CriticValidation[] = snapshot.config.critics.map(definition => {
+  const requiredSet = new Set(required);
+  const critics: CriticValidation[] = snapshot.config.critics.filter(definition => requiredSet.has(definition.target)).map(definition => {
     const id = definition.id, input = snapshot.inputs[id];
     if (!input || input.version !== 2) throw new Error(`Missing current validation input: ${id}`);
     const key = `${id}:${input.key}`, evidence = (input.reusable && !forced.has(id) ? byKey : byRunKey).get(key) ?? null;
@@ -57,11 +58,11 @@ export function queryProject(snapshot: ProjectSnapshot, history: readonly Valida
     return { id, title: definition.title, target: definition.target, deps: [...definition.deps], status, isStale: status !== 'PASS', needsReview: !ownPass,
       canExecute: !ownPass && !attempt, blockedBy: [], reason, input, result: evidence, requestId: attempt?.id ?? null };
   });
-  const own = new Map<string, CriticValidation[]>(Object.keys(snapshot.config.artifacts).map(id => [id, critics.filter(c => c.target === id)]));
+  const own = new Map<string, CriticValidation[]>(required.map(id => [id, critics.filter(c => c.target === id)]));
   const ownSatisfied = (id: string) => snapshot.config.artifacts[id].basis === true || own.get(id)!.length > 0 && own.get(id)!.every(c => c.status === 'PASS');
   const scopeMemo = new Map<string, string[]>();
   const scope = (id: string) => { if (!scopeMemo.has(id)) scopeMemo.set(id, dependencyClosure(snapshot.config.relations, [id])); return scopeMemo.get(id)!; };
-  const artifacts = Object.keys(snapshot.config.artifacts).map((id): ArtifactValidation => {
+  const artifacts = Object.keys(snapshot.config.artifacts).filter(id => requiredSet.has(id)).map((id): ArtifactValidation => {
     const evaluations = own.get(id)!, satisfied = scope(id).every(ownSatisfied);
     const status: ValidationStatus = satisfied ? snapshot.config.artifacts[id].basis ? 'BASIS' : 'PASS' :
       (['RUNNING', 'QUEUED', 'WAITING_HUMAN', 'ERROR', 'RED', 'STALE', 'UNREVIEWED'] as const).find(s => evaluations.some(c => c.status === s)) ?? (ownSatisfied(id) ? 'INCOMPLETE' : 'UNREVIEWED');

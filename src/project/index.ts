@@ -17,7 +17,7 @@ export async function inspectProject({ repoPath, stateDir, selection, recursive 
   const workspace = await prepareWorkspace({ repoPath, stateDir, signal, integrity: workspaceIntegrity });
   try {
     const { config } = await readWorkspaceConfig(workspace.descriptor.path, workspace.signal);
-    const snapshot = await createProjectSnapshot(config, workspace.descriptor.path, workspace.descriptor.hash, workspace.signal, workspace.descriptor.integrity);
+    const snapshot = await createProjectSnapshot(config, workspace.descriptor.path, workspace.descriptor.hash, workspace.signal, workspace.descriptor.integrity, selection);
     const history = projectHistory(stateDir);
     const plan = planProject(snapshot, history, { selection, recursive, force });
     await workspace.assertUnchanged();
