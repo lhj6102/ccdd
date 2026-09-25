@@ -20,3 +20,9 @@ workers never host another Run. Abandoned source records remain unchanged, and
 reviving such a source may execute its original queued ticket again. Actual
 worker-entry-point tests cover close/cancellation isolation, A+B versus A scopes,
 and two-process lease-expiry races.
+
+## Critic efficiency and operations
+
+- R5: Critic prompts include only Artifact ids, paths, target/dependency/basis roles,
+  included folders and mounts. Tool descriptions and schemas appear only in the
+  provider tool channel; all review security and observation instructions remain.
