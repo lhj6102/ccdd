@@ -1,3 +1,4 @@
+import { once } from 'node:events';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdir, readFile, writeFile, symlink, stat } from 'node:fs/promises';
@@ -67,4 +68,58 @@ test('prune does not traverse request-directory symlinks', async t => {
   await symlink(external, data.directory);
   assert.deepEqual(pruneProject(data.stateDir).removed, []);
   assert.equal(await readFile(join(external, 'cache', 'evidence'), 'utf8'), 'keep');
+});
+
+test('prune pins the request parent before a pathname is replaced by an external symlink', async t => {
+  const data = await fixture(t); await data.broker.run(data.run.id);
+  const fs = await import('node:fs');
+  const { pruneTestHooks } = await import('../src/project/prune.js');
+  const external = join(data.root, 'external'), displaced = join(data.root, 'displaced');
+  await mkdir(join(external, 'cache'), { recursive: true }); await writeFile(join(external, 'cache', 'audit'), 'keep');
+  let swapped = false;
+  pruneTestHooks.beforeMove = () => {
+    if (swapped) return; swapped = true;
+    fs.renameSync(data.directory, displaced); fs.symlinkSync(external, data.directory);
+  };
+  t.after(() => { delete pruneTestHooks.beforeMove; });
+  pruneProject(data.stateDir);
+  assert.ok(swapped);
+  assert.equal(await readFile(join(external, 'cache', 'audit'), 'utf8'), 'keep');
+});
+
+test('prune preserves a replaced scratch inode instead of recursively deleting it', async t => {
+  const data = await fixture(t); await data.broker.run(data.run.id);
+  const fs = await import('node:fs');
+  const { pruneTestHooks } = await import('../src/project/prune.js');
+  let replacement: string | undefined;
+  pruneTestHooks.beforeMove = source => {
+    if (replacement) return;
+    fs.renameSync(source, source + '-original'); fs.mkdirSync(source); fs.writeFileSync(join(source, 'audit'), 'keep'); replacement = source;
+  };
+  t.after(() => { delete pruneTestHooks.beforeMove; });
+  assert.throws(() => pruneProject(data.stateDir), /Scratch entry changed/);
+  const quarantine = fs.readdirSync(data.stateDir).find(name => name.startsWith('.prune-'))!;
+  assert.equal(await readFile(join(data.stateDir, quarantine, '0', 'audit'), 'utf8'), 'keep');
+});
+
+test('a real broker persists success while a separate prune process pauses deletion for 6.5 seconds', { timeout: 15000 }, async t => {
+  const data = await fixture(t); await data.broker.run(data.run.id);
+  const { spawn } = await import('node:child_process');
+  const child = spawn(process.execPath, ['--input-type=module', '-e', `
+    import { pruneProject, pruneTestHooks } from ${JSON.stringify(new URL('../src/project/prune.js', import.meta.url).href)};
+    pruneTestHooks.beforeDelete = () => {
+      process.send({ deleting: true });
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 6500);
+    };
+    pruneProject(process.argv[1]); process.disconnect();
+  `, data.stateDir], { stdio: ['ignore', 'ignore', 'ignore', 'ipc'] });
+  t.after(() => child.kill());
+  const exited = once(child, 'exit');
+  await once(child, 'message', { signal: AbortSignal.timeout(5000) });
+  const started = performance.now();
+  const run = await data.broker.submitProject({ selection: { kind: 'all' }, force: true });
+  const result = await data.broker.run(run.id);
+  assert.equal(result!.status, 'GREEN');
+  assert.ok(performance.now() - started < 4000, 'completion must not wait for deletion or hit the 5-second SQLite timeout');
+  assert.equal((await exited)[0], 0);
 });

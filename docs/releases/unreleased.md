@@ -38,3 +38,7 @@ and two-process lease-expiry races.
 - R9: Scheduling and ownership polling read small status rows instead of full
   run/request JSON. Durable request-state revisions trigger replanning only on
   state changes, including changes committed by another process.
+- Review hardening: explicit prune is Linux-only and fails closed elsewhere.
+  Descriptor-anchored traversal and verified private quarantine moves prevent
+  parent-symlink substitution from redirecting deletion. Bulk deletion no longer
+  holds the SQLite writer lock; owned temporary-root cleanup remains portable.

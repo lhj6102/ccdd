@@ -630,3 +630,26 @@ symlinks, and never scans unrelated system temporary directories. Unknown paths,
 worker files, stored results, request records, events, and tool-call audit remain
 untouched. The SQLite store is never vacuumed or truncated. Keep an application
 file outside these declared scratch subtrees if it must remain as audit evidence.
+
+Explicit pruning is currently **Linux-only** and requires `/proc/self/fd`.
+Other platforms fail closed before deletion; ordinary owned temporary-root
+cleanup remains cross-platform. Prune pins the state root and opens each run and
+request directory through a parent descriptor using `O_DIRECTORY|O_NOFOLLOW`.
+Consequently, replacing a checked parent pathname with a symlink cannot redirect
+scratch deletion. Each scratch entry is atomically moved into a private mode-0700
+quarantine, then its device/inode is compared with the pre-move identity before
+any recursive removal. A mismatched entry is **preserved** in quarantine and the
+operation fails with its recovery path; it is not restored over a potentially
+replaced source. Quarantines left after failure/crash require manual inspection,
+not automatic deletion. This assumes the state root and private quarantine are
+trusted; it is not isolation against another process with the same account or
+root privileges deliberately modifying quarantine contents.
+
+Eligibility checks, the operational `prune_claims` record, and quarantine moves
+use short per-request transactions. Terminal runs cannot restart; nonterminal or
+owned runs cannot be claimed for pruning. Bulk recursive removal happens after
+commit, without holding SQLite's global writer lock, so other runs can persist
+results during slow deletion. Completed audit tables are never modified by prune.
+General bounded retry of result persistence on unrelated `SQLITE_BUSY` contention
+is a separate follow-up; this operation does not extend database lock time across
+delete latency.
