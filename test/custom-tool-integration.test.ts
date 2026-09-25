@@ -19,7 +19,7 @@ import type { AgentProfile } from '../src/contracts.js';
 
 const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aD1sAAAAASUVORK5CYII=';
 const agentProfile: AgentProfile = { kind: 'agent', provider: 'openai-codex', model: 'gpt-6-astra', reasoning: 'medium', timeoutMs: 10_000 };
-const verdict = { verdict: 'GREEN', summary: 'Frame checked', evidence: ['Observed the specified frame.'] };
+const verdict = { verdict: 'GREEN' };
 
 async function fixture(t: TestContext, { observation = true, preflight = true, hang = false } = {}) {
   const data = await artifactFixture(t), dir = data.root, repoPath = data.repoPath;

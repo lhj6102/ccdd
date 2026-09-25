@@ -142,7 +142,7 @@ test('explicit default view_image registration reaches the scoped Runner and Pi 
       started = true;
       transport.appendResponses([
         fauxAssistantMessage([fauxToolCall('view_image_preview', {})], { stopReason: 'toolUse' }),
-        fauxAssistantMessage(JSON.stringify({ verdict: 'GREEN', summary: 'Image inspected.', evidence: ['Viewed the registered preview image.'] })),
+        fauxAssistantMessage(JSON.stringify({ verdict: 'GREEN' })),
       ]);
     }
     return transport.provider.streamSimple(model, context, options);
