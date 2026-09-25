@@ -21,7 +21,7 @@ function measureReviewResult(value: unknown): { result: ReviewResult; length: nu
   const result = copy(semanticResult(value)) as ReviewResult;
   for (const key of ['provider', 'model', 'stdout', 'stderr'] as const) { const field = value[key]; if (typeof field === 'string') result[key] = field.slice(0, 24_000); }
   for (const key of ['durationMs', 'exitCode'] as const) { const field = value[key]; if (typeof field === 'number' && Number.isFinite(field)) result[key] = field; }
-  if (Array.isArray(value.toolCalls)) result.toolCalls = value.toolCalls.slice(0, 100).filter((item): item is Record<string, unknown> & { name: string } => object(item) && typeof item.name === 'string').map(item => {
+  if (Array.isArray(value.toolCalls)) result.toolCalls = value.toolCalls.filter((item): item is Record<string, unknown> & { name: string } => object(item) && typeof item.name === 'string').map(item => {
     const call: ReviewToolCall = { name: item.name, ...(item.arguments === undefined ? {} : { arguments: copy(item.arguments) }) };
     const observation = storedObservation(item.observation, item.isError === true);
     if (item.isError === true) call.isError = true;

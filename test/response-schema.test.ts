@@ -55,3 +55,15 @@ test('response schemas are static declarations and cannot overwrite reserved res
     await assert.rejects(data.config(), /schema|reserved|object/);
   }
 });
+
+test('stored audit retains every tool call beyond the former one hundred call cap', async t => {
+  const data = await artifactFixture(t);
+  const { runtimeCritic } = await import('./helpers/artifacts.js');
+  await data.write('a', { name: 'a', critics: [runtimeCritic()] });
+  const toolCalls = Array.from({ length: 150 }, (_, index) => ({ name: 'read_a', arguments: { index }, observation: { artifactId: 'a', operation: 'read', kind: 'content' as const } }));
+  const broker = createBroker({ ...data, detail: 'full', executors: { canExecute: () => ({ ok: true }), execute: async () => ({ verdict: 'GREEN', toolCalls }) } });
+  data.cleanup(() => broker.close());
+  const submitted = await broker.submitProject({ selection: { kind: 'all' } }); await broker.run(submitted.id);
+  const { projectRun } = await import('../src/project/index.js');
+  assert.deepEqual(projectRun(data.stateDir, submitted.id)!.requests[0].result!.toolCalls, toolCalls);
+});
