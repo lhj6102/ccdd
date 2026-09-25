@@ -204,7 +204,7 @@ export async function main(argv = process.argv.slice(2), { stdout = process.stdo
     const [action, id] = positional;
     if (command === 'run') {
       let run = broker.getRun(id); if (!run) throw new Error('Review handle not found.');
-      if (action === 'resume' && run.project?.version !== 3) throw new Error('Historical Runs cannot be resumed; submit a new validation request.');
+      if (action === 'resume' && run.project?.version !== 3) throw new Error('Invalid stored Run format; submit a new validation request.');
       if (action === 'cancel') run = broker.cancel(id);
       else if (action === 'resume' && !terminal.has(run.status)) run = await ensureRunWorker({ broker, context, run });
       if (options['--wait']) return await wait(id);

@@ -2,7 +2,6 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { DatabaseSync } from 'node:sqlite';
 import { artifactFixture, fixtureViews } from './helpers/artifacts.js';
 import { createBroker } from '../src/broker/index.js';
 import { createExecutorRegistry } from '../src/executors/index.js';
@@ -81,14 +80,7 @@ test('changed Human input is an operational failure and cannot accept a semantic
   assert.equal(data.broker.getRequest(data.request.id)!.result, null);
 });
 
-test('GET of historical results neither evaluates obsolete config nor enables resume or Human tools', async t => {
-  const data = await fixture(t); const db = new DatabaseSync(join(data.stateDir, 'broker.sqlite'));
-  const record = JSON.parse(String(db.prepare('SELECT data FROM requests WHERE id=?').get(data.request.id)!.data)); record.configManifest.version = 1;
-  db.prepare('UPDATE requests SET data=? WHERE id=?').run(JSON.stringify(record), data.request.id); db.close();
-  const before = await readFile(join(data.stateDir, 'broker.sqlite')), detail = await (await fetch(data.route)).json() as MonitorDetail;
-  assert.equal(detail.artifactPreview, 'historical'); assert.deepEqual(detail.tools, []); assert.equal(detail.human!.canClaim, false);
-  assert.deepEqual(await readFile(join(data.stateDir, 'broker.sqlite')), before); await assert.rejects(readFile(data.marker), { code: 'ENOENT' });
-});
+
 
 test('unknown routes, duplicate parameters and foreign origins fail with restrictive response headers', async t => {
   const data = await fixture(t);

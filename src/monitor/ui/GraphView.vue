@@ -181,7 +181,7 @@ defineExpose({ refresh });
     <p v-if="error" class="inline-error" role="status">{{ error }}</p>
     <div v-if="!projectId || !runId" class="graph-placeholder"><strong>Select a Run.</strong><p>View Artifact relationships and Critic verdicts for a Run.</p></div>
     <p v-else-if="loading && !data" class="graph-placeholder">Loading Artifact relationships…</p>
-    <div v-else-if="data && !data.available" class="graph-placeholder"><strong>The graph is unavailable for this Run.</strong><p>{{ data.unavailableReason || 'This historical Run has no stored Artifact targets or dependency relationships.' }}</p><p>Use Kanban to inspect individual requests and Artifacts.</p></div>
+    <div v-else-if="data && !data.available" class="graph-placeholder"><strong>The graph is unavailable for this Run.</strong><p>{{ data.unavailableReason || 'This Run has no stored Artifact targets or dependency relationships.' }}</p><p>Use Kanban to inspect individual requests and Artifacts.</p></div>
     <div v-else-if="layoutError" class="graph-placeholder"><p class="inline-error" role="status">{{ layoutError }}</p><button type="button" class="text-button" @click="layoutAttempt++">Retry layout</button></div>
     <p v-else-if="layingOut && !drawing" class="graph-placeholder">Laying out Artifact relationships…</p>
     <template v-else-if="graph && drawing">

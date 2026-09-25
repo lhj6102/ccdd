@@ -1,3 +1,4 @@
+import { assertStateFormat, initializeStateFormat } from '../state-format.js';
 import { semanticResult, validateFinalResult } from '../response-schema.js';
 import { requesterRun, requesterRequest, resultView, type ResultDetail, type ResultOptions } from '../result-view.js';
 import { DatabaseSync } from 'node:sqlite';
@@ -98,6 +99,7 @@ export function readStateContext(stateDir: string) {
   // A worker closing the last WAL connection can briefly lock even read-only queries.
   const database = new DatabaseSync(filename, { readOnly: true, timeout: 5000 });
   try {
+    assertStateFormat(database);
     const row = database.prepare('SELECT value FROM metadata WHERE key = ?').get('registered-repo');
     const identity = row ? parseStored<unknown>(row.value) : null;
     if (!object(identity) || typeof identity.repoPath !== 'string' || !path.isAbsolute(identity.repoPath) || typeof identity.repoId !== 'string') throw new Error('State directory has no valid repository identity.');
@@ -134,7 +136,10 @@ export function createBroker<D extends ResultDetail = 'compact'>({ detail, repoP
   let db!: DatabaseSync;
   try {
     db = new DatabaseSync(path.join(stateDir, 'broker.sqlite'));
-    db.exec(`PRAGMA busy_timeout=5000; PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;
+    db.exec('PRAGMA busy_timeout=5000; BEGIN IMMEDIATE');
+    initializeStateFormat(db);
+    db.exec('COMMIT');
+    db.exec(`PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;
       CREATE TABLE IF NOT EXISTS runs (id TEXT PRIMARY KEY, created_at TEXT NOT NULL, status TEXT NOT NULL, data TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS requests (id TEXT PRIMARY KEY, run_id TEXT NOT NULL REFERENCES runs(id), ordinal INTEGER NOT NULL, status TEXT NOT NULL, data TEXT NOT NULL);
       CREATE INDEX IF NOT EXISTS requests_run ON requests(run_id, ordinal);
@@ -186,7 +191,7 @@ export function createBroker<D extends ResultDetail = 'compact'>({ detail, repoP
     event: (request, type, message) => appendEvent(request.runId, request.id, type, message),
     assertWaiting: request => {
       ensureOpen();
-      if (request.configManifest?.version !== 2) throw new Error('Historical reviews are available for result lookup only.');
+      if (request.configManifest?.version !== 2) throw new Error('Invalid stored review configuration.');
       if (!request.notifiedAt) throw new Error('Human alarm delivery is still pending.');
       if (!ownerAlive(ownerData(request.runId))) throw new Error('An in-place review requires its monitoring worker to remain alive.');
     },
@@ -219,7 +224,7 @@ export function createBroker<D extends ResultDetail = 'compact'>({ detail, repoP
       }
       return;
     }
-    throw new Error('Historical Runs cannot be resumed; submit a new validation request.');
+    throw new Error('Invalid stored Run format; submit a new validation request.');
   }
   const updateRunStatus = (runId: string) => {
     const run = required(runData(runId), 'Run');
@@ -239,7 +244,7 @@ export function createBroker<D extends ResultDetail = 'compact'>({ detail, repoP
       }
       return;
     }
-    throw new Error('Historical Runs are available for result lookup only.');
+    throw new Error('Invalid stored Run format.');
   };
 
   function finishWithin(requestId: string, outcome: { result?: ReviewResult; error?: unknown }, expectedStates: ReviewStatus[] = ['RUNNING', 'WAITING_HUMAN']) {
@@ -403,9 +408,9 @@ export function createBroker<D extends ResultDetail = 'compact'>({ detail, repoP
       reconcileWithin(runId);
       stored = runData(runId);
       if (!stored) throw new Error('Unknown Run.');
-      if (stored.project?.version !== 3) throw new Error('Historical Runs cannot be resumed; submit a new validation request.');
+      if (stored.project?.version !== 3) throw new Error('Invalid stored Run format; submit a new validation request.');
       if (terminal.has(stored.status)) return false;
-      if (!stored.workspace) throw new Error('This legacy Run has no workspace descriptor; submit a new review.');
+      if (!stored.workspace) throw new Error('Invalid Run: no workspace descriptor.');
       if (ownerData(runId)) throw codedError('Another process already owns this review Run.', 'RUN_ALREADY_OWNED');
       db.prepare('INSERT INTO run_owners(run_id,pid,process_identity,token,claimed_at) VALUES (?,?,?,?,?)').run(runId, process.pid, ownProcessIdentity, token, now());
       appendEvent(runId, null, 'worker.started', 'A request-scoped worker owns this Run.', { pid: process.pid });
@@ -548,7 +553,7 @@ export function createBroker<D extends ResultDetail = 'compact'>({ detail, repoP
       const existing = requestData(requestId);
       if (existing) reconcile(existing.runId);
       const request = required(requestData(requestId), 'request');
-      if (request.configManifest?.version !== 2) throw new Error('Historical reviews are available for result lookup only.');
+      if (request.configManifest?.version !== 2) throw new Error('Invalid stored review configuration.');
       if (request.status === 'WAITING_HUMAN' && request.claimedBy === reviewerId) return request;
       if (request.claimedBy) throw new Error('This review is already claimed by another reviewer.');
       signal?.throwIfAborted();
@@ -579,7 +584,7 @@ export function createBroker<D extends ResultDetail = 'compact'>({ detail, repoP
         ensureOpen();
         const current = requestData(requestId);
         if (!current || current.profile.kind !== 'human' || current.status !== 'WAITING_HUMAN') throw new Error('Request is not waiting for a human review.');
-        if (current.configManifest?.version !== 2) throw new Error('Historical reviews are available for result lookup only.');
+        if (current.configManifest?.version !== 2) throw new Error('Invalid stored review configuration.');
         if (!reviewerId || current.claimedBy !== reviewerId) throw new Error('Only the reviewer who claimed this request can use its tools.');
         if (!ownerAlive(ownerData(current.runId))) throw new Error('An in-place review requires its monitoring worker to remain alive.');
         return current;
@@ -636,7 +641,7 @@ export function createBroker<D extends ResultDetail = 'compact'>({ detail, repoP
       if (first) reconcile(first.runId);
       const request = requestData(requestId);
       if (!request || request.profile.kind !== 'human' || request.status !== 'WAITING_HUMAN') throw new Error('Request is not waiting for a human review.');
-      if (request.configManifest?.version !== 2) throw new Error('Historical reviews are available for result lookup only.');
+      if (request.configManifest?.version !== 2) throw new Error('Invalid stored review configuration.');
       if (!reviewerId || request.claimedBy !== reviewerId) throw new Error('Only the reviewer who claimed this request can submit its result.');
       if (!request.notifiedAt) throw new Error('Human alarm delivery is still pending.');
       let workspace: WorkspaceHandle | undefined;

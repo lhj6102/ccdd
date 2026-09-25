@@ -67,3 +67,20 @@ test('project readers preserve read-only, missing-store and invalid-store behavi
   assert.throws(() => projectRequests(f.stateDir, undefined, { detail: 'full' }), { errcode: 26 });
   assert.throws(() => readStateContext(f.stateDir), { errcode: 26 });
 });
+
+test('all store entry points reject pre-5.0 state without migrating it', async t => {
+  const f = await fixture(t);
+  const { DatabaseSync } = await import('node:sqlite');
+  const database = new DatabaseSync(f.filename);
+  database.exec('PRAGMA user_version=0'); database.close();
+  const before = await readFile(f.filename);
+  const expected = /earlier CCDD major.*use a new state directory/;
+  assert.throws(() => createBroker({ repoPath: f.repoPath, stateDir: f.stateDir, repoId: 'fixture' }), expected);
+  assert.throws(() => readStateContext(f.stateDir), expected);
+  assert.throws(() => projectRequests(f.stateDir), expected);
+  const { createMonitorStore } = await import('../src/monitor/store.js');
+  const overview = await createMonitorStore({ stateDirs: [f.stateDir] }).overview();
+  assert.match(overview.projects[0].issue!, expected);
+  assert.equal(overview.requests.length, 0);
+  assert.deepEqual(await readFile(f.filename), before);
+});

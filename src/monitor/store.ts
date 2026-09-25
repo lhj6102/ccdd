@@ -1,3 +1,4 @@
+import { assertStateFormat, StateFormatError } from '../state-format.js';
 import { semanticResult } from '../response-schema.js';
 import { reviewReference } from '../result-view.js';
 import type { ArtifactReferenceMetadata } from '../artifacts/index.js';
@@ -125,6 +126,7 @@ async function readSnapshot(source: Source, requestId?: string, runId?: string):
     if (!(await stat(filename)).isFile()) throw storageError();
     db = new DatabaseSync(filename, { readOnly: true });
     db.exec('BEGIN');
+    assertStateFormat(db);
     const stored = db.prepare("SELECT value FROM metadata WHERE key='registered-repo'").get();
     const identity = json(stored?.value);
     if (typeof identity.repoPath !== 'string' || !isAbsolute(identity.repoPath) || typeof identity.repoId !== 'string') throw storageError();
@@ -158,7 +160,7 @@ async function readSnapshot(source: Source, requestId?: string, runId?: string):
     db.exec('COMMIT');
   } catch (error) {
     try { db?.exec('ROLLBACK'); } catch {}
-    snapshot.project.issue = codeOf(error) === 'ENOENT' ? 'The state store could not be found.' : 'Unable to read the stored state for this project.';
+    snapshot.project.issue = error instanceof StateFormatError ? error.message : codeOf(error) === 'ENOENT' ? 'The state store could not be found.' : 'Unable to read the stored state for this project.';
     snapshot.requests = []; snapshot.runs = []; snapshot.graph = null; snapshot.owners.clear(); snapshot.activity.clear(); snapshot.events = []; snapshot.target = null;
   } finally { db?.close(); }
   return snapshot;
@@ -329,7 +331,7 @@ function artifactReferences(value: unknown): ArtifactReferenceMetadata[] {
   if (!Array.isArray(value)) throw storageError();
   return value.map(item => {
     if (!object(item)) throw storageError();
-    return { id: string(item.id), path: typeof item.path === 'string' ? item.path : '(historical input)' };
+    return { id: string(item.id), path: typeof item.path === 'string' ? item.path : '(invalid input)' };
   });
 }
 
@@ -339,7 +341,7 @@ function pagination(query: { limit?: number; offset?: number }): { limit: number
   return { limit, offset };
 }
 function graphFrom(snapshot: Snapshot, run: MonitorRun): Pick<MonitorGraph, 'available' | 'unavailableReason' | 'graph'> {
-  if (snapshot.graph === null) return { available: false, unavailableReason: 'This historical Run has no stored Artifact graph definition.', graph: null };
+  if (snapshot.graph === null) return { available: false, unavailableReason: 'This Run has no stored Artifact graph definition.', graph: null };
   try {
     validateGraphDefinition(snapshot.graph);
     if (!run.snapshotHash || !/^[a-f0-9]{64}$/.test(run.snapshotHash)) throw storageError();

@@ -1,3 +1,4 @@
+import { assertStateFormat } from '../state-format.js';
 import { semanticResult } from '../response-schema.js';
 import { requesterRun, requesterRequest, requesterEvidence, resultView, type ResultDetail, type ResultOptions } from '../result-view.js';
 import { DatabaseSync } from 'node:sqlite';
@@ -23,7 +24,7 @@ export function withProjectStore<T>(stateDir: string, read: (database: DatabaseS
   if (!existsSync(filename)) return empty;
   // A worker closing the last WAL connection can briefly lock even read-only queries.
   const database = new DatabaseSync(filename, { readOnly: true, timeout: 5000 });
-  try { database.exec('BEGIN'); const result = read(database); database.exec('COMMIT'); return result; }
+  try { database.exec('BEGIN'); assertStateFormat(database); const result = read(database); database.exec('COMMIT'); return result; }
   finally { database.close(); }
 }
 

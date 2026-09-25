@@ -5,7 +5,7 @@ export interface ValidationInput {
   version: 3; key: string; criticHash: string;
   target: { id: string; hash: string }; deps: { id: string; hash: string }[];
   reusable: boolean;
-  /** Omitted for historical/default content verification. Part of the effective Critic identity when nondefault. */
+  /** Omitted for default content verification. Included in default Artifact identity. */
   workspaceIntegrity?: WorkspaceIntegrity;
 }
 export interface ArtifactIdentity { identity: 'script'; value: string }

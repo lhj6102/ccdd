@@ -133,17 +133,7 @@ test('always reviews once per request and metadata-integrity evidence cannot sat
   assert.notEqual(content.inputs['a/check'].key, metadata.inputs['a/check'].key);
 });
 
-test('historical evidence is result-only and old unfinished runs cannot resume', async t => {
-  const data = await fixture(t), run = await data.broker.submitProject({ selection: { kind: 'all' } });
-  const db = new DatabaseSync(join(data.stateDir, 'broker.sqlite'));
-  const saved = JSON.parse(String(db.prepare('SELECT data FROM runs WHERE id=?').get(run.id)!.data)); saved.project.version = 1; saved.project.snapshot.version = 1;
-  db.prepare('UPDATE runs SET data=? WHERE id=?').run(JSON.stringify(saved), run.id); db.close();
-  assert.ok(projectRun(data.stateDir, run.id)); assert.equal(projectRun(data.stateDir, run.id)!.validation, undefined);
-  await assert.rejects(data.broker.run(run.id), /Historical Runs cannot be resumed/);
-  const snapshot = (await inspectProject({ ...data, detail: 'full' })).snapshot;
-  const history = [{ requestId: 'old', runId: 'old', criticId: 'a/check', input: { ...snapshot.inputs['a/check'], version: 1 }, completedAt: new Date().toISOString(), verdict: 'GREEN', summary: 'Controlled historical fixture', evidence: ['Fixture'] }] as any;
-  assert.equal(queryProject(snapshot, history, { stateDir: data.stateDir, detail: 'full' }).critics.find(c => c.id === 'a/check')!.result, null);
-});
+
 
 test('CLI config and graph queries expose qualified owners and cyclic relation types without executing', async t => {
   const data = await fixture(t, true); let output = '';

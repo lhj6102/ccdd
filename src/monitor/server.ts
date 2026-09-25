@@ -149,7 +149,7 @@ async function decorateDetail(detail: MonitorDetail, record: MonitorStoredReques
     ...(preparation ? { preparation } : {}),
   };
   detail.tools = [];
-  detail.artifactPreview = record.request.configManifest?.version === 2 ? 'tools' : 'historical';
+  detail.artifactPreview = 'tools';
   if (detail.request.kind === 'human' && record.request.configManifest?.version === 2) {
     try {
       // GET projects saved declarations only. It never reads config or executes scripts.

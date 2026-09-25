@@ -39,7 +39,7 @@ async function fixture(t: TestContext) {
     await fs.mkdir(stateDir, { recursive: true });
     const db = new DatabaseSync(path.join(stateDir, 'broker.sqlite'));
     try {
-      db.exec(`CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+      db.exec(`PRAGMA user_version=5; CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
         CREATE TABLE runs (id TEXT PRIMARY KEY, created_at TEXT NOT NULL, status TEXT NOT NULL, data TEXT NOT NULL);
         CREATE TABLE requests (id TEXT PRIMARY KEY, run_id TEXT NOT NULL, ordinal INTEGER NOT NULL, status TEXT NOT NULL, data TEXT NOT NULL);
         CREATE TABLE run_owners (run_id TEXT PRIMARY KEY, pid INTEGER NOT NULL, process_identity TEXT, token TEXT NOT NULL, claimed_at TEXT NOT NULL);
@@ -238,7 +238,7 @@ test('public summaries whitelist fields while the internal Artifact lookup retai
   const f = await fixture(t);
   const request = f.request('private', {
     status: 'GREEN', completedAt: at(3), profile: { kind: 'agent', provider: 'openai-codex', model: 'gpt-6-astra', reasoning: 'medium' },
-    result: { verdict: 'GREEN', summary: 'Fits the stated requirement.', evidence: ['spec.md:2'], stdout: 'stdout-secret', stderr: 'stderr-secret', toolCalls: [{ name: 'read_spec', arguments: { secret: 'tool-secret' } }] },
+    result: { verdict: 'GREEN', reasons: ['Fits the stated requirement.'], stdout: 'stdout-secret', stderr: 'stderr-secret', toolCalls: [{ name: 'read_spec', arguments: { secret: 'tool-secret' } }] },
   });
   const source = await f.state('private', [request]);
   const store = createMonitorStore({ stateDirs: [source.stateDir] });
@@ -247,7 +247,7 @@ test('public summaries whitelist fields while the internal Artifact lookup retai
   const detail = present(await store.detail(source.id, request.id));
   assert.deepEqual(detail.profile, request.profile);
   assert.deepEqual(detail.artifacts, request.artifacts.map(({ id, path }) => ({ id, path })));
-  assert.deepEqual(detail.result, { verdict: 'GREEN', reason: 'Fits the stated requirement.', evidence: ['spec.md:2'], inputKey: null, target: request.target ?? '', criticId: request.criticId, reference: { stateDir: source.stateDir, runId: request.runId, requestId: request.id } });
+  assert.deepEqual(detail.result, { verdict: 'GREEN', reasons: ['Fits the stated requirement.'], reference: { stateDir: source.stateDir, runId: request.runId, requestId: request.id } });
   assert.equal(detail.instruction, request.payload.instruction);
   assert.ok(!JSON.stringify(detail).includes('secret'));
   const internal = present(await store.request(source.id, request.id));
@@ -363,23 +363,17 @@ test('run-scoped graph includes all declarations and never borrows passes from o
   assert.deepEqual(await fs.readFile(path.join(state.stateDir, 'broker.sqlite')), before);
 });
 
-test('historical or inconsistent graph metadata remains explicit unavailable without inspecting current source', async t => {
+test('inconsistent graph metadata remains explicit unavailable without inspecting current source', async t => {
   const f = await fixture(t), graph = graphDefinition(), hash = 'a'.repeat(64);
-  const historical = f.request('old', { runId: 'legacy' });
   const invalidSnapshot = f.request('mismatch', { runId: 'mismatch', criticId: 'tests/check', target: 'tests', deps: ['spec'], snapshotHash: 'b'.repeat(64) });
   const invalidTarget = f.request('scope', { runId: 'scope', criticId: 'tests/check', target: 'implementation', deps: ['spec'], snapshotHash: hash });
-  const state = await f.state('history', [historical, invalidSnapshot, invalidTarget], { runData: { mismatch: { snapshotHash: hash, graph }, scope: { snapshotHash: hash, graph } } });
+  const state = await f.state('history', [invalidSnapshot, invalidTarget], { runData: { mismatch: { snapshotHash: hash, graph }, scope: { snapshotHash: hash, graph } } });
   const store = createMonitorStore({ stateDirs: [state.stateDir] });
-  const old = present(await store.graph(state.id, 'legacy'));
-  assert.equal(old.available, false); assert.equal(old.graph, null); assert.match(old.unavailableReason ?? '', /no stored Artifact graph definition/);
-  assert.equal(old.requests.length, 1);
   for (const run of ['mismatch', 'scope']) {
     const result = present(await store.graph(state.id, run));
     assert.equal(result.available, false); assert.equal(result.graph, null); assert.match(result.unavailableReason ?? '', /does not match/);
   }
   assert.equal(await store.graph(state.id, 'unknown'), null);
-  assert.equal(await store.graph('unknown', 'legacy'), null);
-  assert.equal((await store.runs()).runs.find(run => run.id === 'legacy')?.graphAvailable, false);
   // No source directory was ever created; graph observation uses only persisted metadata.
   await assert.rejects(fs.stat(state.repoPath));
 });

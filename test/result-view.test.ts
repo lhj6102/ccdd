@@ -102,21 +102,7 @@ test('CLI verification, status, plan, history and requests are compact; full and
   assert.ok((await cli(stateDir, ['run', 'show', completed.id])).includes('toolCalls'));
 });
 
-test('historical audit lookup keeps legacy input identity and compact references without enabling reuse', async t => {
-  const data = await fixture(t), runId = data.completed.id;
-  const db = new DatabaseSync(join(data.stateDir, 'broker.sqlite'));
-  const row = db.prepare('SELECT id, data FROM requests WHERE run_id = ?').get(runId)!;
-  const request = JSON.parse(String(row.data)); request.validationInput.version = 1; request.validationInput.key = 'legacy-key';
-  db.prepare('UPDATE requests SET data = ? WHERE id = ?').run(JSON.stringify(request), row.id as string);
-  const before = String(db.prepare('SELECT data FROM requests WHERE id = ?').get(row.id as string)!.data);
-  const view = projectRequests(data.stateDir)[0];
-  assert.equal(view.inputKey, 'legacy-key'); assert.equal(projectHistory(data.stateDir).length, 0);
-  assert.deepEqual(projectRun(view.reference.stateDir, view.reference.runId)!.requests[0], request);
-  assert.equal(String(db.prepare('SELECT data FROM requests WHERE id = ?').get(row.id as string)!.data), before);
-  delete request.validationInput;
-  db.prepare('UPDATE requests SET data = ? WHERE id = ?').run(JSON.stringify(request), row.id as string);
-  assert.equal(projectRequests(data.stateDir)[0].inputKey, null); db.close();
-});
+
 
 for (const missing of [false, true]) test(`compact broker preserves required-observation auditing (missing=${missing})`, async t => {
   const data = await artifactFixture(t);

@@ -28,7 +28,7 @@ export interface ReviewResult {
   durationMs?: number; exitCode?: number; toolCalls?: ReviewToolCall[];
 }
 export interface ReviewRequest extends ReviewEnvelope {
-  /** Identity of the input actually reviewed. Absent on historical requests. */
+  /** Identity of the input actually reviewed; provided by project validation. */
   validationInput?: ValidationInput;
   id: string; runId: string; workspace: WorkspaceDescriptor; worktreePath: string;
   status: ReviewStatus; createdAt: string;

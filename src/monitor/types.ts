@@ -49,7 +49,7 @@ export interface MonitorDetail {
   timeline: { label: string; at: string }[];
   artifacts: ArtifactReferenceMetadata[];
   references: Record<string, string>;
-  artifactPreview?: 'tools' | 'historical';
+  artifactPreview?: 'tools';
   human?: MonitorHumanState;
   tools?: MonitorHumanTool[];
   toolIssue?: string;
