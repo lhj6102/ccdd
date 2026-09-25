@@ -1,9 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { chmod, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { chmod, cp, mkdir, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { spawn } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
+import { execFile, spawn } from 'node:child_process';
+import { promisify } from 'node:util';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 import { artifactFixture, fixtureViews, runtimeCritic } from './helpers/artifacts.js';
 import { inspectProject, createProjectSnapshot } from '../src/project/index.js';
@@ -263,12 +264,34 @@ test('default identities use the new format without package or runtime version s
     const after = await createProjectSnapshot(config, data.repoPath, 'b'.repeat(64));
     assert.deepEqual(after.inputs, before.inputs);
   } finally { Object.defineProperty(process.versions, 'node', node); }
-  // CCDD package metadata is external to these Artifact roots and is not an identity signal.
-  await writeFile(join(data.repoPath, 'package.json'), JSON.stringify({ version: '999.0.0' }));
-  assert.deepEqual((await createProjectSnapshot(config, data.repoPath, 'c'.repeat(64))).inputs, before.inputs);
   for (const critic of config.critics) {
     const target = { id: critic.target, hash: before.artifactHashes[critic.target] };
     assert.equal(before.inputs[critic.id].version, 3);
     assert.equal(before.inputs[critic.id].key, inputHash({ version: 3, criticId: critic.id, target, deps: [] }));
   }
+});
+
+
+test('CCDD package version invariance uses fresh processes and isolated built packages', async t => {
+  const data = await artifactFixture(t);
+  await data.write('a', { name: 'a', critics: [runtimeCritic()] });
+  const config = await data.config();
+  const outputs: unknown[] = [];
+  for (const version of ['5.0.0', '999.0.0']) {
+    const packageRoot = join(data.root, `ccdd-${version}`);
+    await mkdir(join(packageRoot, 'dist'), { recursive: true });
+    await cp(fileURLToPath(new URL('../src', import.meta.url)), join(packageRoot, 'dist/src'), { recursive: true });
+    await writeFile(join(packageRoot, 'package.json'), JSON.stringify({ name: '@ccdd/core', type: 'module', version }));
+    await symlink(fileURLToPath(new URL('../../node_modules', import.meta.url)), join(packageRoot, 'node_modules'), 'dir');
+    const code = `
+      import { createProjectSnapshot } from ${JSON.stringify(pathToFileURL(join(packageRoot, 'dist/src/project/identity.js')).href)};
+      import { packageVersion } from ${JSON.stringify(pathToFileURL(join(packageRoot, 'dist/src/runtime-paths.js')).href)};
+      const snapshot = await createProjectSnapshot(${JSON.stringify(config)}, ${JSON.stringify(data.repoPath)}, 'a'.repeat(64));
+      console.log(JSON.stringify({ packageVersion, inputs: snapshot.inputs }));
+    `;
+    const { stdout } = await promisify(execFile)(process.execPath, ['--input-type=module', '-e', code]);
+    const result = JSON.parse(stdout); assert.equal(result.packageVersion, version);
+    outputs.push(result.inputs);
+  }
+  assert.deepEqual(outputs[0], outputs[1]);
 });

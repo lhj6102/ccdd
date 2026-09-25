@@ -167,7 +167,10 @@ is accepted. CCDD adds the required verdict field to the selected schema.
 ```
 
 Schemas use the same supported object JSON Schema dialect as tool arguments.
-Top-level `additionalProperties` must be omitted or false. `verdict`, `reference`,
+Top-level `additionalProperties` must be omitted or false. Top-level composition
+(`allOf`, `anyOf`, `oneOf`, `not`) is rejected at config load; composition inside
+owner-defined properties is allowed. `$ref` and conditional keywords are not
+part of the supported dialect. `verdict`, `reference`,
 `reusedFrom`, `provider`, `model`, `stdout`, `stderr`, `durationMs`, `exitCode` and
 `toolCalls` are reserved. Owner fields are preserved without semantic rewriting
 or string/count truncation. Overall transport limits remain explicit errors.
@@ -265,7 +268,10 @@ A Critic's PASS describes its matching actual result. Final Artifact/project sat
 
 Individual verification executes the selected Critic or the selected Artifact's Critics as soon as their input and execution environment are ready. It never waits for dependency PASS. `--recursive` includes Critics across the required dependency closure, including cycles. `--all` covers every Artifact. Multiple evaluations run concurrently within the Broker's executor limit.
 
-Successful selected results are preserved if other required evidence is missing; the Run is INCOMPLETE. The same result can satisfy a later request after the remaining evidence arrives. Run status distinguishes review execution (`QUEUED`, `RUNNING`, `WAITING_HUMAN`, `ERROR`) from semantic results (`GREEN`, `RED`) and unfinished validation obligations (`INCOMPLETE`). No blocked or reused ticket is fabricated. Identical active Critic/input requests across Runs in the same state directory coalesce: the follower waits for and adopts the original request result. Its cancellation does not cancel the source. Source cancellation/error fails the follower without fabricating a verdict. `--force` opts out of both stored-result reuse and active coalescing.
+Successful selected results are preserved if other required evidence is missing; the Run is INCOMPLETE. The same result can satisfy a later request after the remaining evidence arrives. Run status distinguishes review execution (`QUEUED`, `RUNNING`, `WAITING_HUMAN`, `ERROR`) from semantic results (`GREEN`, `RED`) and unfinished validation obligations (`INCOMPLETE`). No blocked or reused ticket is fabricated. Identical active Critic/input requests across Runs in the same state directory coalesce: the follower waits for and adopts the original request result. Its cancellation does not cancel the source. Source cancellation/error fails the follower without fabricating a verdict. A
+follower can atomically claim and run an unowned queued source through the normal
+Run ownership lifecycle. Racing followers share that single execution. A dead
+source worker is reconciled as WORKER_EXITED; partial execution is not replayed. `--force` opts out of both stored-result reuse and active coalescing.
 
 Project queries compare prepared current input and actual evidence in a readonly transaction. They create no database, ticket or alarm and execute no review tools or Providers. Preparing an opted-in owner identity runs its script with disposable external output; other current-input preparation remains script-free. Completed Runs reference the evidence they consumed, preserving their historical interpretation. `run show` and stored-result queries do not need the current workspace or reconcile owners. A terminal INCOMPLETE Run does not add omitted Critics when resumed; submit a new request.
 
@@ -562,8 +568,9 @@ evidence, Runtime execution or older runs that lack telemetry.
 Telemetry is never added to Artifact/SCC hashes, ValidationInput, reuse keys,
 `ReviewResult.toolCalls` or the Project's semantic `ValidationEvidence` projection.
 It adds only event types and JSON payload fields in existing SQLite storage;
-no schema/identity version or data migration is needed. Existing stored state and
-its evidence remain valid under the Artifact-identity reuse rules.
+within current-format (5.0) state, no schema/identity change or migration is
+needed for telemetry. Only current-format state and its evidence remain valid
+under Artifact-identity reuse rules; 4.x directories are rejected, not migrated.
 
 Telemetry persistence is best-effort, independent of successful observation delivery.
 Rejected or unresponsive optional sinks do not change the evaluation verdict,
