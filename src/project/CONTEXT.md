@@ -6,7 +6,7 @@ Project Validation answers whether the current required scope has matching actua
 - **Artifact Identity**: the content/config/runtime/relation identity of material. Cycles are hashed as strongly connected components. Review IDs and times never affect it.
 - **Validation Input**: the effective Critic conditions, target and explicit references, with the current identity version and execution policy.
 - **Validation Evidence**: an actual semantic review result bound to its Validation Input. Reuse references that result; it is not another evaluation.
-- **Validation Query**: a readonly comparison of current input with evidence and the finite required dependency closure. It executes no scripts and stores no stale flags.
+- **Validation Query**: a readonly comparison of current input with evidence and the finite required dependency closure. The comparison executes no scripts and stores no stale flags. Current-input preparation executes explicitly configured owner identity scripts; static discovery remains script-free.
 - **Individual Validation**: executes only selected Critics. Missing other required evidence makes the request INCOMPLETE, without discarding completed selected results.
 - **Recursive Validation**: includes Critics throughout the required dependency closure. Dependency PASS never gates the start of a ready Critic.
 - **Basis**: an explicit accepted Artifact with no Critics. An ordinary no-Critic Artifact is UNREVIEWED.

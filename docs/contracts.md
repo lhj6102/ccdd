@@ -73,7 +73,7 @@ not execute the script, record observations or start execution telemetry. The
 non-object/oversize guard and credential-safe handling of unrelated errors are
 unchanged.
 
-The cwd is the tool owner's physical folder. `node` uses the current Node executable; bare programs resolve through installed `node_modules/.bin` from that folder to the workspace root, then PATH. Explicit executable paths resolve from the owner. Arguments never select a new executable. Imported script libraries and bundled runtimes must be covered by workspace-relative `metadata.executionPaths`; declarations hash their content. Unlike those shared runtime paths, `stale.paths` and environment paths are owner-relative.
+The cwd is the tool owner's physical folder. `node` uses the current Node executable; bare programs resolve through installed `node_modules/.bin` from that folder to the workspace root, then PATH. Explicit executable paths resolve from the owner. Arguments never select a new executable. Imported script libraries and bundled runtimes must be covered by workspace-relative `metadata.executionPaths`; declarations hash their content. Unlike those shared runtime paths, `stale.paths`, identity entry/input paths and environment paths are owner-relative.
 
 Stdout must contain one existing `ToolResult` JSON value. Stderr is diagnostic output. A minimal result is:
 
@@ -121,6 +121,33 @@ Local material identity hashes content, names, entry types, executable bits and 
 
 `stale: {"kind":"file-hash","paths":[...]}` narrows material to literal owner-relative files/directories, without globs. Missing selected paths have a distinct identity. Config, local view entry files and Runtime test entry files remain mandatory inputs. Environment scripts and their declared `inputs`, view execution inputs, and typed child/mount/instruction relations also participate. Dynamic imports or other files beyond these boundaries must be declared; mutable external services need an appropriate conservative strategy.
 
+### Owner-defined identity
+
+An owner can replace material and view runtime fingerprints with an opaque equivalence string:
+
+```json
+"stale": {
+  "kind": "identity",
+  "script": { "command": "node", "args": ["identity.mjs"] },
+  "inputs": ["identity-rules.json"],
+  "timeoutMs": 30000
+}
+```
+
+Only `kind`, `script`, optional `inputs` and optional `timeoutMs` are accepted; a script accepts only `command` and `args`. Unknown fields fail configuration validation. `inputs` is a list of at most 64 unique owner-relative literal paths (files or directories, no globs); omission and an empty list are allowed. Entry files and inputs cannot escape the owner or traverse symlinks. Internal relative symlinks within a declared input directory follow the same rules as execution inputs. Inputs must exist.
+
+Supported commands are `node` with an owner-relative entry file as the first argument (additional arguments are passed to that script), or an owner-relative executable whose command path is itself the entry file. `node` uses the current Node executable and the environment-script import host. Inline `-e`/`-p`, flags before the Node entry, absolute executable paths and PATH interpreter lookup are not supported: every identity must have a hashable entry file. Other interpreters may be invoked through an owner-provided executable entry. Imported helpers and other rule files must be declared in `inputs` if changing them should invalidate evidence independently of the returned value.
+
+Scripts use the environment-requirement executor: owner cwd, a credential-filtered environment, external temporary/output directories, bounded output, process-group cleanup, cancellation and a timeout. `timeoutMs` is an integer from 1 to 900000, default 30000. Temporary output is removed after each invocation. The workspace must remain unchanged; the normal workspace integrity checks still apply. These are trusted owner scripts, not an OS sandbox, and must treat the workspace as read-only.
+
+Stdout must contain exactly 1–128 characters from `[A-Za-z0-9._:-]`, optionally followed by one LF newline. Empty output, whitespace, CRLF, extra lines, invalid bytes, excessive output, a nonzero exit or timeout fail current-input validation with an Artifact-specific error. No default-identity fallback occurs. Stderr is not part of the value and is not forwarded as an identity diagnostic.
+
+The own hash is `inputHash({version: 2, identity: "script", definition: artifact, identityInputs, value, requirements, environmentInputs})`. `identityInputs` hashes the entry file and declared inputs using owner-relative paths; `value` is stdout without its optional final LF. This replaces **only** material fingerprints and `executionInputs`. The complete Artifact definition (including views, tool metadata and the stale declaration), environment requirements and their inputs remain included. Editing the identity entry or a declared input invalidates old evidence even if it returns the same string. The owner is responsible for the equivalence relation: an unchanged string permits reuse across material, view implementation or shared runtime changes that the identity function considers equivalent. Repeating `verify` reuses the previous matching actual result; `--force` still requires a fresh review of the selected Critics.
+
+Relations, dependencies, component hashing, Critic hashing and execution integrity are unchanged. An identity string does not bypass a changed dependency, Critic definition, executor/runtime version or integrity policy. The default, `file-hash` and `always` identity payloads and hashes are unchanged; no identity version bump or evidence migration is introduced.
+
+Current `plan`/`status` and saved Run validation artifacts expose `identity: "script"` and `value`, in JSON and plain text. Run snapshots retain `artifactIdentities` so even a fully reused Run records the equivalence decision. Stored Run queries never re-execute the identity script. Current-input preparation does execute opted-in identity scripts, including for `status`/`plan` and explicit monitor inspection, but static `config check`, `graph`, config discovery and monitor GETs do not. Replay-validated reuse and tool-result replay receipts are separate ideas, not part of this mode.
+
 Strongly connected components group cycles into a finite condensation graph. Hash each component's sorted members, local identities, internal relationships and dependency-component hashes; derive each Artifact's identity from its canonical name and component hash. Changes to a referenced component invalidate its consumers. Unrelated Artifact changes preserve evidence. Neither review IDs nor completion times contribute to input identity. Repeating an unchanged review therefore does not invalidate consumers.
 
 A version 2 ValidationInput combines the effective Critic definition, current target/dependency identities, executor package version, Node version/platform/architecture and integrity policy. `stale: {"kind":"always"}` permits only current-request evidence for that Artifact and its consumers. `--force` similarly requires a new review for selected Critics while preserving applicable dependency evidence.
@@ -135,7 +162,7 @@ Individual verification executes the selected Critic or the selected Artifact's 
 
 Successful selected results are preserved if other required evidence is missing; the Run is INCOMPLETE. The same result can satisfy a later request after the remaining evidence arrives. Run status distinguishes review execution (`QUEUED`, `RUNNING`, `WAITING_HUMAN`, `ERROR`) from semantic results (`GREEN`, `RED`) and unfinished validation obligations (`INCOMPLETE`). No blocked or reused ticket is fabricated.
 
-Project queries compare current input and actual evidence in a readonly transaction. They create no database, ticket, alarm or output and execute no scripts or Providers. Completed Runs reference the evidence they consumed, preserving their historical interpretation. `run show` and stored-result queries do not need the current workspace or reconcile owners. A terminal INCOMPLETE Run does not add omitted Critics when resumed; submit a new request.
+Project queries compare prepared current input and actual evidence in a readonly transaction. They create no database, ticket or alarm and execute no review tools or Providers. Preparing an opted-in owner identity runs its script with disposable external output; other current-input preparation remains script-free. Completed Runs reference the evidence they consumed, preserving their historical interpretation. `run show` and stored-result queries do not need the current workspace or reconcile owners. A terminal INCOMPLETE Run does not add omitted Critics when resumed; submit a new request.
 
 ## Workspace contract
 

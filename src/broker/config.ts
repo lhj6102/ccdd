@@ -76,8 +76,20 @@ function manifest(value: unknown): ArtifactManifest {
     mounts[alias] = target;
   }
   if (value.stale !== undefined) {
-    if (!object(value.stale) || !['always', 'file-hash'].includes(value.stale.kind)) throw new Error('Invalid stale strategy.');
-    fields(value.stale, value.stale.kind === 'always' ? ['kind'] : ['kind', 'paths'], 'stale');
+    if (!object(value.stale) || !['always', 'file-hash', 'identity'].includes(value.stale.kind)) throw new Error('Invalid stale strategy.');
+    fields(value.stale, value.stale.kind === 'always' ? ['kind'] : value.stale.kind === 'identity' ? ['kind', 'script', 'inputs', 'timeoutMs'] : ['kind', 'paths'], 'stale');
+    if (value.stale.kind === 'identity') {
+      validateScript(value.stale.script);
+      // A concrete owner-relative entry is mandatory; inline programs cannot be fingerprinted.
+      const entry = value.stale.script.command === 'node' ? value.stale.script.args[0] : value.stale.script.command;
+      projectInputPath(entry);
+      if (entry.startsWith('-')) throw new Error('Identity scripts require an owner-relative entry file, not command flags.');
+      if (value.stale.inputs !== undefined) {
+        if (!Array.isArray(value.stale.inputs) || value.stale.inputs.length > 64 || new Set(value.stale.inputs).size !== value.stale.inputs.length) throw new Error('stale.inputs must contain at most 64 unique owner-relative paths.');
+        value.stale.inputs.forEach(projectInputPath);
+      }
+      if (value.stale.timeoutMs !== undefined && (!Number.isSafeInteger(value.stale.timeoutMs) || value.stale.timeoutMs < 1 || value.stale.timeoutMs > 900000)) throw new Error('Identity timeoutMs must be 1–900000.');
+    }
     if (value.stale.paths !== undefined) {
       if (!Array.isArray(value.stale.paths) || !value.stale.paths.length) throw new Error('stale.paths must be a nonempty array.');
       value.stale.paths.forEach(projectInputPath);

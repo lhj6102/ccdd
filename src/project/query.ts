@@ -65,7 +65,7 @@ export function queryProject(snapshot: ProjectSnapshot, history: readonly Valida
     const evaluations = own.get(id)!, satisfied = scope(id).every(ownSatisfied);
     const status: ValidationStatus = satisfied ? snapshot.config.artifacts[id].basis ? 'BASIS' : 'PASS' :
       (['RUNNING', 'QUEUED', 'WAITING_HUMAN', 'ERROR', 'RED', 'STALE', 'UNREVIEWED'] as const).find(s => evaluations.some(c => c.status === s)) ?? (ownSatisfied(id) ? 'INCOMPLETE' : 'UNREVIEWED');
-    return { id, hash: snapshot.artifactHashes[id], status, isStale: !satisfied, criticIds: evaluations.map(c => c.id), passed: evaluations.filter(c => c.status === 'PASS').length, total: evaluations.length };
+    return { id, hash: snapshot.artifactHashes[id], ...snapshot.artifactIdentities?.[id], status, isStale: !satisfied, criticIds: evaluations.map(c => c.id), passed: evaluations.filter(c => c.status === 'PASS').length, total: evaluations.length };
   });
   // These are unmet final obligations, not reasons to delay executing a Critic.
   for (const critic of critics) critic.blockedBy = scope(critic.target).filter(id => id !== critic.target && !ownSatisfied(id));

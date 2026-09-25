@@ -1,6 +1,6 @@
 # Project Validation
 
-Current validation is computed from folder material and actual review records. `status` and `plan` read JSON, hash inputs and read history; they do not execute scripts, create state, or schedule reviews.
+Current validation is computed from folder material and actual review records. `status` and `plan` read JSON, derive identities and read history; they do not create state or schedule reviews. They execute owner identity scripts only when explicitly configured with `stale.kind: "identity"`; view tools, environment requirements and Providers remain unexecuted. `config check` and `graph` always remain script-free.
 
 ## Commands
 
@@ -24,6 +24,25 @@ Final satisfaction still requires the selected Artifact's complete criteria and 
 An explicit `basis: true` has no Critics. Other no-Critic Artifacts are UNREVIEWED. A basis with an unmet dependency is INCOMPLETE. Review completion alone does not alter input identity. SCC hashing includes material, config, view/runtime entries, declared execution inputs and relationships; it excludes verdict IDs and times. Unrelated changes preserve reuse. The latest actual semantic result for identical input wins.
 
 `stale: {"kind":"always"}` requires evidence from the current validation request and propagates through consuming identities. Narrow `file-hash` material paths are owner-relative, but cannot exclude configuration or script entry files. See [identity contracts](contracts.md#input-identity-and-evidence).
+
+## Owner-defined equivalence
+
+```json
+"stale": {
+  "kind": "identity",
+  "script": { "command": "node", "args": ["identity.mjs"] },
+  "inputs": ["identity-rules.json"],
+  "timeoutMs": 30000
+}
+```
+
+The script returns an opaque string of 1–128 characters from `[A-Za-z0-9._:-]`, with at most one trailing LF newline. CCDD does not interpret it. A repeated `verify` reuses matching prior actual evidence when the value and other identity conditions are unchanged, even after material or shared runtime changes. Add `--force` to require a new review of the selected Critics despite an unchanged value.
+
+The entry file and optional declared `inputs` are owner-relative and hashed: changing the equivalence rule invalidates evidence even when its output stays the same. The Artifact definition and tool metadata, environment inputs, dependencies, Critic conditions and execution integrity are still checked. The owner takes responsibility for which material/runtime differences the function treats as equivalent; no replay validation is implied. Existing projects without this strategy retain exactly the same identities.
+
+Use `node` with the entry file first in `args`, followed by any script arguments, or an owner-relative executable as `command`. Inline Node programs, flags before the entry, absolute commands and PATH interpreter lookup are unsupported. Scripts use owner cwd and the environment-check executor with read-only workspace obligations, cancellation and disposable external output. Optional `timeoutMs` defaults to 30000 (range 1–900000). Optional `inputs` accepts up to 64 unique literal files/directories; unknown fields fail validation. Invalid/empty stdout, nonzero exit, timeout or workspace mutation fails validation, never falling back to ordinary file hashing.
+
+`plan`, `status` and `run show` display `identity: script` and the value. Their JSON artifact entries include `identity` and `value`; persisted snapshots also retain the values for fully reused Runs. Saved Run inspection does not execute the function again. See the complete [owner identity contract](contracts.md#owner-defined-identity).
 
 ## Workspace and execution
 

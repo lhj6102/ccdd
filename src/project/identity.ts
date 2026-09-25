@@ -7,6 +7,7 @@ import { createGraphDefinition, stronglyConnectedComponents } from '../broker/gr
 import { packageVersion } from '../runtime-paths.js';
 import { resolveScopePath } from '../artifact-scope.js';
 import type { ProjectSnapshot, ValidationInput } from './types.js';
+import { ownerIdentity } from './owner-identity.js';
 
 export function canonical(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(canonical).join(',')}]`;
@@ -47,8 +48,18 @@ export async function createProjectSnapshot(config: RepoConfig, root: string, sn
   if (!['content', 'metadata'].includes(workspaceIntegrity)) throw new Error('Workspace integrity must be content or metadata.');
   createGraphDefinition(config);
   const artifactHashes: Record<string, string> = {}, reusable: Record<string, boolean> = {}, ownHashes = new Map<string, string>();
+  const artifactIdentities: NonNullable<ProjectSnapshot['artifactIdentities']> = {};
   const scope = Object.fromEntries(Object.entries(config.artifacts).map(([id, artifact]) => [id, { ...artifact, path: path.join(root, artifact.path) }]));
   for (const [id, artifact] of Object.entries(config.artifacts)) {
+    if (artifact.stale?.kind === 'identity') {
+      const { inputs: identityInputs, value } = await ownerIdentity(root, artifact.path, id, artifact.stale, signal);
+      const requirements = Object.fromEntries(Object.entries(config.configManifest.envRequirements ?? {}).filter(([name]) => name.startsWith(`${id}/`)));
+      const environmentPaths = new Set(Object.values(requirements).flatMap(requirement => [requirement.script, ...requirement.inputs ?? []]));
+      const environmentInputs = config.configManifest.environmentInputs?.filter(input => environmentPaths.has(input.path));
+      ownHashes.set(id, inputHash({ version: 2, identity: 'script', definition: artifact, identityInputs, value, requirements, environmentInputs }));
+      artifactIdentities[id] = { identity: 'script', value };
+      continue;
+    }
     const childPaths = new Set(Object.keys(artifact.children).map(child => path.posix.join(artifact.path, child)));
     const paths = new Set(artifact.stale?.kind === 'file-hash' && artifact.stale.paths ? artifact.stale.paths.map(name => path.posix.join(artifact.path, name)) : [artifact.path]);
     const mandatoryPaths = new Set([path.posix.join(artifact.path, 'ccdd.json')]);
@@ -104,5 +115,5 @@ export async function createProjectSnapshot(config: RepoConfig, root: string, sn
     const target = { id: critic.target, hash: artifactHashes[critic.target] }, deps = critic.deps.slice().sort().map(id => ({ id, hash: artifactHashes[id] }));
     inputs[critic.id] = { version: 2, key: inputHash({ criticHash, target, deps }), criticHash, target, deps, reusable: [critic.target, ...critic.deps].every(id => reusable[id]), workspaceIntegrity };
   }
-  return { version: 2, config: structuredClone(config), snapshotHash, artifactHashes, inputs, workspaceIntegrity };
+  return { version: 2, config: structuredClone(config), snapshotHash, artifactHashes, inputs, workspaceIntegrity, ...(Object.keys(artifactIdentities).length ? { artifactIdentities } : {}) };
 }

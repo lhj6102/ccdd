@@ -8,8 +8,10 @@ export interface ValidationInput {
   /** Omitted for historical/default content verification. Part of the effective Critic identity when nondefault. */
   workspaceIntegrity?: WorkspaceIntegrity;
 }
+export interface ArtifactIdentity { identity: 'script'; value: string }
 export interface ProjectSnapshot {
   version: 2; config: RepoConfig; snapshotHash: string;
+  artifactIdentities?: Record<string, ArtifactIdentity>;
   artifactHashes: Record<string, string>; inputs: Record<string, ValidationInput>;
   workspaceIntegrity?: WorkspaceIntegrity;
 }
@@ -33,6 +35,7 @@ export interface CriticValidation {
   requestId: string | null;
 }
 export interface ArtifactValidation {
+  identity?: 'script'; value?: string;
   id: string; hash: string; status: ValidationStatus; isStale: boolean;
   criticIds: string[]; passed: number; total: number;
 }
