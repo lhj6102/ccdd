@@ -35,3 +35,6 @@ and two-process lease-expiry races.
   are retained. Explicit SDK `pruneProject(stateDir)` and CLI `ccdd-project prune`
   remove only known scratch directories of completed, unowned runs; automatic
   pruning remains off and all audit evidence stays intact.
+- R9: Scheduling and ownership polling read small status rows instead of full
+  run/request JSON. Durable request-state revisions trigger replanning only on
+  state changes, including changes committed by another process.

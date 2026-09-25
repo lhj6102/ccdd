@@ -11,6 +11,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { prepareReviewRequests } from '../requester/index.js';
 import { readWorkspaceConfig } from './config.js';
 import { createGraphDefinition, type GraphDefinition } from './graph.js';
+import { createStatusPolling } from './polling.js';
 import { tokenUsage, toolResponseBytes } from '../executors/telemetry.js';
 import { finalResultEventData } from '../executors/final-result.js';
 import { normalizeReviewResult as validateResult, storedObservation } from '../review-result.js';
@@ -157,6 +158,7 @@ export function createBroker<D extends ResultDetail = 'compact'>({ detail, repoP
     if (db.prepare('SELECT value FROM metadata WHERE key = ?').get('registered-repo')?.value !== identity) throw new Error('This state directory belongs to a different registered repository.');
   } catch (error) { db?.close(); throw error; }
 
+  const polling = createStatusPolling(db);
   let closed = false;
   let closing = false;
   const active = new Map<string, ActiveRun>();
@@ -467,33 +469,41 @@ export function createBroker<D extends ResultDetail = 'compact'>({ detail, repoP
       let workspace: WorkspaceHandle | undefined;
       let poll: ReturnType<typeof setInterval> | undefined;
       const inFlight = new Map<string, { kind: ReviewRequest['profile']['kind']; promise: Promise<void> }>();
+      let plannedRevision = -1;
+      const notified = new Set<string>();
+      const kinds = new Map<string, ReviewRequest['profile']['kind']>();
       try {
         onStarted?.({ runId, pid: process.pid });
         workspace = await workspaceAdapter.reopenWorkspace(ownedRun.workspace, { signal: executionSignal });
         const reviewSignal = AbortSignal.any([executionSignal, workspace.signal]);
         poll = setInterval(() => {
           if (ownerData(runId)?.token !== token) abort.abort(codedError('Review ownership was lost.', 'RUN_OWNERSHIP_LOST'));
-          else if (terminal.has(required(runData(runId), 'Run').status)) abort.abort(codedError('Review is already complete or canceled.', 'REVIEW_CANCELED'));
+          else if (terminal.has(required(polling.runStatus(runId), 'Run'))) abort.abort(codedError('Review is already complete or canceled.', 'REVIEW_CANCELED'));
         }, 100);
         while (true) {
-          const current = required(runData(runId), 'Run');
-          if (terminal.has(current.status)) {
+          const current = required(polling.runStatus(runId), 'Run');
+          if (terminal.has(current)) {
             if (inFlight.size) abort.abort(codedError('Review is already complete or canceled.', 'REVIEW_CANCELED'));
             break;
           }
           reviewSignal.throwIfAborted();
-          transaction(() => { refreshReadinessWithin(runId); updateRunStatus(runId); });
-          const requests = runRequests(runId);
+          if (polling.revision() !== plannedRevision) transaction(() => {
+            refreshReadinessWithin(runId); updateRunStatus(runId);
+            plannedRevision = polling.revision();
+          });
+          const requests = polling.requests(runId);
           let executing = [...inFlight.values()].filter(item => item.kind !== 'human').length;
-          for (const queued of requests.filter(request => request.status === 'QUEUED')) {
-            if (queued.profile.kind !== 'human' && executing >= MAX_CONCURRENT_EXECUTORS) continue;
-            if (queued.profile.kind !== 'human') executing++;
-            const promise = executeOne(queued.id, workspace, token, reviewSignal).catch(error => {
+          for (const row of requests.filter(request => request.status === 'QUEUED')) {
+            const kind = kinds.get(row.id) ?? required(requestData(row.id), 'Request').profile.kind;
+            kinds.set(row.id, kind);
+            if (kind !== 'human' && executing >= MAX_CONCURRENT_EXECUTORS) continue;
+            if (kind !== 'human') executing++;
+            const promise = executeOne(row.id, workspace, token, reviewSignal).catch(error => {
               // A different task may win Promise.race before this rejection. Preserve fatal failure independently of that race.
               abort.abort(error);
               throw error;
-            }).finally(() => { inFlight.delete(queued.id); });
-            inFlight.set(queued.id, { kind: queued.profile.kind, promise });
+            }).finally(() => { inFlight.delete(row.id); });
+            inFlight.set(row.id, { kind, promise });
           }
           if (inFlight.size) {
             // Human alarms and independent evaluations progress together.
@@ -506,14 +516,18 @@ export function createBroker<D extends ResultDetail = 'compact'>({ detail, repoP
           }
           const waiting = requests.filter(request => request.status === 'WAITING_HUMAN');
           if (waiting.length) {
-            if (waiting.some(request => !request.notifiedAt)) throw new Error('Human notification did not complete; submit a new Run to retry.');
+            for (const request of waiting) {
+              if (notified.has(request.id)) continue;
+              if (!required(requestData(request.id), 'Request').notifiedAt) throw new Error('Human notification did not complete; submit a new Run to retry.');
+              notified.add(request.id);
+            }
             // The workspace observer stays alive with filesystem events and metadata polls.
             // Notification already crossed its final content boundary; idle waiting
             // must not rehash the entire workspace on every scheduling iteration.
             await delay(100, undefined, { signal: reviewSignal });
             continue;
           }
-          if (terminal.has(required(runData(runId), 'Run').status)) break;
+          if (terminal.has(required(polling.runStatus(runId), 'Run'))) break;
           throw codedError('Run has no executable request or pending Human review.', 'REVIEW_GRAPH_INVALID');
         }
       } catch (error) {
