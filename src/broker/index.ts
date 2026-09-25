@@ -8,6 +8,8 @@ import { prepareReviewRequests } from '../requester/index.js';
 import { readWorkspaceConfig } from './config.js';
 import { createGraphDefinition, type GraphDefinition } from './graph.js';
 import { tokenUsage } from '../executors/telemetry.js';
+import { finalResultEventData } from '../executors/final-result.js';
+import { normalizeReviewResult as validateResult, storedObservation } from '../review-result.js';
 import { createReviewTools, type ToolExecutionDiagnostic } from '../tools/runner.js';
 import { createHumanClaims, HUMAN_PREPARATION_LEASE_MS } from './human-claims.js';
 import { prepareHumanReview } from '../executors/human-preparation.js';
@@ -54,37 +56,6 @@ const fatalExecutionError = (error: unknown): boolean => {
   return Boolean(code?.startsWith('WORKSPACE_') || ['RUN_OWNERSHIP_LOST', 'REVIEW_CANCELED', 'WORKER_STOPPED', 'WORKER_EXITED', 'REVIEW_GRAPH_INVALID'].includes(code ?? ''));
 };
 
-function storedObservation(value: unknown, isError = false): ReviewToolCall['observation'] {
-  if (!object(value) || typeof value.artifactId !== 'string' || typeof value.operation !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(value.operation)) return undefined;
-  const observation: NonNullable<ReviewToolCall['observation']> = { artifactId: value.artifactId.slice(0, 64), operation: value.operation };
-  if (isError) return observation;
-  if (value.kind === 'content' || value.kind === 'empty') observation.kind = value.kind;
-  if (typeof value.detail === 'string') observation.detail = value.detail.slice(0, 2000);
-  for (const key of ['startLine', 'endLine', 'lineCount', 'totalLines'] as const) {
-    const number = value[key];
-    if (number === null || (typeof number === 'number' && Number.isSafeInteger(number) && number >= 0)) observation[key] = number;
-  }
-  return observation;
-}
-
-function validateResult(value: unknown): ReviewResult {
-  if (!object(value) || (value.verdict !== 'GREEN' && value.verdict !== 'RED') || typeof value.summary !== 'string' || !value.summary.trim() ||
-      !Array.isArray(value.evidence) || value.evidence.some(item => typeof item !== 'string')) {
-    throw new Error('Review result requires GREEN/RED verdict, a summary, and string evidence[].');
-  }
-  const result: ReviewResult = { verdict: value.verdict, summary: value.summary.slice(0, 12_000), evidence: (value.evidence as string[]).slice(0, 100).map(item => item.slice(0, 4000)) };
-  for (const key of ['provider', 'model', 'stdout', 'stderr'] as const) { const field = value[key]; if (typeof field === 'string') result[key] = field.slice(0, 24_000); }
-  for (const key of ['durationMs', 'exitCode'] as const) { const field = value[key]; if (typeof field === 'number' && Number.isFinite(field)) result[key] = field; }
-  if (Array.isArray(value.toolCalls)) result.toolCalls = value.toolCalls.slice(0, 100).filter((item): item is Record<string, unknown> & { name: string } => object(item) && typeof item.name === 'string').map(item => {
-    const call: ReviewToolCall = { name: item.name, ...(item.arguments === undefined ? {} : { arguments: copy(item.arguments) }) };
-    const observation = storedObservation(item.observation, item.isError === true);
-    if (item.isError === true) call.isError = true;
-    if (observation) call.observation = observation;
-    return call;
-  });
-  if (JSON.stringify(result).length > 256_000) throw new Error('Review result exceeds the supported size.');
-  return result;
-}
 
 function processIdentity(pid: number) {
   try {
@@ -364,7 +335,12 @@ export function createBroker({ repoPath, stateDir, repoId = 'demo', executors, w
       const result = validateResult(await requireExecutors().execute(copy(request), {
         worktreePath: workspace.descriptor.path, workspacePath: workspace.descriptor.path, runDir, signal,
         onEvent(event) {
-          if (closed || closing || signal.aborted || !event || requestData(requestId)?.status !== 'RUNNING' || !['executor.started', 'artifact.tools.ready', 'artifact.tool.called', 'artifact.tool.completed', 'executor.usage', 'executor.telemetry.failed', 'executor.completed'].includes(event.type)) return;
+          if (closed || closing || signal.aborted || !event || requestData(requestId)?.status !== 'RUNNING' || !['executor.started', 'artifact.tools.ready', 'artifact.tool.called', 'artifact.tool.completed', 'executor.usage', 'executor.final.invalid', 'executor.final.repair', 'executor.telemetry.failed', 'executor.completed'].includes(event.type)) return;
+          if (event.type === 'executor.final.invalid' || event.type === 'executor.final.repair') {
+            const safe = finalResultEventData(event);
+            if (safe) { appendEvent(runId, requestId, event.type, event.type, safe); changed(); }
+            return;
+          }
           const safe: Record<string, unknown> = {};
           for (const key of ['name', 'provider', 'model', 'kind', 'artifactId', 'path']) if (typeof event[key] === 'string') safe[key] = (event[key] as string).slice(0, 1000);
           if (event.type === 'artifact.tool.completed') {

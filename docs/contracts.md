@@ -238,6 +238,74 @@ Runtime currently supports fixed `node --test` entry paths. Paths are owner-rela
 
 Agent execution uses Pi with the exact requested Provider, model and reasoning settings. The only admitted observation operations are scoped view tools. The original payload remains immutable; a digested instruction adds reviewer-specific tool references. The Agent must return the structured verdict, summary and evidence and satisfy required observations. No shell, arbitrary file access or hidden reasoning is persisted as review evidence. Authentication files remain outside the workspace.
 
+### Final Agent response recovery
+
+Pi validates the final assistant text as exactly one JSON value, at most 1 MiB in
+UTF-8, against the supplied final schema. Invalid text receives a bounded category:
+`empty` (including whitespace), `not_json`, `wrapped_json` (a JSON value inside a
+single code fence or surrounding text), `schema_mismatch`, or `over_size` (also used for the existing normalized
+256,000-character persisted review-result envelope limit).
+Size is checked before parsing or wrapper detection. Wrapper detection only
+classifies syntax; it never extracts or accepts a verdict. Even exactly one
+surrounding `json` fence requires repair, preserving the strict final-result
+contract instead of silently choosing a value from mixed content.
+
+An invalid final result permits exactly one additional assistant turn in the same
+Agent context, with the same Provider, model, reasoning and original execution
+deadline. Executable tools are removed and transport requests normally set tool
+selection to `none`; Anthropic retains only the historical tool definitions
+required to serialize its existing tool-use/result messages. Bedrock requires
+historical tool configuration and does not offer a compatible `none` choice, so
+it retains wire definitions with `auto` while local execution remains disabled.
+Even an unsolicited tool call
+cannot invoke an observation or start another turn. No new evidence, semantic guidance or
+preferred verdict is supplied. The fixed prompt is:
+
+`Your final response did not match the required schema: <safe category and paths>. Return only one JSON value matching the schema.`
+
+Schema details contain only up to eight distinct validator `schemaPath`/`keyword`
+pairs (at most 160/40 characters each), stopping diagnostic traversal at eight
+reported errors, including repeated array errors. This detailed traversal is
+limited to simple object/array final schemas; composed or referenced schemas
+receive category-only diagnostics to avoid TypeBox buffering nested errors.
+Values with more than 256 object/array entries also use category-only diagnostics
+to avoid keyword-local buffers such as unexpected-property lists. No instance paths, property names from the
+response, parameter values, validation messages, parse errors or raw response
+text are logged. The same bounded description appears in
+`PROVIDER_RESULT_INVALID` if the repaired result is still invalid. Incomplete or
+failed Provider messages retain their existing error classifications rather than
+being treated as format errors. Exact response identity checks apply to the repair
+as well. Cancellation and timeout remain operational errors, not verdicts.
+
+The review schema includes nonblank summary/evidence strings, string length
+bounds and evidence-count bounds, so those shape errors also reach repair.
+An additional safe check preserves the existing UTF-16 code-unit length limits
+(TypeBox uses graphemes) and applies the same normalized persisted-result size
+check as the Broker, including tool-call metadata and the actual duration captured
+for the accepted candidate. That exact duration is persisted, excluding subsequent
+diagnostic-drain and cleanup latency. Immutable tool metadata is normalized and
+its serialized size counted once across candidate inspections.
+An envelope already too large because of immutable tool metadata cannot be
+repaired by changing evidence; the one attempt still fails closed.
+Only a strictly valid repaired response can proceed to ordinary result and required
+observation checks. The verdict remains the model's own; CCDD does not rewrite it.
+The original transcript exists only in memory for continuation and is reset when
+the invocation ends. Successful final results are stored as before; invalid raw
+responses and repair prompts are never stored.
+
+Repair activity is diagnostic history, not an additional evaluation or evidence.
+It does not alter ValidationInput version 2 or add repair state to reuse keys.
+A coordinated release's executor package version already changes input identity;
+do not deploy modified package contents under the existing published version.
+No package version is changed by this feature patch. A repaired GREEN/RED result
+is reusable under normal identity rules; an ERROR is never semantic evidence.
+Reused evidence points to its original evaluation/run, whose audit events describe
+the repair; a reuse-only run does not invent repair or usage events.
+Human claims and result submission are unchanged and never invoke this repair.
+The MCP observation-tool path is unchanged: it does not own Pi final responses.
+Doctor uses the shared Pi invocation and may repair formatting, but its nonce and
+actual-observation verification remain mandatory.
+
 Human execution notifies an explicitly registered alarm and waits for a person's claim and result. CCDD never fabricates Human or Provider verdicts. The sections below retain the local lifecycle and integrity contracts.
 
 ## Human lifecycle
@@ -343,6 +411,17 @@ Request-scoped Broker event data carries execution diagnostics, not semantic evi
   zero counters when the underlying Provider does not expose usage; these are not
   a claim of independently measured billing. Usage is emitted as each message completes, with pending writes drained when
   the Agent attempt settles, including a later Provider or final-schema failure.
+
+- `executor.final.invalid`: bounded `attempt` (`initial` or `repair`) and `category`
+  from the final-response categories above. Audit data deliberately omits schema
+  paths as well as response content; safe schema paths are only used in the
+  transient repair instruction and terminal diagnostic error.
+- `executor.final.repair`: `outcome` (`started`, `succeeded` or `failed`), recording
+  the one repair turn even when the eventual evaluation fails. The Broker accepts
+  only those fields and fixed event messages, never arbitrary executor text.
+  Provider usage includes the repair message's reported counters. These events
+  use the same best-effort persistence and cancellation boundaries as other
+  diagnostics; a started event without completion is not a claim of success.
 
 `reasoning` is a subset of `output`, and `cacheWrite1h` a subset of `cacheWrite`;
 never sum every field as disjoint counts. Provider cache accounting varies, so
