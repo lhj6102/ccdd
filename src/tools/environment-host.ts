@@ -20,5 +20,5 @@ registerHooks({
     return result;
   },
 });
-process.argv = [process.execPath, script];
+process.argv = [process.execPath, script, ...process.argv.slice(4)];
 await import(pathToFileURL(script).href);

@@ -7,7 +7,9 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { diagnosticsMain } from '../diagnostics-cli.js';
 import { createBroker, readStateContext } from '../broker/index.js';
 import { createGraphDefinition } from '../broker/graph.js';
-import { includedCritics, requiredArtifacts } from './query.js';
+import { dependencyClosure } from '../artifacts/scope.js';
+import { readWorkspaceConfig } from '../broker/config.js';
+import { prepareWorkspace } from '../workspaces/index.js';
 import { localContext, createLocalAlarmMethods } from '../local.js';
 import { createExecutorRegistry } from '../executors/index.js';
 import { ensureRunWorker } from '../worker-client.js';
@@ -73,8 +75,8 @@ const exitFor = (run: ProjectRunView) => run.status === 'GREEN' ? 0 : run.status
 const publicRun = ({ project, ...run }: ProjectRunView) => ({ ...run, workspaceIntegrity: run.workspace?.integrity ?? 'content' });
 function planText(plan: ProjectPlan): string {
   const target = plan.selection.kind === 'artifact' ? plan.selection.artifactId : plan.selection.kind === 'critic' ? plan.selection.criticId : 'Project';
-  const artifacts = plan.artifacts.filter(a => plan.selection.kind === 'all' || plan.selection.kind === 'artifact' && a.id === plan.selection.artifactId);
-  return `${target}: ${plan.satisfied ? 'SATISFIED' : 'NOT SATISFIED'}\nSnapshot: ${plan.snapshotHash}\nIntegrity: ${plan.workspaceIntegrity ?? 'content'}\n` + artifacts.map(a => `  Artifact ${a.id}: ${a.status} (${a.passed}/${a.total} Critics)\n`).join('') + plan.items.map(c => `  ${c.id}: ${c.action} · ${c.status}\n    ${c.reason}`).join('\n') +
+  const artifacts = plan.artifacts.filter(a => a.identity === 'script' || plan.selection.kind === 'all' || plan.selection.kind === 'artifact' && a.id === plan.selection.artifactId);
+  return `${target}: ${plan.satisfied ? 'SATISFIED' : 'NOT SATISFIED'}\nSnapshot: ${plan.snapshotHash}\nIntegrity: ${plan.workspaceIntegrity ?? 'content'}\n` + artifacts.map(a => `  Artifact ${a.id}: ${a.status} (${a.passed}/${a.total} Critics)${a.identity ? ` · identity: ${a.identity} · value: ${a.value}` : ''}\n`).join('') + plan.items.map(c => `  ${c.id}: ${c.action} · ${c.status}\n    ${c.reason}`).join('\n') +
     `\nReuse ${plan.counts.reuse} · Ready ${plan.counts.execute} · Waiting ${plan.counts.wait} · Active ${plan.counts.active} · Failed ${plan.counts.failed}`;
 }
 
@@ -133,22 +135,29 @@ export async function main(argv = process.argv.slice(2), { stdout = process.stdo
         await delay(Math.min(100, Math.max(1, deadline - Date.now())));
       }
     };
-    if (['status', 'plan', 'graph', 'config'].includes(command)) {
+    if (command === 'config' || command === 'graph') {
       if (command === 'config' && (positional.length !== 1 || positional[0] !== 'check')) throw new Error('Use config check.');
-      const selection = command === 'config' ? { kind: 'all' } as const : select(command === 'plan');
-      const { snapshot, plan } = await inspectProject({ ...context, selection, recursive: Boolean(options['--recursive']), force: Boolean(options['--force']), workspaceIntegrity });
-      if (command === 'config') { print({ ok: true, artifacts: Object.keys(snapshot.config.artifacts).length, critics: snapshot.config.critics.length, snapshotHash: snapshot.snapshotHash }, 'Folder configuration and Artifact references are valid.'); return 0; }
-      if (command === 'graph') {
-        const graph = createGraphDefinition(snapshot.config);
+      const selection = command === 'config' ? { kind: 'all' } as const : select();
+      const workspace = await prepareWorkspace({ ...context, integrity: workspaceIntegrity });
+      try {
+        const { config } = await readWorkspaceConfig(workspace.descriptor.path, workspace.signal);
+        await workspace.assertUnchanged();
+        if (command === 'config') { print({ ok: true, artifacts: Object.keys(config.artifacts).length, critics: config.critics.length, snapshotHash: workspace.descriptor.hash }, 'Folder configuration and Artifact references are valid.'); return 0; }
+        const graph = createGraphDefinition(config);
         if (selection.kind !== 'all') {
-          const ids = new Set(includedCritics(snapshot, selection, true));
-          graph.critics = graph.critics.filter(c => ids.has(c.id));
-          const artifacts = new Set(requiredArtifacts(snapshot, selection));
+          const target = selection.kind === 'artifact' ? selection.artifactId : config.critics.find(c => c.id === selection.criticId)?.target;
+          if (!target || !Object.hasOwn(config.artifacts, target)) throw new Error(selection.kind === 'artifact' ? `Unknown Artifact: ${selection.artifactId}` : `Unknown Critic: ${selection.criticId}`);
+          const artifacts = new Set(dependencyClosure(config.relations, [target]));
+          graph.critics = graph.critics.filter(c => artifacts.has(c.target));
           graph.artifacts = Object.fromEntries(Object.entries(graph.artifacts).filter(([id]) => artifacts.has(id)));
           graph.relations = graph.relations.filter(edge => artifacts.has(edge.source) && artifacts.has(edge.target));
         }
         print(graph, graph.critics.map(c => `${c.id}: ${c.deps.join(', ') || '(no deps)'} -> ${c.target}`).join('\n') || Object.keys(graph.artifacts).join('\n')); return 0;
-      }
+      } finally { await workspace.close(); }
+    }
+    if (command === 'status' || command === 'plan') {
+      const selection = select(command === 'plan');
+      const { plan } = await inspectProject({ ...context, selection, recursive: Boolean(options['--recursive']), force: Boolean(options['--force']), workspaceIntegrity });
       print(plan, planText(plan)); return command === 'plan' || plan.satisfied ? 0 : 1;
     }
     if (command === 'history') {

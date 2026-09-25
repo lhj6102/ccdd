@@ -1,0 +1,8 @@
+# Unreleased
+
+## Owner-defined Artifact identity
+
+- Add opt-in `stale.kind: "identity"` with an owner-relative script entry, optional declared inputs and timeout. A bounded opaque stdout string replaces material and view execution fingerprints; the entry, declared inputs, Artifact/tool definitions, environment inputs and dependency identities remain checked.
+- Repeated verification reuses matching actual evidence across material/runtime changes when the owner identity is unchanged. `--force` still requests fresh selected reviews. Invalid output, nonzero exits, timeout and workspace mutation fail validation without fallback.
+- Show the script identity mode and value in plan/status and saved Run validation, including Runs that reuse all evidence. Current identity inspection runs opted-in scripts; static config/graph discovery and saved Run inspection remain script-free.
+- Preserve existing default, file-hash and always identity hashes and execution integrity. This implements issue #47 proposal A as refined; replay-validated reuse and output-hash receipts (proposal B) remain out of scope.

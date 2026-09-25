@@ -3,7 +3,7 @@ import { mkdir, realpath } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { matchesToolManifest } from './manifest.js';
-import type { ConfigManifest, EnvironmentRequirement } from './contracts.js';
+import type { ConfigManifest } from './contracts.js';
 import { readWorkspaceConfig } from '../broker/config.js';
 import { scopedPath, within } from './paths.js';
 
@@ -11,7 +11,7 @@ export interface EnvironmentCheck { id: string; ok: boolean; message: string }
 export interface EnvironmentCheckResult { ok: boolean; checks: EnvironmentCheck[] }
 export interface EnvironmentCheckOptions { workspacePath: string; configManifest?: ConfigManifest; outputDir: string; signal?: AbortSignal; artifactIds?: readonly string[] }
 
-async function outputDirectory(root: string, directory: string): Promise<string> {
+export async function environmentOutputDirectory(root: string, directory: string): Promise<string> {
   const target = resolve(directory);
   let ancestor = target;
   while (true) {
@@ -36,14 +36,17 @@ function checkEnvironment(outputDir: string, tmpDir: string): NodeJS.ProcessEnv 
   };
 }
 
-function runCheck(root: string, script: string, requirement: EnvironmentRequirement, outputDir: string, tmpDir: string, signal?: AbortSignal): Promise<{ ok: boolean; message: string }> {
+/** Shared bounded executor for readiness and owner identity scripts. Callers enforce workspace integrity. */
+export function runEnvironmentScript({ command, args, cwd, outputDir, tmpDir, signal, timeoutMs = 30000, label = 'Environment check', description = 'Environment check passed.' }: {
+  command: string; args: string[]; cwd: string; outputDir: string; tmpDir: string; signal?: AbortSignal;
+  timeoutMs?: number; label?: string; description?: string;
+}): Promise<{ ok: boolean; message: string; stdout: string }> {
   signal?.throwIfAborted();
-  const timeoutMs = requirement.timeoutMs ?? 30000;
   return new Promise(resolveCheck => {
-    const child = spawn(process.execPath, [fileURLToPath(new URL('./environment-host.js', import.meta.url)), root, script], {
-      cwd: root, env: checkEnvironment(outputDir, tmpDir), shell: false, detached: process.platform !== 'win32', stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true,
+    const child = spawn(command, args, {
+      cwd, env: checkEnvironment(outputDir, tmpDir), shell: false, detached: process.platform !== 'win32', stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true,
     });
-    const chunks: Buffer[] = [];
+    const chunks: Buffer[] = [], stdout: Buffer[] = [];
     let bytes = 0, retained = 0, settled = false, failure: string | undefined, killTimer: NodeJS.Timeout | undefined;
     const kill = (kind: NodeJS.Signals): void => { try { if (process.platform !== 'win32' && child.pid) process.kill(-child.pid, kind); else child.kill(kind); } catch { /* Already exited. */ } };
     const finish = (ok: boolean, message: string): void => {
@@ -51,26 +54,26 @@ function runCheck(root: string, script: string, requirement: EnvironmentRequirem
       settled = true;
       clearTimeout(timer); clearTimeout(killTimer); signal?.removeEventListener('abort', abort);
       const diagnostic = Buffer.concat(chunks).toString('utf8').replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, '').trim();
-      resolveCheck({ ok, message: `${message}${diagnostic ? `\n${diagnostic}` : ''}`.slice(0, 4000) });
+      resolveCheck({ ok, message: `${message}${label === 'Environment check' && diagnostic ? `\n${diagnostic}` : ''}`.slice(0, 4000), stdout: Buffer.concat(stdout).toString('utf8') });
     };
     const stop = (message: string): void => {
       if (settled || failure) return;
       failure = message; kill('SIGTERM');
       killTimer = setTimeout(() => { kill('SIGKILL'); finish(false, message); }, 500);
     };
-    const abort = (): void => stop('Environment check was cancelled.');
-    const timer = setTimeout(() => stop(`Environment check timed out after ${timeoutMs} ms.`), timeoutMs);
+    const abort = (): void => stop(`${label} was cancelled.`);
+    const timer = setTimeout(() => stop(`${label} timed out after ${timeoutMs} ms.`), timeoutMs);
     const capture = (chunk: Buffer): void => {
       bytes += chunk.length;
       if (retained < 8192) { const part = chunk.subarray(0, 8192 - retained); chunks.push(part); retained += part.length; }
-      if (bytes > 65536) stop('Environment check output exceeded 64 KiB.');
+      if (bytes > 65536) stop(`${label} output exceeded 64 KiB.`);
     };
-    child.stdout.on('data', capture); child.stderr.on('data', capture);
+    child.stdout.on('data', (chunk: Buffer) => { if (bytes < 65536) stdout.push(chunk.subarray(0, 65536 - bytes)); capture(chunk); }); child.stderr.on('data', capture);
     signal?.addEventListener('abort', abort, { once: true });
-    child.on('error', () => { kill('SIGKILL'); finish(false, failure ?? 'The environment check could not be started.'); });
+    child.on('error', () => { kill('SIGKILL'); finish(false, failure ?? `${label} could not be started.`); });
     // A readiness check may not leave a background process after its script exits.
     child.on('exit', () => kill('SIGKILL'));
-    child.on('close', code => finish(!failure && code === 0, failure ?? (code === 0 ? requirement.description : `Environment check failed (exit ${code ?? 'signal'}): ${requirement.description}`)));
+    child.on('close', code => finish(!failure && code === 0, failure ?? (code === 0 ? description : `${label} failed (exit ${code ?? 'signal'}): ${description}`)));
     if (signal?.aborted) abort();
   });
 }
@@ -84,14 +87,16 @@ export async function checkEnvironmentRequirements(options: EnvironmentCheckOpti
   // Reconnect declarations from this exact snapshot before executing any stored script path.
   const { config } = await readWorkspaceConfig(root, options.signal);
   if (!matchesToolManifest(config, options.configManifest)) throw Object.assign(new Error('Recorded environment requirements do not match this snapshot configuration.'), { code: 'WORKSPACE_ARTIFACT_MISMATCH' });
-  const base = await outputDirectory(root, options.outputDir), checks: EnvironmentCheck[] = [];
+  const base = await environmentOutputDirectory(root, options.outputDir), checks: EnvironmentCheck[] = [];
   for (const [id, requirement] of Object.entries(requirements)) {
     if (options.artifactIds && !options.artifactIds.includes(id.split('/')[0])) continue;
     options.signal?.throwIfAborted();
-    const outputDir = await outputDirectory(root, join(base, id)), tmpDir = await outputDirectory(root, join(outputDir, '.tmp'));
-    const result = await runCheck(root, await scopedPath(root, requirement.script), requirement, outputDir, tmpDir, options.signal);
+    const outputDir = await environmentOutputDirectory(root, join(base, id)), tmpDir = await environmentOutputDirectory(root, join(outputDir, '.tmp'));
+    const { ok, message } = await runEnvironmentScript({ command: process.execPath,
+      args: [fileURLToPath(new URL('./environment-host.js', import.meta.url)), root, await scopedPath(root, requirement.script)],
+      cwd: root, outputDir, tmpDir, signal: options.signal, timeoutMs: requirement.timeoutMs, description: requirement.description });
     options.signal?.throwIfAborted();
-    checks.push({ id, ...result });
+    checks.push({ id, ok, message });
   }
   return { ok: checks.every(check => check.ok), checks };
 }
