@@ -2,14 +2,14 @@
 
 CCDD packages are distributed through npm. GitHub Releases announce each version with an installation command, npm package links, and release notes. They do not host installation tarballs. GitHub still supplies automatic Source code archives; those contain source, not installable packages.
 
-See [getting started](getting-started.md) for setup and [v4.2.0 release notes](releases/v4.2.0.md) for the current changes.
+See [getting started](getting-started.md) for setup and [v4.3.0 release notes](releases/v4.3.0.md) for the current changes.
 
 ## Installing and upgrading
 
-CCDD 4.2.0 supports Node.js 22 LTS (22.19.0 or later). Install matching versions of the three packages:
+CCDD 4.3.0 supports Node.js 22 LTS (22.19.0 or later). Install matching versions of the three packages:
 
 ```sh
-npm install --ignore-scripts @ccdd/core@4.2.0 @ccdd/project@4.2.0 @ccdd/default-tools@4.2.0
+npm install --ignore-scripts @ccdd/core@4.3.0 @ccdd/project@4.3.0 @ccdd/default-tools@4.3.0
 npx ccdd-project config check
 npx ccdd-project tools check
 ```
@@ -33,8 +33,8 @@ To publish, merge the version change and release notes, wait for that commit's
 CI to succeed, then push its version tag:
 
 ```sh
-git tag v4.2.0 COMMIT_SHA
-git push origin v4.2.0
+git tag v4.3.0 COMMIT_SHA
+git push origin v4.3.0
 ```
 
 `release.yml` runs one Node 22 LTS job. It installs npm 11.19.1 for Trusted
@@ -114,7 +114,7 @@ The three npm publications and the GitHub announcement are not one transaction. 
 If the publication scripts need a fix after tagging, merge and verify that fix first, then use the current workflow to publish the original tag:
 
 ```sh
-gh workflow run release.yml --ref main -f tag=v4.2.0
+gh workflow run release.yml --ref main -f tag=v4.3.0
 ```
 
 This recovery uses the publication scripts from main and a separate checkout of the existing tag for release metadata. It still requires that tag's successful main CI and publishes only its retained, checksum-verified packages. It never moves the tag, rebuilds packages, or substitutes the workflow commit's packages. CI also checks each completed verification report with the same asset validator used by publication.
