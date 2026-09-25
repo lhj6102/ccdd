@@ -29,6 +29,16 @@ export interface ReviewToolRegistry {
 }
 export interface ToolExecutionDiagnostic {
   name: string; artifactId: string; operation: string; startedAt: string; durationMs: number; outcome: 'success' | 'error';
+  contentBytes: number; contentBytesByType: Record<'text' | 'json' | 'image' | 'launch', number>;
+}
+/** Payload bytes, not transport framing: UTF-8 text/JSON, decoded images and launch JSON. */
+function responseBytes(result?: ToolResult) {
+  const contentBytesByType = { text: 0, json: 0, image: 0, launch: 0 };
+  for (const block of result?.content ?? []) {
+    contentBytesByType[block.type] += block.type === 'image' ? Buffer.from('data' in block ? block.data : '', 'base64').length
+      : Buffer.byteLength(block.type === 'text' ? block.text : JSON.stringify(block.type === 'json' ? block.data : { kind: 'launch', launched: block.launched }));
+  }
+  return { contentBytes: Object.values(contentBytesByType).reduce((sum, bytes) => sum + bytes, 0), contentBytesByType };
 }
 export interface ReviewToolsOptions {
   worktreePath: string; artifacts: readonly ArtifactReference[]; configManifest: ConfigManifest;
@@ -210,7 +220,7 @@ export async function createReviewTools(options: ReviewToolsOptions): Promise<Re
       const startedAt = new Date().toISOString(), started = performance.now();
       const task = (async () => {
         const attempt = await invoke(tool, actual).then(value => ({ ok: true as const, ...value }), error => ({ ok: false as const, error: error as unknown }));
-        const diagnostic: ToolExecutionDiagnostic = { name: tool.name, artifactId: tool.artifactId, operation: tool.operation, startedAt, durationMs: performance.now() - started, outcome: attempt.ok && !attempt.result.isError ? 'success' : 'error' };
+        const diagnostic: ToolExecutionDiagnostic = { name: tool.name, artifactId: tool.artifactId, operation: tool.operation, startedAt, durationMs: performance.now() - started, outcome: attempt.ok && !attempt.result.isError ? 'success' : 'error', ...responseBytes(attempt.ok ? attempt.result : undefined) };
         if (options.onExecution) await bestEffortDiagnostic(() => options.onExecution!(diagnostic));
         if (!attempt.ok) throw attempt.error;
         // Optional telemetry cannot withhold successfully observed content.

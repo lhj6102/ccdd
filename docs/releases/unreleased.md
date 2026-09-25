@@ -28,3 +28,5 @@ and two-process lease-expiry races.
   provider tool channel; all review security and observation instructions remain.
 - R6: Each Pi request uses its review request id as the stable provider session
   cache key, including tool continuations and the one format-only repair turn.
+- R7: Tool completion diagnostics include total and per-kind response payload
+  bytes, without retaining response content or changing identity/reuse/verdicts.

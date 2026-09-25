@@ -19,3 +19,14 @@ export async function bestEffortDiagnostic(write: () => void | Promise<void>): P
     ]);
   } finally { clearTimeout(timer); }
 }
+
+/** Allow only complete nonnegative payload counters, never arbitrary tool data. */
+export function toolResponseBytes(value: Record<string, unknown>): Record<string, unknown> {
+  const types = ['text', 'json', 'image', 'launch'];
+  const counts = value.contentBytesByType;
+  if (!counts || typeof counts !== 'object' || Array.isArray(counts)) return {};
+  const byType = Object.fromEntries(types.map(type => [type, (counts as Record<string, unknown>)[type]]));
+  if (!Object.values(byType).every(count => typeof count === 'number' && Number.isSafeInteger(count) && count >= 0)) return {};
+  const total = (Object.values(byType) as number[]).reduce((sum, bytes) => sum + bytes, 0);
+  return Number.isSafeInteger(total) && total === value.contentBytes ? { contentBytes: total, contentBytesByType: byType } : {};
+}

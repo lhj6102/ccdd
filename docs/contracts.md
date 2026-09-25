@@ -599,3 +599,14 @@ is unavailable. Underlying callbacks cannot be forcibly canceled, so consumers
 must also bound their own I/O. User cancellation still applies during the bounded
 drain. Existing mandatory observation/Human execution audit failures remain
 operational failures; that preexisting evidence requirement is not telemetry.
+
+Tool completion payload counters (`artifact.tool.completed`, and
+`human.tool.executed` for Human calls) include `contentBytes` and
+`contentBytesByType` with `text`, `json`, `image`, and `launch` counters. The total
+is the sum of those counters across every normalized response block. Text uses
+UTF-8 bytes; JSON uses UTF-8 bytes of its serialized data; images use decoded
+binary bytes (not base64 transport overhead); launch uses the serialized
+`{"kind":"launch","launched":true}` observation shown to the provider. Counts
+exclude protocol framing and observation metadata. Author-controlled errors count
+their returned text; failures with no validated response count zero. These are
+optional operational diagnostics only, never identity, reuse keys, or verdicts.

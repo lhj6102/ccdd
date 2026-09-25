@@ -11,7 +11,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { prepareReviewRequests } from '../requester/index.js';
 import { readWorkspaceConfig } from './config.js';
 import { createGraphDefinition, type GraphDefinition } from './graph.js';
-import { tokenUsage } from '../executors/telemetry.js';
+import { tokenUsage, toolResponseBytes } from '../executors/telemetry.js';
 import { finalResultEventData } from '../executors/final-result.js';
 import { normalizeReviewResult as validateResult, storedObservation } from '../review-result.js';
 import { createReviewTools, type ToolExecutionDiagnostic } from '../tools/runner.js';
@@ -405,6 +405,7 @@ export function createBroker<D extends ResultDetail = 'compact'>({ detail, repoP
           const safe: Record<string, unknown> = {};
           for (const key of ['name', 'provider', 'model', 'kind', 'artifactId', 'path']) if (typeof event[key] === 'string') safe[key] = (event[key] as string).slice(0, 1000);
           if (event.type === 'artifact.tool.completed') {
+            Object.assign(safe, toolResponseBytes(event));
             if (typeof event.startedAt === 'string' && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(event.startedAt) && Number.isFinite(Date.parse(event.startedAt))) safe.startedAt = event.startedAt;
             if (typeof event.durationMs === 'number' && Number.isFinite(event.durationMs) && event.durationMs >= 0) safe.durationMs = event.durationMs;
             if (event.outcome === 'success' || event.outcome === 'error') safe.outcome = event.outcome;
