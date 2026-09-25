@@ -83,7 +83,7 @@ test('Human claim, tool execution and submission work across fresh CLI processes
   const run = await until(() => projectRun(data.stateDir, submitted.data.id)!, value => Boolean(value?.requests[0]?.notifiedAt)); const id = run.requests[0].id;
   const claimed = await separate(['request', 'claim', id, '--reviewer', 'fixture-reader', ...data.args]); assert.equal(claimed.code, 0, JSON.stringify(claimed.data));
   const result = await separate(['request', 'tool', id, '--reviewer', 'fixture-reader', '--tool', 'read_a', '--args', '{"lineCount":1}', ...data.args]); assert.equal(result.code, 0); assert.equal(result.data.observation.kind, 'content');
-  const filename = join(data.root, 'result.json'); await writeFile(filename, JSON.stringify({ verdict: 'GREEN', summary: 'Controlled Human submission fixture', evidence: ['Observed the fixture through its actual tool.'] }));
+  const filename = join(data.root, 'result.json'); await writeFile(filename, JSON.stringify({ verdict: 'GREEN' }));
   assert.equal((await separate(['request', 'submit', id, '--reviewer', 'fixture-reader', '--result-file', filename, ...data.args])).code, 0);
   assert.equal((await separate(['run', 'show', run.id, '--wait', ...data.args])).data.status, 'GREEN');
 });

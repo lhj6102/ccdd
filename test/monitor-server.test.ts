@@ -62,9 +62,9 @@ test('Human actions require the claimant, same-origin CSRF and schema-valid argu
   const result = await post(`${data.route}/tools/read_a`, first, { arguments: { lineCount: 1 } }); assert.equal(result.status, 200); assert.match(JSON.stringify(await result.json()), /Content of a/);
   assert.equal(data.broker.getRequest(data.request.id)!.status, 'WAITING_HUMAN');
   assert.equal((await post(`${data.route}/complete`, first, { verdict: 'GREEN', summary: 'Controlled Human result', evidence: [] })).status, 400);
-  const completed = await post(`${data.route}/complete`, first, { verdict: 'GREEN', summary: 'Controlled Human fixture submission', evidence: ['Read the actual fixture using its registered tool.'] });
+  const completed = await post(`${data.route}/complete`, first, { verdict: 'GREEN' });
   assert.equal(completed.status, 200, await completed.clone().text()); assert.equal((await completed.json() as MonitorDetail).request.status, 'GREEN');
-  assert.equal((await post(`${data.route}/complete`, first, { verdict: 'RED', summary: 'Duplicate', evidence: ['Fixture'] })).status, 409);
+  assert.equal((await post(`${data.route}/complete`, first, { verdict: 'RED' })).status, 409);
 });
 
 test('browser identity survives monitor restart while CSRF requires a fresh session token', async t => {
@@ -77,7 +77,7 @@ test('browser identity survives monitor restart while CSRF requires a fresh sess
 test('changed Human input is an operational failure and cannot accept a semantic verdict', async t => {
   const data = await fixture(t, true), browser = await session(data.monitor.url); assert.equal((await post(`${data.route}/claim`, browser)).status, 200);
   await writeFile(join(data.repoPath, 'a/content.txt'), 'changed');
-  assert.equal((await post(`${data.route}/complete`, browser, { verdict: 'GREEN', summary: 'Must not persist', evidence: ['Fixture'] })).status, 409);
+  assert.equal((await post(`${data.route}/complete`, browser, { verdict: 'GREEN' })).status, 409);
   assert.equal(data.broker.getRequest(data.request.id)!.result, null);
 });
 

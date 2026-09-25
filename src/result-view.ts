@@ -1,3 +1,4 @@
+import { semanticResult } from './response-schema.js';
 import { resolve } from 'node:path';
 import type { ReviewRequest } from './contracts.js';
 import type { RunView } from './broker/index.js';
@@ -8,8 +9,7 @@ export interface ResultOptions<D extends ResultDetail = 'compact'> { detail?: D 
 export type ResultView<D extends ResultDetail, Full, Compact> = D extends 'full' ? Full : Compact;
 export interface ReviewReference { runId: string; requestId: string | null; stateDir: string }
 export interface RequesterResult {
-  verdict: 'GREEN' | 'RED'; reason: string; evidence: string[];
-  inputKey: string | null; target: string; criticId: string; reference: ReviewReference;
+  verdict: 'GREEN' | 'RED'; reference: ReviewReference; reusedFrom?: ReviewReference; [field: string]: unknown;
 }
 export interface RequesterRequest {
   id: string; runId: string; criticId: string; target: string; status: ReviewRequest['status'];
@@ -31,16 +31,14 @@ export const reviewReference = (stateDir: string, runId: string, requestId: stri
 
 /** Whitelists deliberately keep new audit fields out of requester output. Never mutate stored evidence. */
 export function requesterEvidence(evidence: ValidationEvidence, stateDir: string): RequesterResult {
-  return { verdict: evidence.verdict, reason: evidence.summary, evidence: evidence.evidence,
-    inputKey: evidence.input.key, target: evidence.input.target.id, criticId: evidence.criticId,
+  return { ...semanticResult(evidence.result), verdict: evidence.verdict,
     reference: reviewReference(stateDir, evidence.runId, evidence.requestId) };
 }
 export function requesterRequest(request: ReviewRequest, stateDir: string): RequesterRequest {
   const reference = reviewReference(stateDir, request.runId, request.id), inputKey = request.validationInput?.key ?? null;
   return { id: request.id, runId: request.runId, criticId: request.criticId, target: request.target, status: request.status,
     inputKey, reference, error: request.error, errorCode: request.errorCode, blockedReason: request.blockedReason,
-    result: request.result ? { verdict: request.result.verdict, reason: request.result.summary, evidence: request.result.evidence,
-      inputKey, target: request.target, criticId: request.criticId, reference } : null };
+    result: request.result ? { ...semanticResult(request.result), verdict: request.result.verdict, reference } : null };
 }
 function requesterCritic<T extends CriticValidation>(critic: T): Omit<T, 'input' | 'result'> & RequesterCritic {
   const { input, result, ...rest } = critic;

@@ -17,7 +17,7 @@ const audit = {
 };
 async function fixture(t: Parameters<typeof artifactFixture>[0]) {
   const data = await artifactFixture(t);
-  await data.write('a', { name: 'a', critics: [runtimeCritic()] });
+  await data.write('a', { name: 'a', critics: [{ ...runtimeCritic(), passSchema: { type: 'object', properties: { summary: { type: 'string' }, evidence: { type: 'array', items: { type: 'string' } } }, required: ['summary', 'evidence'] } }] });
   const broker = createBroker({ ...data, executors: { canExecute: () => ({ ok: true }), execute: async () => audit } });
   data.cleanup(() => broker.close());
   const submitted = await broker.submitProject({ selection: { kind: 'all' } });
@@ -46,12 +46,12 @@ test('requester defaults reference unchanged stored audit evidence and full API 
   assert.deepEqual(completed.validation!.items[0].result, completed.requests[0].result);
   assert.equal(JSON.stringify(completed).split(audit.evidence[0]).length - 1, 1);
   const result = completed.results[0];
-  assert.equal(result.reason, audit.summary); assert.deepEqual(result.evidence, audit.evidence);
-  assert.equal(result.target, 'a'); assert.equal(result.criticId, 'a/check');
+  assert.equal(result.summary, audit.summary); assert.deepEqual(result.evidence, audit.evidence);
+  assert.equal(completed.requests[0].target, 'a'); assert.equal(completed.requests[0].criticId, 'a/check');
   const { reference } = result;
   const stored = projectRun(reference.stateDir, reference.runId)!;
   const request = stored.requests.find(r => r.id === reference.requestId)!;
-  assert.equal(request.validationInput!.key, result.inputKey);
+  assert.equal(request.validationInput!.key, completed.requests[0].inputKey);
   assert.equal(JSON.stringify(request.result), JSON.stringify(normalizeReviewResult(audit)));
   assert.equal(request.result!.toolCalls!.length, 12);
   const db = new DatabaseSync(join(stateDir, 'broker.sqlite'), { readOnly: true });
@@ -72,8 +72,8 @@ test('requester defaults reference unchanged stored audit evidence and full API 
   const reused = await broker.submitProject({ selection: { kind: 'all' } });
   assert.equal(reused.status, 'GREEN'); assert.equal(reused.requests.length, 0);
   assert.deepEqual(reused.results[0].reference, reference);
-  assert.equal(reused.validation!.critics[0].inputKey, result.inputKey);
-  assert.equal((await inspectProject({ ...data, detail: 'full' })).snapshot.inputs['a/check'].key, result.inputKey);
+  assert.equal(reused.validation!.critics[0].inputKey, completed.requests[0].inputKey);
+  assert.equal((await inspectProject({ ...data, detail: 'full' })).snapshot.inputs['a/check'].key, completed.requests[0].inputKey);
 
   // Normalize path lengths for a deterministic, reproducible transport-size measurement.
   const measure = (value: unknown) => Buffer.byteLength(JSON.stringify(value).replaceAll(data.root, '/fixture'));
@@ -97,7 +97,7 @@ test('CLI verification, status, plan, history and requests are compact; full and
   const full = JSON.parse(await cli(stateDir, ['request', 'show', requestId, '--json', '--full']));
   assert.deepEqual(full.result, shown.requests[0].result);
   const fullStatus = JSON.parse(await cli(stateDir, ['status', '--full', '--json']));
-  assert.equal(fullStatus.critics[0].result.summary, audit.summary);
+  assert.equal(fullStatus.critics[0].result.result.summary, audit.summary);
   assert.ok(fullStatus.critics[0].input.key);
   assert.ok((await cli(stateDir, ['run', 'show', completed.id])).includes('toolCalls'));
 });

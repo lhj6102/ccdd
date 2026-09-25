@@ -1,3 +1,4 @@
+import { semanticResult } from '../response-schema.js';
 import { requesterRun, requesterRequest, requesterEvidence, resultView, type ResultDetail, type ResultOptions } from '../result-view.js';
 import { DatabaseSync } from 'node:sqlite';
 import { existsSync } from 'node:fs';
@@ -12,7 +13,7 @@ export function readEvidence(database: DatabaseSync): ValidationEvidence[] {
   return rows.flatMap(row => {
     const request = JSON.parse(String(row.data)) as ReviewRequest;
     if (!request.validationInput || !/^[a-f0-9]{64}$/.test(request.validationInput.key) || !request.result || request.result.verdict !== request.status || !request.completedAt) return [];
-    return [{ requestId: request.id, runId: request.runId, criticId: request.criticId, input: request.validationInput, completedAt: request.completedAt, verdict: request.result.verdict, summary: request.result.summary, evidence: request.result.evidence }];
+    return [{ requestId: request.id, runId: request.runId, criticId: request.criticId, input: request.validationInput, completedAt: request.completedAt, verdict: request.result.verdict, result: semanticResult(request.result) as ReviewRequest['result'] & { verdict: 'GREEN' | 'RED' } }];
   });
 }
 

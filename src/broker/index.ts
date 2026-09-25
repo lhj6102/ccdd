@@ -1,3 +1,4 @@
+import { semanticResult, validateFinalResult } from '../response-schema.js';
 import { requesterRun, requesterRequest, resultView, type ResultDetail, type ResultOptions } from '../result-view.js';
 import { DatabaseSync } from 'node:sqlite';
 import { randomUUID } from 'node:crypto';
@@ -238,7 +239,7 @@ export function createBroker<D extends ResultDetail = 'compact'>({ detail, repoP
     request.errorCode = errorCode(error) ?? null;
     request.completedAt = now();
     saveRequest(request);
-    appendEvent(request.runId, request.id, hasError ? 'request.error' : 'request.completed', hasError ? required(request.error, 'error message') : required(result, 'review result').summary, { status: request.status, ...(request.errorCode ? { code: request.errorCode } : {}) });
+    appendEvent(request.runId, request.id, hasError ? 'request.error' : 'request.completed', hasError ? required(request.error, 'error message') : `Review ${required(result, 'review result').verdict}.`, { status: request.status, ...(request.errorCode ? { code: request.errorCode } : {}) });
     refreshReadinessWithin(request.runId);
     updateRunStatus(request.runId);
     return true;
@@ -368,6 +369,7 @@ export function createBroker<D extends ResultDetail = 'compact'>({ detail, repoP
           changed();
         },
       }));
+      validateFinalResult(semanticResult(result), request);
       await workspace.assertUnchanged();
       signal.throwIfAborted();
       transaction(() => { if (ownerData(runId)?.token === token) finishWithin(requestId, { result }); });
@@ -610,8 +612,9 @@ export function createBroker<D extends ResultDetail = 'compact'>({ detail, repoP
     },
     async completeHuman(requestId: string, { reviewerId, result }: { reviewerId: unknown; result: unknown }) {
       ensureOpen();
-      const validated = validateResult(result);
-      if (!validated.evidence.length || validated.evidence.some(item => !item.trim())) throw new Error('Human review requires at least one nonempty evidence entry.');
+      const definition = required(requestData(requestId), 'Request');
+      validateFinalResult(result, definition);
+      const validated = validateResult(result, definition);
       const first = requestData(requestId);
       if (first) reconcile(first.runId);
       const request = requestData(requestId);

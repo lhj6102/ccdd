@@ -1,3 +1,4 @@
+import { validateResponseSchema } from '../response-schema.js';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { lstat, readFile, readdir, realpath } from 'node:fs/promises';
@@ -44,9 +45,10 @@ function views(value: unknown): ArtifactViews {
 }
 function critic(value: unknown): CriticDefinition {
   if (!object(value)) throw new Error('Invalid Critic declaration.');
-  fields(value, ['id', 'title', 'profile', 'payload'], 'Critic');
+  fields(value, ['id', 'title', 'profile', 'payload', 'passSchema', 'failSchema'], 'Critic');
   if (typeof value.id !== 'string' || !identifier.test(value.id) || typeof value.title !== 'string' || !value.title.trim()) throw new Error('A Critic needs a local id and title.');
   if (!object(value.payload) || typeof value.payload.instruction !== 'string' || !value.payload.instruction.trim()) throw new Error('A Critic needs payload.instruction.');
+  for (const key of ['passSchema', 'failSchema']) if (value[key] !== undefined) validateResponseSchema(value[key]);
   const profile = value.profile;
   if (!object(profile) || !['agent', 'human', 'runtime'].includes(profile.kind)) throw new Error('Invalid Critic profile.');
   if (profile.kind === 'agent') {

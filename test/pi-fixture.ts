@@ -53,7 +53,7 @@ export function artifactStream({ mode = 'valid', result, onRequest }: ArtifactSt
         const data = text?.type === 'text' ? { content: text.text } : { content: '' };
         return fauxAssistantMessage(JSON.stringify({ ready: true, nonce: mode === 'wrong-nonce' ? 'wrong' : data.content.trim() }));
       }
-      return fauxAssistantMessage(mode === 'malformed' ? 'not json' : JSON.stringify(result ?? { verdict: 'GREEN', summary: 'Inspected the declared Artifacts.', evidence: ['Read the actual contents of the requested Artifacts with tools.'] }));
+      return fauxAssistantMessage(mode === 'malformed' ? 'not json' : JSON.stringify(result ?? { verdict: 'GREEN' }));
     }]);
     return faux.provider.streamSimple(model, context, options);
   };

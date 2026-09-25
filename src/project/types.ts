@@ -18,7 +18,7 @@ export interface ProjectSnapshot {
 }
 export interface ValidationEvidence {
   requestId: string; runId: string; criticId: string; input: ValidationInput;
-  completedAt: string; verdict: ReviewResult['verdict']; summary: string; evidence: string[];
+  completedAt: string; verdict: ReviewResult['verdict']; result: ReviewResult;
 }
 export interface ProjectRunDefinition {
   version: 3; snapshot: ProjectSnapshot; selection: ProjectSelection;

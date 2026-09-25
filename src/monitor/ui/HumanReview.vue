@@ -11,7 +11,7 @@ const emit = defineEmits<{ updated: [detail: MonitorDetail]; refresh: []; sessio
 const busy = ref<'claim' | 'complete' | 'tool' | null>(null), error = ref(''), toolName = ref('');
 const fields = ref<Record<string, string>>({}), toolResult = ref<unknown>(null), lastArguments = ref<Record<string, unknown>>({});
 const jsonInput = ref('{}'), preferJson = ref(false);
-const summary = ref(''), evidence = ref(''), verdict = ref<'GREEN' | 'RED'>('GREEN');
+const responseFields = ref('{}'), verdict = ref<'GREEN' | 'RED'>('GREEN');
 const toolForm = ref<HTMLFormElement | null>(null);
 const toolsRegion = ref<HTMLElement | null>(null), focusedArtifact = ref('');
 const tool = computed(() => props.detail.tools?.find(item => item.name === toolName.value));
@@ -156,11 +156,11 @@ function navigate(operation: 'read' | 'list', path: string): void {
 }
 async function complete(): Promise<void> {
   if (!props.session || !canAct.value || busy.value) return;
-  const entries = evidence.value.split('\n').map(line => line.trim()).filter(Boolean);
-  if (!summary.value.trim() || !entries.length) { error.value = 'Enter a review summary and evidence.'; return; }
-  if (entries.length > 100 || entries.some(item => item.length > 4_000)) { error.value = 'Provide up to 100 evidence entries, each at most 4,000 characters.'; return; }
-  const result = { verdict: verdict.value, summary: summary.value.trim(), evidence: entries };
-  if (new TextEncoder().encode(JSON.stringify(result)).byteLength > 32_768) { error.value = 'The summary and evidence are too long. Please shorten them.'; return; }
+  let fields: Record<string, unknown>;
+  try { fields = JSON.parse(responseFields.value); if (!fields || typeof fields !== 'object' || Array.isArray(fields) || 'verdict' in fields) throw new Error(); }
+  catch { error.value = 'Enter owner response fields as a JSON object without verdict.'; return; }
+  const result = { ...fields, verdict: verdict.value };
+  if (new TextEncoder().encode(JSON.stringify(result)).byteLength > 32_768) { error.value = 'The result exceeds the HTTP request size limit; use the CLI for larger results.'; return; }
   busy.value = 'complete'; error.value = '';
   try {
     const value = await api<MonitorDetail>(`${route.value}/complete`, { body: result, csrfToken: props.session.csrfToken });
@@ -226,8 +226,8 @@ onUnmounted(() => { alive = false; clearInterval(preparationTimer); toolControll
       <form class="verdict-form" @submit.prevent="complete">
         <h3 class="section-title">Review result</h3>
         <fieldset class="verdict-options" :disabled="!canAct || !!busy"><legend class="sr-only">Verdict</legend><label :class="{ chosen: verdict === 'GREEN' }"><input v-model="verdict" type="radio" value="GREEN" /><span><strong>GREEN</strong> Criteria met</span></label><label :class="{ chosen: verdict === 'RED' }"><input v-model="verdict" type="radio" value="RED" /><span><strong>RED</strong> Criteria not met</span></label></fieldset>
-        <label class="form-label"><span>Review summary</span><textarea v-model="summary" rows="3" required maxlength="12000" placeholder="Briefly explain your verdict." :disabled="!canAct || !!busy"></textarea></label>
-        <label class="form-label"><span>Evidence <small>One entry per line</small></span><textarea v-model="evidence" rows="3" required maxlength="24000" placeholder="Describe what you inspected or cite relevant locations." :disabled="!canAct || !!busy"></textarea></label>
+        <details class="tool-schema"><summary>Owner response schema</summary><pre>{{ JSON.stringify(verdict === 'GREEN' ? detail.responseSchemas?.passSchema ?? {} : detail.responseSchemas?.failSchema ?? {}, null, 2) }}</pre></details>
+        <label class="form-label"><span>Owner response fields (JSON)</span><textarea v-model="responseFields" rows="5" placeholder="{}" :disabled="!canAct || !!busy"></textarea></label>
         <div class="submit-row"><p>Your verdict will be saved as the result of this request.</p><button class="primary-button" type="submit" :disabled="!canAct || !!busy">{{ busy === 'complete' ? 'Submitting…' : 'Submit result' }}</button></div>
       </form>
     </template>

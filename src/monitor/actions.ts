@@ -39,7 +39,7 @@ export async function claimReview(record: MonitorStoredRequest, reviewerId: stri
   finally { await broker.close(); }
 }
 
-export async function completeReview(record: MonitorStoredRequest, reviewerId: string, result: Pick<ReviewResult, 'verdict' | 'summary' | 'evidence'>): Promise<void> {
+export async function completeReview(record: MonitorStoredRequest, reviewerId: string, result: ReviewResult): Promise<void> {
   available(record, reviewerId, true);
   await authorizeWorkspace(record);
   const broker = createBroker({ ...record, detail: 'full' });

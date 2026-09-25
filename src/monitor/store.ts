@@ -1,3 +1,4 @@
+import { semanticResult } from '../response-schema.js';
 import { reviewReference } from '../result-view.js';
 import type { ArtifactReferenceMetadata } from '../artifacts/index.js';
 import { createHash } from 'node:crypto';
@@ -410,15 +411,12 @@ export function createMonitorStore(options: MonitorSources = {}) {
       try {
         const raw = snapshot.target;
         if (!object(raw.payload)) throw storageError();
-        const outcome: MonitorDetail['result'] = object(raw.result) && typeof raw.result.summary === 'string' && Array.isArray(raw.result.evidence) && raw.result.evidence.every(item => typeof item === 'string')
-          && (raw.result.verdict === 'GREEN' || raw.result.verdict === 'RED')
-          ? { verdict: raw.result.verdict, reason: text(raw.result.summary, 12_000),
-            inputKey: object(raw.validationInput) && typeof raw.validationInput.key === 'string' ? raw.validationInput.key : null,
-            target: header.target ?? '', criticId: header.criticId, reference: reviewReference(snapshot.source.stateDir, header.runId, header.id), evidence: (raw.result.evidence as string[]).slice(0, 100).map(item => text(item, 4_000)) } : null;
+        const outcome: MonitorDetail['result'] = object(raw.result) && (raw.result.verdict === 'GREEN' || raw.result.verdict === 'RED')
+          ? { ...semanticResult(raw.result), verdict: raw.result.verdict, reference: reviewReference(snapshot.source.stateDir, header.runId, header.id) } : null;
         const request = (await projectRequests(snapshot, new Map(), requestId))[0];
         const artifacts = artifactReferences(raw.artifacts);
         return {
-          request, instruction: text(string(raw.payload.instruction), 24_000), profile: profile(raw.profile), result: outcome,
+          request, responseSchemas: { ...(object(raw.passSchema) ? { passSchema: raw.passSchema } : {}), ...(object(raw.failSchema) ? { failSchema: raw.failSchema } : {}) }, instruction: text(string(raw.payload.instruction), 24_000), profile: profile(raw.profile), result: outcome,
           error: typeof raw.error === 'string' ? text(raw.error, 2_000) : null, timeline: timeline(header, snapshot.events), artifacts,
           references: object(raw.references) ? Object.fromEntries(Object.entries(raw.references).filter((entry): entry is [string, string] => typeof entry[1] === 'string')) : {},
         };

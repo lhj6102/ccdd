@@ -15,7 +15,7 @@ import { fauxProvider, fauxAssistantMessage, fauxToolCall } from '@earendil-work
 import type { StreamFn } from '../src/executors/pi.js';
 import { DatabaseSync } from 'node:sqlite';
 
-const controlledResult = { verdict: 'GREEN' as const, summary: 'Controlled executor fixture', evidence: ['Controlled unit-test response, not Provider evaluation.'] };
+const controlledResult = { verdict: 'GREEN' as const };
 async function fixture(t: TestContext, human = false, executors?: BrokerExecutors) {
   const data = await artifactFixture(t);
   await data.write('a', { name: 'a', views: fixtureViews(), critics: [human ? { id: 'check', title: 'Human review', profile: { kind: 'human' }, payload: { instruction: 'Read {a}.' } } : runtimeCritic()] });
@@ -53,7 +53,7 @@ test('executor concurrency remains bounded while independent slots progress', as
 
 test('RED and operational ERROR retain independent results and never block other ready Critics', async t => {
   const data = await fixture(t, false, { canExecute: () => ({ ok: true }), async execute(request) {
-    if (request.target === 'a') return { ...controlledResult, verdict: 'RED', summary: 'Controlled contradiction' };
+    if (request.target === 'a') return { ...controlledResult, verdict: 'RED' };
     if (request.target === 'c') throw new Error('Controlled operational failure');
     return controlledResult;
   } });
@@ -72,7 +72,7 @@ test('Human tools require the active claimant and preserve review state until ex
   const result = await data.broker.executeHumanTool(request.id, { reviewerId: 'reader', toolName: 'read_a', arguments: { lineCount: 1 } });
   assert.equal(result.observation?.kind, 'content'); assert.equal(data.broker.getRequest(request.id)!.status, 'WAITING_HUMAN');
   await assert.rejects(data.broker.completeHuman(request.id, { reviewerId: 'other', result: controlledResult }), /claimed/);
-  await data.broker.completeHuman(request.id, { reviewerId: 'reader', result: { ...controlledResult, summary: 'Controlled Human submission fixture' } });
+  await data.broker.completeHuman(request.id, { reviewerId: 'reader', result: { ...controlledResult } });
   await waitFor(() => data.broker.getRun(run.id)!.status === 'GREEN');
 });
 
@@ -311,44 +311,14 @@ test('Broker final-result diagnostics allowlist only bounded categories, attempt
   assert.doesNotMatch(JSON.stringify(events), /PRIVATE_/);
 });
 
-for (const invalid of [
-  { ...controlledResult, summary: '' }, { ...controlledResult, summary: ' \n\t' },
-  { ...controlledResult, summary: 'x'.repeat(8001) }, { ...controlledResult, evidence: [] },
-  { ...controlledResult, evidence: [' '] }, { ...controlledResult, evidence: ['x'.repeat(8001)] },
-  { ...controlledResult, evidence: Array(101).fill('Observed input') },
-  { ...controlledResult, summary: '\u{1f600}'.repeat(4001) },
-  { ...controlledResult, evidence: [('x\u0301').repeat(4001)] },
-  { ...controlledResult, evidence: [' '.repeat(4000) + 'Observed input'] },
-]) test('actual review result bounds reach format repair before Broker validation', async t => {
-  const data = await artifactFixture(t);
-  await data.write('a', { name: 'a', views: fixtureViews(), critics: [{ id: 'review', title: 'Review', profile: agentProfile, payload: { instruction: 'Read {a}.' } }] });
-  let faux: ReturnType<typeof fauxProvider> | undefined, calls = 0;
-  const streamFn: StreamFn = (model, context, options) => {
-    calls++;
-    if (!faux) {
-      faux = fauxProvider({ provider: model.provider, api: model.api });
-      faux.setResponses([
-        fauxAssistantMessage([fauxToolCall('read_a', {})], { stopReason: 'toolUse' }),
-        fauxAssistantMessage(JSON.stringify(invalid)), fauxAssistantMessage(JSON.stringify(controlledResult)),
-      ]);
-    }
-    return faux.provider.streamSimple(model, context, options);
-  };
-  const broker = createBroker({ detail: 'full', ...data, executors: createExecutorRegistry({ streamFn }) }); data.cleanup(() => broker.close());
-  const submitted = await broker.submitProject({ selection: { kind: 'all' } }); await broker.run(submitted.id);
-  const run = projectRun(data.stateDir, submitted.id)!;
-  assert.equal(run.status, 'GREEN'); assert.equal(calls, 3);
-  assert.deepEqual(run.events.find(event => event.type === 'executor.final.invalid')?.data, { attempt: 'initial', category: 'schema_mismatch' });
-});
-
 test('the persisted result envelope size is checked before accepting a final response or repair', async t => {
   const data = await artifactFixture(t);
-  await data.write('a', { name: 'a', views: fixtureViews(), critics: [{ id: 'review', title: 'Review', profile: agentProfile, payload: { instruction: 'Read {a}.' } }] });
+  await data.write('a', { name: 'a', views: fixtureViews(), critics: [{ id: 'review', title: 'Review', profile: agentProfile, passSchema: { type: 'object', properties: { details: { type: 'string' } } }, payload: { instruction: 'Read {a}.' } }] });
   let faux: ReturnType<typeof fauxProvider> | undefined;
   const streamFn: StreamFn = (model, context, options) => {
     if (!faux) {
       faux = fauxProvider({ provider: model.provider, api: model.api });
-      const oversized = { ...controlledResult, evidence: Array(65).fill('x'.repeat(4000)) };
+      const oversized = { ...controlledResult, details: 'x'.repeat(260000) };
       faux.setResponses([
         fauxAssistantMessage([fauxToolCall('read_a', {})], { stopReason: 'toolUse' }),
         fauxAssistantMessage(JSON.stringify(oversized)), fauxAssistantMessage(JSON.stringify(oversized)),

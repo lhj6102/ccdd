@@ -42,6 +42,7 @@ export interface MonitorHumanTool {
 export interface MonitorToolResponse { result: unknown }
 export interface MonitorDetail {
   request: MonitorRequest;
+  responseSchemas?: import('../response-schema.js').ResponseSchemas;
   instruction: string; profile: CriticProfile;
   result: RequesterResult | null;
   error: string | null;

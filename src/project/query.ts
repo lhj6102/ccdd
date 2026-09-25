@@ -50,7 +50,7 @@ export function queryProject(snapshot: ProjectSnapshot, history: readonly Valida
     } else if (attempt?.status === 'ERROR') {
       status = 'ERROR'; reason = attempt.error ?? 'The review could not complete.';
     } else if (ownPass) { status = 'PASS'; reason = `Actual PASS evidence ${evidence!.requestId} matches this input.`; }
-    else if (evidence?.verdict === 'RED') { status = 'RED'; reason = evidence.summary; }
+    else if (evidence?.verdict === 'RED') { status = 'RED'; reason = `Actual RED evidence ${evidence.requestId} matches this input.`; }
     else if (forced.has(id)) { status = 'STALE'; reason = 'This request explicitly requires a new review.'; }
     else if (!input.reusable) { status = 'STALE'; reason = 'The always strategy requires a review in this validation request.'; }
     else if (byCritic.has(id)) { status = 'STALE'; reason = 'Artifact content, referenced inputs, or Critic conditions changed.'; }

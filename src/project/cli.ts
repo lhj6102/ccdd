@@ -82,7 +82,7 @@ function planText(plan: RequesterPlan): string {
   const results = new Map(plan.results.map(result => [result.reference.requestId, result]));
   return `${target}: ${plan.satisfied ? 'SATISFIED' : 'NOT SATISFIED'}\nSnapshot: ${plan.snapshotHash}\nIntegrity: ${plan.workspaceIntegrity ?? 'content'}\n` + artifacts.map(a => `  Artifact ${a.id}: ${a.status} (${a.passed}/${a.total} Critics)${a.identity ? ` · identity: ${a.identity} · value: ${a.value}` : ''}\n`).join('') + plan.items.map(c => {
     const result = c.result ? results.get(c.result.requestId) : undefined;
-    return `  ${c.id}: ${c.action} · ${c.status}\n    ${c.reason}${result ? `\n    Critic reason: ${result.reason}\n    Evidence: ${result.evidence.join('; ')}\n    Reference: ${JSON.stringify(result.reference)}` : ''}`;
+    return `  ${c.id}: ${c.action} · ${c.status}\n    ${c.reason}${result ? `\n    Result: ${JSON.stringify(result)}\n    Reference: ${JSON.stringify(result.reference)}` : ''}`;
   }).join('\n') + `\nReuse ${plan.counts.reuse} · Ready ${plan.counts.execute} · Waiting ${plan.counts.wait} · Active ${plan.counts.active} · Failed ${plan.counts.failed}`;
 }
 
@@ -172,7 +172,7 @@ export async function main(argv = process.argv.slice(2), { stdout = process.stdo
     if (command === 'history') {
       const selection = select();
       const entries = projectHistory(context.stateDir, { detail: 'full' }).filter(e => selection.kind === 'all' || selection.kind === 'critic' && e.criticId === selection.criticId || selection.kind === 'artifact' && e.input.target.id === selection.artifactId);
-      print(full ? entries : entries.map(e => requesterEvidence(e, context.stateDir)), full ? undefined : entries.map(e => `${e.completedAt} ${e.criticId} ${e.verdict} · ${e.requestId}\n  ${e.summary}`).join('\n') || 'No recorded validation evidence.'); return 0;
+      print(full ? entries : entries.map(e => requesterEvidence(e, context.stateDir)), full ? undefined : entries.map(e => `${e.completedAt} ${e.criticId} ${e.verdict} · ${e.requestId}\n  ${JSON.stringify(e.result)}`).join('\n') || 'No recorded validation evidence.'); return 0;
     }
     if (command === 'run' || command === 'request') {
       const [action, id] = positional;
