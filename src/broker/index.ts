@@ -26,6 +26,8 @@ import type { ProjectRunDefinition, ProjectSelection } from '../project/types.js
 import type { RunStatus } from '../contracts.js';
 import type { ReviewEnvelope, ReviewRequest, ReviewResult, ReviewStatus, ReviewToolCall, ExecutionContext, ExecutorReadiness } from '../contracts.js';
 
+/** Internal instrumentation for deterministic scheduler regression tests. */
+export const brokerTestHooks: { onHydrate?: (bytes: number) => void; onPlan?: () => void; onIdleTick?: () => void } = {};
 interface OwnerRecord { run_id: string; pid: number; process_identity: string | null; token: string; claimed_at: string }
 export interface RunRecord {
   id: string; repoId: string; snapshotHash: string; workspace: WorkspaceDescriptor;
@@ -46,7 +48,7 @@ export interface BrokerOptions { repoPath: string; stateDir: string; repoId?: st
 interface ActiveRun { runId: string; token: string; abort: AbortController; promise: Promise<RunRecord & { requests: ReviewRequest[] }> | null }
 const object = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === 'object' && !Array.isArray(value);
 const errorCode = (error: unknown): string | undefined => object(error) && typeof error.code === 'string' ? error.code : undefined;
-const parseStored = <T>(value: unknown): T => { if (typeof value !== 'string') throw new Error('Broker store contains a non-text JSON record.'); return JSON.parse(value) as T; };
+const parseStored = <T>(value: unknown): T => { if (typeof value !== 'string') throw new Error('Broker store contains a non-text JSON record.'); brokerTestHooks.onHydrate?.(Buffer.byteLength(value)); return JSON.parse(value) as T; };
 const required = <T>(value: T | null | undefined, label: string): T => { if (value == null) throw new Error(`Unknown ${label}.`); return value; };
 
 
@@ -242,6 +244,7 @@ export function createBroker<D extends ResultDetail = 'compact'>({ detail, repoP
         saveRun(run);
         appendEvent(runId, null, 'request.uncoalesced', 'Unowned source submission lease expired; replanning this Run.');
       }
+      brokerTestHooks.onPlan?.();
       const plan = planProject(run.project.snapshot, readEvidence(db), { selection: run.project.selection, recursive: run.project.recursive, force: run.project.force, runId, coalescedRequestIds: run.project.coalescedRequestIds, attempts: [...requests, ...sharedRequests(run)] });
       for (const item of plan.items.filter(item => item.action === 'EXECUTE')) {
         if (!run.project.force) {
@@ -273,6 +276,7 @@ export function createBroker<D extends ResultDetail = 'compact'>({ detail, repoP
     const states = attemptsFor(run).map(request => request.status);
     if (run.project?.version === 3) {
       if (terminal.has(run.status)) return;
+      brokerTestHooks.onPlan?.();
       const plan = planProject(run.project.snapshot, readEvidence(db), { selection: run.project.selection, recursive: run.project.recursive, force: run.project.force, runId, coalescedRequestIds: run.project.coalescedRequestIds, attempts: attemptsFor(run) });
       const status: RunStatus = states.includes('RUNNING') ? 'RUNNING' : states.includes('QUEUED') ? 'QUEUED' : states.includes('WAITING_HUMAN') ? 'WAITING_HUMAN' :
         states.includes('ERROR') ? 'ERROR' : states.includes('RED') || plan.critics.some(critic => critic.status === 'RED') ? 'RED' : plan.satisfied ? 'GREEN' : 'INCOMPLETE';
@@ -315,6 +319,7 @@ export function createBroker<D extends ResultDetail = 'compact'>({ detail, repoP
       appendEvent(runId, request.id, 'request.error', request.error, { status: request.status, ...(request.errorCode ? { code: request.errorCode } : {}) });
     }
     if (run.project?.version === 3) {
+      brokerTestHooks.onPlan?.();
       const plan = planProject(run.project.snapshot, readEvidence(db), { selection: run.project.selection, recursive: run.project.recursive, force: run.project.force, runId, coalescedRequestIds: run.project.coalescedRequestIds, attempts: attemptsFor(run) });
       run.project.evidenceRequestIds = [...new Set(plan.critics.flatMap(c => c.result ? [c.result.requestId] : []))];
     }
@@ -524,6 +529,7 @@ export function createBroker<D extends ResultDetail = 'compact'>({ detail, repoP
             // The workspace observer stays alive with filesystem events and metadata polls.
             // Notification already crossed its final content boundary; idle waiting
             // must not rehash the entire workspace on every scheduling iteration.
+            brokerTestHooks.onIdleTick?.();
             await delay(100, undefined, { signal: reviewSignal });
             continue;
           }

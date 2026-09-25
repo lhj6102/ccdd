@@ -42,3 +42,6 @@ and two-process lease-expiry races.
   Descriptor-anchored traversal and verified private quarantine moves prevent
   parent-symlink substitution from redirecting deletion. Bulk deletion no longer
   holds the SQLite writer lock; owned temporary-root cleanup remains portable.
+- Real Broker regression coverage verifies zero hydrated JSON bytes and zero
+  replans on unchanged idle ticks, plus cross-process Human completion. The
+  earlier returned-byte comparison is a SQL-helper microbenchmark only.

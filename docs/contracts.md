@@ -653,3 +653,10 @@ results during slow deletion. Completed audit tables are never modified by prune
 General bounded retry of result persistence on unrelated `SQLITE_BUSY` contention
 is a separate follow-up; this operation does not extend database lock time across
 delete latency.
+
+Scheduler regression coverage measures the actual Broker loop: unchanged Human
+waiting ticks hydrate zero JSON bytes and invoke no planner, including ownership
+polling. A separate process submits a Human completion through the public Broker
+API and the waiting worker settles successfully. The consumer-sized SQL helper
+comparison (1,086,059 versus 51 returned bytes per tick) is only a microbenchmark,
+not a measurement of complete scheduler work or physical disk I/O.

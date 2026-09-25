@@ -66,3 +66,38 @@ import { DatabaseSync } from 'node:sqlite';
   assert.deepEqual(woke.requests, [{ id: 'request-A', status: 'GREEN' }]);
   assert.equal((await exited)[0], 0);
 });
+
+test('real idle broker ticks neither hydrate records nor replan and a remote Human completion advances the run', { timeout: 15000 }, async t => {
+  const { artifactFixture, fixtureViews } = await import('./helpers/artifacts.js');
+  const { createBroker, brokerTestHooks } = await import('../src/broker/index.js');
+  const { createExecutorRegistry } = await import('../src/executors/index.js');
+  const { spawn } = await import('node:child_process');
+  const data = await artifactFixture(t);
+  await data.write('a', { name: 'a', views: fixtureViews(), critics: [{ id: 'human', title: 'Review', profile: { kind: 'human' }, payload: { instruction: 'Read {a}.' } }] });
+  const broker = createBroker({ ...data, executors: createExecutorRegistry({ alarmMethods: [async () => {}] }) }); data.cleanup(() => broker.close());
+  const submitted = await broker.submitProject({ selection: { kind: 'all' } });
+  let bytes = 0, plans = 0, ticks = 0, previous: { bytes: number; plans: number } | undefined;
+  const samples: { bytes: number; plans: number }[] = [];
+  let ready!: () => void; const idle = new Promise<void>(resolve => { ready = resolve; });
+  brokerTestHooks.onHydrate = count => { bytes += count; };
+  brokerTestHooks.onPlan = () => { plans++; };
+  brokerTestHooks.onIdleTick = () => {
+    if (previous) samples.push({ bytes: bytes - previous.bytes, plans: plans - previous.plans });
+    previous = { bytes, plans }; if (++ticks === 4) ready();
+  };
+  t.after(() => { delete brokerTestHooks.onHydrate; delete brokerTestHooks.onPlan; delete brokerTestHooks.onIdleTick; });
+  const running = broker.run(submitted.id);
+  await Promise.race([idle, new Promise((_, reject) => setTimeout(() => reject(new Error('Scheduler did not idle')), 5000).unref())]);
+  assert.deepEqual(samples.slice(0, 3), Array.from({ length: 3 }, () => ({ bytes: 0, plans: 0 })));
+  t.diagnostic('Real broker: 3 unchanged idle ticks, 0 hydrated JSON bytes and 0 planner calls per tick (ownership polling included).');
+  const child = spawn(process.execPath, ['--input-type=module', '-e', `
+    import { createBroker } from ${JSON.stringify(new URL('../src/broker/index.js', import.meta.url).href)};
+    const broker = createBroker({ repoPath: process.argv[1], stateDir: process.argv[2] });
+    await broker.claimHuman(process.argv[3], 'remote-reviewer');
+    await broker.completeHuman(process.argv[3], { reviewerId: 'remote-reviewer', result: { verdict: 'GREEN', summary: 'Controlled Human fixture', evidence: ['Controlled transport; no provider evaluation.'] } });
+    await broker.close();
+  `, data.repoPath, data.stateDir, submitted.requests[0].id], { stdio: ['ignore', 'ignore', 'pipe'] });
+  t.after(() => child.kill()); let stderr = ''; child.stderr!.on('data', data => { stderr += data; });
+  assert.equal((await once(child, 'exit'))[0], 0, stderr);
+  assert.equal((await running)!.status, 'GREEN');
+});
