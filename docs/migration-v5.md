@@ -59,3 +59,14 @@ For `stale.kind: "identity"`, the local identity uses only Artifact ID and the s
 Matching GREEN **and RED** results are reused without evaluation. RED still does not satisfy validation. `--force` requests a fresh selected review and retains prior audit history. `stale.kind: "always"` requires current-request evidence rather than prior completed results.
 
 Identical active Critic/input requests across Runs within one state directory share one original ticket. The follower waits and adopts that result, with an original audit reference and `reusedFrom`. Force opts out. Cancelling a follower does not cancel the source; cancelling/failing the source ends followers without manufacturing a semantic result. Separate state directories do not coalesce.
+
+
+Coalescing never hosts another Run in the follower worker. Unowned QUEUED sources
+are eligible only during a submission grace lease (default 15 seconds, aligned
+with worker startup timeout). SDK `createBroker({coalescingGraceMs})` configures
+new Runs' leases from 0 to 300000 milliseconds. Eligibility uses the persisted
+source submission time; later followers cannot renew it. At expiry a follower
+atomically replans, joins another matching active owner if present, or creates
+its own ticket. Competing followers share one execution. The abandoned source is
+not modified. Reviving that source later may execute its original queued ticket
+again; new submissions instead use normal matching-verdict reuse.

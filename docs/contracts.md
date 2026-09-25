@@ -269,9 +269,23 @@ A Critic's PASS describes its matching actual result. Final Artifact/project sat
 Individual verification executes the selected Critic or the selected Artifact's Critics as soon as their input and execution environment are ready. It never waits for dependency PASS. `--recursive` includes Critics across the required dependency closure, including cycles. `--all` covers every Artifact. Multiple evaluations run concurrently within the Broker's executor limit.
 
 Successful selected results are preserved if other required evidence is missing; the Run is INCOMPLETE. The same result can satisfy a later request after the remaining evidence arrives. Run status distinguishes review execution (`QUEUED`, `RUNNING`, `WAITING_HUMAN`, `ERROR`) from semantic results (`GREEN`, `RED`) and unfinished validation obligations (`INCOMPLETE`). No blocked or reused ticket is fabricated. Identical active Critic/input requests across Runs in the same state directory coalesce: the follower waits for and adopts the original request result. Its cancellation does not cancel the source. Source cancellation/error fails the follower without fabricating a verdict. A
-follower can atomically claim and run an unowned queued source through the normal
-Run ownership lifecycle. Racing followers share that single execution. A dead
-source worker is reconciled as WORKER_EXITED; partial execution is not replayed. `--force` opts out of both stored-result reuse and active coalescing.
+follower never executes or hosts another Run. It coalesces only onto a request
+with a live Run owner, or an unowned QUEUED request inside its submission grace
+lease. `createBroker({coalescingGraceMs})` configures that lease for newly submitted
+Runs (integer 0–300000 ms). The default is 15000 ms: enough for the CLI worker's
+15-second startup budget while bounding abandonment; normal SDK/CLI callers
+start within milliseconds. The persisted source Run's submission time and lease
+control eligibility, not the follower's configuration or arrival time.
+
+When the lease expires without an owner, the follower removes that shared
+reference and replans inside a write transaction. It first checks for another
+owned/leased matching active request; otherwise it creates a ticket in its own
+Run. Racing followers therefore share one execution. The abandoned source's
+records remain untouched. If its caller later runs it, its already-queued ticket
+may execute again (even if matching evidence now exists); cancel abandoned Runs
+rather than revive them when that is not desired. New submissions reuse matching
+GREEN/RED evidence normally. A dead source worker is reconciled as WORKER_EXITED;
+partial execution is not replayed. `--force` opts out of both stored-result reuse and active coalescing.
 
 Project queries compare prepared current input and actual evidence in a readonly transaction. They create no database, ticket or alarm and execute no review tools or Providers. Preparing an opted-in owner identity runs its script with disposable external output; other current-input preparation remains script-free. Completed Runs reference the evidence they consumed, preserving their historical interpretation. `run show` and stored-result queries do not need the current workspace or reconcile owners. A terminal INCOMPLETE Run does not add omitted Critics when resumed; submit a new request.
 

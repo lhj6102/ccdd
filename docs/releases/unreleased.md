@@ -12,3 +12,11 @@ These breaking changes target 5.0. Package metadata stays at 4.3.0 pending the c
 Controlled transport tests exercise actual Pi Agent/tool execution and required-observation checks without real Provider calls. Full audit content is unchanged by projection. Payload-size measurements are reported by `test/result-view.test.ts`; they are fixture measurements, not Provider performance benchmarks.
 
 The normalized 12-call audit fixture measures **51,528 bytes full → 691 bytes compact (98.66% smaller)** for a standalone request. Its Run and standalone plan each contain owner result text exactly once; full stored request JSON remains byte-identical before and after requester reads.
+
+Coalescing uses a bounded submission grace lease for unowned QUEUED sources
+(default 15 seconds; SDK `coalescingGraceMs` configures newly submitted Runs).
+Expiry atomically replans into a follower-owned ticket or another active source;
+workers never host another Run. Abandoned source records remain unchanged, and
+reviving such a source may execute its original queued ticket again. Actual
+worker-entry-point tests cover close/cancellation isolation, A+B versus A scopes,
+and two-process lease-expiry races.

@@ -1,5 +1,7 @@
 import test from 'node:test';
 import { once } from 'node:events';
+import { DatabaseSync } from 'node:sqlite';
+import { join } from 'node:path';
 import assert from 'node:assert/strict';
 import { setTimeout as delay } from 'node:timers/promises';
 import { createBroker } from '../src/broker/index.js';
@@ -50,20 +52,6 @@ test('source cancellation becomes a follower failure without fabricating a verdi
   assert.deepEqual(broker.getRun(follower.id)!.results, []);
 });
 
-test('a follower executes an unowned queued source once and settles both Runs', { timeout: 10000 }, async t => {
-  const data = await artifactFixture(t); await data.write('a', { name: 'a', critics: [runtimeCritic()] });
-  let calls = 0;
-  const executors = { canExecute: () => ({ ok: true as const }), execute: async () => { calls++; return { verdict: 'GREEN' as const }; } };
-  const source = createBroker({ ...data, executors });
-  const first = await source.submitProject({ selection: { kind: 'all' } }); await source.close();
-  const follower = createBroker({ ...data, executors }); data.cleanup(() => follower.close());
-  const second = await follower.submitProject({ selection: { kind: 'all' } });
-  assert.equal(second.requests.length, 0);
-  assert.equal((await follower.run(second.id))!.status, 'GREEN');
-  assert.equal(follower.getRun(first.id)!.status, 'GREEN'); assert.equal(calls, 1);
-  assert.equal(follower.getRun(second.id)!.results[0].reference.runId, first.id);
-});
-
 // Separate processes share only SQLite; each candidate uses the real atomic Run
 // owner claim and reconciliation code, not a mock lock or a same-process mutex.
 async function worker(t: Parameters<typeof artifactFixture>[0], data: { repoPath: string; stateDir: string }, runId: string, mode: 'finish' | 'hang', callsFile: string) {
@@ -91,23 +79,6 @@ async function worker(t: Parameters<typeof artifactFixture>[0], data: { repoPath
   return { child, exited, errors: () => errors, message: async () => (await once(child, 'message'))[0] };
 }
 
-test('two follower processes race to recover one abandoned source with one execution', { timeout: 15000 }, async t => {
-  const { join } = await import('node:path'); const { readFile } = await import('node:fs/promises');
-  const data = await artifactFixture(t); await data.write('a', { name: 'a', critics: [runtimeCritic()] });
-  const broker = createBroker({ ...data, executors: { canExecute: () => ({ ok: true }), execute: async () => { throw new Error('Only child workers execute'); } } }); data.cleanup(() => broker.close());
-  const source = await broker.submitProject({ selection: { kind: 'all' } });
-  const followers = await Promise.all([broker.submitProject({ selection: { kind: 'all' } }), broker.submitProject({ selection: { kind: 'all' } })]);
-  const callsFile = join(data.root, 'calls');
-  const workers = await Promise.all(followers.map(run => worker(t, { repoPath: data.repoPath, stateDir: data.stateDir }, run.id, 'finish', callsFile)));
-  t.after(() => { for (const w of workers) w.child.kill('SIGKILL'); });
-  const results = workers.map(w => w.message()); workers.forEach(w => w.child.send('go'));
-  assert.deepEqual(await Promise.all(results), ['GREEN', 'GREEN']);
-  for (const w of workers) assert.equal((await w.exited)[0], 0, w.errors());
-  assert.equal(await readFile(callsFile, 'utf8'), 'executed\n');
-  assert.equal(broker.getRun(source.id)!.status, 'GREEN');
-  for (const run of followers) { assert.equal(broker.getRun(run.id)!.status, 'GREEN'); assert.equal(broker.getRun(run.id)!.requests.length, 0); }
-});
-
 test('a dead source owner is reconciled and its follower settles without replaying partial execution', { timeout: 15000 }, async t => {
   const { join } = await import('node:path'); const { readFile } = await import('node:fs/promises');
   const data = await artifactFixture(t); await data.write('a', { name: 'a', critics: [runtimeCritic()] });
@@ -123,4 +94,130 @@ test('a dead source owner is reconciled and its follower settles without replayi
   const stored = projectRun(data.stateDir, source.id)!;
   assert.equal(stored.requests[0].errorCode, 'WORKER_EXITED'); assert.equal(stored.requests[0].result, null);
   assert.equal(retried, 0); assert.equal(await readFile(callsFile, 'utf8'), 'executed\n');
+});
+
+
+// Launch the production worker entry point, including its finally/broker.close().
+async function actualWorker(t: Parameters<typeof artifactFixture>[0], data: { repoPath: string; stateDir: string }, runId: string) {
+  const { fork } = await import('node:child_process');
+  const { fileURLToPath } = await import('node:url');
+  const child = fork(fileURLToPath(new URL('../src/worker.js', import.meta.url)), [JSON.stringify({ ...data, repoId: 'demo', runId, humanInbox: false })], {
+    stdio: ['ignore', 'ignore', 'pipe', 'ipc'], execArgv: [],
+    env: Object.fromEntries(Object.entries(process.env).filter(([key]) => key !== 'NODE_TEST_CONTEXT')),
+  });
+  t.after(() => child.kill('SIGKILL'));
+  let errors = ''; child.stderr!.on('data', chunk => { errors += chunk; });
+  const exited = once(child, 'exit');
+  const [ready] = await once(child, 'message'); assert.equal(ready.type, 'ready', JSON.stringify(ready));
+  return { child, exited, errors: () => errors };
+}
+async function runtimeFixture(t: Parameters<typeof artifactFixture>[0], hold = false) {
+  const { join } = await import('node:path');
+  const data = await artifactFixture(t), calls = join(data.root, 'calls');
+  // Mutable execution barriers/counters stay outside the reviewed workspace.
+  const script = (name: string, wait: boolean) => `import {appendFileSync,existsSync} from 'node:fs';
+    appendFileSync(${JSON.stringify(calls)}, ${JSON.stringify(name + '\n')});
+    ${wait ? `while (!existsSync(${JSON.stringify(join(data.root, 'release'))})) await new Promise(r=>setTimeout(r,20));` : ''}`;
+  await data.write('a', { name: 'a', critics: [runtimeCritic()] }, { 'check.test.mjs': script('a', hold) });
+  const broker = createBroker({ ...data, coalescingGraceMs: 1000, executors: { canExecute: () => ({ ok: true }), execute: async () => { throw new Error('Only actual workers execute'); } } });
+  data.cleanup(() => broker.close());
+  return { ...data, broker, calls, script };
+}
+async function waitForCall(calls: string, name: string) {
+  const { readFile } = await import('node:fs/promises');
+  for (let attempt = 0; attempt < 250; attempt++) {
+    if ((await readFile(calls, 'utf8').catch(() => '')).split('\n').includes(name)) return;
+    await delay(20);
+  }
+  assert.fail(`No ${name} execution observed`);
+}
+
+test('submission grace coalesces simultaneous submits into one ticket', async t => {
+  const data = await runtimeFixture(t);
+  const runs = await Promise.all([data.broker.submitProject({ selection: { kind: 'all' } }), data.broker.submitProject({ selection: { kind: 'all' } })]);
+  assert.equal(runs.reduce((sum, run) => sum + run.requests.length, 0), 1);
+});
+
+test('actual follower worker expires an abandoned lease without changing its source; revived source executes its queued ticket', { timeout: 15000 }, async t => {
+  const { readFile } = await import('node:fs/promises');
+  const data = await runtimeFixture(t);
+  await data.write('b', { name: 'b', critics: [runtimeCritic()] }, { 'check.test.mjs': data.script('b', false) });
+  const source = await data.broker.submitProject({ selection: { kind: 'all' } });
+  const before = storedSource(data.stateDir, source.id);
+  const follower = await data.broker.submitProject({ selection: { kind: 'artifact', artifactId: 'a' } }); assert.equal(follower.requests.length, 0);
+  const worker = await actualWorker(t, data, follower.id); assert.equal((await worker.exited)[0], 0, worker.errors());
+  assert.equal(data.broker.getRun(follower.id)!.status, 'GREEN');
+  assert.deepEqual(storedSource(data.stateDir, source.id), before);
+  assert.equal(await readFile(data.calls, 'utf8'), 'a\n');
+  const revived = await actualWorker(t, data, source.id); assert.equal((await revived.exited)[0], 0, revived.errors());
+  assert.equal(data.broker.getRun(source.id)!.status, 'GREEN');
+  assert.deepEqual((await readFile(data.calls, 'utf8')).trim().split('\n').sort(), ['a', 'a', 'b']);
+});
+
+for (const expired of [false, true]) test(`actual worker close after follower cancellation leaves abandoned source untouched (expired=${expired})`, { timeout: 15000 }, async t => {
+  const data = await runtimeFixture(t, true);
+  const source = await data.broker.submitProject({ selection: { kind: 'all' } }), before = storedSource(data.stateDir, source.id);
+  const follower = await data.broker.submitProject({ selection: { kind: 'all' } });
+  const worker = await actualWorker(t, data, follower.id);
+  if (expired) await waitForCall(data.calls, 'a');
+  data.broker.cancel(follower.id);
+  assert.equal((await worker.exited)[0], 0, worker.errors());
+  assert.equal(data.broker.getRun(follower.id)!.status, 'ERROR');
+  assert.deepEqual(storedSource(data.stateDir, source.id), before);
+});
+
+test('actual A follower worker finishes and closes while source B keeps running', { timeout: 15000 }, async t => {
+  const { join } = await import('node:path'); const { readFile, writeFile } = await import('node:fs/promises');
+  const data = await runtimeFixture(t);
+  await data.write('b', { name: 'b', critics: [runtimeCritic()] }, { 'check.test.mjs': data.script('b', true) });
+  const source = await data.broker.submitProject({ selection: { kind: 'all' } });
+  const follower = await data.broker.submitProject({ selection: { kind: 'artifact', artifactId: 'a' } });
+  const sourceWorker = await actualWorker(t, data, source.id); await waitForCall(data.calls, 'b');
+  const followerWorker = await actualWorker(t, data, follower.id);
+  assert.equal((await followerWorker.exited)[0], 0, followerWorker.errors());
+  assert.equal(data.broker.getRun(follower.id)!.status, 'GREEN');
+  assert.equal(data.broker.getRun(source.id)!.status, 'RUNNING');
+  assert.equal(projectRun(data.stateDir, source.id)!.requests.find(request => request.target === 'b')!.status, 'RUNNING');
+  await writeFile(join(data.root, 'release'), 'go');
+  assert.equal((await sourceWorker.exited)[0], 0, sourceWorker.errors());
+  assert.equal(data.broker.getRun(source.id)!.status, 'GREEN');
+  assert.deepEqual((await readFile(data.calls, 'utf8')).trim().split('\n').sort(), ['a', 'b']);
+});
+
+test('two actual follower workers race at lease expiry and execute one own ticket', { timeout: 15000 }, async t => {
+  const { readFile } = await import('node:fs/promises');
+  const data = await runtimeFixture(t);
+  const source = await data.broker.submitProject({ selection: { kind: 'all' } }), before = storedSource(data.stateDir, source.id);
+  const followers = await Promise.all([data.broker.submitProject({ selection: { kind: 'all' } }), data.broker.submitProject({ selection: { kind: 'all' } })]);
+  assert.equal(followers.reduce((sum, run) => sum + run.requests.length, 0), 0);
+  const workers = await Promise.all(followers.map(run => actualWorker(t, data, run.id)));
+  for (const worker of workers) assert.equal((await worker.exited)[0], 0, worker.errors());
+  assert.equal(await readFile(data.calls, 'utf8'), 'a\n');
+  assert.deepEqual(storedSource(data.stateDir, source.id), before);
+  assert.equal(followers.reduce((sum, run) => sum + data.broker.getRun(run.id)!.requests.length, 0), 1);
+  for (const run of followers) assert.equal(data.broker.getRun(run.id)!.status, 'GREEN');
+});
+
+
+function storedSource(stateDir: string, runId: string) {
+  const db = new DatabaseSync(join(stateDir, 'broker.sqlite'), { readOnly: true });
+  try { return {
+    run: db.prepare('SELECT data FROM runs WHERE id=?').get(runId)!.data,
+    requests: db.prepare('SELECT data FROM requests WHERE run_id=? ORDER BY ordinal').all(runId),
+    events: db.prepare('SELECT * FROM events WHERE run_id=? ORDER BY id').all(runId),
+  }; } finally { db.close(); }
+}
+
+test('actual follower worker cancellation and close leave a live source worker running', { timeout: 15000 }, async t => {
+  const { writeFile } = await import('node:fs/promises');
+  const data = await runtimeFixture(t, true);
+  const source = await data.broker.submitProject({ selection: { kind: 'all' } });
+  const sourceWorker = await actualWorker(t, data, source.id); await waitForCall(data.calls, 'a');
+  const follower = await data.broker.submitProject({ selection: { kind: 'all' } });
+  const followerWorker = await actualWorker(t, data, follower.id);
+  data.broker.cancel(follower.id); assert.equal((await followerWorker.exited)[0], 0, followerWorker.errors());
+  assert.equal(data.broker.getRun(source.id)!.status, 'RUNNING');
+  await writeFile(join(data.root, 'release'), 'go');
+  assert.equal((await sourceWorker.exited)[0], 0, sourceWorker.errors());
+  assert.equal(data.broker.getRun(source.id)!.status, 'GREEN');
 });
