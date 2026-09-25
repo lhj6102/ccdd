@@ -3,6 +3,7 @@ import { semanticResult, validateFinalResult } from '../response-schema.js';
 import { requesterRun, requesterRequest, resultView, type ResultDetail, type ResultOptions } from '../result-view.js';
 import { DatabaseSync } from 'node:sqlite';
 import { randomUUID } from 'node:crypto';
+import { performance } from 'node:perf_hooks';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -182,11 +183,21 @@ export function createBroker<D extends ResultDetail = 'compact'>({ detail, repoP
   const runRequests = (id: string): ReviewRequest[] => db.prepare('SELECT data FROM requests WHERE run_id = ? ORDER BY ordinal').all(id).map(row => parseStored<ReviewRequest>(row.data));
   const sharedRequests = (run: RunRecord): ReviewRequest[] => (run.project?.coalescedRequestIds ?? []).map(id => required(requestData(id), 'Shared Request'));
   const attemptsFor = (run: RunRecord): ReviewRequest[] => [...runRequests(run.id), ...sharedRequests(run)];
+  const submissionDeadlines = new Map<string, number>();
   const shareable = (request: ReviewRequest): boolean => {
     const source = required(runData(request.runId), 'Source Run');
     if (terminal.has(source.status)) return false;
     if (ownerAlive(ownerData(source.id))) return true;
-    return request.status === 'QUEUED' && Date.now() < Date.parse(source.createdAt) + (source.coalescingGraceMs ?? 15_000);
+    const grace = source.coalescingGraceMs;
+    if (request.status !== 'QUEUED' || typeof grace !== 'number' || !Number.isSafeInteger(grace) || grace <= 0 || grace > 300_000) return false;
+    const elapsed = typeof source.createdAt === 'string' ? Date.now() - Date.parse(source.createdAt) : NaN;
+    if (!Number.isFinite(elapsed) || elapsed < 0 || elapsed >= grace) return false;
+    // A wall-clock rollback must not extend a lease already observed here.
+    // Keep this process-local bound without changing the source Run.
+    const tick = performance.now();
+    const deadline = Math.min(submissionDeadlines.get(source.id) ?? Infinity, tick + grace - elapsed);
+    submissionDeadlines.set(source.id, deadline);
+    return tick < deadline;
   };
   const saveRequest = (request: ReviewRequest) => db.prepare('UPDATE requests SET status = ?, data = ? WHERE id = ?').run(request.status, JSON.stringify(request), request.id);
   const saveRun = (run: RunRecord) => db.prepare('UPDATE runs SET status = ?, data = ? WHERE id = ?').run(run.status, JSON.stringify(run), run.id);

@@ -132,6 +132,62 @@ async function waitForCall(calls: string, name: string) {
   assert.fail(`No ${name} execution observed`);
 }
 
+for (const scenario of ['future timestamp', 'invalid timestamp', 'missing timestamp', 'backward clock', 'zero grace', 'zero grace with backward clock', 'invalid grace', 'missing grace'] as const) {
+  test(`unowned submission lease fails closed for ${scenario} without changing its source`, async t => {
+    const data = await artifactFixture(t); await data.write('a', { name: 'a', critics: [runtimeCritic()] });
+    let calls = 0;
+    const broker = createBroker({ ...data, coalescingGraceMs: scenario.startsWith('zero grace') ? 0 : 100,
+      executors: { canExecute: () => ({ ok: true }), execute: async () => { calls++; return { verdict: 'GREEN' }; } } });
+    data.cleanup(() => broker.close());
+    const source = await broker.submitProject({ selection: { kind: 'all' } });
+    const db = new DatabaseSync(join(data.stateDir, 'broker.sqlite'));
+    try {
+      const record = JSON.parse(String(db.prepare('SELECT data FROM runs WHERE id=?').get(source.id)!.data));
+      if (scenario === 'future timestamp') record.createdAt = new Date(Date.now() + 86_400_000).toISOString();
+      if (scenario === 'invalid timestamp') record.createdAt = 'invalid';
+      if (scenario === 'missing timestamp') delete record.createdAt;
+      if (scenario === 'invalid grace') record.coalescingGraceMs = -1;
+      if (scenario === 'missing grace') delete record.coalescingGraceMs;
+      db.prepare('UPDATE runs SET data=? WHERE id=?').run(JSON.stringify(record), source.id);
+    } finally { db.close(); }
+    const before = storedSource(data.stateDir, source.id);
+    if (scenario.includes('backward clock')) {
+      const rolledBack = Date.now() - 60_000;
+      t.mock.method(Date, 'now', () => rolledBack);
+    }
+    const follower = await broker.submitProject({ selection: { kind: 'all' } });
+    assert.equal(follower.requests.length, 1);
+    assert.equal((await broker.run(follower.id))!.status, 'GREEN');
+    assert.equal(calls, 1);
+    assert.deepEqual(storedSource(data.stateDir, source.id), before);
+  });
+}
+
+test('a waiting follower bounds its lease monotonically across a backward wall-clock adjustment', { timeout: 10000 }, async t => {
+  const data = await artifactFixture(t); await data.write('a', { name: 'a', critics: [runtimeCritic()] });
+  let calls = 0;
+  const broker = createBroker({ ...data, detail: 'full', coalescingGraceMs: 2000,
+    executors: { canExecute: () => ({ ok: true }), execute: async () => { calls++; return { verdict: 'GREEN' }; } } });
+  data.cleanup(() => broker.close());
+  const source = await broker.submitProject({ selection: { kind: 'all' } }), before = storedSource(data.stateDir, source.id);
+  const createdAt = Date.parse(source.createdAt);
+  let wallClock = createdAt + 1000;
+  t.mock.method(Date, 'now', () => wallClock);
+  const follower = await broker.submitProject({ selection: { kind: 'all' } });
+  assert.equal(follower.requests.length, 0);
+  const running = broker.run(follower.id);
+  const timeout = setTimeout(() => broker.cancel(follower.id), 3000);
+  try {
+    await delay(100);
+    assert.equal(calls, 0);
+    // Still a valid positive wall-clock age: only the monotonic bound can expire it.
+    wallClock = createdAt + 500;
+    assert.equal((await running)!.status, 'GREEN');
+    assert.equal(calls, 1);
+    assert.deepEqual(storedSource(data.stateDir, source.id), before);
+  } finally { clearTimeout(timeout); }
+});
+
 test('submission grace coalesces simultaneous submits into one ticket', async t => {
   const data = await runtimeFixture(t);
   const runs = await Promise.all([data.broker.submitProject({ selection: { kind: 'all' } }), data.broker.submitProject({ selection: { kind: 'all' } })]);

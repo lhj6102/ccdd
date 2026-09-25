@@ -275,7 +275,10 @@ lease. `createBroker({coalescingGraceMs})` configures that lease for newly submi
 Runs (integer 0–300000 ms). The default is 15000 ms: enough for the CLI worker's
 15-second startup budget while bounding abandonment; normal SDK/CLI callers
 start within milliseconds. The persisted source Run's submission time and lease
-control eligibility, not the follower's configuration or arrival time.
+control eligibility, not the follower's configuration or arrival time. Zero grace
+disables unowned coalescing. Invalid/missing lease metadata or a future submission
+time expires eligibility immediately. Each Broker also bounds observed remaining
+grace with a monotonic deadline, so a wall-clock rollback cannot prolong its wait.
 
 When the lease expires without an owner, the follower removes that shared
 reference and replans inside a write transaction. It first checks for another
