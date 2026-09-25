@@ -38,7 +38,10 @@ test('individual verification executes selected inputs immediately and preserves
   assert.equal(second.status, 'GREEN'); assert.equal(second.requests.length, 1);
   const current = await inspectProject({ ...data, selection: { kind: 'artifact', artifactId: 'a' } });
   assert.equal(current.plan.satisfied, true);
-  assert.equal(current.plan.critics.find(c => c.id === 'independent/check')!.status, 'UNREVIEWED');
+  assert.deepEqual(current.plan.critics.map(c => c.id), ['a/check', 'b/check']);
+  assert.deepEqual(current.plan.artifacts.map(a => a.id), ['a', 'b']);
+  const whole = await inspectProject(data);
+  assert.equal(whole.plan.critics.find(c => c.id === 'independent/check')!.status, 'UNREVIEWED');
 });
 
 test('recursive verification of a cycle runs real processes without PASS gates and reuses the same actual evidence', async t => {

@@ -12,6 +12,7 @@ export interface ArtifactIdentity { identity: 'script'; value: string }
 export interface ProjectSnapshot {
   version: 2; config: RepoConfig; snapshotHash: string;
   artifactIdentities?: Record<string, ArtifactIdentity>;
+  /** Prepared only for the selected dependency closure; config retains the full static graph. */
   artifactHashes: Record<string, string>; inputs: Record<string, ValidationInput>;
   workspaceIntegrity?: WorkspaceIntegrity;
 }

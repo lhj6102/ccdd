@@ -473,15 +473,15 @@ export function createBroker({ repoPath, stateDir, repoId = 'demo', executors, w
   }
 
   return {
-    async submitProject({ requesterId = 'cli', selection, recursive = false, force = false, ...removed }: { requesterId?: string; selection: ProjectSelection; recursive?: boolean; force?: boolean }) {
+    async submitProject({ requesterId = 'cli', selection, recursive = false, force = false, signal, ...removed }: { requesterId?: string; selection: ProjectSelection; recursive?: boolean; force?: boolean; signal?: AbortSignal }) {
       ensureOpen(); requireExecutors();
       if ('mode' in removed) throw new Error('Workspace modes are no longer supported; supply an unchanged workspace.');
       if (!requesterId.trim() || requesterId.length > 200) throw new Error('requesterId is required (maximum 200 characters).');
       await requireExecutors().validateWorkspace?.(repoPath);
-      const workspace = await workspaceAdapter.prepareWorkspace({ repoPath, stateDir, integrity: workspaceIntegrity });
+      const workspace = await workspaceAdapter.prepareWorkspace({ repoPath, stateDir, integrity: workspaceIntegrity, signal });
       try {
         const { config } = await readWorkspaceConfig(workspace.descriptor.path, workspace.signal);
-        const snapshot = await createProjectSnapshot(config, workspace.descriptor.path, workspace.descriptor.hash, workspace.signal, workspace.descriptor.integrity);
+        const snapshot = await createProjectSnapshot(config, workspace.descriptor.path, workspace.descriptor.hash, workspace.signal, workspace.descriptor.integrity, selection);
         const ids = includedCritics(snapshot, selection, recursive);
         const templates: ReviewEnvelope[] = [];
         for (const id of ids) templates.push(...await prepareReviewRequests({ repoPath: workspace.descriptor.path, repoId, snapshotHash: workspace.descriptor.hash, criticId: id, preparedConfig: config }));

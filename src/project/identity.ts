@@ -6,7 +6,8 @@ import type { RepoConfig, WorkspaceIntegrity } from '../contracts.js';
 import { createGraphDefinition, stronglyConnectedComponents } from '../broker/graph.js';
 import { packageVersion } from '../runtime-paths.js';
 import { resolveScopePath } from '../artifact-scope.js';
-import type { ProjectSnapshot, ValidationInput } from './types.js';
+import type { ProjectSelection, ProjectSnapshot, ValidationInput } from './types.js';
+import { requiredArtifacts } from './query.js';
 import { ownerIdentity } from './owner-identity.js';
 
 export function canonical(value: unknown): string {
@@ -44,13 +45,16 @@ async function hashMaterial(root: string, relative: string, childPaths: Set<stri
   return inputHash(entries);
 }
 
-export async function createProjectSnapshot(config: RepoConfig, root: string, snapshotHash: string, signal?: AbortSignal, workspaceIntegrity: WorkspaceIntegrity = 'content'): Promise<ProjectSnapshot> {
+export async function createProjectSnapshot(config: RepoConfig, root: string, snapshotHash: string, signal?: AbortSignal, workspaceIntegrity: WorkspaceIntegrity = 'content', selection: ProjectSelection = { kind: 'all' }): Promise<ProjectSnapshot> {
   if (!['content', 'metadata'].includes(workspaceIntegrity)) throw new Error('Workspace integrity must be content or metadata.');
   createGraphDefinition(config);
+  // A dependency closure contains whole SCCs; keep the full definitions and hash payloads unchanged.
+  const required = new Set(requiredArtifacts({ config }, selection));
   const artifactHashes: Record<string, string> = {}, reusable: Record<string, boolean> = {}, ownHashes = new Map<string, string>();
   const artifactIdentities: NonNullable<ProjectSnapshot['artifactIdentities']> = {};
   const scope = Object.fromEntries(Object.entries(config.artifacts).map(([id, artifact]) => [id, { ...artifact, path: path.join(root, artifact.path) }]));
   for (const [id, artifact] of Object.entries(config.artifacts)) {
+    if (!required.has(id)) continue;
     if (artifact.stale?.kind === 'identity') {
       const { inputs: identityInputs, value } = await ownerIdentity(root, artifact.path, id, artifact.stale, signal);
       const requirements = Object.fromEntries(Object.entries(config.configManifest.envRequirements ?? {}).filter(([name]) => name.startsWith(`${id}/`)));
@@ -105,11 +109,13 @@ export async function createProjectSnapshot(config: RepoConfig, root: string, sn
     return hash;
   };
   for (const [index, members] of components.entries()) {
+    if (!required.has(members[0])) continue;
     const hash = visit(index);
     for (const id of members) { artifactHashes[id] = inputHash({ id, component: hash }); reusable[id] = reusableComponents.get(index)!; }
   }
   const inputs: Record<string, ValidationInput> = {};
   for (const critic of config.critics) {
+    if (!required.has(critic.target)) continue;
     const criticHash = inputHash({ version: 2, executorVersion: packageVersion, critic, workspaceIntegrity,
       runtime: { node: process.versions.node, platform: process.platform, arch: process.arch } });
     const target = { id: critic.target, hash: artifactHashes[critic.target] }, deps = critic.deps.slice().sort().map(id => ({ id, hash: artifactHashes[id] }));

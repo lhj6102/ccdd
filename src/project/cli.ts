@@ -17,6 +17,7 @@ import { inspectProject } from './index.js';
 import { projectHistory, projectRun, projectRuns, projectRequests, type ProjectRunView } from './store.js';
 import type { ProjectPlan, ProjectSelection } from './types.js';
 import type { PiOptions } from '../executors/pi.js';
+import { withCliCancellation } from '../cli-cancellation.js';
 import { claimHumanFromCli } from '../review/local-claim.js';
 
 type Output = { write(value: string): unknown };
@@ -75,7 +76,8 @@ const exitFor = (run: ProjectRunView) => run.status === 'GREEN' ? 0 : run.status
 const publicRun = ({ project, ...run }: ProjectRunView) => ({ ...run, workspaceIntegrity: run.workspace?.integrity ?? 'content' });
 function planText(plan: ProjectPlan): string {
   const target = plan.selection.kind === 'artifact' ? plan.selection.artifactId : plan.selection.kind === 'critic' ? plan.selection.criticId : 'Project';
-  const artifacts = plan.artifacts.filter(a => a.identity === 'script' || plan.selection.kind === 'all' || plan.selection.kind === 'artifact' && a.id === plan.selection.artifactId);
+  // Project queries expose only the selection's required dependency closure.
+  const artifacts = plan.artifacts;
   return `${target}: ${plan.satisfied ? 'SATISFIED' : 'NOT SATISFIED'}\nSnapshot: ${plan.snapshotHash}\nIntegrity: ${plan.workspaceIntegrity ?? 'content'}\n` + artifacts.map(a => `  Artifact ${a.id}: ${a.status} (${a.passed}/${a.total} Critics)${a.identity ? ` · identity: ${a.identity} · value: ${a.value}` : ''}\n`).join('') + plan.items.map(c => `  ${c.id}: ${c.action} · ${c.status}\n    ${c.reason}`).join('\n') +
     `\nReuse ${plan.counts.reuse} · Ready ${plan.counts.execute} · Waiting ${plan.counts.wait} · Active ${plan.counts.active} · Failed ${plan.counts.failed}`;
 }
@@ -157,7 +159,7 @@ export async function main(argv = process.argv.slice(2), { stdout = process.stdo
     }
     if (command === 'status' || command === 'plan') {
       const selection = select(command === 'plan');
-      const { plan } = await inspectProject({ ...context, selection, recursive: Boolean(options['--recursive']), force: Boolean(options['--force']), workspaceIntegrity });
+      const { plan } = await withCliCancellation('Project validation cancelled.', signal => inspectProject({ ...context, selection, recursive: Boolean(options['--recursive']), force: Boolean(options['--force']), workspaceIntegrity, signal }));
       print(plan, planText(plan)); return command === 'plan' || plan.satisfied ? 0 : 1;
     }
     if (command === 'history') {
@@ -186,7 +188,7 @@ export async function main(argv = process.argv.slice(2), { stdout = process.stdo
     const executors = createExecutorRegistry({ piOptions, alarmMethods: createLocalAlarmMethods({ ...context, humanInbox }) });
     broker = createBroker({ ...context, executors, workspaceIntegrity });
     if (command === 'verify') {
-      const run = await broker.submitProject({ selection: verifySelection!, recursive: Boolean(options['--recursive']), force: Boolean(options['--force']), requesterId: get('--requester') ?? 'cli' });
+      const run = await withCliCancellation('Project validation cancelled.', signal => broker!.submitProject({ selection: verifySelection!, recursive: Boolean(options['--recursive']), force: Boolean(options['--force']), requesterId: get('--requester') ?? 'cli', signal }));
       if (!terminal.has(run.status)) await ensureRunWorker({ broker, context, run, initialConfig: { piOptions, humanInbox } });
       if (options['--wait']) return await wait(run.id);
       const view = projectRun(context.stateDir, run.id)!; printRun(view);
