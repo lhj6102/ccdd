@@ -9,6 +9,7 @@ const reserved = new Set(['verdict', 'reference', 'reusedFrom', ...auditFields])
 /** Owner schemas describe extra top-level result fields, never transport or audit fields. */
 export function validateResponseSchema(schema: unknown): asserts schema is JsonSchema {
   validateSchema(schema);
+  if (['allOf', 'anyOf', 'oneOf', 'not'].some(key => Object.hasOwn(schema, key))) throw new Error('Response schemas cannot use top-level composition; compose schemas inside owner fields instead.');
   if (Object.keys(schema.properties ?? {}).some(key => reserved.has(key))) throw new Error('Response schemas cannot declare reserved result fields.');
   if (((schema.required ?? []) as string[]).some(key => reserved.has(key))) throw new Error('Response schemas cannot require reserved result fields.');
   if (schema.additionalProperties !== undefined && schema.additionalProperties !== false) throw new Error('Response schemas must forbid undeclared top-level fields.');

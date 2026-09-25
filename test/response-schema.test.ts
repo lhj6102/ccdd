@@ -1,4 +1,5 @@
 import test from 'node:test';
+import { validateResponseSchema, validateFinalResult } from '../src/response-schema.js';
 import assert from 'node:assert/strict';
 import { createBroker } from '../src/broker/index.js';
 import { createExecutorRegistry } from '../src/executors/index.js';
@@ -66,4 +67,23 @@ test('stored audit retains every tool call beyond the former one hundred call ca
   const submitted = await broker.submitProject({ selection: { kind: 'all' } }); await broker.run(submitted.id);
   const { projectRun } = await import('../src/project/index.js');
   assert.deepEqual(projectRun(data.stateDir, submitted.id)!.requests[0].result!.toolCalls, toolCalls);
+});
+
+
+test('response schemas reject same-instance composition but permit nested owner verdict fields', async t => {
+  const data = await artifactFixture(t);
+  const conflict = { properties: { verdict: { const: 'GREEN' } }, required: ['verdict'] };
+  for (const schema of [
+    { type: 'object', allOf: [conflict] },
+    { type: 'object', anyOf: [conflict] },
+    { type: 'object', oneOf: [conflict] },
+    { type: 'object', not: conflict },
+  ]) {
+    await data.write('a', { name: 'a', critics: [{ id: 'review', title: 'Review', profile: agentProfile, failSchema: schema as import('../src/tools/contracts.js').JsonSchema, payload: { instruction: 'Read.' } }] });
+    await assert.rejects(data.config(), /top-level composition/);
+  }
+  const schema = { type: 'object', properties: { detail: { type: 'object', properties: { verdict: { type: 'string' } }, required: ['verdict'] } }, required: ['detail'] };
+  validateResponseSchema(schema);
+  const result = { verdict: 'RED', detail: { verdict: 'Owner-defined nested text' } };
+  assert.deepEqual(validateFinalResult(result, { failSchema: schema }), result);
 });
