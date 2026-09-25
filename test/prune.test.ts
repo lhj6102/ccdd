@@ -123,3 +123,42 @@ test('a real broker persists success while a separate prune process pauses delet
   assert.ok(performance.now() - started < 4000, 'completion must not wait for deletion or hit the 5-second SQLite timeout');
   assert.equal((await exited)[0], 0);
 });
+
+test('final quarantine removal failure closes every descriptor and retains the recovery claim', async t => {
+  const data = await fixture(t); await data.broker.run(data.run.id);
+  await data.broker.close();
+  const { readdirSync } = await import('node:fs');
+  const { pruneTestHooks } = await import('../src/project/prune.js');
+  const failure = Object.assign(new Error('Injected final removal failure'), { code: 'EACCES' });
+  const before = readdirSync('/proc/self/fd').length;
+  pruneTestHooks.removeQuarantine = () => { throw failure; };
+  t.after(() => { delete pruneTestHooks.removeQuarantine; });
+  assert.throws(() => pruneProject(data.stateDir), error => error === failure);
+  assert.equal(readdirSync('/proc/self/fd').length, before);
+  const quarantine = readdirSync(data.stateDir).find(name => name.startsWith('.prune-'))!;
+  assert.ok(quarantine);
+  const db = new DatabaseSync(join(data.stateDir, 'broker.sqlite'));
+  try { assert.equal(db.prepare('SELECT id FROM prune_claims WHERE id = ?').get(quarantine)?.id, quarantine); }
+  finally { db.close(); }
+});
+
+for (const originalFailure of [false, true]) test(`database close failure still closes root fd and preserves the first error (original=${originalFailure})`, async t => {
+  const data = await fixture(t); await data.broker.run(data.run.id);
+  await data.broker.close();
+  const { readdirSync } = await import('node:fs');
+  const { pruneTestHooks } = await import('../src/project/prune.js');
+  const first = new Error('Original deletion error'), closing = new Error('Injected close error');
+  const close = DatabaseSync.prototype.close;
+  let closes = 0;
+  const mock = t.mock.method(DatabaseSync.prototype, 'close', function(this: DatabaseSync) {
+    close.call(this);
+    // readStateContext closes its readonly connection first.
+    if (++closes === 2) throw closing;
+  });
+  if (originalFailure) pruneTestHooks.beforeDelete = () => { throw first; };
+  t.after(() => { delete pruneTestHooks.beforeDelete; mock.mock.restore(); });
+  const before = readdirSync('/proc/self/fd').length;
+  assert.throws(() => pruneProject(data.stateDir), error => error === (originalFailure ? first : closing));
+  assert.equal(closes, 2);
+  assert.equal(readdirSync('/proc/self/fd').length, before);
+});

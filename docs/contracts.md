@@ -641,7 +641,16 @@ quarantine, then its device/inode is compared with the pre-move identity before
 any recursive removal. A mismatched entry is **preserved** in quarantine and the
 operation fails with its recovery path; it is not restored over a potentially
 replaced source. Quarantines left after failure/crash require manual inspection,
-not automatic deletion. This assumes the state root and private quarantine are
+not automatic deletion. A failed or crashed prune may also leave a
+`prune_claims` row whose `id` is the quarantine directory name (for example,
+`.prune-Ab12Cd`). Rerunning prune does not recover that directory or clear its
+claim. After verifying that its prune process has stopped, inspect and recover
+any required files, then manually remove the quarantine and delete only its
+matching row from `broker.sqlite` with a parameterized
+`DELETE FROM prune_claims WHERE id = ?` using that exact directory name. An
+interrupted transaction may have rolled the row back; deleting an absent claim
+is harmless. Do not clear claims belonging to active prune operations.
+This assumes the state root and private quarantine are
 trusted; it is not isolation against another process with the same account or
 root privileges deliberately modifying quarantine contents.
 

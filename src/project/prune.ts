@@ -5,7 +5,7 @@ import { readStateContext } from '../broker/index.js';
 
 export interface PruneResult { removed: string[]; skippedRequests: string[] }
 /** Internal deterministic test seam; not exported by the project SDK. */
-export const pruneTestHooks: { beforeMove?: (path: string) => void; beforeDelete?: () => void } = {};
+export const pruneTestHooks: { beforeMove?: (path: string) => void; beforeDelete?: () => void; removeQuarantine?: (path: string) => void } = {};
 const terminal = new Set(['GREEN', 'RED', 'ERROR', 'INCOMPLETE']);
 const segment = (value: string) => value !== '.' && value !== '..' && /^[A-Za-z0-9_-]+$/.test(value);
 const transient = (name: string) => ['output', 'tmp', 'home', 'cache', 'human-tools', 'preparation'].includes(name) || /^tool-output-[A-Za-z0-9]+$/.test(name);
@@ -23,7 +23,7 @@ export function pruneProject(stateDir: string): PruneResult {
   let db: DatabaseSync | undefined, quarantineFd: number | undefined, quarantineName: string | undefined;
   const result: PruneResult = { removed: [], skippedRequests: [] };
   const staged: { name: string; original: string }[] = [];
-  let preserveQuarantine = false;
+  let preserveQuarantine = false, failed = false;
   try {
     db = new DatabaseSync(join(anchor(rootFd), 'broker.sqlite'), { timeout: 5000 });
     db.exec('CREATE TABLE IF NOT EXISTS prune_claims (id TEXT PRIMARY KEY, created_at TEXT NOT NULL)');
@@ -72,12 +72,29 @@ export function pruneProject(stateDir: string): PruneResult {
       rmSync(join(anchor(quarantineFd), entry.name), { recursive: true, force: true });
       result.removed.push(entry.original);
     }
-    db.prepare('DELETE FROM prune_claims WHERE id = ?').run(quarantineName);
     return result;
-  } catch (error) { preserveQuarantine = true; throw error; }
+  } catch (error) { failed = true; preserveQuarantine = true; throw error; }
   finally {
-    if (quarantineFd !== undefined) closeSync(quarantineFd);
-    if (quarantineName && !preserveQuarantine) rmSync(join(anchor(rootFd), quarantineName), { recursive: true, force: true });
-    db?.close(); closeSync(rootFd);
+    let cleanupFailed = false, cleanupError: unknown;
+    const cleanup = (action: () => void) => {
+      try { action(); }
+      catch (error) {
+        if (!cleanupFailed) cleanupError = error;
+        cleanupFailed = true; preserveQuarantine = true;
+      }
+    };
+    // Each resource gets its own attempt. A cleanup error must neither strand
+    // later resources nor replace an error from the operation itself.
+    cleanup(() => { if (quarantineFd !== undefined) closeSync(quarantineFd); });
+    cleanup(() => {
+      if (!quarantineName || preserveQuarantine) return;
+      const directory = join(anchor(rootFd), quarantineName);
+      if (pruneTestHooks.removeQuarantine) pruneTestHooks.removeQuarantine(directory);
+      else rmSync(directory, { recursive: true, force: true });
+      db?.prepare('DELETE FROM prune_claims WHERE id = ?').run(quarantineName);
+    });
+    cleanup(() => { db?.close(); });
+    cleanup(() => { closeSync(rootFd); });
+    if (!failed && cleanupFailed) throw cleanupError;
   }
 }
