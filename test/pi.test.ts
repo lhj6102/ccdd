@@ -91,6 +91,30 @@ test('Pi pre-validation rejects coercible/null/extra arguments and traversal wit
   assert.equal(good.toolCalls.length, 1);
 });
 
+test('Pi exposes actionable schema tool errors and lets the reviewer correct its call', async t => {
+  const data = await fixture(t), faux = fauxProvider({ provider: profile.provider, api: validatePiProfile(profile).api });
+  faux.setResponses([
+    fauxAssistantMessage([fauxToolCall('read_spec', { startLine: 'PRIVATE_ARGUMENT' }), fauxToolCall('read_spec', { offset: 'PRIVATE_ARGUMENT' })], { stopReason: 'toolUse' }),
+    fauxAssistantMessage([fauxToolCall('read_spec', { startLine: 1, lineCount: 1 })], { stopReason: 'toolUse' }),
+    fauxAssistantMessage(JSON.stringify(verdict)),
+  ]);
+  let sawErrors = false;
+  const actual = await invokePi({ ...data, streamFn: (model, context, options) => {
+    const errors = context.messages.filter(message => message.role === 'toolResult' && message.isError);
+    if (errors.length) {
+      sawErrors = true; assert.equal(errors.length, 2);
+      const text = JSON.stringify(errors);
+      assert.match(text, /instancePath/); assert.match(text, /startLine/); assert.match(text, /expected integer/);
+      assert.match(text, /additionalProperties/); assert.match(text, /offset/); assert.doesNotMatch(text, /PRIVATE_ARGUMENT/);
+    }
+    return faux.provider.streamSimple(model, context, options);
+  } });
+  assert.ok(sawErrors);
+  assert.equal(actual.toolCalls.length, 1);
+  assert.deepEqual(actual.toolCalls[0].arguments, { startLine: 1, lineCount: 1 });
+  assert.equal(actual.toolCalls[0].observation?.kind, 'content');
+});
+
 test('Pi provider failure, timeout and cancellation are errors rather than verdicts', async t => {
   for (const [mode, code] of [['auth-error', 'AUTHENTICATION_FAILED'], ['model-error', 'MODEL_ACCESS_FAILED'], ['network-error', 'PROVIDER_CONNECTION_FAILED'], ['throw', 'PROVIDER_EXECUTION_FAILED']] as const) {
     await assert.rejects(invokePi({ ...await fixture(t), streamFn: artifactStream({ mode }) }), error => {

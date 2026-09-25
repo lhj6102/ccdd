@@ -99,6 +99,9 @@ test('MCP exposes arbitrary schemas and sends image content with the same audite
     { jsonrpc: '2.0', id: 1, method: 'tools/list' },
     { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'frame_clip', arguments: { frame: 1, transparent: true } } },
     { jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'frame_clip', arguments: { frame: -1, transparent: true } } },
+    { jsonrpc: '2.0', id: 4, method: 'tools/call', params: { name: 'frame_clip', arguments: { frame: 'PRIVATE_ARGUMENT', transparent: true } } },
+    { jsonrpc: '2.0', id: 5, method: 'tools/call', params: { name: 'frame_clip', arguments: { frame: 1, transparent: true, extra: 'PRIVATE_ARGUMENT' } } },
+    { jsonrpc: '2.0', id: 6, method: 'tools/call', params: { name: 'frame_clip', arguments: { frame: 1 } } },
   ];
   let output = '';
   await serveArtifactMcp({ manifestPath, input: Readable.from(messages.map(message => `${JSON.stringify(message)}\n`)), output: new Writable({ write(chunk, _encoding, done) { output += chunk.toString(); done(); } }) });
@@ -106,7 +109,12 @@ test('MCP exposes arbitrary schemas and sends image content with the same audite
   assert.equal(replies[0].result.tools[0].name, 'frame_clip');
   assert.equal(replies[0].result.tools[0].inputSchema.properties.transparent.type, 'boolean');
   assert.deepEqual(replies[1].result.content, [{ type: 'image', data: png, mimeType: 'image/png' }]);
-  assert.equal(replies[2].result.isError, true);
+  for (const reply of replies.slice(2)) assert.equal(reply.result.isError, true);
+  assert.match(replies[2].result.content[0].text, /instancePath "\/frame" \[minimum\]/);
+  assert.match(replies[3].result.content[0].text, /instancePath "\/frame" \[type\]: expected integer/);
+  assert.match(replies[4].result.content[0].text, /instancePath "" \[additionalProperties\].*"extra"/);
+  assert.match(replies[5].result.content[0].text, /instancePath "" \[required\].*"transparent"/);
+  assert.doesNotMatch(output, /PRIVATE_ARGUMENT/);
   const audit = (await readFile(auditPath, 'utf8')).trim().split('\n').map(line => JSON.parse(line));
   assert.equal(audit.length, 1);
   assert.equal(audit[0].observation.kind, 'content');
