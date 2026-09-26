@@ -161,7 +161,7 @@ export function createBroker<D extends ResultDetail = 'compact'>({ detail, repoP
   let closing = false;
   const active = new Map<string, ActiveRun>();
   const listeners = new Set<() => void>();
-  const ensureOpen = () => { if (closed || closing) throw new Error('Broker is closed.'); };
+  const ensureOpen = () => { if (closed || closing) throw new Error('Broker is closed.'); sweepSubmissionDeadlines(); };
   const requireExecutors = () => {
     if (!executors || typeof executors.canExecute !== 'function' || typeof executors.execute !== 'function') throw new Error('Review submission and execution require an executor registry.');
     return executors;
@@ -184,6 +184,15 @@ export function createBroker<D extends ResultDetail = 'compact'>({ detail, repoP
   const sharedRequests = (run: RunRecord): ReviewRequest[] => (run.project?.coalescedRequestIds ?? []).map(id => required(requestData(id), 'Shared Request'));
   const attemptsFor = (run: RunRecord): ReviewRequest[] => [...runRequests(run.id), ...sharedRequests(run)];
   const submissionDeadlines = new Map<string, number>();
+  function sweepSubmissionDeadlines() {
+    for (const id of submissionDeadlines.keys()) {
+      const source = runData(id);
+      // Retain expired unowned sources: dropping their monotonic tombstone could
+      // renew eligibility after a wall-clock rollback. Owned Runs cannot revert
+      // to an abandoned submission; worker exit is reconciled as terminal.
+      if (!source || terminal.has(source.status) || ownerData(id)) submissionDeadlines.delete(id);
+    }
+  }
   const shareable = (request: ReviewRequest): boolean => {
     const source = required(runData(request.runId), 'Source Run');
     if (terminal.has(source.status)) return false;
@@ -200,7 +209,10 @@ export function createBroker<D extends ResultDetail = 'compact'>({ detail, repoP
     return tick < deadline;
   };
   const saveRequest = (request: ReviewRequest) => db.prepare('UPDATE requests SET status = ?, data = ? WHERE id = ?').run(request.status, JSON.stringify(request), request.id);
-  const saveRun = (run: RunRecord) => db.prepare('UPDATE runs SET status = ?, data = ? WHERE id = ?').run(run.status, JSON.stringify(run), run.id);
+  const saveRun = (run: RunRecord) => {
+    db.prepare('UPDATE runs SET status = ?, data = ? WHERE id = ?').run(run.status, JSON.stringify(run), run.id);
+    if (terminal.has(run.status)) submissionDeadlines.delete(run.id);
+  };
   const appendEvent = (runId: string, requestId: string | null, type: string, message: string, data: unknown = null) => {
     db.prepare('INSERT INTO events(run_id,request_id,created_at,type,message,data) VALUES (?,?,?,?,?,?)').run(runId, requestId, now(), type, message.slice(0, 4000), data === null ? null : JSON.stringify(data));
   };
@@ -215,6 +227,7 @@ export function createBroker<D extends ResultDetail = 'compact'>({ detail, repoP
     },
   });
   function refreshReadinessWithin(runId: string): void {
+    sweepSubmissionDeadlines();
     const run = required(runData(runId), 'Run'), requests = runRequests(runId);
     if (run.project?.version === 3) {
       if (terminal.has(run.status)) return;
@@ -725,7 +738,7 @@ export function createBroker<D extends ResultDetail = 'compact'>({ detail, repoP
       const owned = [...active.values()];
       for (const entry of owned) entry.abort.abort(codedError('The review worker stopped before completion.', 'WORKER_STOPPED'));
       await Promise.allSettled(owned.map(entry => entry.promise));
-      listeners.clear(); db.close(); closed = true;
+      submissionDeadlines.clear(); listeners.clear(); db.close(); closed = true;
     },
   };
   const viewRun = <T extends Parameters<typeof requesterRun>[0] | null>(value: T) => resultView({ detail }, value, () => value ? requesterRun(storedRun(db, value.id) ?? value, stateDir) : null);

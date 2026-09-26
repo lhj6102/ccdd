@@ -188,6 +188,79 @@ test('a waiting follower bounds its lease monotonically across a backward wall-c
   } finally { clearTimeout(timeout); }
 });
 
+test('submission deadline lifecycle prunes local/remote sources, retains abandoned tombstones, and clears on close', { timeout: 15000 }, async t => {
+  const data = await artifactFixture(t); await data.write('a', { name: 'a', critics: [runtimeCritic()] });
+  const executors = { canExecute: () => ({ ok: true as const }), execute: async () => ({ verdict: 'GREEN' }) };
+  const broker = createBroker({ ...data, detail: 'full', coalescingGraceMs: 2000, executors }); data.cleanup(() => broker.close());
+  let deadlines!: Map<string, number>;
+  for (let i = 0; i < 12; i++) {
+    if (i) await data.edit('a', manifest => { manifest.critics![0].title = `case ${i}`; });
+    const source = await broker.submitProject({ selection: { kind: 'all' } });
+    // Observe the private map without adding a diagnostics API or changing the
+    // production module. This mock is restored immediately after submission.
+    const originalSet = Map.prototype.set;
+    const observer = t.mock.method(Map.prototype, 'set', function (this: Map<string, number>, key: string, value: number) {
+      if (key === source.id && typeof value === 'number') deadlines = this;
+      return originalSet.call(this, key, value);
+    });
+    const follower = await broker.submitProject({ selection: { kind: 'all' } }).finally(() => observer.mock.restore());
+    assert.equal(follower.requests.length, 0); assert.equal(deadlines.size, 1);
+    await broker.run(source.id); await broker.run(follower.id);
+    assert.equal(deadlines.size, 0, 'completed pairs must not accumulate entries');
+  }
+
+  await data.edit('a', manifest => { manifest.critics![0].title = 'locally cancelled'; });
+  const cancelled = await broker.submitProject({ selection: { kind: 'all' } });
+  const cancelledFollower = await broker.submitProject({ selection: { kind: 'all' } });
+  assert.equal(deadlines.size, 1); broker.cancel(cancelled.id);
+  assert.equal(deadlines.size, 0, 'local terminal transition removes its deadline');
+  await broker.run(cancelledFollower.id);
+
+  const remote = createBroker({ ...data, executors }); data.cleanup(() => remote.close());
+  await data.edit('a', manifest => { manifest.critics![0].title = 'remotely completed'; });
+  const completed = await broker.submitProject({ selection: { kind: 'all' } });
+  const completedFollower = await broker.submitProject({ selection: { kind: 'all' } });
+  assert.equal(deadlines.size, 1);
+  await remote.run(completed.id);
+  assert.equal(deadlines.size, 1, 'remote completion is discovered on the next local operation');
+  assert.equal(broker.getRun(completed.id)!.status, 'GREEN');
+  assert.equal(deadlines.size, 0);
+  await broker.run(completedFollower.id);
+
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; }); t.after(() => release());
+  const owner = createBroker({ ...data, executors: { ...executors, execute: async () => { await gate; return { verdict: 'GREEN' }; } } });
+  data.cleanup(() => owner.close());
+  await data.edit('a', manifest => { manifest.critics![0].title = 'remotely owned'; });
+  const owned = await broker.submitProject({ selection: { kind: 'all' } });
+  const ownedFollower = await broker.submitProject({ selection: { kind: 'all' } });
+  const running = owner.run(owned.id);
+  try {
+    assert.equal(deadlines.size, 1);
+    assert.ok(broker.getRun(owned.id)!.owner);
+    assert.equal(deadlines.size, 0, 'remote ownership no longer needs a submission deadline');
+  } finally { release(); await running; }
+  await broker.run(ownedFollower.id);
+
+  await data.edit('a', manifest => { manifest.critics![0].title = 'abandoned'; });
+  const abandoned = await broker.submitProject({ selection: { kind: 'all' } }), before = storedSource(data.stateDir, abandoned.id);
+  let wallClock = Date.parse(abandoned.createdAt) + 1500;
+  const clock = t.mock.method(Date, 'now', () => wallClock);
+  const abandonedFollower = await broker.submitProject({ selection: { kind: 'all' } });
+  assert.equal(abandonedFollower.requests.length, 0); assert.equal(deadlines.size, 1);
+  await delay(550);
+  broker.getRun(abandoned.id);
+  assert.equal(deadlines.size, 1, 'expired unowned source keeps its tombstone');
+  wallClock = Date.parse(abandoned.createdAt) + 500;
+  const replacement = await broker.submitProject({ selection: { kind: 'all' } });
+  assert.equal(replacement.requests.length, 1, 'rollback cannot renew the abandoned source');
+  assert.ok(deadlines.has(abandoned.id));
+  assert.deepEqual(storedSource(data.stateDir, abandoned.id), before);
+  clock.mock.restore();
+  await broker.close();
+  assert.equal(deadlines.size, 0, 'close releases even abandoned tombstones');
+});
+
 test('submission grace coalesces simultaneous submits into one ticket', async t => {
   const data = await runtimeFixture(t);
   const runs = await Promise.all([data.broker.submitProject({ selection: { kind: 'all' } }), data.broker.submitProject({ selection: { kind: 'all' } })]);
