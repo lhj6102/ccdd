@@ -8,7 +8,7 @@ Project Validation answers whether the current required scope has matching actua
 - **Validation Evidence**: an actual semantic review result bound to its Validation Input. Reuse references that result; it is not another evaluation.
 - **Validation Query**: a readonly comparison of current input with evidence and the finite required dependency closure. The comparison executes no scripts and stores no stale flags. Current-input preparation computes identities and validation inputs only for the selected dependency closure, executing explicitly configured owner identity scripts there; static discovery remains script-free. Query output uses that same scope, while snapshots retain the full static graph.
 - **Individual Validation**: executes only selected Critics. Missing other required evidence makes the request INCOMPLETE, without discarding completed selected results.
-- **Recursive Validation**: includes Critics throughout the required dependency closure. Dependency PASS never gates the start of a ready Critic.
+- **Recursive Validation**: includes Critics throughout the required dependency closure. Current GREEN evidence gates dependent Critics outside the same SCC by default; ignoreGates explicitly bypasses the gate.
 - **Basis**: an explicit accepted Artifact with no Critics. An ordinary no-Critic Artifact is UNREVIEWED.
 
 Folder containment, logical mounts and instruction references are equal-level dependencies. Final satisfaction requires actual matching PASS for all required non-basis Artifacts; a cycle itself proves nothing. History from previous identity versions is result-only.

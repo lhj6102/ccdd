@@ -207,8 +207,8 @@ Public requester surfaces:
   observation tools only, not requester review results; its tool protocol and
   audit recording are unchanged.
 
-CCDD 5.0.0 requires a fresh state directory: all store entry points reject
-4.x/unmarked state without reading or migrating its records. ValidationInput
+CCDD 6.0.0 requires a fresh state directory: all store entry points reject
+previous-major/unmarked state without reading or migrating its records. ValidationInput
 version 3 is a one-time key transition; package/runtime version changes alone do
 not invalidate identity thereafter. See [migration](migration-v5.md).
 
@@ -265,7 +265,7 @@ A Critic's PASS describes its matching actual result. Final Artifact/project sat
 
 ## Selection and scheduling
 
-Individual verification executes the selected Critic or the selected Artifact's Critics as soon as their input and execution environment are ready. It never waits for dependency PASS. `--recursive` includes Critics across the required dependency closure, including cycles. `--all` covers every Artifact. Multiple evaluations run concurrently within the Broker's executor limit.
+In 6.0, selected Critics execute only after dependency Critics outside the same SCC have current GREEN evidence, unless `ignoreGates` / `--ignore-gates` is explicit. Basis/no-Critic dependencies do not gate. RED yields BLOCKED; operational failure yields WAIT_DEPENDENCY, without executing or fabricating a child verdict. SCC peers execute together after external gates pass. `--recursive` includes Critics across the required dependency closure, including cycles. `--all` covers every Artifact. Multiple evaluations run concurrently within the Broker's executor limit.
 
 Successful selected results are preserved if other required evidence is missing; the Run is INCOMPLETE. The same result can satisfy a later request after the remaining evidence arrives. Run status distinguishes review execution (`QUEUED`, `RUNNING`, `WAITING_HUMAN`, `ERROR`) from semantic results (`GREEN`, `RED`) and unfinished validation obligations (`INCOMPLETE`). No blocked or reused ticket is fabricated. Identical active Critic/input requests across Runs in the same state directory coalesce: the follower waits for and adopts the original request result. Its cancellation does not cancel the source. Source cancellation/error fails the follower without fabricating a verdict. A
 follower never executes or hosts another Run. It coalesces only onto a request
@@ -737,3 +737,20 @@ in-flight peers, stops dispatching queued owners, and awaits their cleanup befor
 rejecting. No partial snapshot, fallback identity or review Run is returned.
 Identity scripts must compute their values independently; parallel scheduling
 does not provide synchronization for owner-created shared side effects.
+
+
+## Normalized state and live requester changes (6.0)
+
+State format 6 is fresh-only: no migration or compatibility path. Definitions, prepared inputs, workspace descriptors and audit results are immutable content-addressed nodes. Mutable Run/request records contain small lifecycle headers and references. Requests are indexed by readiness and identity. Membership counters and reverse gate edges drive status transitions; no full plan or definition hydration is required for an isolated transition. Event rows are append-only.
+
+`broker.changes(runId, {after: 0, limit: 100})` returns `{runId,status,cursor,hasMore,changes}`. Each change has its monotonic cursor, requestId, criticId, status, optional compact semantic result/reference, and operational error fields. Drain pages until `hasMore` is false, then retain the returned cursor. A rolled-back transition creates no visible cursor. Telemetry notifications can wake `onChange` without adding lifecycle changes; querying the cursor then returns an empty page. Returned values are detached from stored state. The cursor is scoped to this local state database, not an identity/reuse key.
+
+Use `onChange` to schedule a coalesced cursor drain, not `getRun` on each telemetry event. Compact `getRun`/`listRuns` are whole-Run snapshots with O(returned membership) work; they omit definition/audit hydration but are not constant-time streaming APIs. Full audit is loaded explicitly behind result references. Readonly monitor access remains readonly.
+
+`broker.retryRequest(id)` requeues only ERROR against the same immutable input after its worker settles. Dependent WAIT_DEPENDENCY requests receive no verdict and release once the retry is GREEN. Changed source input requires a new submission and is re-planned under its new identity; an existing Run never silently changes its snapshot. Blocked reused descendant evidence remains auditable but is not current satisfaction. `--force` does not bypass gates.
+
+The admission boundary follows dependency readiness and precedes QUEUED-to-RUNNING. An optional `Admission.acquire({requestId,runId,kind,provider?,model?}, {signal,waiting})` returns a lease with idempotent `release()`. Waiting reports a bounded QUEUED admission reason, supports cancellation, and releases a late-acquired slot or any terminal execution path. The default is FIFO local admission at maxConcurrentExecutors. Machine-wide provider pools and holder leases are reserved for 6.1, not implemented here.
+
+Gate construction uses only direct edges of the SCC condensation, not a materialized transitive closure. BLOCKED and release states propagate through those edges; SCC peers share external gates. Construction visits each Artifact relation once plus emitted Critic gate references. Transitions visit affected memberships/edges, independent of unrelated Run/project size. Multiple Critics on an Artifact still require one obligation per dependency Critic.
+
+Telemetry remains a bounded synchronous SQLite append in 6.0; there is no off-thread drain. It never rewrites Run/request definitions or advances the lifecycle changes cursor. `blockedReason` in a changes page reflects the current request state, not a historical reason-at-cursor snapshot.

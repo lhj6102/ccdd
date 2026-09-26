@@ -1,3 +1,4 @@
+import { criticGates } from './gates.js';
 import { createGraphDefinition } from '../broker/graph.js';
 import { dependencyClosure } from '../artifacts/scope.js';
 import type { ProjectSnapshot, ProjectSelection, QueryOptions, ValidationEvidence, ArtifactValidation, CriticValidation, ProjectQuery, ProjectPlan, ValidationStatus } from './types.js';
@@ -45,8 +46,8 @@ export function queryProject(snapshot: ProjectSnapshot, history: readonly Valida
     const key = `${id}:${input.key}`, evidence = (input.reusable && !forced.has(id) ? byKey : byRunKey).get(key) ?? null;
     const attempt = attempts.get(id), ownPass = evidence?.verdict === 'GREEN';
     let status: ValidationStatus, reason: string;
-    if (attempt && ['QUEUED', 'RUNNING', 'WAITING_HUMAN'].includes(attempt.status)) {
-      status = attempt.status as ValidationStatus; reason = 'A review of this input is in progress.';
+    if (attempt && ['QUEUED', 'RUNNING', 'WAITING_HUMAN', 'WAIT_DEPENDENCY', 'BLOCKED'].includes(attempt.status)) {
+      status = attempt.status as ValidationStatus; reason = 'blockedReason' in attempt && typeof attempt.blockedReason === 'string' && attempt.blockedReason ? attempt.blockedReason : 'A review of this input is in progress.';
     } else if (attempt?.status === 'ERROR') {
       status = 'ERROR'; reason = attempt.error ?? 'The review could not complete.';
     } else if (ownPass) { status = 'PASS'; reason = `Actual PASS evidence ${evidence!.requestId} matches this input.`; }
@@ -58,30 +59,49 @@ export function queryProject(snapshot: ProjectSnapshot, history: readonly Valida
     return { id, title: definition.title, target: definition.target, deps: [...definition.deps], status, isStale: status !== 'PASS', needsReview: !evidence,
       canExecute: !evidence && !attempt, blockedBy: [], reason, input, result: evidence, requestId: attempt?.id ?? null };
   });
-  const own = new Map<string, CriticValidation[]>(required.map(id => [id, critics.filter(c => c.target === id)]));
+  if (!options.ignoreGates) {
+    const gates = criticGates(snapshot);
+    const original = new Map(critics.map(c => [c.id, c.status]));
+    const byId = new Map(critics.map(c => [c.id, c]));
+    for (const [id, dependencies] of gates) {
+      const critic = byId.get(id); if (!critic) continue;
+      const unmet = dependencies.filter(id => original.get(id) !== 'PASS');
+      if (!unmet.length) continue;
+      const red = unmet.filter(id => original.get(id) === 'RED' || original.get(id) === 'BLOCKED');
+      critic.status = red.length ? 'BLOCKED' : 'WAIT_DEPENDENCY'; critic.canExecute = false; critic.isStale = true;
+      critic.blockedBy = unmet;
+      critic.reason = `${red.length ? 'Dependency verdict RED' : 'Waiting for current GREEN dependency evidence'}: ${unmet.map(id => `${id} (${original.get(id) ?? 'UNREVIEWED'})`).join(', ')}`;
+      // The own result remains auditable but cannot masquerade as current satisfaction.
+      critic.result = null;
+      original.set(critic.id, critic.status);
+    }
+  }
+  const own = new Map<string, CriticValidation[]>(required.map(id => [id, []]));
+  for (const critic of critics) own.get(critic.target)!.push(critic);
   const ownSatisfied = (id: string) => snapshot.config.artifacts[id].basis === true || own.get(id)!.length > 0 && own.get(id)!.every(c => c.status === 'PASS');
   const scopeMemo = new Map<string, string[]>();
   const scope = (id: string) => { if (!scopeMemo.has(id)) scopeMemo.set(id, dependencyClosure(snapshot.config.relations, [id])); return scopeMemo.get(id)!; };
   const artifacts = Object.keys(snapshot.config.artifacts).filter(id => requiredSet.has(id)).map((id): ArtifactValidation => {
     const evaluations = own.get(id)!, satisfied = scope(id).every(ownSatisfied);
     const status: ValidationStatus = satisfied ? snapshot.config.artifacts[id].basis ? 'BASIS' : 'PASS' :
-      (['RUNNING', 'QUEUED', 'WAITING_HUMAN', 'ERROR', 'RED', 'STALE', 'UNREVIEWED'] as const).find(s => evaluations.some(c => c.status === s)) ?? (ownSatisfied(id) ? 'INCOMPLETE' : 'UNREVIEWED');
+      (['RUNNING', 'QUEUED', 'WAITING_HUMAN', 'ERROR', 'RED', 'BLOCKED', 'WAIT_DEPENDENCY', 'STALE', 'UNREVIEWED'] as const).find(s => evaluations.some(c => c.status === s)) ?? (ownSatisfied(id) ? 'INCOMPLETE' : 'UNREVIEWED');
     return { id, hash: snapshot.artifactHashes[id], ...snapshot.artifactIdentities?.[id], status, isStale: !satisfied, criticIds: evaluations.map(c => c.id), passed: evaluations.filter(c => c.status === 'PASS').length, total: evaluations.length };
   });
   // These are unmet final obligations, not reasons to delay executing a Critic.
-  for (const critic of critics) critic.blockedBy = scope(critic.target).filter(id => id !== critic.target && !ownSatisfied(id));
+  for (const critic of critics) if (!critic.blockedBy.length) critic.blockedBy = scope(critic.target).filter(id => id !== critic.target && !ownSatisfied(id));
   return { snapshotHash: snapshot.snapshotHash, workspaceIntegrity: snapshot.workspaceIntegrity ?? 'content', selection, satisfied: required.every(ownSatisfied), artifacts, critics };
 }
 
 export function planProject(snapshot: ProjectSnapshot, history: readonly ValidationEvidence[], options: QueryOptions & { recursive?: boolean; force?: boolean } = {}, coalesce?: (critic: CriticValidation) => { requestId: string; leaseExpiresAt?: string } | null): ProjectPlan {
   const selection = options.selection ?? { kind: 'all' }, selectedCriticIds = selectedCritics(snapshot, selection), includedCriticIds = includedCritics(snapshot, selection, Boolean(options.recursive));
   const query = queryProject(snapshot, history, { ...options, selection, forceCriticIds: options.force ? selectedCriticIds : options.forceCriticIds });
-  const items = query.critics.filter(c => includedCriticIds.includes(c.id)).map(c => {
-    const action = (c.result ? 'REUSE' : ['QUEUED', 'RUNNING', 'WAITING_HUMAN'].includes(c.status) ? 'ACTIVE' : c.canExecute ? 'EXECUTE' : c.requestId ? 'FAILED' : 'WAIT') as ProjectPlan['items'][number]['action'];
+  const includedSet = new Set(includedCriticIds);
+  const items = query.critics.filter(c => includedSet.has(c.id)).map(c => {
+    const action = (c.status === 'BLOCKED' || c.status === 'WAIT_DEPENDENCY' ? c.status : c.result ? 'REUSE' : ['QUEUED', 'RUNNING', 'WAITING_HUMAN'].includes(c.status) ? 'ACTIVE' : c.canExecute ? 'EXECUTE' : c.requestId ? 'FAILED' : 'WAIT') as ProjectPlan['items'][number]['action'];
     // Force bypasses adoption for the whole submission, matching the Broker.
     const source = action === 'EXECUTE' && !options.force && !options.forceCriticIds?.includes(c.id) ? coalesce?.(c) : null;
     return source ? { ...c, ...source, canExecute: false, reason: 'An identical active request can supply this review.', action: 'COALESCE' as const } : { ...c, action };
   });
   return { ...query, recursive: Boolean(options.recursive), force: Boolean(options.force), selectedCriticIds, includedCriticIds, items,
-    counts: { reuse: items.filter(c => c.action === 'REUSE').length, coalesce: items.filter(c => c.action === 'COALESCE').length, execute: items.filter(c => c.action === 'EXECUTE').length, wait: items.filter(c => c.action === 'WAIT').length, active: items.filter(c => c.action === 'ACTIVE').length, failed: items.filter(c => c.action === 'FAILED').length } };
+    counts: { gated: items.filter(c => c.action === 'BLOCKED' || c.action === 'WAIT_DEPENDENCY').length, reuse: items.filter(c => c.action === 'REUSE').length, coalesce: items.filter(c => c.action === 'COALESCE').length, execute: items.filter(c => c.action === 'EXECUTE').length, wait: items.filter(c => c.action === 'WAIT').length, active: items.filter(c => c.action === 'ACTIVE').length, failed: items.filter(c => c.action === 'FAILED').length } };
 }

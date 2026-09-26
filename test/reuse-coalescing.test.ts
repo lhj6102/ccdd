@@ -443,8 +443,8 @@ for (const scenario of [
     if (scenario === 'terminal run') run.status = 'ERROR';
     if (scenario.includes('running')) request.status = 'RUNNING';
     if (scenario.includes('human')) request.status = 'WAITING_HUMAN';
-    if (scenario === 'different key') request.validationInput.key = '0'.repeat(64);
-    if (scenario === 'old input') request.validationInput.version = 2;
+    if (scenario === 'different key') request.inputKey = '0'.repeat(64);
+    if (scenario === 'old input') request.inputVersion = 2;
     database.prepare('UPDATE runs SET status=?,data=? WHERE id=?').run(run.status, JSON.stringify(run), run.id);
     database.prepare('UPDATE requests SET status=?,data=? WHERE id=?').run(request.status, JSON.stringify(request), request.id);
     if (scenario.startsWith('live') || scenario === 'dead owner') {

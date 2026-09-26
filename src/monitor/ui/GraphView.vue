@@ -70,7 +70,7 @@ function artifactLabel(artifact: Artifact): string {
   if (artifact.validationStatus === 'INCOMPLETE') return 'Required evidence missing';
   if (artifact.validationStatus === 'STALE') return 'Needs revalidation';
   if (artifact.status === 'BLOCKED' && graph.value?.critics.some(critic => critic.target === artifact.id && criticBlocked(critic))) return 'Blocked by failure';
-  return { BASIS: 'Basis Artifact', UNREVIEWED: 'Unreviewed', BLOCKED: 'Awaiting dependencies', QUEUED: 'Queued', RUNNING: 'Running', WAITING_HUMAN: 'Awaiting Human', GREEN: 'Passed', RED: 'Criteria not met', ERROR: 'Execution error' }[artifact.status];
+  return { WAIT_DEPENDENCY: 'Waiting for dependency evidence', BASIS: 'Basis Artifact', UNREVIEWED: 'Unreviewed', BLOCKED: 'Awaiting dependencies', QUEUED: 'Queued', RUNNING: 'Running', WAITING_HUMAN: 'Awaiting Human', GREEN: 'Passed', RED: 'Criteria not met', ERROR: 'Execution error' }[artifact.status];
 }
 function artifactAccessibleLabel(artifact: Artifact): string { return `${artifact.id}, folder ${artifact.path || '.'}, ${artifactLabel(artifact)}, ${artifact.passed}/${artifact.total} Critics passed`; }
 function criticBlocked(critic: Critic): boolean {

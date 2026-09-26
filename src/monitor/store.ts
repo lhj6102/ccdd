@@ -1,3 +1,4 @@
+import { records } from '../broker/storage.js';
 import { assertStateFormat, StateFormatError } from '../state-format.js';
 import { semanticResult } from '../response-schema.js';
 import { reviewReference } from '../result-view.js';
@@ -34,7 +35,7 @@ export interface MonitorStoredRequest { request: ReviewRequest; repoPath: string
 type ProcessCheck = { exists: boolean | null; identity: string | null };
 type ProcessChecks = Map<number, Promise<ProcessCheck>>;
 
-const statuses = new Set<string>(['BLOCKED', 'QUEUED', 'RUNNING', 'WAITING_HUMAN', 'GREEN', 'RED', 'ERROR']);
+const statuses = new Set<string>(['WAIT_DEPENDENCY', 'BLOCKED', 'QUEUED', 'RUNNING', 'WAITING_HUMAN', 'GREEN', 'RED', 'ERROR']);
 export function monitorLane(request: Pick<MonitorRequest, 'status' | 'claimedBy'>): MonitorLane {
   if (request.status === 'GREEN') return 'success';
   if (request.status === 'RED' || request.status === 'ERROR') return 'failure';
@@ -99,7 +100,7 @@ const headerSql = `SELECT id,run_id,status,
 const runSql = `SELECT id,status,created_at,
   json_extract(data,'$.id') AS json_id,json_extract(data,'$.status') AS json_status,
   json_extract(data,'$.snapshotHash') AS snapshot_hash,json_extract(data,'$.completedAt') AS completed_at,
-  json_extract(data,'$.scope') AS scope,json_type(data,'$.graph') AS graph_type,json_extract(data,'$.graph.version') AS graph_version
+  json_extract(data,'$.scope') AS scope,'object' AS graph_type,2 AS graph_version
   FROM runs`;
 function readRun(row: Record<string, unknown>, project: string): MonitorRun {
   const status = string(row.status);
@@ -135,7 +136,8 @@ async function readSnapshot(source: Source, requestId?: string, runId?: string):
     snapshot.requests = db.prepare(headerSql).all().map(readHeader);
     snapshot.runs = db.prepare(runSql).all().map(row => readRun(row, source.id));
     if (runId !== undefined) {
-      const row = db.prepare("SELECT json_extract(data,'$.graph') AS graph FROM runs WHERE id=?").get(runId);
+      const graph = records(db).run(runId)?.graph;
+      const row = graph ? { graph: JSON.stringify(graph) } : undefined;
       if (row?.graph != null) {
         try { snapshot.graph = JSON.parse(string(row.graph)); } catch { snapshot.graph = false; }
       }
@@ -151,7 +153,7 @@ async function readSnapshot(source: Source, requestId?: string, runId?: string):
       const header = snapshot.requests.find(request => request.id === requestId);
       if (header) {
         const target = db.prepare('SELECT data FROM requests WHERE id=?').get(requestId);
-        snapshot.target = json(target?.data);
+        snapshot.target = records(db).request(requestId) as unknown as Record<string, unknown>;
         snapshot.events = db.prepare('SELECT id,request_id,type,created_at FROM events WHERE run_id=? AND (request_id=? OR request_id IS NULL) ORDER BY id').all(header.runId, requestId).map(row => ({
           id: Number(row.id), requestId: nullableString(row.request_id), type: string(row.type), at: date(row.created_at),
         }));

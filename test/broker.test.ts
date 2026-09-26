@@ -51,7 +51,7 @@ test('executor concurrency remains bounded while independent slots progress', as
   const run = await data.submit(); assert.equal((await data.broker.run(run.id))!.status, 'GREEN'); assert.equal(maximum, 4);
 });
 
-test('RED and operational ERROR retain independent results and never block other ready Critics', async t => {
+test('RED gates dependents while operational ERROR preserves independent results', async t => {
   const data = await fixture(t, false, { canExecute: () => ({ ok: true }), async execute(request) {
     if (request.target === 'a') return { ...controlledResult, verdict: 'RED' };
     if (request.target === 'c') throw new Error('Controlled operational failure');
@@ -60,7 +60,7 @@ test('RED and operational ERROR retain independent results and never block other
   await data.write('b', { name: 'b', critics: [runtimeCritic('check', 'Depends on {a}.')] });
   await data.write('c', { name: 'c', critics: [runtimeCritic()] });
   const run = await data.submit(), completed = (await data.broker.run(run.id))!;
-  assert.equal(completed.status, 'ERROR'); assert.deepEqual(completed.requests.map(r => r.status), ['RED', 'GREEN', 'ERROR']);
+  assert.equal(completed.status, 'ERROR'); assert.deepEqual(completed.requests.map(r => r.status), ['RED', 'BLOCKED', 'ERROR']);
 });
 
 test('Human tools require the active claimant and preserve review state until explicit completion', async t => {

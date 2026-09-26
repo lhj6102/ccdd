@@ -1,3 +1,5 @@
+import { initializeRecords, records } from '../src/broker/storage.js';
+import type { RunRecord } from '../src/broker/index.js';
 import test, { type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
@@ -39,22 +41,24 @@ async function fixture(t: TestContext) {
     await fs.mkdir(stateDir, { recursive: true });
     const db = new DatabaseSync(path.join(stateDir, 'broker.sqlite'));
     try {
-      db.exec(`PRAGMA user_version=5; CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+      db.exec(`PRAGMA user_version=6; CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
         CREATE TABLE runs (id TEXT PRIMARY KEY, created_at TEXT NOT NULL, status TEXT NOT NULL, data TEXT NOT NULL);
         CREATE TABLE requests (id TEXT PRIMARY KEY, run_id TEXT NOT NULL, ordinal INTEGER NOT NULL, status TEXT NOT NULL, data TEXT NOT NULL);
         CREATE TABLE run_owners (run_id TEXT PRIMARY KEY, pid INTEGER NOT NULL, process_identity TEXT, token TEXT NOT NULL, claimed_at TEXT NOT NULL);
         CREATE TABLE events (id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL, request_id TEXT, created_at TEXT NOT NULL, type TEXT NOT NULL, message TEXT NOT NULL, data TEXT);`);
       // Seed the read-only adapter fixture in one transaction. Per-row durability
       // adds thousands of disk flushes without exercising monitor behavior.
+      initializeRecords(db);
+      const store = records(db);
       db.exec('BEGIN');
       db.prepare('INSERT INTO metadata VALUES (?,?)').run('registered-repo', JSON.stringify({ repoPath, repoId: 'local' }));
       const runs = new Set<string>();
       for (const [ordinal, request] of requests.entries()) {
         if (!runs.has(request.runId)) {
-          db.prepare('INSERT INTO runs VALUES (?,?,?,?)').run(request.runId, request.createdAt, request.status, JSON.stringify({ id: request.runId, status: request.status, ...options.runData?.[request.runId] }));
+          db.prepare('INSERT INTO runs VALUES (?,?,?,?)').run(request.runId, request.createdAt, request.status, JSON.stringify(store.packRun({ id: request.runId, status: request.status, workspace: request.workspace, ...options.runData?.[request.runId] } as RunRecord)));
           runs.add(request.runId);
         }
-        db.prepare('INSERT INTO requests VALUES (?,?,?,?,?)').run(request.id, request.runId, ordinal, request.status, JSON.stringify(request));
+        db.prepare('INSERT INTO requests VALUES (?,?,?,?,?)').run(request.id, request.runId, ordinal, request.status, JSON.stringify(store.packRequest(request as ReviewRequest)));
       }
       for (const owner of options.owners ?? []) db.prepare('INSERT INTO run_owners VALUES (?,?,?,?,?)').run(owner.runId, owner.pid, owner.identity ?? null, 'owner-token-secret', at(0));
       for (const event of options.events ?? []) db.prepare('INSERT INTO events (run_id,request_id,created_at,type,message,data) VALUES (?,?,?,?,?,?)').run(event.runId, event.requestId, event.at, event.type, 'event-secret', JSON.stringify({ token: 'event-token-secret' }));

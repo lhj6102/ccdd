@@ -26,13 +26,13 @@ export { createBroker } from '../broker/index.js';
 export { createExecutorRegistry } from '../executors/index.js';
 
 /** Explicit CLI query: briefly observe the current workspace without creating a store. */
-export async function inspectProject<D extends ResultDetail = 'compact'>({ detail, repoPath, stateDir, selection, recursive = false, force = false, signal, identityConcurrency = DEFAULT_IDENTITY_CONCURRENCY, workspaceIntegrity = 'content' }: { repoPath: string; stateDir: string; selection?: ProjectSelection; recursive?: boolean; force?: boolean; signal?: AbortSignal; identityConcurrency?: number; workspaceIntegrity?: WorkspaceIntegrity } & ResultOptions<D>) {
+export async function inspectProject<D extends ResultDetail = 'compact'>({ detail, repoPath, stateDir, selection, recursive = false, force = false, ignoreGates = false, signal, identityConcurrency = DEFAULT_IDENTITY_CONCURRENCY, workspaceIntegrity = 'content' }: { repoPath: string; stateDir: string; selection?: ProjectSelection; recursive?: boolean; force?: boolean; ignoreGates?: boolean; signal?: AbortSignal; identityConcurrency?: number; workspaceIntegrity?: WorkspaceIntegrity } & ResultOptions<D>) {
   positiveConcurrency(identityConcurrency, 'identityConcurrency');
   const workspace = await prepareWorkspace({ repoPath, stateDir, signal, integrity: workspaceIntegrity });
   try {
     const { config } = await readWorkspaceConfig(workspace.descriptor.path, workspace.signal);
     const snapshot = await createProjectSnapshot(config, workspace.descriptor.path, workspace.descriptor.hash, workspace.signal, workspace.descriptor.integrity, selection, { identityConcurrency });
-    const plan = currentProjectPlan(stateDir, snapshot, { selection, recursive, force });
+    const plan = currentProjectPlan(stateDir, snapshot, { selection, recursive, force, ignoreGates });
     await workspace.assertUnchanged();
     return resultView({ detail }, { snapshot, plan }, () => ({ plan: requesterPlan(plan, stateDir) }));
   } finally { await workspace.close(); }

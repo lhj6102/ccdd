@@ -10,6 +10,11 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { prepareReviewRequests } from '../requester/index.js';
 import { readWorkspaceConfig } from './config.js';
 import { createGraphDefinition, type GraphDefinition } from './graph.js';
+import { localAdmission, type Admission, type AdmissionLease } from './admission.js';
+export type { Admission, AdmissionLease, AdmissionRequest } from './admission.js';
+import { readChanges, type ChangeOptions } from './changes.js';
+import { initializeRecords, records } from './storage.js';
+import { createReadiness } from './readiness.js';
 import { createStatusPolling } from './polling.js';
 import { ownerAlive, ownProcessIdentity, type OwnerRecord } from './ownership.js';
 import { coalescingEligibility, findCoalescibleRequest } from './coalescing.js';
@@ -44,7 +49,7 @@ export interface BrokerExecutors {
   execute(request: ReviewRequest, context: ExecutionContext & { signal: AbortSignal }): Promise<unknown>;
   notifyHuman?(request: ReviewRequest, context: { signal: AbortSignal }): Promise<unknown>;
 }
-export interface BrokerOptions { repoPath: string; stateDir: string; repoId?: string; coalescingGraceMs?: number; maxConcurrentExecutors?: number; identityConcurrency?: number; executors?: BrokerExecutors; workspaceIntegrity?: WorkspaceIntegrity; workspaceAdapter?: { prepareWorkspace: typeof prepareWorkspace; reopenWorkspace: typeof reopenWorkspace } }
+export interface BrokerOptions { repoPath: string; stateDir: string; repoId?: string; coalescingGraceMs?: number; maxConcurrentExecutors?: number; admission?: Admission; identityConcurrency?: number; executors?: BrokerExecutors; workspaceIntegrity?: WorkspaceIntegrity; workspaceAdapter?: { prepareWorkspace: typeof prepareWorkspace; reopenWorkspace: typeof reopenWorkspace } }
 interface ActiveRun { runId: string; token: string; abort: AbortController; promise: Promise<RunRecord & { requests: ReviewRequest[] }> | null }
 const object = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === 'object' && !Array.isArray(value);
 const errorCode = (error: unknown): string | undefined => object(error) && typeof error.code === 'string' ? error.code : undefined;
@@ -103,7 +108,7 @@ function prepareStateDirectory(repoPath: string, stateDir: string) {
 }
 
 /** Durable broker operations. Merely opening the store never starts a worker. */
-export function createBroker<D extends ResultDetail = 'compact'>({ detail, repoPath, stateDir, repoId = 'demo', coalescingGraceMs = 15_000, maxConcurrentExecutors = 4, identityConcurrency = DEFAULT_IDENTITY_CONCURRENCY, executors, workspaceIntegrity = 'content', workspaceAdapter = { prepareWorkspace, reopenWorkspace } }: BrokerOptions & ResultOptions<D>) {
+export function createBroker<D extends ResultDetail = 'compact'>({ detail, repoPath, stateDir, repoId = 'demo', coalescingGraceMs = 15_000, maxConcurrentExecutors = 4, admission = localAdmission(maxConcurrentExecutors), identityConcurrency = DEFAULT_IDENTITY_CONCURRENCY, executors, workspaceIntegrity = 'content', workspaceAdapter = { prepareWorkspace, reopenWorkspace } }: BrokerOptions & ResultOptions<D>) {
   positiveConcurrency(maxConcurrentExecutors, 'maxConcurrentExecutors');
   positiveConcurrency(identityConcurrency, 'identityConcurrency');
   if (!Number.isSafeInteger(coalescingGraceMs) || coalescingGraceMs < 0 || coalescingGraceMs > 300_000) throw new Error('coalescingGraceMs must be an integer from 0 to 300000.');
@@ -130,10 +135,12 @@ export function createBroker<D extends ResultDetail = 'compact'>({ detail, repoP
       CREATE TABLE IF NOT EXISTS runs (id TEXT PRIMARY KEY, created_at TEXT NOT NULL, status TEXT NOT NULL, data TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS requests (id TEXT PRIMARY KEY, run_id TEXT NOT NULL REFERENCES runs(id), ordinal INTEGER NOT NULL, status TEXT NOT NULL, data TEXT NOT NULL);
       CREATE INDEX IF NOT EXISTS requests_run ON requests(run_id, ordinal);
-      CREATE INDEX IF NOT EXISTS requests_validation_input ON requests(json_extract(data, '$.validationInput.key'));
+      CREATE INDEX IF NOT EXISTS requests_validation_input ON requests(json_extract(data, '$.criticId'),json_extract(data, '$.inputKey'));
+      CREATE INDEX IF NOT EXISTS requests_ready ON requests(run_id,status,ordinal);
       CREATE TABLE IF NOT EXISTS events (id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL REFERENCES runs(id), request_id TEXT, created_at TEXT NOT NULL, type TEXT NOT NULL, message TEXT NOT NULL, data TEXT);
       CREATE TABLE IF NOT EXISTS metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS run_owners (run_id TEXT PRIMARY KEY REFERENCES runs(id), pid INTEGER NOT NULL, process_identity TEXT, token TEXT NOT NULL, claimed_at TEXT NOT NULL);`);
+    initializeRecords(db);
     const previousRepo = db.prepare('SELECT value FROM metadata WHERE key = ?').get('registered-repo');
     const identity = JSON.stringify({ repoPath, repoId });
     if (previousRepo && previousRepo.value !== identity) throw new Error('This state directory belongs to a different registered repository.');
@@ -147,78 +154,23 @@ export function createBroker<D extends ResultDetail = 'compact'>({ detail, repoP
   let closing = false;
   const active = new Map<string, ActiveRun>();
   const listeners = new Set<() => void>();
-  const ensureOpen = () => { if (closed || closing) throw new Error('Broker is closed.'); sweepSubmissionDeadlines(); };
+  const ensureOpen = () => { if (closed || closing) throw new Error('Broker is closed.'); };
   const requireExecutors = () => {
     if (!executors || typeof executors.canExecute !== 'function' || typeof executors.execute !== 'function') throw new Error('Review submission and execution require an executor registry.');
     return executors;
   };
-  // data_version changes for commits from other connections, not our own writes.
-  // Check inside the same SQLite snapshot as each read; rollback discards every
-  // locally published cache entry. These are bounded read caches, never evidence.
-  const versionStatement = db.prepare('PRAGMA data_version');
-  let dataVersion = Number(versionStatement.get()!.data_version);
-  const runCache = new Map<string, { value: RunRecord; bytes: number }>();
-  type Attempt = Pick<ReviewRequest, 'id' | 'criticId' | 'status' | 'error'>;
-  const attemptCache = new Map<string, Attempt>();
-  let evidenceCache: ReturnType<typeof readEvidence> | undefined;
-  const clearReadCaches = () => { runCache.clear(); attemptCache.clear(); evidenceCache = undefined; };
-  const syncReadCaches = () => {
-    const version = Number(versionStatement.get()!.data_version);
-    if (version !== dataVersion) { clearReadCaches(); dataVersion = version; }
-  };
-  const currentEvidence = () => {
-    syncReadCaches();
-    if (evidenceCache) return evidenceCache;
-    const evidence = readEvidence(db);
-    // Large histories remain authoritative reads rather than unbounded retention.
-    if (Buffer.byteLength(JSON.stringify(evidence)) <= 16 * 1024 ** 2) evidenceCache = evidence;
-    return evidence;
-  };
-  const cacheRun = (run: RunRecord, bytes: number) => {
-    runCache.delete(run.id);
-    while (runCache.size && ([...runCache.values()].reduce((sum, item) => sum + item.bytes, 0) + bytes > 96 * 1024 ** 2 || runCache.size >= 4)) runCache.delete(runCache.keys().next().value!);
-    // Keep at most four Runs / 96 MiB of serialized definitions, or one
-    // oversized current Run. Lifecycle fields are copied for each caller.
-    runCache.set(run.id, { value: { ...run, ...(run.project ? { project: { ...run.project } } : {}) }, bytes });
-  };
-  const cacheAttempt = ({ id, criticId, status, error }: Attempt) => {
-    attemptCache.delete(id);
-    if (attemptCache.size >= 4096) attemptCache.delete(attemptCache.keys().next().value!);
-    const attempt = { id, criticId, status, error }; attemptCache.set(id, attempt); return attempt;
-  };
+  const store = records(db);
+  const clearReadCaches = () => store.clear();
   const transaction = <T>(callback: () => T): T => {
     db.exec('BEGIN IMMEDIATE');
-    try { syncReadCaches(); const result = callback(); db.exec('COMMIT'); return result; }
-    catch (error) { try { db.exec('ROLLBACK'); } finally { clearReadCaches(); } throw error; }
+    try { const value = callback(); db.exec('COMMIT'); return value; }
+    catch (error) { try { db.exec('ROLLBACK'); } finally { store.clear(); } throw error; }
   };
-  const requestData = (id: string): ReviewRequest | null => {
-    const row = db.prepare('SELECT data FROM requests WHERE id = ?').get(id);
-    return row ? parseStored<ReviewRequest>(row.data) : null;
-  };
-  const runData = (id: string): RunRecord | null => {
-    syncReadCaches();
-    let cached = runCache.get(id);
-    if (!cached) {
-      const row = db.prepare('SELECT data FROM runs WHERE id = ?').get(id);
-      if (!row) return null;
-      cacheRun(parseStored<RunRecord>(row.data), Buffer.byteLength(String(row.data)));
-      cached = runCache.get(id)!;
-    }
-    const run = cached.value;
-    return { ...run, ...(run.project ? { project: { ...run.project } } : {}) };
-  };
+  const requestData = (id: string): ReviewRequest | null => store.request(id);
+  const runData = (id: string): RunRecord | null => store.run(id);
   const ownerData = (id: string): OwnerRecord | undefined => db.prepare('SELECT * FROM run_owners WHERE run_id = ?').get(id) as OwnerRecord | undefined;
-  const runRequests = (id: string): ReviewRequest[] => db.prepare('SELECT data FROM requests WHERE run_id = ? ORDER BY ordinal').all(id).map(row => parseStored<ReviewRequest>(row.data));
-  const sharedRequests = (run: RunRecord): ReviewRequest[] => (run.project?.coalescedRequestIds ?? []).map(id => required(requestData(id), 'Shared Request'));
-  const attemptData = (id: string): Attempt => {
-    syncReadCaches();
-    const cached = attemptCache.get(id);
-    if (cached) return cached;
-    const row = required(db.prepare("SELECT json_object('id',id,'criticId',json_extract(data,'$.criticId'),'status',status,'error',json_extract(data,'$.error')) AS data FROM requests WHERE id = ?").get(id), 'Request');
-    return cacheAttempt(parseStored<Attempt>(row.data));
-  };
-  const runAttempts = (id: string): Attempt[] => polling.requests(id).map(row => attemptData(row.id));
-  const attemptsFor = (run: RunRecord): Attempt[] => [...runAttempts(run.id), ...(run.project?.coalescedRequestIds ?? []).map(attemptData)];
+  const runRequests = (id: string): ReviewRequest[] => db.prepare('SELECT id FROM requests WHERE run_id=? ORDER BY ordinal').all(id).map(row => required(requestData(String(row.id)), 'Request'));
+  const sharedRequests = (run: { id: string }): ReviewRequest[] => db.prepare("SELECT q.data FROM shared_members m JOIN requests q ON q.id=m.request_id WHERE m.run_id=? AND m.source_run_id!=?").all(run.id, run.id).map(row => parseStored<ReviewRequest>(row.data));
   const submissionDeadlines = new Map<string, number>();
   function sweepSubmissionDeadlines() {
     for (const id of submissionDeadlines.keys()) {
@@ -230,20 +182,19 @@ export function createBroker<D extends ResultDetail = 'compact'>({ detail, repoP
     }
   }
   const coalescing = { reconcile: reconcileWithin, deadlines: submissionDeadlines };
-  const shareable = (request: ReviewRequest): boolean => coalescingEligibility(db, request, coalescing) !== null;
-  const saveRequest = (request: ReviewRequest) => {
-    syncReadCaches();
-    const previous = polling.requestStatus(request.id);
-    db.prepare('UPDATE requests SET status = ?, data = ? WHERE id = ?').run(request.status, JSON.stringify(request), request.id);
-    if (previous === 'GREEN' || previous === 'RED' || request.status === 'GREEN' || request.status === 'RED') evidenceCache = undefined;
-    cacheAttempt(request);
+  const requestHeader = (id: string): Record<string, any> | null => { const row = db.prepare('SELECT data FROM requests WHERE id=?').get(id); return row ? parseStored<Record<string, any>>(row.data) : null; };
+  const saveHeader = (packed: Record<string, any>) => {
+    db.prepare('UPDATE requests SET status=?,data=? WHERE id=?').run(packed.status, JSON.stringify(packed), packed.id);
+    readiness.transition(packed);
   };
-  const saveRun = (run: RunRecord) => {
-    syncReadCaches();
-    const json = JSON.stringify(run);
-    db.prepare('UPDATE runs SET status = ?, data = ? WHERE id = ?').run(run.status, json, run.id);
-    cacheRun(run, Buffer.byteLength(json));
-    if (terminal.has(run.status)) submissionDeadlines.delete(run.id);
+  const saveRequest = (request: ReviewRequest) => {
+    const packed = required(requestHeader(request.id), 'Request');
+    for (const key of ['status','startedAt','completedAt','claimedBy','claimedAt','tryClaim','preparationAttempt','claimAttemptId','notifiedAt','error','errorCode','blockedReason'] as const) {
+      if (request[key] === undefined) delete packed[key]; else packed[key] = request[key];
+    }
+    packed.resultRef = request.result ? store.put(request.result) : null;
+    packed.semanticRef = request.result ? store.put(semanticResult(request.result)) : null;
+    saveHeader(packed);
   };
   const appendEvent = (runId: string, requestId: string | null, type: string, message: string, data: unknown = null) => {
     db.prepare('INSERT INTO events(run_id,request_id,created_at,type,message,data) VALUES (?,?,?,?,?,?)').run(runId, requestId, now(), type, message.slice(0, 4000), data === null ? null : JSON.stringify(data));
@@ -258,98 +209,39 @@ export function createBroker<D extends ResultDetail = 'compact'>({ detail, repoP
       if (!ownerAlive(ownerData(request.runId))) throw new Error('An in-place review requires its monitoring worker to remain alive.');
     },
   });
-  function refreshReadinessWithin(runId: string): void {
-    sweepSubmissionDeadlines();
-    const run = required(runData(runId), 'Run'), requests = runAttempts(runId);
-    if (run.project?.version === 3) {
-      if (terminal.has(run.status)) return;
-      for (const shared of sharedRequests(run)) reconcileWithin(shared.runId);
-      // Called in a write transaction: expire only unowned queued sources, then
-      // recheck all matching owned/leased requests before creating our own ticket.
-      const retained = sharedRequests(run).filter(request => terminal.has(request.status) || shareable(request));
-      if (retained.length !== (run.project.coalescedRequestIds ?? []).length) {
-        run.project.coalescedRequestIds = retained.map(request => request.id);
-        saveRun(run);
-        appendEvent(runId, null, 'request.uncoalesced', 'Unowned source submission lease expired; replanning this Run.');
-      }
-      brokerTestHooks.onPlan?.();
-      const plan = planProject(run.project.snapshot, currentEvidence(), { selection: run.project.selection, recursive: run.project.recursive, force: run.project.force, runId, coalescedRequestIds: run.project.coalescedRequestIds, attempts: [...requests, ...(run.project.coalescedRequestIds ?? []).map(attemptData)] });
-      for (const item of plan.items.filter(item => item.action === 'EXECUTE')) {
-        if (!run.project.force) {
-          const shared = findCoalescibleRequest(db, item.id, item.input.key, coalescing)?.request;
-          if (shared) {
-            run.project.coalescedRequestIds = [...new Set([...(run.project.coalescedRequestIds ?? []), shared.id])];
-            saveRun(run);
-            appendEvent(runId, shared.id, 'request.coalesced', 'Waiting for an identical active review in another Run.', { sourceRunId: shared.runId });
-            continue;
-          }
-        }
-        const envelope = run.project.templates.find(template => template.criticId === item.id);
-        if (!envelope) throw codedError(`Missing prepared Critic ${item.id}.`, 'REVIEW_GRAPH_INVALID');
-        const request: ReviewRequest = { ...copy(envelope), validationInput: copy(item.input), id: randomUUID(), runId,
-          workspace: run.workspace, worktreePath: run.workspace.path, status: 'QUEUED', createdAt: now(),
-          startedAt: null, completedAt: null, claimedBy: null, claimedAt: null, notifiedAt: null, result: null, error: null, blockedReason: null };
-        db.prepare('INSERT INTO requests(id,run_id,ordinal,status,data) VALUES (?,?,?,?,?)').run(request.id, runId, requests.length, request.status, JSON.stringify(request));
-        requests.push(cacheAttempt(request));
-        appendEvent(runId, request.id, 'request.queued', 'Pull validation found an executable Critic requiring an actual review.');
-      }
-      return;
-    }
-    throw new Error('Invalid stored Run format; submit a new validation request.');
-  }
-  const updateRunStatus = (runId: string) => {
-    const run = required(runData(runId), 'Run');
-    const attempts = attemptsFor(run), states = attempts.map(request => request.status);
-    if (run.project?.version === 3) {
-      if (terminal.has(run.status)) return;
-      brokerTestHooks.onPlan?.();
-      const plan = planProject(run.project.snapshot, currentEvidence(), { selection: run.project.selection, recursive: run.project.recursive, force: run.project.force, runId, coalescedRequestIds: run.project.coalescedRequestIds, attempts });
-      const status: RunStatus = states.includes('RUNNING') ? 'RUNNING' : states.includes('QUEUED') ? 'QUEUED' : states.includes('WAITING_HUMAN') ? 'WAITING_HUMAN' :
-        states.includes('ERROR') ? 'ERROR' : states.includes('RED') || plan.critics.some(critic => critic.status === 'RED') ? 'RED' : plan.satisfied ? 'GREEN' : 'INCOMPLETE';
-      if (run.status !== status) {
-        run.status = status;
-        if (terminal.has(status)) {
-          run.completedAt = now();
-          run.project.evidenceRequestIds = [...new Set(plan.critics.flatMap(c => c.result ? [c.result.requestId] : []))];
-        }
-        saveRun(run); appendEvent(runId, null, 'run.status', `Run ${status}`, { status });
-      }
-      return;
-    }
-    throw new Error('Invalid stored Run format.');
-  };
+  const readiness = createReadiness(db, store, coalescing, appendEvent);
+  const refreshReadinessWithin = (id: string) => readiness.refresh(id);
+  const updateRunStatus = (id: string) => readiness.updateRun(id);
 
   function finishWithin(requestId: string, outcome: { result?: ReviewResult; error?: unknown }, expectedStates: ReviewStatus[] = ['RUNNING', 'WAITING_HUMAN']) {
     const { result, error } = outcome, hasError = Object.hasOwn(outcome, 'error');
-    const request = requestData(requestId);
-    if (!request || !expectedStates.includes(request.status) || terminal.has(required(runData(request.runId), 'Run').status)) return false;
+    const request = requestHeader(requestId);
+    if (!request || !expectedStates.includes(request.status) || terminal.has(required(polling.runStatus(request.runId), 'Run'))) return false;
     request.status = hasError ? 'ERROR' : required(result, 'review result').verdict;
-    request.result = result ?? null;
+    request.resultRef = result ? store.put(result) : null;
+    request.semanticRef = result ? store.put(semanticResult(result)) : null;
     request.error = hasError ? errorText(error) : null;
     request.errorCode = errorCode(error) ?? null;
     request.completedAt = now();
-    saveRequest(request);
+    saveHeader(request);
     appendEvent(request.runId, request.id, hasError ? 'request.error' : 'request.completed', hasError ? required(request.error, 'error message') : `Review ${required(result, 'review result').verdict}.`, { status: request.status, ...(request.errorCode ? { code: request.errorCode } : {}) });
-    refreshReadinessWithin(request.runId);
-    updateRunStatus(request.runId);
+
     return true;
   }
 
   function failWithin(runId: string, error: unknown) {
-    const run = runData(runId);
-    if (!run || terminal.has(run.status)) return;
-    for (const request of runRequests(runId)) {
-      if (terminal.has(request.status)) continue;
-      request.status = 'ERROR'; request.result = null; request.error = errorText(error); request.errorCode = errorCode(error) ?? null;
-      request.completedAt = now(); request.blockedReason = null; saveRequest(request);
+    const run = readiness.header(runId); if (!run || terminal.has(run.status)) return;
+    // Cancellation is proportional to affected requests, never definitions.
+    submissionDeadlines.delete(runId);
+    run.status = 'ERROR'; run.error = errorText(error); run.completedAt = now();
+    db.prepare('UPDATE runs SET status=?,data=? WHERE id=?').run(run.status, JSON.stringify(run), runId);
+    for (const row of db.prepare("SELECT data FROM requests WHERE run_id=? AND status IN ('QUEUED','RUNNING','WAITING_HUMAN','WAIT_DEPENDENCY','BLOCKED')").all(runId)) {
+      const request = parseStored<Record<string, any>>(row.data);
+      request.status = 'ERROR'; request.resultRef = null; request.semanticRef = null; request.error = errorText(error); request.errorCode = errorCode(error) ?? null; request.completedAt = now(); request.blockedReason = null;
+      db.prepare('UPDATE requests SET status=?,data=? WHERE id=?').run('ERROR', JSON.stringify(request), request.id);
+      readiness.transition(request);
       appendEvent(runId, request.id, 'request.error', request.error, { status: request.status, ...(request.errorCode ? { code: request.errorCode } : {}) });
     }
-    if (run.project?.version === 3) {
-      brokerTestHooks.onPlan?.();
-      const plan = planProject(run.project.snapshot, currentEvidence(), { selection: run.project.selection, recursive: run.project.recursive, force: run.project.force, runId, coalescedRequestIds: run.project.coalescedRequestIds, attempts: attemptsFor(run) });
-      run.project.evidenceRequestIds = [...new Set(plan.critics.flatMap(c => c.result ? [c.result.requestId] : []))];
-    }
-    run.status = 'ERROR'; run.error = errorText(error); run.completedAt = now(); saveRun(run);
     appendEvent(runId, null, 'run.error', run.error);
   }
 
@@ -371,10 +263,11 @@ export function createBroker<D extends ResultDetail = 'compact'>({ detail, repoP
 
   function getRun(id: string): RunView | null {
     ensureOpen();
-    if (!runData(id)) return null;
+    if (!polling.runStatus(id)) return null;
     if (ownerData(id)) reconcile(id);
     const run = required(runData(id), 'Run');
     const owner = ownerData(id);
+    if (owner || terminal.has(run.status)) submissionDeadlines.delete(id);
     const events = db.prepare('SELECT * FROM (SELECT * FROM events WHERE run_id = ? ORDER BY id DESC LIMIT 500) ORDER BY id').all(id).map(event => ({ id: Number(event.id), runId: String(event.run_id), requestId: event.request_id === null ? null : String(event.request_id), createdAt: String(event.created_at), type: String(event.type), message: String(event.message), ...(event.data ? { data: parseStored<unknown>(event.data) } : {}) }));
     const view = copy(run);
     return { ...view, scope: view.scope ?? { kind: view.graph ? 'graph' : 'chain' }, owner: owner ? { pid: owner.pid, claimedAt: owner.claimed_at } : null, requests: runRequests(id), events };
@@ -386,12 +279,18 @@ export function createBroker<D extends ResultDetail = 'compact'>({ detail, repoP
   }
 
   async function executeOne(requestId: string, workspace: WorkspaceHandle, token: string, signal: AbortSignal) {
-    const initial = required(requestData(requestId), 'Request');
+    const initial = required(requestHeader(requestId), 'Request');
     const runId = initial.runId;
+    let lease: AdmissionLease | undefined;
+    try {
+      if (initial.profile.kind !== 'human') lease = await admission.acquire({ requestId, runId, kind: initial.profile.kind, provider: initial.profile.provider, model: initial.profile.model }, { signal, waiting(reason) {
+        transaction(() => { const current = required(requestHeader(requestId), 'Request'); if (current.status !== 'QUEUED') return; current.blockedReason = reason.slice(0, 2000); saveHeader(current); }); changed();
+      } });
+      signal.throwIfAborted();
     transaction(() => {
-      const request = required(requestData(requestId), 'Request');
+      const request = required(requestHeader(requestId), 'Request');
       if (ownerData(runId)?.token !== token || request.status !== 'QUEUED') throw codedError('Review ownership changed before execution.', 'RUN_OWNERSHIP_LOST');
-      request.status = 'RUNNING'; request.startedAt = now(); request.blockedReason = null; saveRequest(request);
+      request.status = 'RUNNING'; request.startedAt = now(); request.blockedReason = null; saveHeader(request);
       appendEvent(runId, request.id, 'request.started', `${request.title}: reviewing the supplied workspace.`, { snapshotHash: workspace.descriptor.hash });
       updateRunStatus(runId);
     });
@@ -402,7 +301,7 @@ export function createBroker<D extends ResultDetail = 'compact'>({ detail, repoP
       const request = required(requestData(requestId), 'Request');
       const runDir = path.join(stateDir, 'runs', runId, request.id);
       fs.mkdirSync(runDir, { recursive: true, mode: 0o700 });
-      if (required(runData(runId), 'Run').project) {
+      if (required(readiness.header(runId), 'Run').project) {
         const capability = await requireExecutors().canExecute(copy(request));
         if (!capability?.ok) throw codedError(capability?.reason ?? 'No compatible executor.', capability?.code ?? 'EXECUTOR_UNAVAILABLE');
       }
@@ -473,6 +372,7 @@ export function createBroker<D extends ResultDetail = 'compact'>({ detail, repoP
       transaction(() => { if (ownerData(runId)?.token === token) finishWithin(requestId, { error: reason }); });
       changed();
     }
+    } catch (error) { if (signal.aborted || fatalExecutionError(error)) throw error; transaction(() => { if (ownerData(runId)?.token === token) finishWithin(requestId, { error }, ['QUEUED']); }); changed(); } finally { await lease?.release(); }
   }
 
   async function run(runId: string, { signal, onStarted }: { signal?: AbortSignal; onStarted?: (value: { runId: string; pid: number }) => void } = {}) {
@@ -481,12 +381,14 @@ export function createBroker<D extends ResultDetail = 'compact'>({ detail, repoP
     let stored: RunRecord | null = null;
     const acquired = transaction(() => {
       reconcileWithin(runId);
-      stored = runData(runId);
+      const header = readiness.header(runId);
+      stored = header ? { ...header, workspace: store.get(header.workspaceRef) } : null;
       if (!stored) throw new Error('Unknown Run.');
       if (stored.project?.version !== 3) throw new Error('Invalid stored Run format; submit a new validation request.');
       if (terminal.has(stored.status)) return false;
       if (!stored.workspace) throw new Error('Invalid Run: no workspace descriptor.');
       if (ownerData(runId)) throw codedError('Another process already owns this review Run.', 'RUN_ALREADY_OWNED');
+      submissionDeadlines.delete(runId);
       db.prepare('INSERT INTO run_owners(run_id,pid,process_identity,token,claimed_at) VALUES (?,?,?,?,?)').run(runId, process.pid, ownProcessIdentity, token, now());
       appendEvent(runId, null, 'worker.started', 'A request-scoped worker owns this Run.', { pid: process.pid });
       return true;
@@ -504,7 +406,6 @@ export function createBroker<D extends ResultDetail = 'compact'>({ detail, repoP
       let plannedRevision = -1, leaseDeadline = Infinity;
       let pendingSources: string[] = [];
       const notified = new Set<string>();
-      const kinds = new Map<string, ReviewRequest['profile']['kind']>();
       try {
         onStarted?.({ runId, pid: process.pid });
         workspace = await workspaceAdapter.reopenWorkspace(copy(ownedRun.workspace), { signal: executionSignal });
@@ -523,16 +424,15 @@ export function createBroker<D extends ResultDetail = 'compact'>({ detail, repoP
           const sourceExited = pendingSources.some(id => { const owner = ownerData(id); return owner !== undefined && !ownerAlive(owner); });
           if (polling.revision() !== plannedRevision || performance.now() >= leaseDeadline || sourceExited) transaction(() => {
             refreshReadinessWithin(runId); updateRunStatus(runId);
-            const pending = sharedRequests(required(runData(runId), 'Run')).filter(request => !terminal.has(request.status));
+            const pending = sharedRequests({ id: runId }).filter(request => !terminal.has(request.status));
             pendingSources = [...new Set(pending.map(request => request.runId))];
             leaseDeadline = Math.min(Infinity, ...pendingSources.filter(id => !ownerData(id)).map(id => submissionDeadlines.get(id) ?? performance.now()));
             plannedRevision = polling.revision();
           });
-          const requests = polling.requests(runId);
+          const requests = db.prepare("SELECT id,status,json_extract(data,'$.profile.kind') AS kind FROM requests WHERE run_id=? AND status='QUEUED' ORDER BY ordinal LIMIT ?").all(runId, maxConcurrentExecutors + inFlight.size + 1) as unknown as { id: string; status: ReviewStatus; kind: ReviewRequest['profile']['kind'] }[];
           let executing = [...inFlight.values()].filter(item => item.kind !== 'human').length;
-          for (const row of requests.filter(request => request.status === 'QUEUED')) {
-            const kind = kinds.get(row.id) ?? required(requestData(row.id), 'Request').profile.kind;
-            kinds.set(row.id, kind);
+          for (const row of requests.filter(request => request.status === 'QUEUED' && !inFlight.has(request.id))) {
+            const kind = row.kind;
             if (kind !== 'human' && executing >= maxConcurrentExecutors) continue;
             if (kind !== 'human') executing++;
             const promise = executeOne(row.id, workspace, token, reviewSignal).catch(error => {
@@ -552,7 +452,7 @@ export function createBroker<D extends ResultDetail = 'compact'>({ detail, repoP
             await delay(Math.max(1, Math.min(100, leaseDeadline - performance.now())), undefined, { signal: reviewSignal });
             continue;
           }
-          const waiting = requests.filter(request => request.status === 'WAITING_HUMAN');
+          const waiting = db.prepare("SELECT id FROM requests WHERE run_id=? AND status='WAITING_HUMAN' ORDER BY ordinal LIMIT 1").all(runId) as unknown as { id: string }[];
           if (waiting.length) {
             for (const request of waiting) {
               if (notified.has(request.id)) continue;
@@ -593,8 +493,8 @@ export function createBroker<D extends ResultDetail = 'compact'>({ detail, repoP
   }
 
   const broker = {
-    async submitProject({ requesterId = 'cli', selection, recursive = false, force = false, signal, identityConcurrency: submissionIdentityConcurrency = identityConcurrency, ...removed }: { requesterId?: string; selection: ProjectSelection; recursive?: boolean; force?: boolean; signal?: AbortSignal; identityConcurrency?: number }) {
-      ensureOpen(); requireExecutors();
+    async submitProject({ requesterId = 'cli', selection, recursive = false, force = false, ignoreGates = false, signal, identityConcurrency: submissionIdentityConcurrency = identityConcurrency, ...removed }: { requesterId?: string; selection: ProjectSelection; recursive?: boolean; force?: boolean; ignoreGates?: boolean; signal?: AbortSignal; identityConcurrency?: number }) {
+      ensureOpen(); requireExecutors(); sweepSubmissionDeadlines();
       positiveConcurrency(submissionIdentityConcurrency, 'identityConcurrency');
       if ('mode' in removed) throw new Error('Workspace modes are no longer supported; supply an unchanged workspace.');
       if (!requesterId.trim() || requesterId.length > 200) throw new Error('requesterId is required (maximum 200 characters).');
@@ -608,12 +508,12 @@ export function createBroker<D extends ResultDetail = 'compact'>({ detail, repoP
         for (const id of ids) templates.push(...await prepareReviewRequests({ repoPath: workspace.descriptor.path, repoId, snapshotHash: workspace.descriptor.hash, criticId: id, preparedConfig: config }));
         const id = randomUUID(), createdAt = now();
         const record: RunRecord = { id, repoId, coalescingGraceMs, snapshotHash: workspace.descriptor.hash, workspace: workspace.descriptor, requesterId,
-          scope: { kind: 'project' }, graph: createGraphDefinition(config), project: { version: 3, snapshot, selection, recursive, force, templates }, status: 'QUEUED', createdAt };
+          scope: { kind: 'project' }, graph: createGraphDefinition(config), project: { version: 3, snapshot, selection, recursive, force, ignoreGates, templates }, status: 'QUEUED', createdAt };
         await workspace.assertUnchanged(); workspace.signal.throwIfAborted();
         transaction(() => {
-          db.prepare('INSERT INTO runs(id,created_at,status,data) VALUES (?,?,?,?)').run(id, createdAt, record.status, JSON.stringify(record));
+          db.prepare('INSERT INTO runs(id,created_at,status,data) VALUES (?,?,?,?)').run(id, createdAt, record.status, JSON.stringify(store.packRun(record)));
           appendEvent(id, null, 'run.submitted', 'Project validation requested against fixed input.', { selection, recursive, force });
-          refreshReadinessWithin(id); updateRunStatus(id);
+          brokerTestHooks.onPlan?.(); readiness.initialize(record);
         });
         changed(); return required(getRun(id), 'Run');
       } finally { await workspace.close(); }
@@ -769,7 +669,7 @@ export function createBroker<D extends ResultDetail = 'compact'>({ detail, repoP
       ensureOpen();
       transaction(() => {
         reconcileWithin(runId);
-        if (!runData(runId)) throw new Error('Unknown Run.');
+        if (!polling.runStatus(runId)) throw new Error('Unknown Run.');
         if (ownerData(runId)) throw codedError('Another process already owns this review Run.', 'RUN_ALREADY_OWNED');
         failWithin(runId, error instanceof Error ? error : new Error(errorText(error)));
       });
@@ -779,11 +679,32 @@ export function createBroker<D extends ResultDetail = 'compact'>({ detail, repoP
       ensureOpen();
       const error = codedError('Review canceled by requester.', 'REVIEW_CANCELED');
       transaction(() => {
-        if (!runData(runId)) throw new Error('Unknown Run.');
+        if (!polling.runStatus(runId)) throw new Error('Unknown Run.');
         failWithin(runId, error);
       });
       for (const entry of active.values()) if (entry.runId === runId) entry.abort.abort(error);
       changed(); return getRun(runId);
+    },
+    retryRequest(requestId: string) {
+      ensureOpen();
+      transaction(() => {
+        const request = required(requestHeader(requestId), 'Request');
+        if (request.status !== 'ERROR') throw new Error('Only an operationally failed request can be retried. Submit changed input as a new Run.');
+        const run = required(readiness.header(request.runId), 'Run');
+        if (ownerData(run.id)) throw codedError('Wait for the current worker to settle before retrying.', 'RUN_ALREADY_OWNED');
+        run.status = 'QUEUED'; delete run.completedAt; delete run.error;
+        db.prepare('UPDATE runs SET status=?,data=? WHERE id=?').run(run.status, JSON.stringify(run), run.id);
+        const gate = db.prepare('SELECT unmet,red FROM gate_counts WHERE run_id=? AND critic_id=?').get(request.runId,request.criticId);
+        request.status = Number(gate?.unmet ?? 0) ? Number(gate?.red ?? 0) ? 'BLOCKED' : 'WAIT_DEPENDENCY' : 'QUEUED'; request.error = null; request.errorCode = null; request.resultRef = null; request.semanticRef = null; request.startedAt = null; request.completedAt = null;
+        saveHeader(request);
+        appendEvent(run.id, request.id, 'request.retried', 'Retry requested against the same immutable input.');
+      });
+      changed(); return viewRequest(requestData(requestId));
+    },
+    changes(runId: string, options?: ChangeOptions) {
+      ensureOpen(); db.exec('BEGIN');
+      try { const page = readChanges(db, runId, stateDir, options); db.exec('COMMIT'); return page; }
+      catch (error) { db.exec('ROLLBACK'); throw error; }
     },
     onChange(callback: () => void) { listeners.add(callback); return () => listeners.delete(callback); },
     async close() {
@@ -802,8 +723,8 @@ export function createBroker<D extends ResultDetail = 'compact'>({ detail, repoP
     ...broker,
     submitProject: async (...args: Parameters<typeof broker.submitProject>) => viewRun(await broker.submitProject(...args))!,
     run: async (...args: Parameters<typeof broker.run>) => viewRun(await broker.run(...args)),
-    getRun: (id: string) => viewRun(broker.getRun(id)),
-    listRuns: () => broker.listRuns().map(value => viewRun(value)!),
+    getRun: (id: string) => { ensureOpen(); if (ownerData(id)) reconcile(id); return resultView({ detail }, detail === 'full' ? broker.getRun(id) : null, () => storedRequesterRun(db, id, stateDir)); },
+    listRuns: () => { ensureOpen(); return db.prepare('SELECT id FROM runs ORDER BY created_at DESC,rowid DESC').all().map(row => { const id = String(row.id); return resultView({ detail }, detail === 'full' ? required(broker.getRun(id), 'Run') : null!, () => required(storedRequesterRun(db, id, stateDir), 'Run')); }); },
     getRequest: (id: string) => viewRequest(broker.getRequest(id)),
     claimHuman: async (...args: Parameters<typeof broker.claimHuman>) => viewRequest(await broker.claimHuman(...args))!,
     completeHuman: async (...args: Parameters<typeof broker.completeHuman>) => viewRequest(await broker.completeHuman(...args)),

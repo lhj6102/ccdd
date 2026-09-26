@@ -70,7 +70,7 @@ test('folder, mount and instruction inputs invalidate consumers while unrelated 
     current = (await inspectProject({ ...data, detail: 'full' })).snapshot;
     assert.notEqual(current.inputs['a/check'].key, old.inputs['a/check'].key);
   }
-  assert.equal(queryProject(current, projectHistory(data.stateDir, { detail: 'full' }), { stateDir: data.stateDir, detail: 'full' }).critics.find(c => c.id === 'a/check')!.status, 'STALE');
+  assert.equal(queryProject(current, projectHistory(data.stateDir, { detail: 'full' }), { stateDir: data.stateDir, detail: 'full' }).critics.find(c => c.id === 'a/check')!.status, 'WAIT_DEPENDENCY');
 });
 
 test('SCC identity is finite and independent of evidence IDs, completion times and definition discovery order', async t => {
@@ -118,7 +118,7 @@ test('force replaces evidence only for selected Critics and a later actual RED s
   assert.equal(forced.status, 'GREEN'); assert.deepEqual(forced.requests.map(r => r.criticId), ['a/check']);
   await writeFile(join(data.repoPath, 'b/check.test.mjs'), "import test from 'node:test';import assert from 'node:assert/strict';test('actual failure',()=>assert.equal(1,2));");
   const failing = await data.verify({ selection: { kind: 'artifact', artifactId: 'a' }, recursive: true });
-  assert.equal(failing.status, 'RED'); assert.equal(failing.requests.find(r => r.criticId === 'a/check')!.status, 'GREEN');
+  assert.equal(failing.status, 'RED'); assert.equal(failing.requests.find(r => r.criticId === 'a/check')!.status, 'BLOCKED');
   assert.equal(failing.requests.find(r => r.criticId === 'b/check')!.status, 'RED');
   assert.equal(failing.validation!.satisfied, false);
 });

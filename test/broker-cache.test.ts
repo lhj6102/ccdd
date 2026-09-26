@@ -5,6 +5,7 @@ import { spawn } from 'node:child_process';
 import { DatabaseSync } from 'node:sqlite';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
+import { records } from '../src/broker/storage.js';
 import { createBroker, brokerTestHooks } from '../src/broker/index.js';
 import { artifactFixture, runtimeCritic, readTool } from './helpers/artifacts.js';
 
@@ -118,9 +119,9 @@ for (const method of ['submitProject', 'getRun', 'listRuns', 'run', 'terminalRun
     broker.cancel(id); // Persist still-active cached Runs after the attempted mutation.
     const database = new DatabaseSync(join(data.stateDir, 'broker.sqlite'), { readOnly: true });
     try {
-      const stored = JSON.parse(String(database.prepare('SELECT data FROM runs WHERE id = ?').get(id)!.data));
+      const stored = records(database).run(id)!;
       for (const key of ['scope', 'workspace', 'graph'] as const) assert.deepEqual(stored[key], expected[key], key);
-      for (const key of ['snapshot', 'selection', 'templates'] as const) assert.deepEqual(stored.project[key], expected.project![key], key);
+      for (const key of ['snapshot', 'selection', 'templates'] as const) assert.deepEqual(stored.project![key], expected.project![key], key);
     } finally { database.close(); }
     if (expected.status === 'GREEN') {
       const reused = await broker.submitProject({ selection: { kind: 'all' } });
@@ -143,6 +144,6 @@ test('workspace adapter cannot mutate a cached Run descriptor', async t => {
   assert.equal((await broker.run(submitted.id))!.status, 'GREEN');
   assert.deepEqual(broker.getRun(submitted.id)!.workspace, submitted.workspace);
   const database = new DatabaseSync(join(data.stateDir, 'broker.sqlite'), { readOnly: true });
-  try { assert.deepEqual(JSON.parse(String(database.prepare('SELECT data FROM runs WHERE id = ?').get(submitted.id)!.data)).workspace, submitted.workspace); }
+  try { assert.deepEqual(records(database).run(submitted.id)!.workspace, submitted.workspace); }
   finally { database.close(); }
 });
