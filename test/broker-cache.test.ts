@@ -92,3 +92,57 @@ test('rolled-back completion never leaks cached semantic evidence into a later s
   assert.equal(next.status, 'QUEUED');
   assert.equal(next.requests.length, 1);
 });
+
+// Corrupt every nested JSON field, not just scope: snapshots, manifests, request
+// attempts and results must all be detached at the public boundary.
+function mutateView(value: unknown): void {
+  if (!value || typeof value !== 'object') return;
+  for (const [key, child] of Object.entries(value)) {
+    if (child && typeof child === 'object') mutateView(child);
+    else (value as Record<string, unknown>)[key] = typeof child === 'number' ? -1 : typeof child === 'boolean' ? !child : 'forged';
+  }
+}
+
+for (const method of ['submitProject', 'getRun', 'listRuns', 'run', 'terminalRun', 'cancel', 'failRun'] as const) {
+  test(`mutating a full ${method} view cannot change cached reads or persisted state`, async t => {
+    const data = await artifactFixture(t); await data.write('a', { name: 'a', critics: [runtimeCritic()] });
+    const broker = createBroker({ ...data, detail: 'full', executors: { canExecute: () => ({ ok: true }), execute: async () => ({ verdict: 'GREEN' }) } });
+    data.cleanup(() => broker.close());
+    const submitted = await broker.submitProject({ selection: { kind: 'all' } }), id = submitted.id;
+    const view = method === 'submitProject' ? submitted : method === 'getRun' ? broker.getRun(id) : method === 'listRuns' ? broker.listRuns()[0] :
+      method === 'run' ? await broker.run(id) : method === 'terminalRun' ? (await broker.run(id), await broker.run(id)) :
+      method === 'cancel' ? broker.cancel(id) : broker.failRun(id, new Error('controlled failure'));
+    const expected = structuredClone(broker.getRun(id)!);
+    mutateView(view);
+    assert.deepEqual(broker.getRun(id), expected, 'returned objects do not own cached state');
+    broker.cancel(id); // Persist still-active cached Runs after the attempted mutation.
+    const database = new DatabaseSync(join(data.stateDir, 'broker.sqlite'), { readOnly: true });
+    try {
+      const stored = JSON.parse(String(database.prepare('SELECT data FROM runs WHERE id = ?').get(id)!.data));
+      for (const key of ['scope', 'workspace', 'graph'] as const) assert.deepEqual(stored[key], expected[key], key);
+      for (const key of ['snapshot', 'selection', 'templates'] as const) assert.deepEqual(stored.project[key], expected.project![key], key);
+    } finally { database.close(); }
+    if (expected.status === 'GREEN') {
+      const reused = await broker.submitProject({ selection: { kind: 'all' } });
+      assert.equal(reused.status, 'GREEN', 'mutated returned results do not corrupt evidence');
+      assert.equal(reused.requests.length, 0);
+    }
+  });
+}
+
+test('workspace adapter cannot mutate a cached Run descriptor', async t => {
+  const { prepareWorkspace, reopenWorkspace } = await import('../src/workspaces/index.js');
+  const data = await artifactFixture(t); await data.write('a', { name: 'a', critics: [runtimeCritic()] });
+  const broker = createBroker({ ...data, detail: 'full', workspaceAdapter: { prepareWorkspace, async reopenWorkspace(descriptor, options) {
+    const workspace = await reopenWorkspace(descriptor, options);
+    descriptor.hash = 'forged';
+    return workspace;
+  } }, executors: { canExecute: () => ({ ok: true }), execute: async () => ({ verdict: 'GREEN' }) } });
+  data.cleanup(() => broker.close());
+  const submitted = await broker.submitProject({ selection: { kind: 'all' } });
+  assert.equal((await broker.run(submitted.id))!.status, 'GREEN');
+  assert.deepEqual(broker.getRun(submitted.id)!.workspace, submitted.workspace);
+  const database = new DatabaseSync(join(data.stateDir, 'broker.sqlite'), { readOnly: true });
+  try { assert.deepEqual(JSON.parse(String(database.prepare('SELECT data FROM runs WHERE id = ?').get(submitted.id)!.data)).workspace, submitted.workspace); }
+  finally { database.close(); }
+});

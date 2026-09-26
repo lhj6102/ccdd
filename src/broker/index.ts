@@ -376,7 +376,8 @@ export function createBroker<D extends ResultDetail = 'compact'>({ detail, repoP
     const run = required(runData(id), 'Run');
     const owner = ownerData(id);
     const events = db.prepare('SELECT * FROM (SELECT * FROM events WHERE run_id = ? ORDER BY id DESC LIMIT 500) ORDER BY id').all(id).map(event => ({ id: Number(event.id), runId: String(event.run_id), requestId: event.request_id === null ? null : String(event.request_id), createdAt: String(event.created_at), type: String(event.type), message: String(event.message), ...(event.data ? { data: parseStored<unknown>(event.data) } : {}) }));
-    return { ...copy(run), scope: run.scope ?? { kind: run.graph ? 'graph' : 'chain' }, owner: owner ? { pid: owner.pid, claimedAt: owner.claimed_at } : null, requests: runRequests(id), events };
+    const view = copy(run);
+    return { ...view, scope: view.scope ?? { kind: view.graph ? 'graph' : 'chain' }, owner: owner ? { pid: owner.pid, claimedAt: owner.claimed_at } : null, requests: runRequests(id), events };
   }
 
   function failOwned(runId: string, token: string, error: unknown) {
@@ -506,7 +507,7 @@ export function createBroker<D extends ResultDetail = 'compact'>({ detail, repoP
       const kinds = new Map<string, ReviewRequest['profile']['kind']>();
       try {
         onStarted?.({ runId, pid: process.pid });
-        workspace = await workspaceAdapter.reopenWorkspace(ownedRun.workspace, { signal: executionSignal });
+        workspace = await workspaceAdapter.reopenWorkspace(copy(ownedRun.workspace), { signal: executionSignal });
         const reviewSignal = AbortSignal.any([executionSignal, workspace.signal]);
         poll = setInterval(() => {
           if (ownerData(runId)?.token !== token) abort.abort(codedError('Review ownership was lost.', 'RUN_OWNERSHIP_LOST'));
