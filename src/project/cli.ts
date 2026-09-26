@@ -25,7 +25,7 @@ import { claimHumanFromCli } from '../review/local-claim.js';
 
 type Output = { write(value: string): unknown };
 const terminal = new Set(['GREEN', 'RED', 'ERROR', 'INCOMPLETE']);
-const flags = new Set(['--all', '--recursive', '--force', '--wait', '--json', '--full', '--help', '--human-inbox']);
+const flags = new Set(['--all', '--recursive', '--force', '--ignore-gates', '--wait', '--json', '--full', '--help', '--human-inbox']);
 const values = new Set(['--repo', '--state-dir', '--critic', '--timeout-ms', '--requester', '--reviewer', '--result-file', '--tool', '--args', '--run', '--pi-auth-file', '--codex-auth-file', '--integrity', '--concurrency', '--identity-concurrency']);
 const help = `CCDD Project — pull validation and explicit review execution
 
@@ -47,9 +47,10 @@ const help = `CCDD Project — pull validation and explicit review execution
   ccdd-project request submit REQUEST_ID --reviewer ID --result-file PATH
   ccdd-project doctor | tools check | monitor   (explicit diagnostics and UI)
 
-Individual verification runs selected Critics immediately; missing required evidence makes the request INCOMPLETE.
+Dependency Critics must have current GREEN evidence before execution. RED blocks descendants; operational failures wait. SCC peers execute together.
 --recursive includes Critics throughout the required dependency scope, including cycles.
---force reviews selected Critics again while reusing matching dependency evidence.
+--force reviews selected Critics again while respecting dependency gates.
+--ignore-gates explicitly evaluates selected Critics regardless of dependency verdicts.
 Queries never create review tickets, send alarms or execute review tools or Providers.
 Reviews run in the supplied workspace. Keep it unchanged until completion.
 State and review output must stay outside the repository.
@@ -88,7 +89,7 @@ function planText(plan: RequesterPlan): string {
   return `${target}: ${plan.satisfied ? 'SATISFIED' : 'NOT SATISFIED'}\nSnapshot: ${plan.snapshotHash}\nIntegrity: ${plan.workspaceIntegrity ?? 'content'}\n` + artifacts.map(a => `  Artifact ${a.id}: ${a.status} (${a.passed}/${a.total} Critics)${a.identity ? ` · identity: ${a.identity} · value: ${a.value}` : ''}\n`).join('') + plan.items.map(c => {
     const result = c.result ? results.get(c.result.requestId) : undefined;
     return `  ${c.id}: ${c.action} · ${c.status}\n    ${c.reason}${c.action === 'COALESCE' ? `\n    Request: ${c.requestId}${c.leaseExpiresAt ? ` · Lease expires: ${c.leaseExpiresAt}` : ''}` : ''}${result ? `\n    Result: ${JSON.stringify(result)}\n    Reference: ${JSON.stringify(result.reference)}` : ''}`;
-  }).join('\n') + `\nReuse ${plan.counts.reuse} · Coalesce ${plan.counts.coalesce} · Ready ${plan.counts.execute} · Waiting ${plan.counts.wait} · Active ${plan.counts.active} · Failed ${plan.counts.failed}`;
+  }).join('\n') + `\nReuse ${plan.counts.reuse} · Coalesce ${plan.counts.coalesce} · Gated ${plan.counts.gated} · Ready ${plan.counts.execute} · Waiting ${plan.counts.wait} · Active ${plan.counts.active} · Failed ${plan.counts.failed}`;
 }
 
 export async function main(argv = process.argv.slice(2), { stdout = process.stdout, stderr = process.stderr }: { stdout?: Output; stderr?: Output } = {}): Promise<number> {
@@ -106,7 +107,7 @@ export async function main(argv = process.argv.slice(2), { stdout = process.stdo
     const full = Boolean(options['--full']) || command === 'run' && positional[0] === 'show';
     const permitted = new Set([...common, ...(['status', 'plan', 'verify', 'history', 'run', 'request'].includes(command) ? ['--full'] : []), ...(['status', 'plan', 'verify', 'history'].includes(command) ? ['--critic', '--all'] : []),
       ...(['status', 'plan', 'verify'].includes(command) ? ['--integrity', '--identity-concurrency'] : []),
-      ...(['plan', 'verify'].includes(command) ? ['--recursive', '--force'] : []),
+      ...(['plan', 'verify'].includes(command) ? ['--recursive', '--force', '--ignore-gates'] : []),
       ...(command === 'verify' ? ['--concurrency', '--wait', '--timeout-ms', '--requester', '--human-inbox', '--pi-auth-file', '--codex-auth-file'] : []),
       ...(command === 'run' ? ['--wait', '--timeout-ms'] : []),
       ...(command === 'request' ? ['--run', '--reviewer', '--result-file', '--tool', '--args'] : [])]);
@@ -178,7 +179,7 @@ export async function main(argv = process.argv.slice(2), { stdout = process.stdo
     }
     if (command === 'status' || command === 'plan') {
       const selection = select(command === 'plan');
-      const { plan } = await withCliCancellation('Project validation cancelled.', signal => inspectProject({ detail: 'full', ...context, selection, recursive: Boolean(options['--recursive']), force: Boolean(options['--force']), workspaceIntegrity, identityConcurrency, signal }));
+      const { plan } = await withCliCancellation('Project validation cancelled.', signal => inspectProject({ detail: 'full', ...context, selection, recursive: Boolean(options['--recursive']), force: Boolean(options['--force']), ignoreGates: Boolean(options['--ignore-gates']), workspaceIntegrity, identityConcurrency, signal }));
       const output = full ? plan : requesterPlan(plan, context.stateDir);
       print(output, full ? undefined : planText(requesterPlan(plan, context.stateDir))); return command === 'plan' || plan.satisfied ? 0 : 1;
     }
@@ -208,7 +209,7 @@ export async function main(argv = process.argv.slice(2), { stdout = process.stdo
     const executors = createExecutorRegistry({ piOptions, alarmMethods: createLocalAlarmMethods({ ...context, humanInbox }) });
     broker = createBroker({ detail: 'full', ...context, executors, workspaceIntegrity, maxConcurrentExecutors, identityConcurrency });
     if (command === 'verify') {
-      const run = await withCliCancellation('Project validation cancelled.', signal => broker!.submitProject({ selection: verifySelection!, recursive: Boolean(options['--recursive']), force: Boolean(options['--force']), requesterId: get('--requester') ?? 'cli', signal }));
+      const run = await withCliCancellation('Project validation cancelled.', signal => broker!.submitProject({ selection: verifySelection!, recursive: Boolean(options['--recursive']), force: Boolean(options['--force']), ignoreGates: Boolean(options['--ignore-gates']), requesterId: get('--requester') ?? 'cli', signal }));
       if (!terminal.has(run.status)) await ensureRunWorker({ broker, context, run, initialConfig: { piOptions, humanInbox, maxConcurrentExecutors } });
       if (options['--wait']) return await wait(run.id);
       const view = projectRun(context.stateDir, run.id)!; printRun(view);

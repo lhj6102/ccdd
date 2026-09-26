@@ -52,7 +52,7 @@ test('requester defaults reference unchanged stored audit evidence and full API 
   const stored = projectRun(reference.stateDir, reference.runId)!;
   const request = stored.requests.find(r => r.id === reference.requestId)!;
   assert.equal(request.validationInput!.key, completed.requests[0].inputKey);
-  assert.equal(JSON.stringify(request.result), JSON.stringify(normalizeReviewResult(audit)));
+  assert.deepEqual(request.result, normalizeReviewResult(audit));
   assert.equal(request.result!.toolCalls!.length, 12);
   const db = new DatabaseSync(join(stateDir, 'broker.sqlite'), { readOnly: true });
   const bytes = () => db.prepare('SELECT data FROM requests ORDER BY ordinal').all().map(row => row.data);

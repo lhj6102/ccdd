@@ -17,7 +17,7 @@ const object = (value: unknown): value is Record<string, any> => value !== null 
 const identifier = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
 const qualified = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}\/[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
 
-/** Static graph metadata only. Cycles express shared validation obligations, never scheduling gates. */
+/** Static graph metadata only. SCC peers share validation obligations and execute together; external dependencies gate by default. */
 export function validateGraphDefinition(value: unknown): asserts value is GraphDefinition {
   if (!object(value) || value.version !== 2 || !object(value.artifacts) || !Array.isArray(value.critics) || !Array.isArray(value.relations)) throw new Error('Invalid Artifact graph definition.');
   for (const [id, artifact] of Object.entries(value.artifacts)) {

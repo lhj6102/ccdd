@@ -6,6 +6,7 @@ import { ownerAlive, type OwnerRecord } from './ownership.js';
 
 const terminal = new Set(['GREEN', 'RED', 'ERROR', 'INCOMPLETE']);
 interface CoalescingOptions {
+  ignoreGates?: boolean;
   /** Submission reconciles durably; readonly inspection leaves this absent. */
   reconcile?: (runId: string) => void;
   /** A waiting Broker retains monotonic lease bounds; a fresh quote has no prior observations. */
@@ -14,7 +15,8 @@ interface CoalescingOptions {
 
 /** One adoption rule. A dead owner is ineligible even without writing WORKER_EXITED. */
 export function coalescingEligibility(database: DatabaseSync, request: ReviewRequest, options: CoalescingOptions = {}): { leaseExpiresAt?: string } | null {
-  if (!['QUEUED', 'RUNNING', 'WAITING_HUMAN'].includes(request.status)) return null;
+  if (!['QUEUED', 'RUNNING', 'WAITING_HUMAN', 'WAIT_DEPENDENCY', 'BLOCKED'].includes(request.status)) return null;
+  if (options.ignoreGates && ['WAIT_DEPENDENCY','BLOCKED'].includes(request.status)) return null;
   options.reconcile?.(request.runId);
   const row = database.prepare("SELECT json_object('id',json_extract(data,'$.id'),'status',json_extract(data,'$.status'),'createdAt',json_extract(data,'$.createdAt'),'coalescingGraceMs',json_extract(data,'$.coalescingGraceMs')) AS data FROM runs WHERE id = ?").get(request.runId);
   if (!row) return null;
@@ -25,7 +27,7 @@ export function coalescingEligibility(database: DatabaseSync, request: ReviewReq
   // reconciles it using the same PID/process identity check and owner token.
   if (owner) return ownerAlive(owner) ? {} : null;
   const grace = source.coalescingGraceMs;
-  if (request.status !== 'QUEUED' || typeof grace !== 'number' || !Number.isSafeInteger(grace) || grace <= 0 || grace > 300_000) return null;
+  if (!['QUEUED','WAIT_DEPENDENCY','BLOCKED'].includes(request.status) || typeof grace !== 'number' || !Number.isSafeInteger(grace) || grace <= 0 || grace > 300_000) return null;
   const submitted = typeof source.createdAt === 'string' ? Date.parse(source.createdAt) : NaN;
   const elapsed = Date.now() - submitted;
   if (!Number.isFinite(elapsed) || elapsed < 0 || elapsed >= grace) return null;
@@ -37,7 +39,7 @@ export function coalescingEligibility(database: DatabaseSync, request: ReviewReq
 
 /** Stable candidate order is shared by readonly quotes and transactional adoption. */
 export function findCoalescibleRequest(database: DatabaseSync, criticId: string, inputKey: string, options: CoalescingOptions = {}) {
-  const rows = database.prepare("SELECT data FROM requests WHERE status IN ('QUEUED','RUNNING','WAITING_HUMAN') AND json_extract(data, '$.criticId') = ? AND json_extract(data, '$.validationInput.key') = ? AND json_extract(data, '$.validationInput.version') = 3 ORDER BY rowid").all(criticId, inputKey);
+  const rows = database.prepare("SELECT data FROM requests WHERE status IN ('QUEUED','RUNNING','WAITING_HUMAN','WAIT_DEPENDENCY','BLOCKED') AND json_extract(data, '$.criticId') = ? AND json_extract(data, '$.inputKey') = ? AND json_extract(data,'$.inputVersion')=3 ORDER BY rowid").all(criticId, inputKey);
   for (const row of rows) {
     const request = JSON.parse(String(row.data)) as ReviewRequest;
     const eligibility = coalescingEligibility(database, request, options);

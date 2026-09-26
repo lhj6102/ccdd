@@ -6,7 +6,7 @@ import { createStatusPolling } from '../src/broker/polling.js';
 
 test('scheduler ticks read status rows instead of consumer-sized run and request JSON', t => {
   const db = new DatabaseSync(':memory:'); t.after(() => db.close());
-  db.exec('PRAGMA user_version=5; CREATE TABLE runs(id TEXT PRIMARY KEY,status TEXT,data TEXT); CREATE TABLE requests(id TEXT PRIMARY KEY,run_id TEXT,ordinal INTEGER,status TEXT,data TEXT);');
+  db.exec('PRAGMA user_version=6; CREATE TABLE runs(id TEXT PRIMARY KEY,status TEXT,data TEXT); CREATE TABLE requests(id TEXT PRIMARY KEY,run_id TEXT,ordinal INTEGER,status TEXT,data TEXT);');
   const polling = createStatusPolling(db);
   const large = JSON.stringify({ scope: 'x'.repeat(543_000) });
   db.prepare('INSERT INTO runs VALUES (?,?,?)').run('run', 'RUNNING', large);
@@ -34,7 +34,7 @@ test('a waiting run observes another process terminal request transition through
   const { spawn } = await import('node:child_process');
   const data = await artifactFixture(t), filename = join(data.root, 'polling.sqlite');
   const db = new DatabaseSync(filename); t.after(() => db.close());
-  db.exec("PRAGMA user_version=5; PRAGMA journal_mode=WAL; CREATE TABLE runs(id TEXT PRIMARY KEY,status TEXT,data TEXT); CREATE TABLE requests(id TEXT PRIMARY KEY,run_id TEXT,ordinal INTEGER,status TEXT,data TEXT);");
+  db.exec("PRAGMA user_version=6; PRAGMA journal_mode=WAL; CREATE TABLE runs(id TEXT PRIMARY KEY,status TEXT,data TEXT); CREATE TABLE requests(id TEXT PRIMARY KEY,run_id TEXT,ordinal INTEGER,status TEXT,data TEXT);");
   const polling = createStatusPolling(db);
   db.prepare('INSERT INTO runs VALUES (?,?,?)').run('run-A', 'RUNNING', 'large-record-not-needed');
   db.prepare('INSERT INTO runs VALUES (?,?,?)').run('run-B', 'BLOCKED', 'large-record-not-needed');

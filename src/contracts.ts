@@ -16,7 +16,7 @@ export interface ReviewEnvelope extends ResponseSchemas {
   configManifest: ConfigManifest;
   payload: ReviewPayload; profile: CriticProfile; target: string; deps: string[];
 }
-export type ReviewStatus = 'BLOCKED' | 'QUEUED' | 'RUNNING' | 'WAITING_HUMAN' | 'GREEN' | 'RED' | 'ERROR';
+export type ReviewStatus = 'WAIT_DEPENDENCY' | 'BLOCKED' | 'QUEUED' | 'RUNNING' | 'WAITING_HUMAN' | 'GREEN' | 'RED' | 'ERROR';
 export type RunStatus = ReviewStatus | 'INCOMPLETE';
 export interface ReviewToolCall {
   name: string; arguments?: unknown; at?: string; isError?: true;

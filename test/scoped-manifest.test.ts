@@ -1,3 +1,4 @@
+import { records } from '../src/broker/storage.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
@@ -77,9 +78,9 @@ test('5.0 and 5.1 full-manifest fixture remains executable with identical identi
   // Reconnect the exact historical envelope through the persisted request seam.
   const submitted = await broker.submitProject({ selection: { kind: 'critic', criticId: 'a/review' } });
   const db = new DatabaseSync(join(data.stateDir, 'broker.sqlite'));
-  const saved = JSON.parse(String(db.prepare('SELECT data FROM requests WHERE run_id = ?').get(submitted.id)!.data));
+  const saved = records(db).request(submitted.requests[0].id)!;
   saved.configManifest = fixture.envelope.configManifest;
-  db.prepare('UPDATE requests SET data = ? WHERE id = ?').run(JSON.stringify(saved), saved.id); db.close();
+  db.prepare('UPDATE requests SET data = ? WHERE id = ?').run(JSON.stringify(records(db).packRequest(saved)), saved.id); db.close();
   assert.deepEqual(projectRun(data.stateDir, submitted.id)!.requests[0].configManifest, fixture.envelope.configManifest);
   assert.equal((await broker.run(submitted.id))!.status, 'GREEN');
   assert.equal(executions, 1);
@@ -101,7 +102,7 @@ for (const historical of [false, true]) test(`Human claims check only admitted r
   if (historical) {
     const db = new DatabaseSync(join(data.stateDir, 'broker.sqlite'));
     const request = run.requests[0]; request.configManifest = (await data.config()).configManifest;
-    db.prepare('UPDATE requests SET data = ? WHERE id = ?').run(JSON.stringify(request), request.id); db.close();
+    db.prepare('UPDATE requests SET data = ? WHERE id = ?').run(JSON.stringify(records(db).packRequest(request)), request.id); db.close();
   }
   const running = broker.run(run.id);
   try {

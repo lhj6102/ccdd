@@ -6,7 +6,7 @@
 
 `@ccdd/core` provides definitions and a pure scope resolver. `@ccdd/project` packages the three contexts. Optional `@ccdd/default-tools` supplies ordinary scripts; installing it registers no tool.
 
-Each Artifact folder owns `ccdd.json`, its views and its Critics. Project Validation discovers markers and derives child, mount and instruction relations. Cycles are allowed. Strongly connected components provide finite content identities, and per-query traversal collects required actual evidence. Readiness to execute does not depend on another Critic's PASS.
+Each Artifact folder owns `ccdd.json`, its views and its Critics. Project Validation discovers markers and derives child, mount and instruction relations. Cycles are allowed. Strongly connected components provide finite content identities, and per-query traversal collects required actual evidence. In 6.0, dependency Critics outside the same SCC must have current GREEN evidence before execution; basis/no-Critic inputs do not gate. Explicit ignoreGates bypasses this default.
 
 The Requester builds immutable envelopes from static declarations. Artifact Runner reconnects script definitions from the same manifest and workspace, binds them to reviewer-specific tools, and validates JSON arguments/results. It creates no Artifact copies or generated material. Scripts receive canonical paths and logical connections; writable output belongs outside input.
 

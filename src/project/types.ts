@@ -22,7 +22,7 @@ export interface ValidationEvidence {
 }
 export interface ProjectRunDefinition {
   version: 3; snapshot: ProjectSnapshot; selection: ProjectSelection;
-  recursive: boolean; force: boolean;
+  recursive: boolean; force: boolean; ignoreGates?: boolean;
   /** Prepared definitions, not tickets or persisted stale states. */
   templates: ReviewEnvelope[];
   /** Original evidence consumed by a completed execution; never a cached stale flag. */
@@ -30,7 +30,7 @@ export interface ProjectRunDefinition {
   /** Existing active requests adopted by this Run; never duplicate executions. */
   coalescedRequestIds?: string[];
 }
-export type ValidationStatus = 'PASS' | 'BASIS' | 'UNREVIEWED' | 'STALE' | 'RED' | 'ERROR' | 'INCOMPLETE' | 'QUEUED' | 'RUNNING' | 'WAITING_HUMAN';
+export type ValidationStatus = 'BLOCKED' | 'WAIT_DEPENDENCY' | 'PASS' | 'BASIS' | 'UNREVIEWED' | 'STALE' | 'RED' | 'ERROR' | 'INCOMPLETE' | 'QUEUED' | 'RUNNING' | 'WAITING_HUMAN';
 export interface CriticValidation {
   id: string; title: string; target: string; deps: string[]; status: ValidationStatus;
   isStale: boolean; canExecute: boolean; needsReview: boolean; blockedBy: string[];
@@ -48,11 +48,11 @@ export interface ProjectQuery {
   artifacts: ArtifactValidation[]; critics: CriticValidation[];
 }
 export interface ProjectPlan extends ProjectQuery {
-  recursive: boolean; force: boolean; selectedCriticIds: string[]; includedCriticIds: string[];
-  items: (CriticValidation & { action: 'REUSE' | 'COALESCE' | 'EXECUTE' | 'WAIT' | 'ACTIVE' | 'FAILED'; leaseExpiresAt?: string })[];
-  counts: { reuse: number; coalesce: number; execute: number; wait: number; active: number; failed: number };
+  recursive: boolean; force: boolean; ignoreGates?: boolean; selectedCriticIds: string[]; includedCriticIds: string[];
+  items: (CriticValidation & { action: 'BLOCKED' | 'WAIT_DEPENDENCY' | 'REUSE' | 'COALESCE' | 'EXECUTE' | 'WAIT' | 'ACTIVE' | 'FAILED'; leaseExpiresAt?: string })[];
+  counts: { gated: number; reuse: number; coalesce: number; execute: number; wait: number; active: number; failed: number };
 }
 export interface QueryOptions {
-  selection?: ProjectSelection; forceCriticIds?: readonly string[];
-  runId?: string; coalescedRequestIds?: readonly string[]; attempts?: readonly Pick<ReviewRequest, 'id' | 'criticId' | 'status' | 'error'>[];
+  selection?: ProjectSelection; ignoreGates?: boolean; forceCriticIds?: readonly string[];
+  runId?: string; coalescedRequestIds?: readonly string[]; attempts?: readonly Pick<ReviewRequest, 'id' | 'criticId' | 'status' | 'error' | 'blockedReason'>[];
 }

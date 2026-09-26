@@ -1,6 +1,6 @@
 {
   "name": "@ccdd/default-tools",
-  "version": "5.1.2",
+  "version": "6.0.0",
   "license": "MIT",
   "publishConfig": {
     "access": "public",
@@ -34,7 +34,7 @@
     "prepack": "npm run build"
   },
   "peerDependencies": {
-    "@ccdd/core": ">=5.0.0 <6"
+    "@ccdd/core": ">=6.0.0 <7"
   },
   "dependencies": {
     "@earendil-works/pi-agent-core": "0.85.1"

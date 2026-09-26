@@ -4,7 +4,7 @@ export const kindLabels = { agent: 'Agent', human: 'Human', runtime: 'Runtime' }
 export function statusLabel(request: MonitorRequest): string {
   if (request.blockedByFailure) return 'Blocked by failure';
   if (request.status === 'WAITING_HUMAN') return request.claimedBy ? 'Reviewer working' : 'Awaiting reviewer';
-  return { BLOCKED: 'Awaiting dependencies', QUEUED: 'Queued', RUNNING: 'Running', GREEN: 'Passed', RED: 'Criteria not met', ERROR: 'Execution error' }[request.status];
+  return { WAIT_DEPENDENCY: 'Waiting for dependency evidence', BLOCKED: 'Blocked by dependency verdict', QUEUED: 'Queued', RUNNING: 'Running', GREEN: 'Passed', RED: 'Criteria not met', ERROR: 'Execution error' }[request.status];
 }
 export function elapsed(start: string, end: string | null | undefined, now: number): string {
   const seconds = Math.max(0, Math.floor(((end ? Date.parse(end) : now) - Date.parse(start)) / 1000));
