@@ -2,15 +2,17 @@
 
 CCDD packages are distributed through npm. GitHub Releases announce each version with an installation command, npm package links, and release notes. They do not host installation tarballs. GitHub still supplies automatic Source code archives; those contain source, not installable packages.
 
-See [getting started](getting-started.md) for setup and [v5.1.1 release notes](releases/v5.1.1.md) for the current changes.
+See [getting started](getting-started.md) for setup and [v5.1.2 release notes](releases/v5.1.2.md) for the current changes.
 
-## Current release: 5.1.1
+## Current release: 5.1.2
 
-This patch scopes request manifests and tool environments to admitted Artifacts
-and avoids unrelated manifest hydration in scheduling, listings and monitoring.
-Existing 5.0 and 5.1 requests remain readable and executable; configuration
-hashes, Artifact identities and validation/reuse keys are unchanged. No state
-migration or new directory is required.
+This patch reduces synchronous Broker lifecycle JSON work that can starve tool
+responses on large Runs. Bounded connection-local read caches observe local
+writes and other connections without changing reuse policy or workspace
+validation. Existing 5.0 and 5.1 state and reuse keys remain valid; no migration
+or new directory is required. See the release notes for the measured table and
+its limitations: the controlled benchmark is not a Provider performance claim,
+and remaining high-concurrency overhead is follow-up work.
 
 The [5.1.0 planning additions](releases/v5.1.0.md) remain available: `COALESCE`,
 `counts.coalesce` and an optional submission lease deadline distinguish adopted
@@ -30,15 +32,15 @@ old installation if needed. See [migration to 5.0](migration-v5.md).
 
 ## Installing and upgrading
 
-CCDD 5.1.1 supports Node.js 22 LTS (22.19.0 or later). Install matching versions of the three packages:
+CCDD 5.1.2 supports Node.js 22 LTS (22.19.0 or later). Install matching versions of the three packages:
 
 ```sh
-npm install --ignore-scripts @ccdd/core@5.1.1 @ccdd/project@5.1.1 @ccdd/default-tools@5.1.1
+npm install --ignore-scripts @ccdd/core@5.1.2 @ccdd/project@5.1.2 @ccdd/default-tools@5.1.2
 npx ccdd-project config check
 npx ccdd-project tools check
 ```
 
-`@ccdd/core` supplies definitions. `@ccdd/project` supplies validation, the CLI, Broker, Executors, and monitor. `@ccdd/default-tools` is optional when all tools are custom. Project and default-tools 5.1.1 target core `>=5.0.0 <6`: the core SDK is unchanged and the scoped-manifest fixes do not require new core APIs.
+`@ccdd/core` supplies definitions. `@ccdd/project` supplies validation, the CLI, Broker, Executors, and monitor. `@ccdd/default-tools` is optional when all tools are custom. Project and default-tools 5.1.2 target core `>=5.0.0 <6`: the core SDK is unchanged and the Broker lifecycle fixes do not require new core APIs.
 
 Version 4 introduced folder-owned `ccdd.json` files. Projects older than v4
 must also follow the [v4 configuration migration](migration-v4.md), then the
@@ -64,8 +66,8 @@ To publish, merge the version change and release notes, wait for that commit's
 CI to succeed, then push its version tag:
 
 ```sh
-git tag v5.1.1 COMMIT_SHA
-git push origin v5.1.1
+git tag v5.1.2 COMMIT_SHA
+git push origin v5.1.2
 ```
 
 `release.yml` runs one Node 22 LTS job. It installs npm 11.19.1 for Trusted
@@ -145,7 +147,7 @@ The three npm publications and the GitHub announcement are not one transaction. 
 If the publication scripts need a fix after tagging, merge and verify that fix first, then use the current workflow to publish the original tag:
 
 ```sh
-gh workflow run release.yml --ref main -f tag=v5.1.1
+gh workflow run release.yml --ref main -f tag=v5.1.2
 ```
 
 This recovery uses the publication scripts from main and a separate checkout of the existing tag for release metadata. It still requires that tag's successful main CI and publishes only its retained, checksum-verified packages. It never moves the tag, rebuilds packages, or substitutes the workflow commit's packages. CI also checks each completed verification report with the same asset validator used by publication.
