@@ -198,9 +198,13 @@ export function createBroker<D extends ResultDetail = 'compact'>({ detail, repoP
     }
   }
   const shareable = (request: ReviewRequest): boolean => {
+    // Reconcile PID/token ownership at the adoption boundary, before even an
+    // unowned submission lease can make a dead worker's ticket eligible.
+    reconcileWithin(request.runId);
     const source = required(runData(request.runId), 'Source Run');
     if (terminal.has(source.status)) return false;
-    if (ownerAlive(ownerData(source.id))) return true;
+    const owner = ownerData(source.id);
+    if (owner) return ownerAlive(owner); // Never fall back to grace for an owned source.
     const grace = source.coalescingGraceMs;
     if (request.status !== 'QUEUED' || typeof grace !== 'number' || !Number.isSafeInteger(grace) || grace <= 0 || grace > 300_000) return false;
     const elapsed = typeof source.createdAt === 'string' ? Date.now() - Date.parse(source.createdAt) : NaN;
@@ -249,8 +253,7 @@ export function createBroker<D extends ResultDetail = 'compact'>({ detail, repoP
       for (const item of plan.items.filter(item => item.action === 'EXECUTE')) {
         if (!run.project.force) {
           const candidates = db.prepare("SELECT data FROM requests WHERE status IN ('QUEUED','RUNNING','WAITING_HUMAN') AND json_extract(data, '$.criticId') = ? AND json_extract(data, '$.validationInput.key') = ? AND json_extract(data, '$.validationInput.version') = 3 ORDER BY rowid").all(item.id, item.input.key).map(row => parseStored<ReviewRequest>(row.data));
-          for (const candidate of candidates) reconcileWithin(candidate.runId);
-          const shared = candidates.map(candidate => required(requestData(candidate.id), 'Request')).find(candidate => !terminal.has(candidate.status) && shareable(candidate));
+          const shared = candidates.find(candidate => shareable(candidate));
           if (shared) {
             run.project.coalescedRequestIds = [...new Set([...(run.project.coalescedRequestIds ?? []), shared.id])];
             saveRun(run);

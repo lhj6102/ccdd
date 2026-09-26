@@ -386,3 +386,29 @@ test('actual follower worker expires an abandoned lease without a scheduling rev
   assert.equal(await readFile(data.calls, 'utf8'), 'a\n');
   assert.deepEqual(storedSource(data.stateDir, source.id), before);
 });
+
+test('first identical submission after source worker SIGKILL executes once without a manual retry', { timeout: 15000 }, async t => {
+  const { readFile } = await import('node:fs/promises');
+  const data = await runtimeFixture(t);
+  const source = await data.broker.submitProject({ selection: { kind: 'all' } });
+  const originalCalls = join(data.root, 'killed-source-calls');
+  const sourceWorker = await worker(t, { repoPath: data.repoPath, stateDir: data.stateDir }, source.id, 'hang', originalCalls);
+  const executing = sourceWorker.message(); sourceWorker.child.send('go'); assert.equal(await executing, 'executing');
+  sourceWorker.child.kill('SIGKILL'); await sourceWorker.exited;
+  // Do not getRun/reconcile before submitting: the stale owner must still be
+  // present when the first new submission encounters this candidate.
+  const db = new DatabaseSync(join(data.stateDir, 'broker.sqlite'), { readOnly: true });
+  try { assert.ok(db.prepare('SELECT run_id FROM run_owners WHERE run_id=?').get(source.id)); } finally { db.close(); }
+  const follower = await data.broker.submitProject({ selection: { kind: 'all' } });
+  assert.equal(follower.requests.length, 1);
+  assert.equal(follower.status, 'QUEUED');
+  const replacementWorker = await actualWorker(t, data, follower.id);
+  assert.equal((await replacementWorker.exited)[0], 0, replacementWorker.errors());
+  assert.equal(data.broker.getRun(follower.id)!.status, 'GREEN');
+  assert.equal(await readFile(data.calls, 'utf8'), 'a\n', 'new submission executes exactly once');
+  assert.equal(await readFile(originalCalls, 'utf8'), 'executed\n', 'dead source is never replayed');
+  const stored = projectRun(data.stateDir, source.id)!;
+  assert.equal(stored.status, 'ERROR');
+  assert.equal(stored.requests[0].errorCode, 'WORKER_EXITED');
+  assert.equal(stored.requests[0].result, null);
+});
