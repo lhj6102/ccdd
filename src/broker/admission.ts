@@ -19,6 +19,7 @@ export function localAdmission(limit: number): Admission {
   return { acquire(_request, { signal, waiting }) {
     signal.throwIfAborted();
     if (active >= limit || pending.length) waiting('Waiting for executor admission slot.');
+    signal.throwIfAborted();
     return new Promise((resolve, reject) => {
       const waiter = { signal, resolve, reject, abort: () => { const index = pending.indexOf(waiter); if (index >= 0) pending.splice(index, 1); reject(signal.reason); } };
       pending.push(waiter); signal.addEventListener('abort', waiter.abort, { once: true }); drain();

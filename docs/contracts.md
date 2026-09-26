@@ -754,3 +754,7 @@ The admission boundary follows dependency readiness and precedes QUEUED-to-RUNNI
 Gate construction uses only direct edges of the SCC condensation, not a materialized transitive closure. BLOCKED and release states propagate through those edges; SCC peers share external gates. Construction visits each Artifact relation once plus emitted Critic gate references. Transitions visit affected memberships/edges, independent of unrelated Run/project size. Multiple Critics on an Artifact still require one obligation per dependency Critic.
 
 Telemetry remains a bounded synchronous SQLite append in 6.0; there is no off-thread drain. It never rewrites Run/request definitions or advances the lifecycle changes cursor. `blockedReason` in a changes page reflects the current request state, not a historical reason-at-cursor snapshot.
+
+Immutable record reads authenticate canonical SHA-256, node tags, ordered keys and child references. Local mutation counters and external SQLite data_version invalidate encoded caches, including warm readers after deletion. Result verdicts must agree with their lifecycle status. Compact saved snapshots select evidence through that Run's membership references, not global history, and do not load discarded audit events.
+
+The offline benchmark network guard is a tripwire for explicitly patched parent APIs only, not process-tree network isolation. DNS promises/Resolver, UDP, native code and child processes are unguarded; zero attempts measures only the patched APIs.

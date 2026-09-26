@@ -30,10 +30,13 @@ export function createReadiness(db: DatabaseSync, store: ReturnType<typeof recor
   const publish = (member: Member, request: Record<string, any>) => {
     db.prepare('INSERT INTO request_changes(run_id,request_id,critic_id,status,result_ref,error,error_code) VALUES (?,?,?,?,?,?,?)').run(member.run_id, request.id, member.critic_id, request.status, request.semanticRef ?? null, request.error ?? null, request.errorCode ?? null);
   };
+  const effectiveState = (member: Member, request: Record<string, any>) => {
+    const gate = db.prepare('SELECT unmet,red FROM gate_counts WHERE run_id=? AND critic_id=?').get(member.run_id,member.critic_id);
+    return request.runId !== member.run_id && Number(gate?.unmet ?? 0) ? Number(gate?.red ?? 0) ? 'BLOCKED' : 'WAIT_DEPENDENCY' : request.status;
+  };
   const setMember = (member: Member, request: Record<string, any>) => {
     readinessTestHooks.member?.();
-    const gate = db.prepare('SELECT unmet,red FROM gate_counts WHERE run_id=? AND critic_id=?').get(member.run_id,member.critic_id);
-    const status = request.runId !== member.run_id && Number(gate?.unmet ?? 0) ? Number(gate?.red ?? 0) ? 'BLOCKED' : 'WAIT_DEPENDENCY' : request.status;
+    const status = effectiveState(member, request);
     changeCount(member.run_id, member.state, -1); changeCount(member.run_id, status, 1);
     db.prepare('UPDATE run_members SET state=?,request_id=?,evidence_id=? WHERE run_id=? AND critic_id=?').run(status, request.id, request.status === 'GREEN' || request.status === 'RED' ? request.id : null, member.run_id, member.critic_id);
     if (request.runId !== member.run_id && !terminal.has(request.status)) db.prepare('INSERT OR REPLACE INTO shared_members VALUES (?,?,?,?)').run(member.run_id,member.critic_id,request.id,request.runId);
@@ -56,7 +59,7 @@ export function createReadiness(db: DatabaseSync, store: ReturnType<typeof recor
   const adoptOrCreate = (member: Member) => {
     const run = header(member.run_id);
     const gate = db.prepare('SELECT unmet FROM gate_counts WHERE run_id=? AND critic_id=?').get(member.run_id, member.critic_id);
-    const source = !run.project.force ? findCoalescibleRequest(db, member.critic_id, member.input_key, options)?.request : null;
+    const source = !run.project.force ? findCoalescibleRequest(db, member.critic_id, member.input_key, { ...options, ignoreGates: run.project.ignoreGates })?.request : null;
     const request = source ? JSON.parse(String(db.prepare('SELECT data FROM requests WHERE id=?').get(source.id)!.data)) : createRequest(member);
     setMember(member, request);
     if (source) event(member.run_id, source.id, 'request.coalesced', 'Waiting for an identical active review.', { sourceRunId: source.runId });
@@ -146,9 +149,11 @@ export function createReadiness(db: DatabaseSync, store: ReturnType<typeof recor
         const input = store.get<ValidationInput>(request.inputRef);
         for (const member of waiting) {
           if (!input.reusable && member.run_id !== request.runId) continue;
-          changeCount(member.run_id, member.state, -1); changeCount(member.run_id, request.status, 1);
-          db.prepare('UPDATE run_members SET state=?,evidence_id=? WHERE run_id=? AND critic_id=?').run(request.status, request.id, member.run_id, member.critic_id);
-          publish(member, request); if (member.state !== request.status) propagate(member, request.status); affected.add(member.run_id);
+          const status = effectiveState(member, request);
+          changeCount(member.run_id, member.state, -1); changeCount(member.run_id, status, 1);
+          db.prepare('UPDATE run_members SET state=?,evidence_id=? WHERE run_id=? AND critic_id=?').run(status, request.id, member.run_id, member.critic_id);
+          publish(member, { ...request, status, semanticRef: status === request.status ? request.semanticRef : null });
+          if (member.state !== status) propagate(member, status); affected.add(member.run_id);
         }
       }
       for (const id of affected) if (id === request.runId || db.prepare('SELECT 1 FROM run_owners WHERE run_id=?').get(id)) updateRun(id);
@@ -160,7 +165,7 @@ export function createReadiness(db: DatabaseSync, store: ReturnType<typeof recor
         options.reconcile(request.runId);
         const current = db.prepare('SELECT data,status FROM requests WHERE id=?').get(request.id)!;
         if (terminal.has(String(current.status))) { this.transition(JSON.parse(String(current.data))); continue; }
-        if (!coalescingEligibility(db, request, options)) adoptOrCreate(row as unknown as Member);
+        if (!coalescingEligibility(db, request, { ...options, ignoreGates: header(runId).project.ignoreGates })) adoptOrCreate(row as unknown as Member);
       }
       updateRun(runId);
     },

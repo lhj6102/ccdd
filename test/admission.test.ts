@@ -39,3 +39,12 @@ test('admission exceptions fail only their request and other work progresses', a
   data.cleanup(() => broker.close()); const run = await broker.submitProject({ selection: { kind: 'all' } });
   assert.equal((await broker.run(run.id))!.status, 'ERROR'); assert.equal(released, 1);
 });
+
+test('waiting callback may cancel synchronously without stranding a waiter', async () => {
+  const pool = localAdmission(1), request = { requestId: 'r', runId: 'run', kind: 'agent' };
+  const first = await pool.acquire(request, { signal: new AbortController().signal, waiting() {} });
+  const controller = new AbortController();
+  await assert.rejects(async () => pool.acquire(request, { signal: controller.signal, waiting() { controller.abort(new Error('synchronous cancel')); } }), /synchronous cancel/);
+  await first.release();
+  const next = await pool.acquire(request, { signal: new AbortController().signal, waiting() { assert.fail('canceled waiter consumed slot'); } }); await next.release();
+});

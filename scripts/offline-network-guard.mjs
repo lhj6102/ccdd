@@ -1,3 +1,6 @@
+// Test tripwire for the patched parent-process APIs only, not an OS sandbox.
+// DNS promises/Resolver, UDP, native code and child processes are not covered.
+// The zero counter proves only that these patched paths were not attempted.
 import net from 'node:net';
 import tls from 'node:tls';
 import http from 'node:http';

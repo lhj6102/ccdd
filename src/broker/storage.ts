@@ -35,6 +35,12 @@ export function initializeRecords(db: DatabaseSync) {
 export function records(db: DatabaseSync) {
   // Cache encoded nodes only, bounded by bytes. Decoded values are always caller-owned.
   const nodes = new Map<string, string>(); let bytes = 0;
+  const revision = db.prepare('SELECT (SELECT data_version FROM pragma_data_version) AS external, total_changes() AS local');
+  let generation = '';
+  const sync = () => {
+    const row = revision.get()!, next = `${row.external}/${row.local}`;
+    if (next !== generation) { nodes.clear(); bytes = 0; generation = next; }
+  };
   const remember = (hash: string, data: string) => {
     if (nodes.has(hash) || Buffer.byteLength(data) > 4 * 1024 ** 2) return;
     while (nodes.size && bytes + Buffer.byteLength(data) > 4 * 1024 ** 2) { const first = nodes.keys().next().value!; bytes -= Buffer.byteLength(nodes.get(first)!); nodes.delete(first); }
@@ -43,6 +49,7 @@ export function records(db: DatabaseSync) {
   const insert = db.prepare('INSERT OR IGNORE INTO definitions(hash,data) VALUES (?,?)');
   const read = db.prepare('SELECT data FROM definitions WHERE hash=?');
   const put = (value: unknown): string => {
+    sync();
     const memo = new WeakMap<object, string>();
     const visit = (value: unknown): string => {
       if (value && typeof value === 'object' && memo.has(value)) return memo.get(value)!;
@@ -50,22 +57,41 @@ export function records(db: DatabaseSync) {
       if (json === undefined) throw new Error('Immutable records must be JSON.');
       const node: Node = json.length < 1024 || !value || typeof value !== 'object' ? { json: value } : Array.isArray(value)
         ? { array: value.map(visit) }
-        : { object: Object.entries(value).filter(([, v]) => v !== undefined).sort(([a], [b]) => a.localeCompare(b)).map(([key, v]) => [key, visit(v)]) };
+        : { object: Object.entries(value).filter(([, v]) => v !== undefined).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([key, v]) => [key, visit(v)]) };
       const data = canonical(node), hash = createHash('sha256').update(data).digest('hex');
       // Never infer persistence from the cache: a previous transaction may have rolled back.
       const result = insert.run(hash, data); if (result.changes) storageTestHooks.write?.(Buffer.byteLength(data));
-      remember(hash, data); if (value && typeof value === 'object') memo.set(value, hash); return hash;
+      if (result.changes) remember(hash, data); else { const stored = read.get(hash); if (!stored || stored.data !== data) throw new Error(`Corrupt immutable definition ${hash}`); }
+      if (value && typeof value === 'object') memo.set(value, hash); return hash;
     };
     return visit(value);
   };
   const get = <T>(hash: string): T => {
+    sync();
+    const active = new Set<string>();
+    const reference = (value: unknown): value is string => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
     const visit = (hash: string): unknown => {
-      let data = nodes.get(hash);
-      if (data === undefined) { const row = read.get(hash); if (!row) throw new Error(`Missing immutable definition ${hash}`); data = String(row.data); storageTestHooks.read?.(Buffer.byteLength(data)); remember(hash, data); }
-      const node = JSON.parse(data) as Node;
-      if ('json' in node) return node.json;
-      if ('array' in node) return node.array.map(visit);
-      return Object.fromEntries(node.object.map(([key, ref]) => [key, visit(ref)]));
+      if (!reference(hash) || active.has(hash) || active.size >= 512) throw new Error('Invalid immutable reference.');
+      active.add(hash);
+      try {
+        let data = nodes.get(hash);
+        if (data === undefined) {
+          const row = read.get(hash); if (!row) throw new Error(`Missing immutable definition ${hash}`);
+          data = String(row.data); storageTestHooks.read?.(Buffer.byteLength(data));
+          const parsed = JSON.parse(data);
+          if (createHash('sha256').update(canonical(parsed)).digest('hex') !== hash) throw new Error(`Corrupt immutable definition ${hash}`);
+        }
+        const node = JSON.parse(data) as Node;
+        if (!node || typeof node !== 'object' || Array.isArray(node) || Object.keys(node).length !== 1) throw new Error('Invalid immutable node.');
+        if ('json' in node) { remember(hash, data); return node.json; }
+        if ('array' in node) {
+          if (!Array.isArray(node.array) || !node.array.every(reference)) throw new Error('Invalid immutable array references.');
+          const value = node.array.map(visit); remember(hash, data); return value;
+        }
+        if (!('object' in node) || !Array.isArray(node.object) || !node.object.every((pair, i, all) =>
+          Array.isArray(pair) && pair.length === 2 && typeof pair[0] === 'string' && reference(pair[1]) && (i === 0 || all[i - 1][0] < pair[0]))) throw new Error('Invalid immutable object references.');
+        const value = Object.fromEntries(node.object.map(([key, ref]) => [key, visit(ref)])); remember(hash, data); return value;
+      } finally { active.delete(hash); }
     };
     return visit(hash) as T;
   };
@@ -98,7 +124,9 @@ export function records(db: DatabaseSync) {
     const row = db.prepare('SELECT data FROM requests WHERE id=?').get(id); if (!row) return null;
     const header = JSON.parse(String(row.data));
     const { envelopeRef, workspaceRef, inputRef, resultRef, inputKey: _, inputVersion: __, semanticRef, ...rest } = header;
-    return { ...rest, ...(full ? get<ReviewEnvelope>(envelopeRef) : {}), workspace: get(workspaceRef), ...(inputRef ? { validationInput: get(inputRef) } : {}), result: resultRef ? get(full ? resultRef : semanticRef) : null } as ReviewRequest;
+    const result = resultRef ? get<ReviewRequest['result']>(full ? resultRef : semanticRef) : null;
+    if (result && (result.verdict !== header.status || !['GREEN','RED'].includes(header.status))) throw new Error('Stored result/status mismatch.');
+    return { ...rest, ...(full ? get<ReviewEnvelope>(envelopeRef) : {}), workspace: get(workspaceRef), ...(inputRef ? { validationInput: get(inputRef) } : {}), result } as ReviewRequest;
   };
   return { put, get, packRun, packRequest, run, request, clear: () => { nodes.clear(); bytes = 0; } };
 }

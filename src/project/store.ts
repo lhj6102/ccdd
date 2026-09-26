@@ -11,14 +11,17 @@ import type { ValidationEvidence, ProjectPlan } from './types.js';
 import { planProject } from './query.js';
 import { findCoalescibleRequest } from '../broker/coalescing.js';
 
-export function readEvidence(database: DatabaseSync): ValidationEvidence[] {
+export function readEvidence(database: DatabaseSync, runId?: string): ValidationEvidence[] {
   const store = records(database);
-  const rows = database.prepare("SELECT data FROM requests WHERE status IN ('GREEN','RED') ORDER BY json_extract(data,'$.completedAt'),rowid").all();
+  const rows = runId === undefined
+    ? database.prepare("SELECT data FROM requests WHERE status IN ('GREEN','RED') ORDER BY json_extract(data,'$.completedAt'),rowid").all()
+    : database.prepare("SELECT q.data FROM requests q JOIN (SELECT DISTINCT evidence_id FROM run_members WHERE run_id=? AND evidence_id IS NOT NULL) m ON q.id=m.evidence_id WHERE q.status IN ('GREEN','RED') ORDER BY json_extract(q.data,'$.completedAt'),q.rowid").all(runId);
   return rows.flatMap(row => {
     const header = JSON.parse(String(row.data));
     if (!header.inputRef || !header.resultRef || !header.completedAt) return [];
     const input = store.get<ValidationEvidence['input']>(header.inputRef), result = store.get<ReviewRequest['result']>(header.semanticRef);
-    if (input.version !== 3 || !/^[a-f0-9]{64}$/.test(input.key) || !result || result.verdict !== header.status) return [];
+    if (!result || result.verdict !== header.status) throw new Error('Stored result/status mismatch.');
+    if (input.version !== 3 || !/^[a-f0-9]{64}$/.test(input.key)) return [];
     return [{ requestId: header.id, runId: header.runId, criticId: header.criticId, input, completedAt: header.completedAt, verdict: result.verdict, result: semanticResult(result) as NonNullable<ReviewRequest['result']> }];
   });
 }
@@ -37,17 +40,17 @@ export function projectHistory<D extends ResultDetail = 'compact'>(stateDir: str
 
 export type ProjectRunView = RunView & { validation?: ProjectPlan };
 // Compact/status consumers do not hydrate request manifests or duplicated Run
-// templates/graph. Full audit lookup remains lossless, including 5.0/5.1 records.
+// templates/graph. Full audit lookup reconstructs the admitted current-format record.
 const requestProjection = "json_remove(data, '$.artifacts', '$.configManifest', '$.payload', '$.references')";
 function readRun(database: DatabaseSync, id: string, full: boolean): ProjectRunView | null {
   const store = records(database), run = store.run(id, full);
   if (!run) return null;
   const requests = database.prepare('SELECT id FROM requests WHERE run_id=? ORDER BY ordinal').all(id).map(row => store.request(String(row.id), full)!);
   const shared = (run.project?.coalescedRequestIds ?? []).map(id => store.request(id, false)!);
-  const events = database.prepare('SELECT * FROM (SELECT * FROM events WHERE run_id = ? ORDER BY id DESC LIMIT 500) ORDER BY id').all(id).map(event => ({ id: Number(event.id), runId: String(event.run_id), requestId: event.request_id === null ? null : String(event.request_id), createdAt: String(event.created_at), type: String(event.type), message: String(event.message), ...(event.data ? { data: JSON.parse(String(event.data)) as unknown } : {}) }));
+  const events = full ? database.prepare('SELECT * FROM (SELECT * FROM events WHERE run_id = ? ORDER BY id DESC LIMIT 500) ORDER BY id').all(id).map(event => ({ id: Number(event.id), runId: String(event.run_id), requestId: event.request_id === null ? null : String(event.request_id), createdAt: String(event.created_at), type: String(event.type), message: String(event.message), ...(event.data ? { data: JSON.parse(String(event.data)) as unknown } : {}) })) : [];
   const owner = database.prepare('SELECT pid, claimed_at FROM run_owners WHERE run_id = ?').get(id);
   return { ...run, scope: run.scope ?? { kind: run.graph ? 'graph' : 'chain' }, requests, events, owner: owner ? { pid: Number(owner.pid), claimedAt: String(owner.claimed_at) } : null,
-    ...(run.project?.version === 3 ? { validation: planProject(run.project.snapshot, readEvidence(database).filter(e => !run.project!.evidenceRequestIds || run.project!.evidenceRequestIds.includes(e.requestId)), { selection: run.project.selection, recursive: run.project.recursive, force: run.project.force, ignoreGates: run.project.ignoreGates, runId: id, coalescedRequestIds: run.project.coalescedRequestIds, attempts: [...requests, ...shared] }) } : {}) };
+    ...(run.project?.version === 3 ? { validation: planProject(run.project.snapshot, readEvidence(database, id).filter(e => !run.project!.evidenceRequestIds || run.project!.evidenceRequestIds.includes(e.requestId)), { selection: run.project.selection, recursive: run.project.recursive, force: run.project.force, ignoreGates: run.project.ignoreGates, runId: id, coalescedRequestIds: run.project.coalescedRequestIds, attempts: [...requests, ...shared] }) } : {}) };
 }
 export function storedRun(database: DatabaseSync, id: string): ProjectRunView | null { return readRun(database, id, true); }
 export function storedRequesterRun(database: DatabaseSync, id: string, stateDir: string) {
@@ -69,7 +72,7 @@ export function projectRequests<D extends ResultDetail = 'compact'>(stateDir: st
 /** Evidence and active candidates belong to one readonly snapshot; never reconcile stored owners. */
 export function currentProjectPlan(stateDir: string, snapshot: Parameters<typeof planProject>[0], options: Parameters<typeof planProject>[2]): ProjectPlan {
   return withProjectStore<ProjectPlan | null>(stateDir, db => planProject(snapshot, readEvidence(db), options, critic => {
-    const source = findCoalescibleRequest(db, critic.id, critic.input.key);
+    const source = findCoalescibleRequest(db, critic.id, critic.input.key, { ignoreGates: options?.ignoreGates });
     return source ? { requestId: source.request.id, ...(source.leaseExpiresAt ? { leaseExpiresAt: source.leaseExpiresAt } : {}) } : null;
   }), null) ?? planProject(snapshot, [], options);
 }

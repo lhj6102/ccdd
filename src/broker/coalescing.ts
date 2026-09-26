@@ -6,6 +6,7 @@ import { ownerAlive, type OwnerRecord } from './ownership.js';
 
 const terminal = new Set(['GREEN', 'RED', 'ERROR', 'INCOMPLETE']);
 interface CoalescingOptions {
+  ignoreGates?: boolean;
   /** Submission reconciles durably; readonly inspection leaves this absent. */
   reconcile?: (runId: string) => void;
   /** A waiting Broker retains monotonic lease bounds; a fresh quote has no prior observations. */
@@ -15,6 +16,7 @@ interface CoalescingOptions {
 /** One adoption rule. A dead owner is ineligible even without writing WORKER_EXITED. */
 export function coalescingEligibility(database: DatabaseSync, request: ReviewRequest, options: CoalescingOptions = {}): { leaseExpiresAt?: string } | null {
   if (!['QUEUED', 'RUNNING', 'WAITING_HUMAN', 'WAIT_DEPENDENCY', 'BLOCKED'].includes(request.status)) return null;
+  if (options.ignoreGates && ['WAIT_DEPENDENCY','BLOCKED'].includes(request.status)) return null;
   options.reconcile?.(request.runId);
   const row = database.prepare("SELECT json_object('id',json_extract(data,'$.id'),'status',json_extract(data,'$.status'),'createdAt',json_extract(data,'$.createdAt'),'coalescingGraceMs',json_extract(data,'$.coalescingGraceMs')) AS data FROM runs WHERE id = ?").get(request.runId);
   if (!row) return null;

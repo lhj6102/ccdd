@@ -157,3 +157,32 @@ test('direct SCC gate construction visits dense edges once without transitive ex
   const cycle = criticGates({ config });
   assert.deepEqual(cycle.get('n118/check'), ['n117/check']); assert.deepEqual(cycle.get('n119/check'), ['n117/check']);
 });
+
+for (const verdict of ['GREEN','RED'] as const) test(`external reused evidence cannot release fresh descendants before ancestor ${verdict}`, async t => {
+  const data = await artifactFixture(t); let phase = 'seed', release!: () => void; const hold = new Promise<void>(r => { release = r; }), calls: string[] = [];
+  for (const [id,dependency] of [['a',''],['b','a'],['c','b']]) await data.write(id, { name: id, critics: [runtimeCritic('check', dependency ? `Inspect {${dependency}}.` : 'Inspect.')] });
+  const broker = createBroker({ ...data, executors: { canExecute: () => ({ ok: true }), execute: async request => {
+    calls.push(`${phase}:${request.target}`); if (request.target === 'a') { if (phase === 'seed') throw new Error('seed operational failure'); await hold; return { verdict }; } return { verdict: 'GREEN' };
+  } } }); data.cleanup(async () => { release(); await broker.close(); });
+  const seed = await broker.submitProject({ selection: { kind: 'critic', criticId: 'b/check' }, recursive: true, ignoreGates: true }); await broker.run(seed.id);
+  phase = 'wait'; const run = await broker.submitProject({ selection: { kind: 'all' } }), running = broker.run(run.id);
+  await delay(20);
+  const external = await broker.submitProject({ selection: { kind: 'critic', criticId: 'b/check' }, force: true, ignoreGates: true }); await broker.run(external.id);
+  await delay(30); assert.ok(!calls.includes('wait:c'));
+  const before = broker.changes(run.id)!; assert.ok(before.changes.filter(c => c.criticId === 'b/check').every(c => c.result === null));
+  release(); assert.equal((await running)!.status, verdict);
+  assert.equal(calls.includes('wait:c'),verdict === 'GREEN');
+});
+
+test('ignore-gates follower rejects blocked sources in both quote and submission', async t => {
+  const data = await artifactFixture(t); let release!: () => void; const hold = new Promise<void>(r => { release = r; }), calls: string[] = [];
+  await data.write('a',{name:'a',critics:[runtimeCritic()]}); await data.write('b',{name:'b',critics:[runtimeCritic('check','Inspect {a}.')]});
+  const broker = createBroker({ ...data, executors: { canExecute:()=>({ok:true}), execute: async request => { calls.push(request.target); if(request.target==='a'){await hold;return {verdict:'RED'};}return {verdict:'GREEN'};} } });
+  data.cleanup(async()=>{release();await broker.close();});
+  const source = await broker.submitProject({selection:{kind:'all'}}), running = broker.run(source.id); await delay(10);
+  const plan=(await inspectProject({...data,ignoreGates:true})).plan;
+  assert.equal(plan.items.find(c=>c.id==='b/check')!.action,'EXECUTE');
+  const follower=await broker.submitProject({selection:{kind:'all'},ignoreGates:true}), following=broker.run(follower.id);
+  assert.ok(follower.requests.some(c=>c.criticId==='b/check')); await delay(20); assert.ok(calls.includes('b'));
+  release();await running;await following;
+});
