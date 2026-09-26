@@ -103,17 +103,115 @@ crashes, malformed results and arbitrary stderr still use credential-safe generi
 diagnostics, even if stdout contains an error-shaped value. Audit persistence
 must succeed before an authored error can reach a reviewer.
 
-This is an additive stdout/result contract, not a config or stdin schema change.
-Existing success results, manifests and SQLite records need no migration. Changing
-a script to opt in changes its mandatory execution input hash (and its consumers'
-ValidationInput keys); no timing, error message or result flag enters content
-identity. ValidationInput remains version 2; historical input versions remain
-result-only. Coordinated releases already include the executor package version in
-ValidationInput, so deployment changes do not silently reuse different executors.
+This stdout/result contract does not change script stdin. Under default identity,
+changing a script changes its execution input hash and consumer keys. Under
+owner identity, the returned value alone controls the local identity. Timing,
+error messages and result flags do not contribute to identity. ValidationInput
+is version 3 and has no package/runtime version salt.
 
 Each invocation gets private external output, temporary, home and cache directories. Provider secrets and Node preload hooks are not inherited. Timeouts, cancellation, output limits and process-group cleanup remain mandatory. Main-process exit also cleans surviving descendants. Desktop launchers deliberately hand an application session to the reviewer; launch is not a verdict. Custom scripts are trusted workspace code, not an OS sandbox, and must honor their scope and keep input unchanged.
 
 Stored manifests contain only serializable metadata and declarations. Execution rediscovers static config from the recorded workspace and requires an exact manifest/scope match. Static preflight lists definitions without invoking user scripts. Explicit `tools check --execute` exercises a real process. Blind A/B comparison is a user-script procedure, demonstrated in the [folder example](../examples/artifact-folders/README.md), not a presentation setting or special Executor.
+
+## Requester results and audit lookup
+
+**Unreleased, for the 5.0 line: breaking default output change.** Requester
+results are compact by default. This is not a 4.x-compatible change; existing
+callers that consume audit fields must explicitly request full detail.
+
+A completed requester result contains `verdict`, owner-defined response fields,
+and `reference: {runId, requestId, stateDir}`. A reused result in a Run also has
+`reusedFrom` pointing to the original reference. There are no built-in summary,
+reason or evidence fields. `stateDir` is an absolute local state location, not a
+URL or credential. Request wrappers retain IDs, inputKey, status and operational
+errors. Run wrappers retain status, workspace integrity and projected validation.
+An unfinished request has `result: null`; Run-level references use `requestId: null`.
+
+A compact Run, query or plan emits each result exactly once in its top-level
+`results` array. Its request, Critic and plan-item entries use `result: {requestId}`
+references rather than repeating owner text. A standalone request contains its
+result directly. A Run's nested validation has no second results array.
+
+Resolve a reference using `projectRun(reference.stateDir, reference.runId)` or
+`ccdd-project run show RUN_ID --state-dir STATE_DIR --json`; find the request by
+ID in `requests`. These readonly audit queries always return full detail and do
+not need the current source or an Executor. Reused/coalesced results point to the
+original request; no duplicate review ticket is fabricated.
+
+`toolCalls` (all calls, arguments and observation receipts), criteria/payload,
+config/input snapshots, timestamps, ownership, stdout/stderr and telemetry stay
+in the stored audit. Projection never rewrites these records. Required-observation
+checks run before projection; missing observations fail with ERROR. The explicit
+overall result-size limit still fails oversized results rather than silently
+dropping calls. There is no tool-call count truncation.
+
+### Owner response schemas
+
+A Critic may declare `passSchema` for GREEN and `failSchema` for RED. Both are
+optional JSON Schema objects describing additional top-level fields. Without a
+schema for that verdict, only `{"verdict":"GREEN"}` or `{"verdict":"RED"}`
+is accepted. CCDD adds the required verdict field to the selected schema.
+
+```json
+{
+  "failSchema": {
+    "type": "object",
+    "properties": {
+      "reasons": { "type": "array", "items": { "type": "string" },
+        "description": "Concrete reasons the criteria were not met." }
+    },
+    "required": ["reasons"],
+    "additionalProperties": false
+  }
+}
+```
+
+Schemas use the same supported object JSON Schema dialect as tool arguments.
+Top-level `additionalProperties` must be omitted or false. Top-level composition
+(`allOf`, `anyOf`, `oneOf`, `not`) is rejected at config load; composition inside
+owner-defined properties is allowed. `$ref` and conditional keywords are not
+part of the supported dialect. `verdict`, `reference`,
+`reusedFrom`, `provider`, `model`, `stdout`, `stderr`, `durationMs`, `exitCode` and
+`toolCalls` are reserved. Owner fields are preserved without semantic rewriting
+or string/count truncation. Overall transport limits remain explicit errors.
+Agent and Human results use the same verdict-specific schema. An invalid Agent
+final response receives at most one format-only repair turn; Human submissions
+are rejected for correction, never automatically rewritten. Runtime results are
+verdict-only (plus stored process audit); schemas requiring extra Runtime result
+fields cannot be fulfilled by the built-in Runtime executor.
+
+Public requester surfaces:
+
+- `createBroker({repoPath, stateDir, ...})`: compact results from submission,
+  execution, Run/request reads and lists, cancellation/failure, and Human
+  claim/completion. Set `detail: "full"` on the Broker for its previous full
+  execution envelopes. Workers and Human-action adapters opt into this mode.
+- `inspectProject(...)`: `{plan}` by default; `detail: "full"` returns
+  `{snapshot, plan}` with the full internal semantic evidence projection.
+- Public `queryProject` / `planProject` require `{stateDir, ...options}` to make
+  evidence references resolvable; `detail: "full"` preserves the internal query
+  shape. Their history input is `projectHistory(stateDir, {detail: "full"})`, not
+  compact requester history. Internal Project Validation queries remain full.
+- `projectHistory(stateDir, options?)`, `projectRuns(stateDir, options?)`, and
+  `projectRequests(stateDir, runId?, options?)` default to compact; pass
+  `{detail: "full"}` to restore their stored/semantic views. `projectRun` is the
+  full-audit lookup and does not need an option.
+- CLI `verify`, `status`, `plan`, `history`, `request`, Run lists and actions use
+  compact output, including plain text. `--full` restores the detailed payload;
+  `run show` always displays full JSON even without `--json`. Full status/plan
+  and history retain their existing semantic evidence shapes, not inline tool
+  traces: use the referenced Run for complete audit details.
+- Monitor current-input queries and verdicts use compact results; explicit
+  request-detail pages still include reviewer instructions and operational UI
+  metadata. Their results carry the same audit references. Artifact MCP serves
+  observation tools only, not requester review results; its tool protocol and
+  audit recording are unchanged.
+
+This unreleased change leaves package metadata at 4.3.0 until the coordinated
+5.0 release. Start with a fresh state directory: all store entry points reject
+4.x/unmarked state without reading or migrating its records. ValidationInput
+version 3 is a one-time key transition; package/runtime version changes alone do
+not invalidate identity thereafter. See [migration](migration-v5.md).
 
 ## Input identity and evidence
 
@@ -123,7 +221,7 @@ Local material identity hashes content, names, entry types, executable bits and 
 
 ### Owner-defined identity
 
-An owner can replace material and view runtime fingerprints with an opaque equivalence string:
+An owner can replace all automatic local identity inputs with an opaque equivalence string:
 
 ```json
 "stale": {
@@ -136,23 +234,33 @@ An owner can replace material and view runtime fingerprints with an opaque equiv
 
 Only `kind`, `script`, optional `inputs` and optional `timeoutMs` are accepted; a script accepts only `command` and `args`. Unknown fields fail configuration validation. `inputs` is a list of at most 64 unique owner-relative literal paths (files or directories, no globs); omission and an empty list are allowed. Entry files and inputs cannot escape the owner or traverse symlinks. Internal relative symlinks within a declared input directory follow the same rules as execution inputs. Inputs must exist.
 
-Supported commands are `node` with an owner-relative entry file as the first argument (additional arguments are passed to that script), or an owner-relative executable whose command path is itself the entry file. `node` uses the current Node executable and the environment-script import host. Inline `-e`/`-p`, flags before the Node entry, absolute executable paths and PATH interpreter lookup are not supported: every identity must have a hashable entry file. Other interpreters may be invoked through an owner-provided executable entry. Imported helpers and other rule files must be declared in `inputs` if changing them should invalidate evidence independently of the returned value.
+Supported commands are `node` with an owner-relative entry file as the first argument (additional arguments are passed to that script), or an owner-relative executable whose command path is itself the entry file. `node` uses the current Node executable and the environment-script import host. Inline `-e`/`-p`, flags before the Node entry, absolute executable paths and PATH interpreter lookup are not supported: every identity must have a scoped entry file. Other interpreters may be invoked through an owner-provided executable entry. Declared `inputs` are scoped and checked for existence, but neither their contents nor the entry file are automatically hashed. Include their relevant semantics in the returned identity value.
 
 Scripts use the environment-requirement executor: owner cwd, a credential-filtered environment, external temporary/output directories, bounded output, process-group cleanup, cancellation and a timeout. `timeoutMs` is an integer from 1 to 900000, default 30000. Temporary output is removed after each invocation. The workspace must remain unchanged; the normal workspace integrity checks still apply. These are trusted owner scripts, not an OS sandbox, and must treat the workspace as read-only.
 
 Stdout must contain exactly 1–128 characters from `[A-Za-z0-9._:-]`, optionally followed by one LF newline. Empty output, whitespace, CRLF, extra lines, invalid bytes, excessive output, a nonzero exit or timeout fail current-input validation with an Artifact-specific error. No default-identity fallback occurs. Stderr is not part of the value and is not forwarded as an identity diagnostic.
 
-The own hash is `inputHash({version: 2, identity: "script", definition: artifact, identityInputs, value, requirements, environmentInputs})`. `identityInputs` hashes the entry file and declared inputs using owner-relative paths; `value` is stdout without its optional final LF. This replaces **only** material fingerprints and `executionInputs`. The complete Artifact definition (including views, tool metadata and the stale declaration), environment requirements and their inputs remain included. Editing the identity entry or a declared input invalidates old evidence even if it returns the same string. The owner is responsible for the equivalence relation: an unchanged string permits reuse across material, view implementation or shared runtime changes that the identity function considers equivalent. Repeating `verify` reuses the previous matching actual result; `--force` still requires a fresh review of the selected Critics.
+The own hash is `inputHash({id, value})`, where `value` is stdout without its
+optional final LF. Only the owner's value and Artifact ID participate locally.
+No Artifact/Critic definition, identity script, declared input, tool/profile,
+environment, criteria, integrity policy, package version or runtime version is
+automatically mixed back in. The owner must encode every distinction that should
+invalidate review in the returned value. Identical output deliberately permits
+reuse despite such changes. Safety, scoping and workspace-integrity checks still
+run; identity does not bypass execution safety.
 
-Relations, dependencies, component hashing, Critic hashing and execution integrity are unchanged. An identity string does not bypass a changed dependency, Critic definition, executor/runtime version or integrity policy. The default, `file-hash` and `always` identity payloads and hashes are unchanged; no identity version bump or evidence migration is introduced.
+Dependency identities and cycle connectivity still propagate. A changed required
+dependency invalidates its consumers. Default identity retains material,
+configuration, owned Critic definitions, declared execution/environment inputs
+and integrity policy coverage; only package/runtime version salts are removed.
 
 Current `plan`/`status` and saved Run validation artifacts expose `identity: "script"` and `value`, in JSON and plain text. Run snapshots retain `artifactIdentities` so even a fully reused Run records the equivalence decision. Stored Run queries never re-execute the identity script. Current-input preparation computes identities and validation inputs only for the selected targets and their dependency closure; JSON and plain-text validation output use that same scope. A whole-project selection prepares every Artifact. Scoped hashes are identical to the corresponding whole-project hashes. Preparation does execute opted-in identity scripts, including for `status`/`plan` and explicit monitor inspection, but static `config check`, `graph`, config discovery and monitor GETs do not. Foreground CLI preparation handles SIGINT/SIGTERM through cancellation: it terminates identity process groups, removes disposable output and exits with code 2 and `Project validation cancelled.`. Replay-validated reuse and tool-result replay receipts are separate ideas, not part of this mode.
 
 Strongly connected components group cycles into a finite condensation graph. Hash each component's sorted members, local identities, internal relationships and dependency-component hashes; derive each Artifact's identity from its canonical name and component hash. Changes to a referenced component invalidate its consumers. Unrelated Artifact changes preserve evidence. Neither review IDs nor completion times contribute to input identity. Repeating an unchanged review therefore does not invalidate consumers.
 
-A version 2 ValidationInput combines the effective Critic definition, current target/dependency identities, executor package version, Node version/platform/architecture and integrity policy. `stale: {"kind":"always"}` permits only current-request evidence for that Artifact and its consumers. `--force` similarly requires a new review for selected Critics while preserving applicable dependency evidence.
+A version 3 ValidationInput key is `inputHash({version: 3, criticId, target, deps})`: only the Critic ID and current target/dependency Artifact identities are inputs. Default Artifacts carry definition and integrity coverage inside their identities; owner Artifacts use their returned values. Package version, Node version, platform and architecture are not automatic salts. `stale: {"kind":"always"}` permits only current-request evidence for that Artifact and its consumers. `--force` similarly requires a new review for selected Critics while preserving applicable dependency evidence.
 
-Only actual semantic GREEN/RED results with the current input version are evidence. The latest semantic verdict for a matching input wins; RED is not hidden by an earlier GREEN. Operational ERROR is not a semantic verdict. Historical inputs remain queryable as stored results but never satisfy new inputs or resume execution.
+Only actual semantic GREEN/RED results with the current input version are evidence. The latest semantic verdict for a matching input wins; RED is not hidden by an earlier GREEN. Operational ERROR is not a semantic verdict. Matching GREEN and RED are both reused without executing again. RED remains unsatisfied. Use `--force` for a fresh review; ERROR is never reused. State from 4.x is rejected on opening; use a fresh state directory.
 
 A Critic's PASS describes its matching actual result. Final Artifact/project satisfaction separately requires every owned Critic and every required Artifact in the dependency closure. Explicit bases need no fabricated review. A cycle is not evidence: all non-basis members still need matching actual PASS results. Traversal uses visited sets and per-query memoization, with no persistent stale flag or invalidation queue.
 
@@ -160,7 +268,27 @@ A Critic's PASS describes its matching actual result. Final Artifact/project sat
 
 Individual verification executes the selected Critic or the selected Artifact's Critics as soon as their input and execution environment are ready. It never waits for dependency PASS. `--recursive` includes Critics across the required dependency closure, including cycles. `--all` covers every Artifact. Multiple evaluations run concurrently within the Broker's executor limit.
 
-Successful selected results are preserved if other required evidence is missing; the Run is INCOMPLETE. The same result can satisfy a later request after the remaining evidence arrives. Run status distinguishes review execution (`QUEUED`, `RUNNING`, `WAITING_HUMAN`, `ERROR`) from semantic results (`GREEN`, `RED`) and unfinished validation obligations (`INCOMPLETE`). No blocked or reused ticket is fabricated.
+Successful selected results are preserved if other required evidence is missing; the Run is INCOMPLETE. The same result can satisfy a later request after the remaining evidence arrives. Run status distinguishes review execution (`QUEUED`, `RUNNING`, `WAITING_HUMAN`, `ERROR`) from semantic results (`GREEN`, `RED`) and unfinished validation obligations (`INCOMPLETE`). No blocked or reused ticket is fabricated. Identical active Critic/input requests across Runs in the same state directory coalesce: the follower waits for and adopts the original request result. Its cancellation does not cancel the source. Source cancellation/error fails the follower without fabricating a verdict. A
+follower never executes or hosts another Run. It coalesces only onto a request
+with a live Run owner, or an unowned QUEUED request inside its submission grace
+lease. `createBroker({coalescingGraceMs})` configures that lease for newly submitted
+Runs (integer 0–300000 ms). The default is 15000 ms: enough for the CLI worker's
+15-second startup budget while bounding abandonment; normal SDK/CLI callers
+start within milliseconds. The persisted source Run's submission time and lease
+control eligibility, not the follower's configuration or arrival time. Zero grace
+disables unowned coalescing. Invalid/missing lease metadata or a future submission
+time expires eligibility immediately. Each Broker also bounds observed remaining
+grace with a monotonic deadline, so a wall-clock rollback cannot prolong its wait.
+
+When the lease expires without an owner, the follower removes that shared
+reference and replans inside a write transaction. It first checks for another
+owned/leased matching active request; otherwise it creates a ticket in its own
+Run. Racing followers therefore share one execution. The abandoned source's
+records remain untouched. If its caller later runs it, its already-queued ticket
+may execute again (even if matching evidence now exists); cancel abandoned Runs
+rather than revive them when that is not desired. New submissions reuse matching
+GREEN/RED evidence normally. A dead source worker is reconciled as WORKER_EXITED;
+partial execution is not replayed. `--force` opts out of both stored-result reuse and active coalescing.
 
 Project queries compare prepared current input and actual evidence in a readonly transaction. They create no database, ticket or alarm and execute no review tools or Providers. Preparing an opted-in owner identity runs its script with disposable external output; other current-input preparation remains script-free. Completed Runs reference the evidence they consumed, preserving their historical interpretation. `run show` and stored-result queries do not need the current workspace or reconcile owners. A terminal INCOMPLETE Run does not add omitted Critics when resumed; submit a new request.
 
@@ -201,8 +329,7 @@ filesystem. Unsupported monitoring fails closed.
 `{descriptor,signal,assertUnchanged,close}` without writing to the input or
 creating a workspace cache. Version 2 descriptors have no `mode` and identify
 the canonical supplied path as both `sourcePath` and `path`. Reopening checks
-that same path and its recorded integrity proof. Historical review records remain readable, but Project version 4 never
-resumes their execution or accepts their input keys as current evidence.
+that same path and its recorded integrity proof. Only the current major state format is accepted; 4.x state is neither read nor migrated.
 
 Acquisition validates input with its observer active. Human claims, registered
 tools and results use that observer; user code is followed by a fresh integrity
@@ -252,10 +379,10 @@ source descriptor. Reopening a strict descriptor with a metadata override is
 rejected; an explicit new metadata-policy capture is required.
 
 The Project CLI accepts `--integrity content|metadata` for `verify`, `status`, and
-`plan`; the default is `content`. Nondefault integrity participates in the effective
-Critic identity, so metadata-policy review evidence cannot satisfy a strict query,
-and strict evidence is not silently substituted for a metadata-policy request.
-The new validation-input version also separates version 4 evidence from historical keys.
+`plan`; the default is `content`. Default Artifact identity includes integrity policy, so content and metadata
+reviews have distinct keys. Owner identity controls this distinction itself;
+encode policy in its value when reviews should not be considered equivalent.
+Execution safety always enforces the requested policy independently of reuse.
 
 ## Broker and Executors
 
@@ -263,7 +390,7 @@ The Broker owns SQLite tickets, claims, events, results and process ownership. A
 
 Runtime currently supports fixed `node --test` entry paths. Paths are owner-relative logical paths, including mounts; the Executor resolves them to real files and runs with the owner's cwd. Actual assertion failure returns RED; missing input, unsupported profile, process failure or broken execution is ERROR. Standard output and diagnostics are bounded. State, caches and temporary paths stay external through the supplied environment.
 
-Agent execution uses Pi with the exact requested Provider, model and reasoning settings. The only admitted observation operations are scoped view tools. The original payload remains immutable; a digested instruction adds reviewer-specific tool references. The Agent must return the structured verdict, summary and evidence and satisfy required observations. No shell, arbitrary file access or hidden reasoning is persisted as review evidence. Authentication files remain outside the workspace.
+Agent execution uses Pi with the exact requested Provider, model and reasoning settings. The only admitted observation operations are scoped view tools. The original payload remains immutable; a digested instruction adds reviewer-specific tool references. The Agent must return the structured verdict and any owner-schema response fields and satisfy required observations. No shell, arbitrary file access or hidden reasoning is persisted as review evidence. Authentication files remain outside the workspace.
 
 ### Final Agent response recovery
 
@@ -304,16 +431,12 @@ failed Provider messages retain their existing error classifications rather than
 being treated as format errors. Exact response identity checks apply to the repair
 as well. Cancellation and timeout remain operational errors, not verdicts.
 
-The review schema includes nonblank summary/evidence strings, string length
-bounds and evidence-count bounds, so those shape errors also reach repair.
-An additional safe check preserves the existing UTF-16 code-unit length limits
-(TypeBox uses graphemes) and applies the same normalized persisted-result size
-check as the Broker, including tool-call metadata and the actual duration captured
-for the accepted candidate. That exact duration is persisted, excluding subsequent
-diagnostic-drain and cleanup latency. Immutable tool metadata is normalized and
-its serialized size counted once across candidate inspections.
+The verdict-specific owner schema governs result fields and descriptions; CCDD
+adds no summary/evidence requirements. The same normalized persisted-result size
+check as the Broker includes tool-call metadata and the actual accepted duration.
+Immutable audit metadata is normalized and counted once across inspections.
 An envelope already too large because of immutable tool metadata cannot be
-repaired by changing evidence; the one attempt still fails closed.
+repaired by shortening owner fields; the single repair still fails closed.
 Only a strictly valid repaired response can proceed to ordinary result and required
 observation checks. The verdict remains the model's own; CCDD does not rewrite it.
 The original transcript exists only in memory for continuation and is reset when
@@ -321,9 +444,8 @@ the invocation ends. Successful final results are stored as before; invalid raw
 responses and repair prompts are never stored.
 
 Repair activity is diagnostic history, not an additional evaluation or evidence.
-It does not alter ValidationInput version 2 or add repair state to reuse keys.
-A coordinated release's executor package version already changes input identity;
-do not deploy modified package contents under the existing published version.
+It does not add repair state to version 3 reuse keys. Package/runtime version
+changes alone do not invalidate identity.
 No package version is changed by this feature patch. A repaired GREEN/RED result
 is reusable under normal identity rules; an ERROR is never semantic evidence.
 Reused evidence points to its original evaluation/run, whose audit events describe
@@ -385,11 +507,11 @@ The worker persists WAITING_HUMAN, invokes registered alarms, and records delive
 
 Human waiting retains the monitoring worker. Another local CLI process can
 inspect Artifacts, claim the request, and submit
-`{reviewerId,result:{verdict,summary,evidence}}`. Only the claimant may complete
+`{reviewerId,result:{verdict,...ownerFields}}`. Only the claimant may complete
 it and only once. Input integrity is revalidated at completion, and the existing
 worker settles the selected scope using its saved execution configuration.
 
-Human tool execution requires the active claimant and a WAITING_HUMAN request. The Broker reopens and validates the recorded workspace, matches stored Artifact definitions against its config, resolves registered tools, and validates workspace/claim again after execution. Only safe tool name, Artifact ID and operation metadata are persisted. Launch errors do not become RED or complete the review; input mutation invalidates the review with ERROR. Human result submission requires a nonempty summary and at least one nonblank evidence entry.
+Human tool execution requires the active claimant and a WAITING_HUMAN request. The Broker reopens and validates the recorded workspace, matches stored Artifact definitions against its config, resolves registered tools, and validates workspace/claim again after execution. Only safe tool name, Artifact ID and operation metadata are persisted. Launch errors do not become RED or complete the review; input mutation invalidates the review with ERROR. Human result submission validates the selected owner response schema exactly. The monitor accepts additional fields as a JSON object; it rejects invalid or oversized input and never truncates it.
 
 Human waiting keeps its worker and input monitoring alive. Human completion requires a live owner. Changes or owner death invalidate the review. Result files and notification output must be outside the reviewed workspace.
 
@@ -463,8 +585,9 @@ evidence, Runtime execution or older runs that lack telemetry.
 Telemetry is never added to Artifact/SCC hashes, ValidationInput, reuse keys,
 `ReviewResult.toolCalls` or the Project's semantic `ValidationEvidence` projection.
 It adds only event types and JSON payload fields in existing SQLite storage;
-no schema/identity version or data migration is needed. Existing stored state and
-its evidence remain valid under the existing executor-version identity rules.
+within current-format (5.0) state, no schema/identity change or migration is
+needed for telemetry. Only current-format state and its evidence remain valid
+under Artifact-identity reuse rules; 4.x directories are rejected, not migrated.
 
 Telemetry persistence is best-effort, independent of successful observation delivery.
 Rejected or unresponsive optional sinks do not change the evaluation verdict,

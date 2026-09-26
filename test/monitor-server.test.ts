@@ -2,7 +2,6 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { DatabaseSync } from 'node:sqlite';
 import { artifactFixture, fixtureViews } from './helpers/artifacts.js';
 import { createBroker } from '../src/broker/index.js';
 import { createExecutorRegistry } from '../src/executors/index.js';
@@ -15,7 +14,7 @@ async function fixture(t: Parameters<typeof artifactFixture>[0], waiting = false
   await data.write('a', { name: 'a', views: fixtureViews(), ...(cycle ? { mounts: { peer: 'b' } } : {}), critics: [{ id: 'human', title: 'Human review', profile: { kind: 'human' }, payload: { instruction: cycle ? 'Inspect {a} and {peer}.' : 'Inspect {a}.', authFile: 'DO_NOT_EXPOSE_AUTH' } }] });
   if (cycle) await data.write('b', { name: 'b', basis: true, views: fixtureViews(), mounts: { peer: 'a' } });
   await writeFile(join(data.repoPath, 'ccdd.config.ts'), `import {writeFileSync} from 'node:fs';writeFileSync(${JSON.stringify(marker)},'executed');`);
-  const broker = createBroker({ ...data, executors: createExecutorRegistry({ alarmMethods: [async () => {}] }) }); data.cleanup(() => broker.close());
+  const broker = createBroker({ detail: 'full', ...data, executors: createExecutorRegistry({ alarmMethods: [async () => {}] }) }); data.cleanup(() => broker.close());
   const run = await broker.submitProject({ selection: { kind: 'all' } }); if (waiting) await runUntilSettled(broker, run.id);
   const monitor = await startMonitor({ stateDirs: [data.stateDir], port: 0 }); data.cleanup(() => monitor.close());
   const overview = await (await fetch(`${monitor.url}/api/requests`)).json() as MonitorOverview, request = overview.requests[0];
@@ -62,9 +61,9 @@ test('Human actions require the claimant, same-origin CSRF and schema-valid argu
   const result = await post(`${data.route}/tools/read_a`, first, { arguments: { lineCount: 1 } }); assert.equal(result.status, 200); assert.match(JSON.stringify(await result.json()), /Content of a/);
   assert.equal(data.broker.getRequest(data.request.id)!.status, 'WAITING_HUMAN');
   assert.equal((await post(`${data.route}/complete`, first, { verdict: 'GREEN', summary: 'Controlled Human result', evidence: [] })).status, 400);
-  const completed = await post(`${data.route}/complete`, first, { verdict: 'GREEN', summary: 'Controlled Human fixture submission', evidence: ['Read the actual fixture using its registered tool.'] });
+  const completed = await post(`${data.route}/complete`, first, { verdict: 'GREEN' });
   assert.equal(completed.status, 200, await completed.clone().text()); assert.equal((await completed.json() as MonitorDetail).request.status, 'GREEN');
-  assert.equal((await post(`${data.route}/complete`, first, { verdict: 'RED', summary: 'Duplicate', evidence: ['Fixture'] })).status, 409);
+  assert.equal((await post(`${data.route}/complete`, first, { verdict: 'RED' })).status, 409);
 });
 
 test('browser identity survives monitor restart while CSRF requires a fresh session token', async t => {
@@ -77,18 +76,11 @@ test('browser identity survives monitor restart while CSRF requires a fresh sess
 test('changed Human input is an operational failure and cannot accept a semantic verdict', async t => {
   const data = await fixture(t, true), browser = await session(data.monitor.url); assert.equal((await post(`${data.route}/claim`, browser)).status, 200);
   await writeFile(join(data.repoPath, 'a/content.txt'), 'changed');
-  assert.equal((await post(`${data.route}/complete`, browser, { verdict: 'GREEN', summary: 'Must not persist', evidence: ['Fixture'] })).status, 409);
+  assert.equal((await post(`${data.route}/complete`, browser, { verdict: 'GREEN' })).status, 409);
   assert.equal(data.broker.getRequest(data.request.id)!.result, null);
 });
 
-test('GET of historical results neither evaluates obsolete config nor enables resume or Human tools', async t => {
-  const data = await fixture(t); const db = new DatabaseSync(join(data.stateDir, 'broker.sqlite'));
-  const record = JSON.parse(String(db.prepare('SELECT data FROM requests WHERE id=?').get(data.request.id)!.data)); record.configManifest.version = 1;
-  db.prepare('UPDATE requests SET data=? WHERE id=?').run(JSON.stringify(record), data.request.id); db.close();
-  const before = await readFile(join(data.stateDir, 'broker.sqlite')), detail = await (await fetch(data.route)).json() as MonitorDetail;
-  assert.equal(detail.artifactPreview, 'historical'); assert.deepEqual(detail.tools, []); assert.equal(detail.human!.canClaim, false);
-  assert.deepEqual(await readFile(join(data.stateDir, 'broker.sqlite')), before); await assert.rejects(readFile(data.marker), { code: 'ENOENT' });
-});
+
 
 test('unknown routes, duplicate parameters and foreign origins fail with restrictive response headers', async t => {
   const data = await fixture(t);

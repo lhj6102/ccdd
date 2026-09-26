@@ -17,7 +17,7 @@ async function fixture(t: Parameters<typeof artifactFixture>[0], script = 'proce
 test('environment declarations belong to folders and remain inert during discovery and queries', async t => {
   const data = await fixture(t, 'throw new Error("Only explicit preparation executes this.");');
   const config = await data.config(); assert.equal(config.configManifest.envRequirements!['a/runtime'].script, 'a/environment.mjs');
-  const { plan } = await inspectProject(data); assert.equal(plan.artifacts[0].status, 'UNREVIEWED');
+  const { plan } = await inspectProject({ ...data, detail: 'full' }); assert.equal(plan.artifacts[0].status, 'UNREVIEWED');
   assert.equal((await data.check()).ok, false);
 });
 
@@ -57,9 +57,9 @@ test('declared runtime material and readiness inputs invalidate only their consu
   const data = await artifactFixture(t), views = fixtureViews(); views.humanTools!.read.metadata.executionPaths = ['runtime'];
   await mkdir(join(data.repoPath, 'runtime')); await writeFile(join(data.repoPath, 'runtime/code.txt'), 'version1');
   await data.write('a', { name: 'a', views, critics: [runtimeCritic()] }); await data.write('b', { name: 'b', critics: [runtimeCritic()] });
-  const before = (await inspectProject(data)).snapshot;
+  const before = (await inspectProject({ ...data, detail: 'full' })).snapshot;
   await writeFile(join(data.repoPath, 'runtime/code.txt'), 'version2');
-  const after = (await inspectProject(data)).snapshot;
+  const after = (await inspectProject({ ...data, detail: 'full' })).snapshot;
   assert.notEqual(before.inputs['a/check'].key, after.inputs['a/check'].key); assert.equal(before.inputs['b/check'].key, after.inputs['b/check'].key);
 });
 

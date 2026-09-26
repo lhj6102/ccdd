@@ -19,7 +19,7 @@ import type { AgentProfile } from '../src/contracts.js';
 
 const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aD1sAAAAASUVORK5CYII=';
 const agentProfile: AgentProfile = { kind: 'agent', provider: 'openai-codex', model: 'gpt-6-astra', reasoning: 'medium', timeoutMs: 10_000 };
-const verdict = { verdict: 'GREEN', summary: 'Frame checked', evidence: ['Observed the specified frame.'] };
+const verdict = { verdict: 'GREEN' };
 
 async function fixture(t: TestContext, { observation = true, preflight = true, hang = false } = {}) {
   const data = await artifactFixture(t), dir = data.root, repoPath = data.repoPath;
@@ -175,7 +175,7 @@ test('failed custom observation persistence cannot satisfy the Agent required Ar
 
 test('Broker persists custom operation and observation kind through completion and restart', async t => {
   const data = await fixture(t);
-  const broker = createBroker({ repoPath: data.repoPath, stateDir: data.stateDir, executors: createExecutorRegistry({ streamFn: frameStream() }) });
+  const broker = createBroker({ detail: 'full', repoPath: data.repoPath, stateDir: data.stateDir, executors: createExecutorRegistry({ streamFn: frameStream() }) });
   t.after(() => broker.close());
   const submitted = await broker.submitProject({ selection: { kind: 'critic', criticId: 'clip/frame-review' }, requesterId: 'integration-test' });
   const completed = await broker.run(submitted.id);
@@ -186,7 +186,7 @@ test('Broker persists custom operation and observation kind through completion a
   assert.deepEqual(completed.requests[0].result?.toolCalls?.[0].observation, observation);
   assert.deepEqual((broker.getRun(submitted.id)!.events.find(event => event.type === 'artifact.tool.called')?.data as { observation?: unknown }).observation, observation);
   await broker.close();
-  const reopened = createBroker({ repoPath: data.repoPath, stateDir: data.stateDir });
+  const reopened = createBroker({ detail: 'full', repoPath: data.repoPath, stateDir: data.stateDir });
   try { assert.deepEqual(reopened.getRun(submitted.id)!.requests[0].result?.toolCalls?.[0].observation, observation); }
   finally { await reopened.close(); }
 });

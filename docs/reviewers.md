@@ -20,7 +20,7 @@ ccdd-project verify spec --recursive --wait --codex-auth-file /external/auth.jso
 
 Use `--pi-auth-file`/`CCDD_PI_AUTH_FILE` for a Pi auth store, or `--codex-auth-file`/`CCDD_CODEX_AUTH_FILE` to bridge an existing Codex auth file read-only. Credentials must never be inside reviewed input. Doctor makes a real Provider call with a private nonce outside the project; it does not evaluate project quality or substitute for the actual Critic.
 
-Agents receive only scoped tools and return structured GREEN/RED, summary and evidence. Each target and explicit instruction reference must have a successful content or empty observation. Listing files, mentioning a reference or launching an app does not count. An admitted child or mount is not automatically a mandatory observation. Image views require a model supporting image input.
+Agents receive only scoped tools and return structured GREEN/RED plus fields required by the Critic's optional passSchema/failSchema (verdict-only when no schema applies). Each target and explicit instruction reference must have a successful content or empty observation. Listing files, mentioning a reference or launching an app does not count. An admitted child or mount is not automatically a mandatory observation. Image views require a model supporting image input.
 
 ## Human
 
@@ -41,7 +41,7 @@ ccdd-project request tool REQUEST_ID --reviewer me --tool read_spec --args '{"pa
 ccdd-project request submit REQUEST_ID --reviewer me --result-file /external/result.json
 ```
 
-The tool name and arguments depend on the declared view. The result file contains the person's actual `{"verdict":"GREEN|RED","summary":"...","evidence":["..."]}`. A launch receipt alone never completes a review. Only the current claimant can call Human tools or submit results, and completion requires a live worker and unchanged input.
+The tool name and arguments depend on the declared view. The result file contains the person's actual `{"verdict":"GREEN"}` or `{"verdict":"RED"}`, plus any fields required by the corresponding declared owner response schema (for example `{"verdict":"RED","reasons":["Unmet requirement"]}` when failSchema declares reasons). A launch receipt alone never completes a review. Only the current claimant can call Human tools or submit results, and completion requires a live worker and unchanged input.
 
 ## Local environment checks
 

@@ -70,9 +70,9 @@ The [getting-started guide](docs/getting-started.md) includes a complete runnabl
 
 ## Read the result
 
-Every actual review returns a verdict, summary and concrete evidence. GREEN means its criteria were met; RED means they were not. Execution problems produce ERROR. Final validation needs matching PASS evidence for all required Critics and dependencies. A folder without Critics stays UNREVIEWED unless explicitly declared `basis: true`.
+Every actual review returns a verdict and any owner-defined fields required by its optional passSchema/failSchema. There is no built-in summary or evidence field. GREEN means its criteria were met; RED means they were not. Execution problems produce ERROR. Final validation needs matching PASS evidence for all required Critics and dependencies. A folder without Critics stays UNREVIEWED unless explicitly declared `basis: true`.
 
-An individual check runs its selected Critics immediately. If other required evidence is missing, their results are saved and the request is INCOMPLETE. Add `--recursive` to include those other evaluations. CCDD reuses matching actual evidence and computes freshness when queried; it does not store stale flags.
+An individual check runs its selected Critics immediately. If other required evidence is missing, their results are saved and the request is INCOMPLETE. Add `--recursive` to include those other evaluations. CCDD reuses both matching GREEN and RED results (RED remains unsatisfied), coalesces identical active requests across Runs, and computes freshness when queried; it does not store stale flags.
 
 Reviews run in the workspace you supply. Keep it unchanged until completion, including Human waiting. Records, caches and generated output live outside it. To keep editing elsewhere, create your own worktree and pass it with `--repo`.
 
@@ -99,3 +99,5 @@ See [Contributing](CONTRIBUTING.md), [the context map](CONTEXT-MAP.md), [detaile
 ## License
 
 [MIT](LICENSE).
+
+Unreleased development: requester results default to a compact projection in the upcoming **5.0 breaking release**. See [migration and audit lookup](docs/project-validation.md#compact-review-results-unreleased-50) and [unreleased notes](docs/releases/unreleased.md).

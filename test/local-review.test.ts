@@ -29,7 +29,7 @@ async function fixture(t: TestContext, script = 'console.log("Required runtime i
     critics: [{ id: 'human', title: 'Inspect the asset', profile: { kind: 'human' }, payload: { instruction: 'Inspect {asset}.', privateField: 'NOT_IN_PORTABLE_REVIEW' } }],
   }));
   await writeFile(join(repoPath, 'view.mjs'), `import {readFile,writeFile} from 'node:fs/promises';let input='';for await(const chunk of process.stdin)input+=chunk;const {context}=JSON.parse(input);const text=await readFile(context.artifactPath+'/asset.txt','utf8');await writeFile(context.outputDir+'/actually-viewed.txt',text);process.stdout.write(JSON.stringify({content:[{type:'text',text}]}));`);
-  const broker = createBroker({ repoPath, stateDir, repoId: 'test', executors: {
+  const broker = createBroker({ detail: 'full', repoPath, stateDir, repoId: 'test', executors: {
     canExecute: () => ({ ok: true }), notifyHuman: async () => {},
     execute: async () => { throw new Error('This fixture must perform only actual Human tool execution.'); },
   } });

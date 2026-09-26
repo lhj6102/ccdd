@@ -1,4 +1,4 @@
-import type { ArtifactViews, EnvironmentRequirement, ScriptDefinition } from './tools/contracts.js';
+import type { ArtifactViews, EnvironmentRequirement, ScriptDefinition, JsonSchema } from './tools/contracts.js';
 
 /** Public declarations contain data only; discovery never executes code. */
 export interface AgentProfile { kind: 'agent'; provider: string; model: string; reasoning: string; timeoutMs?: number }
@@ -6,7 +6,7 @@ export interface HumanProfile { kind: 'human' }
 export interface RuntimeProfile { kind: 'runtime'; command: string; args: string[]; timeoutMs?: number }
 export type CriticProfile = AgentProfile | HumanProfile | RuntimeProfile;
 export interface ReviewPayload { instruction: string; [key: string]: unknown }
-export interface CriticDefinition { id: string; title: string; profile: CriticProfile; payload: ReviewPayload }
+export interface CriticDefinition { id: string; title: string; profile: CriticProfile; payload: ReviewPayload; passSchema?: JsonSchema; failSchema?: JsonSchema }
 export type StaleStrategy = { kind: 'file-hash'; paths?: string[] } | { kind: 'always' }
   | { kind: 'identity'; script: ScriptDefinition; inputs?: string[]; timeoutMs?: number };
 export interface ArtifactManifest {

@@ -1,5 +1,9 @@
+import { assertStateFormat, initializeStateFormat } from '../state-format.js';
+import { semanticResult, validateFinalResult } from '../response-schema.js';
+import { requesterRun, requesterRequest, resultView, type ResultDetail, type ResultOptions } from '../result-view.js';
 import { DatabaseSync } from 'node:sqlite';
 import { randomUUID } from 'node:crypto';
+import { performance } from 'node:perf_hooks';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -16,7 +20,7 @@ import { prepareHumanReview } from '../executors/human-preparation.js';
 import { prepareWorkspace, reopenWorkspace, type WorkspaceDescriptor, type WorkspaceHandle, type WorkspaceIntegrity } from '../workspaces/index.js';
 import { createProjectSnapshot } from '../project/identity.js';
 import { includedCritics, planProject } from '../project/query.js';
-import { readEvidence } from '../project/store.js';
+import { readEvidence, storedRun } from '../project/store.js';
 import type { ProjectRunDefinition, ProjectSelection } from '../project/types.js';
 import type { RunStatus } from '../contracts.js';
 import type { ReviewEnvelope, ReviewRequest, ReviewResult, ReviewStatus, ReviewToolCall, ExecutionContext, ExecutorReadiness } from '../contracts.js';
@@ -27,7 +31,7 @@ export interface RunRecord {
   requesterId: string; scope?: { kind: 'graph' } | { kind: 'chain' } | { kind: 'critic'; criticId: string } | { kind: 'project' };
   project?: ProjectRunDefinition;
   graph?: GraphDefinition;
-  status: RunStatus; createdAt: string; completedAt?: string; error?: string;
+  status: RunStatus; coalescingGraceMs?: number; createdAt: string; completedAt?: string; error?: string;
 }
 export interface BrokerEvent { id: number; runId: string; requestId: string | null; createdAt: string; type: string; message: string; data?: unknown }
 export interface RunView extends RunRecord { scope: NonNullable<RunRecord['scope']>; owner: { pid: number; claimedAt: string } | null; requests: ReviewRequest[]; events: BrokerEvent[] }
@@ -37,7 +41,7 @@ export interface BrokerExecutors {
   execute(request: ReviewRequest, context: ExecutionContext & { signal: AbortSignal }): Promise<unknown>;
   notifyHuman?(request: ReviewRequest, context: { signal: AbortSignal }): Promise<unknown>;
 }
-export interface BrokerOptions { repoPath: string; stateDir: string; repoId?: string; executors?: BrokerExecutors; workspaceIntegrity?: WorkspaceIntegrity; workspaceAdapter?: { prepareWorkspace: typeof prepareWorkspace; reopenWorkspace: typeof reopenWorkspace } }
+export interface BrokerOptions { repoPath: string; stateDir: string; repoId?: string; coalescingGraceMs?: number; executors?: BrokerExecutors; workspaceIntegrity?: WorkspaceIntegrity; workspaceAdapter?: { prepareWorkspace: typeof prepareWorkspace; reopenWorkspace: typeof reopenWorkspace } }
 interface ActiveRun { runId: string; token: string; abort: AbortController; promise: Promise<RunRecord & { requests: ReviewRequest[] }> | null }
 const object = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === 'object' && !Array.isArray(value);
 const errorCode = (error: unknown): string | undefined => object(error) && typeof error.code === 'string' ? error.code : undefined;
@@ -96,6 +100,7 @@ export function readStateContext(stateDir: string) {
   // A worker closing the last WAL connection can briefly lock even read-only queries.
   const database = new DatabaseSync(filename, { readOnly: true, timeout: 5000 });
   try {
+    assertStateFormat(database);
     const row = database.prepare('SELECT value FROM metadata WHERE key = ?').get('registered-repo');
     const identity = row ? parseStored<unknown>(row.value) : null;
     if (!object(identity) || typeof identity.repoPath !== 'string' || !path.isAbsolute(identity.repoPath) || typeof identity.repoId !== 'string') throw new Error('State directory has no valid repository identity.');
@@ -115,7 +120,9 @@ function prepareStateDirectory(repoPath: string, stateDir: string) {
 }
 
 /** Durable broker operations. Merely opening the store never starts a worker. */
-export function createBroker({ repoPath, stateDir, repoId = 'demo', executors, workspaceIntegrity = 'content', workspaceAdapter = { prepareWorkspace, reopenWorkspace } }: BrokerOptions) {
+export function createBroker<D extends ResultDetail = 'compact'>({ detail, repoPath, stateDir, repoId = 'demo', coalescingGraceMs = 15_000, executors, workspaceIntegrity = 'content', workspaceAdapter = { prepareWorkspace, reopenWorkspace } }: BrokerOptions & ResultOptions<D>) {
+  if (!Number.isSafeInteger(coalescingGraceMs) || coalescingGraceMs < 0 || coalescingGraceMs > 300_000) throw new Error('coalescingGraceMs must be an integer from 0 to 300000.');
+  if (detail !== undefined && detail !== 'compact' && detail !== 'full') throw new Error('detail must be compact or full.');
   if (!['content', 'metadata'].includes(workspaceIntegrity)) throw new Error('Workspace integrity must be content or metadata.');
   try {
     repoPath = fs.realpathSync(repoPath);
@@ -131,7 +138,10 @@ export function createBroker({ repoPath, stateDir, repoId = 'demo', executors, w
   let db!: DatabaseSync;
   try {
     db = new DatabaseSync(path.join(stateDir, 'broker.sqlite'));
-    db.exec(`PRAGMA busy_timeout=5000; PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;
+    db.exec('PRAGMA busy_timeout=5000; BEGIN IMMEDIATE');
+    initializeStateFormat(db);
+    db.exec('COMMIT');
+    db.exec(`PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;
       CREATE TABLE IF NOT EXISTS runs (id TEXT PRIMARY KEY, created_at TEXT NOT NULL, status TEXT NOT NULL, data TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS requests (id TEXT PRIMARY KEY, run_id TEXT NOT NULL REFERENCES runs(id), ordinal INTEGER NOT NULL, status TEXT NOT NULL, data TEXT NOT NULL);
       CREATE INDEX IF NOT EXISTS requests_run ON requests(run_id, ordinal);
@@ -151,7 +161,7 @@ export function createBroker({ repoPath, stateDir, repoId = 'demo', executors, w
   let closing = false;
   const active = new Map<string, ActiveRun>();
   const listeners = new Set<() => void>();
-  const ensureOpen = () => { if (closed || closing) throw new Error('Broker is closed.'); };
+  const ensureOpen = () => { if (closed || closing) throw new Error('Broker is closed.'); sweepSubmissionDeadlines(); };
   const requireExecutors = () => {
     if (!executors || typeof executors.canExecute !== 'function' || typeof executors.execute !== 'function') throw new Error('Review submission and execution require an executor registry.');
     return executors;
@@ -171,8 +181,38 @@ export function createBroker({ repoPath, stateDir, repoId = 'demo', executors, w
   };
   const ownerData = (id: string): OwnerRecord | undefined => db.prepare('SELECT * FROM run_owners WHERE run_id = ?').get(id) as OwnerRecord | undefined;
   const runRequests = (id: string): ReviewRequest[] => db.prepare('SELECT data FROM requests WHERE run_id = ? ORDER BY ordinal').all(id).map(row => parseStored<ReviewRequest>(row.data));
+  const sharedRequests = (run: RunRecord): ReviewRequest[] => (run.project?.coalescedRequestIds ?? []).map(id => required(requestData(id), 'Shared Request'));
+  const attemptsFor = (run: RunRecord): ReviewRequest[] => [...runRequests(run.id), ...sharedRequests(run)];
+  const submissionDeadlines = new Map<string, number>();
+  function sweepSubmissionDeadlines() {
+    for (const id of submissionDeadlines.keys()) {
+      const source = runData(id);
+      // Retain expired unowned sources: dropping their monotonic tombstone could
+      // renew eligibility after a wall-clock rollback. Owned Runs cannot revert
+      // to an abandoned submission; worker exit is reconciled as terminal.
+      if (!source || terminal.has(source.status) || ownerData(id)) submissionDeadlines.delete(id);
+    }
+  }
+  const shareable = (request: ReviewRequest): boolean => {
+    const source = required(runData(request.runId), 'Source Run');
+    if (terminal.has(source.status)) return false;
+    if (ownerAlive(ownerData(source.id))) return true;
+    const grace = source.coalescingGraceMs;
+    if (request.status !== 'QUEUED' || typeof grace !== 'number' || !Number.isSafeInteger(grace) || grace <= 0 || grace > 300_000) return false;
+    const elapsed = typeof source.createdAt === 'string' ? Date.now() - Date.parse(source.createdAt) : NaN;
+    if (!Number.isFinite(elapsed) || elapsed < 0 || elapsed >= grace) return false;
+    // A wall-clock rollback must not extend a lease already observed here.
+    // Keep this process-local bound without changing the source Run.
+    const tick = performance.now();
+    const deadline = Math.min(submissionDeadlines.get(source.id) ?? Infinity, tick + grace - elapsed);
+    submissionDeadlines.set(source.id, deadline);
+    return tick < deadline;
+  };
   const saveRequest = (request: ReviewRequest) => db.prepare('UPDATE requests SET status = ?, data = ? WHERE id = ?').run(request.status, JSON.stringify(request), request.id);
-  const saveRun = (run: RunRecord) => db.prepare('UPDATE runs SET status = ?, data = ? WHERE id = ?').run(run.status, JSON.stringify(run), run.id);
+  const saveRun = (run: RunRecord) => {
+    db.prepare('UPDATE runs SET status = ?, data = ? WHERE id = ?').run(run.status, JSON.stringify(run), run.id);
+    if (terminal.has(run.status)) submissionDeadlines.delete(run.id);
+  };
   const appendEvent = (runId: string, requestId: string | null, type: string, message: string, data: unknown = null) => {
     db.prepare('INSERT INTO events(run_id,request_id,created_at,type,message,data) VALUES (?,?,?,?,?,?)').run(runId, requestId, now(), type, message.slice(0, 4000), data === null ? null : JSON.stringify(data));
   };
@@ -181,17 +221,38 @@ export function createBroker({ repoPath, stateDir, repoId = 'demo', executors, w
     event: (request, type, message) => appendEvent(request.runId, request.id, type, message),
     assertWaiting: request => {
       ensureOpen();
-      if (request.configManifest?.version !== 2) throw new Error('Historical reviews are available for result lookup only.');
+      if (request.configManifest?.version !== 2) throw new Error('Invalid stored review configuration.');
       if (!request.notifiedAt) throw new Error('Human alarm delivery is still pending.');
       if (!ownerAlive(ownerData(request.runId))) throw new Error('An in-place review requires its monitoring worker to remain alive.');
     },
   });
   function refreshReadinessWithin(runId: string): void {
+    sweepSubmissionDeadlines();
     const run = required(runData(runId), 'Run'), requests = runRequests(runId);
-    if (run.project?.version === 2) {
+    if (run.project?.version === 3) {
       if (terminal.has(run.status)) return;
-      const plan = planProject(run.project.snapshot, readEvidence(db), { selection: run.project.selection, recursive: run.project.recursive, force: run.project.force, runId, attempts: requests });
+      for (const shared of sharedRequests(run)) reconcileWithin(shared.runId);
+      // Called in a write transaction: expire only unowned queued sources, then
+      // recheck all matching owned/leased requests before creating our own ticket.
+      const retained = sharedRequests(run).filter(request => terminal.has(request.status) || shareable(request));
+      if (retained.length !== (run.project.coalescedRequestIds ?? []).length) {
+        run.project.coalescedRequestIds = retained.map(request => request.id);
+        saveRun(run);
+        appendEvent(runId, null, 'request.uncoalesced', 'Unowned source submission lease expired; replanning this Run.');
+      }
+      const plan = planProject(run.project.snapshot, readEvidence(db), { selection: run.project.selection, recursive: run.project.recursive, force: run.project.force, runId, coalescedRequestIds: run.project.coalescedRequestIds, attempts: [...requests, ...sharedRequests(run)] });
       for (const item of plan.items.filter(item => item.action === 'EXECUTE')) {
+        if (!run.project.force) {
+          const candidates = db.prepare("SELECT data FROM requests WHERE status IN ('QUEUED','RUNNING','WAITING_HUMAN') AND json_extract(data, '$.criticId') = ? AND json_extract(data, '$.validationInput.key') = ? AND json_extract(data, '$.validationInput.version') = 3 ORDER BY rowid").all(item.id, item.input.key).map(row => parseStored<ReviewRequest>(row.data));
+          for (const candidate of candidates) reconcileWithin(candidate.runId);
+          const shared = candidates.map(candidate => required(requestData(candidate.id), 'Request')).find(candidate => !terminal.has(candidate.status) && shareable(candidate));
+          if (shared) {
+            run.project.coalescedRequestIds = [...new Set([...(run.project.coalescedRequestIds ?? []), shared.id])];
+            saveRun(run);
+            appendEvent(runId, shared.id, 'request.coalesced', 'Waiting for an identical active review in another Run.', { sourceRunId: shared.runId });
+            continue;
+          }
+        }
         const envelope = run.project.templates.find(template => template.criticId === item.id);
         if (!envelope) throw codedError(`Missing prepared Critic ${item.id}.`, 'REVIEW_GRAPH_INVALID');
         const request: ReviewRequest = { ...copy(envelope), validationInput: copy(item.input), id: randomUUID(), runId,
@@ -203,16 +264,16 @@ export function createBroker({ repoPath, stateDir, repoId = 'demo', executors, w
       }
       return;
     }
-    throw new Error('Historical Runs cannot be resumed; submit a new validation request.');
+    throw new Error('Invalid stored Run format; submit a new validation request.');
   }
   const updateRunStatus = (runId: string) => {
-    const states = runRequests(runId).map(request => request.status);
     const run = required(runData(runId), 'Run');
-    if (run.project?.version === 2) {
+    const states = attemptsFor(run).map(request => request.status);
+    if (run.project?.version === 3) {
       if (terminal.has(run.status)) return;
-      const plan = planProject(run.project.snapshot, readEvidence(db), { selection: run.project.selection, recursive: run.project.recursive, force: run.project.force, runId, attempts: runRequests(runId) });
+      const plan = planProject(run.project.snapshot, readEvidence(db), { selection: run.project.selection, recursive: run.project.recursive, force: run.project.force, runId, coalescedRequestIds: run.project.coalescedRequestIds, attempts: attemptsFor(run) });
       const status: RunStatus = states.includes('RUNNING') ? 'RUNNING' : states.includes('QUEUED') ? 'QUEUED' : states.includes('WAITING_HUMAN') ? 'WAITING_HUMAN' :
-        states.includes('ERROR') ? 'ERROR' : states.includes('RED') ? 'RED' : plan.satisfied ? 'GREEN' : 'INCOMPLETE';
+        states.includes('ERROR') ? 'ERROR' : states.includes('RED') || plan.critics.some(critic => critic.status === 'RED') ? 'RED' : plan.satisfied ? 'GREEN' : 'INCOMPLETE';
       if (run.status !== status) {
         run.status = status;
         if (terminal.has(status)) {
@@ -223,7 +284,7 @@ export function createBroker({ repoPath, stateDir, repoId = 'demo', executors, w
       }
       return;
     }
-    throw new Error('Historical Runs are available for result lookup only.');
+    throw new Error('Invalid stored Run format.');
   };
 
   function finishWithin(requestId: string, outcome: { result?: ReviewResult; error?: unknown }, expectedStates: ReviewStatus[] = ['RUNNING', 'WAITING_HUMAN']) {
@@ -236,7 +297,7 @@ export function createBroker({ repoPath, stateDir, repoId = 'demo', executors, w
     request.errorCode = errorCode(error) ?? null;
     request.completedAt = now();
     saveRequest(request);
-    appendEvent(request.runId, request.id, hasError ? 'request.error' : 'request.completed', hasError ? required(request.error, 'error message') : required(result, 'review result').summary, { status: request.status, ...(request.errorCode ? { code: request.errorCode } : {}) });
+    appendEvent(request.runId, request.id, hasError ? 'request.error' : 'request.completed', hasError ? required(request.error, 'error message') : `Review ${required(result, 'review result').verdict}.`, { status: request.status, ...(request.errorCode ? { code: request.errorCode } : {}) });
     refreshReadinessWithin(request.runId);
     updateRunStatus(request.runId);
     return true;
@@ -251,8 +312,8 @@ export function createBroker({ repoPath, stateDir, repoId = 'demo', executors, w
       request.completedAt = now(); request.blockedReason = null; saveRequest(request);
       appendEvent(runId, request.id, 'request.error', request.error, { status: request.status, ...(request.errorCode ? { code: request.errorCode } : {}) });
     }
-    if (run.project?.version === 2) {
-      const plan = planProject(run.project.snapshot, readEvidence(db), { selection: run.project.selection, recursive: run.project.recursive, force: run.project.force, runId, attempts: runRequests(runId) });
+    if (run.project?.version === 3) {
+      const plan = planProject(run.project.snapshot, readEvidence(db), { selection: run.project.selection, recursive: run.project.recursive, force: run.project.force, runId, coalescedRequestIds: run.project.coalescedRequestIds, attempts: attemptsFor(run) });
       run.project.evidenceRequestIds = [...new Set(plan.critics.flatMap(c => c.result ? [c.result.requestId] : []))];
     }
     run.status = 'ERROR'; run.error = errorText(error); run.completedAt = now(); saveRun(run);
@@ -366,6 +427,7 @@ export function createBroker({ repoPath, stateDir, repoId = 'demo', executors, w
           changed();
         },
       }));
+      validateFinalResult(semanticResult(result), request);
       await workspace.assertUnchanged();
       signal.throwIfAborted();
       transaction(() => { if (ownerData(runId)?.token === token) finishWithin(requestId, { result }); });
@@ -386,9 +448,9 @@ export function createBroker({ repoPath, stateDir, repoId = 'demo', executors, w
       reconcileWithin(runId);
       stored = runData(runId);
       if (!stored) throw new Error('Unknown Run.');
-      if (stored.project?.version !== 2) throw new Error('Historical Runs cannot be resumed; submit a new validation request.');
+      if (stored.project?.version !== 3) throw new Error('Invalid stored Run format; submit a new validation request.');
       if (terminal.has(stored.status)) return false;
-      if (!stored.workspace) throw new Error('This legacy Run has no workspace descriptor; submit a new review.');
+      if (!stored.workspace) throw new Error('Invalid Run: no workspace descriptor.');
       if (ownerData(runId)) throw codedError('Another process already owns this review Run.', 'RUN_ALREADY_OWNED');
       db.prepare('INSERT INTO run_owners(run_id,pid,process_identity,token,claimed_at) VALUES (?,?,?,?,?)').run(runId, process.pid, ownProcessIdentity, token, now());
       appendEvent(runId, null, 'worker.started', 'A request-scoped worker owns this Run.', { pid: process.pid });
@@ -437,6 +499,10 @@ export function createBroker({ repoPath, stateDir, repoId = 'demo', executors, w
             await Promise.race([...inFlight.values()].map(item => item.promise).concat(delay(50, undefined, { signal: reviewSignal })));
             continue;
           }
+          if (sharedRequests(required(runData(runId), 'Run')).some(request => !terminal.has(request.status))) {
+            await delay(100, undefined, { signal: reviewSignal });
+            continue;
+          }
           const waiting = requests.filter(request => request.status === 'WAITING_HUMAN');
           if (waiting.length) {
             if (waiting.some(request => !request.notifiedAt)) throw new Error('Human notification did not complete; submit a new Run to retry.');
@@ -472,7 +538,7 @@ export function createBroker({ repoPath, stateDir, repoId = 'demo', executors, w
     return entry.promise;
   }
 
-  return {
+  const broker = {
     async submitProject({ requesterId = 'cli', selection, recursive = false, force = false, signal, ...removed }: { requesterId?: string; selection: ProjectSelection; recursive?: boolean; force?: boolean; signal?: AbortSignal }) {
       ensureOpen(); requireExecutors();
       if ('mode' in removed) throw new Error('Workspace modes are no longer supported; supply an unchanged workspace.');
@@ -486,8 +552,8 @@ export function createBroker({ repoPath, stateDir, repoId = 'demo', executors, w
         const templates: ReviewEnvelope[] = [];
         for (const id of ids) templates.push(...await prepareReviewRequests({ repoPath: workspace.descriptor.path, repoId, snapshotHash: workspace.descriptor.hash, criticId: id, preparedConfig: config }));
         const id = randomUUID(), createdAt = now();
-        const record: RunRecord = { id, repoId, snapshotHash: workspace.descriptor.hash, workspace: workspace.descriptor, requesterId,
-          scope: { kind: 'project' }, graph: createGraphDefinition(config), project: { version: 2, snapshot, selection, recursive, force, templates }, status: 'QUEUED', createdAt };
+        const record: RunRecord = { id, repoId, coalescingGraceMs, snapshotHash: workspace.descriptor.hash, workspace: workspace.descriptor, requesterId,
+          scope: { kind: 'project' }, graph: createGraphDefinition(config), project: { version: 3, snapshot, selection, recursive, force, templates }, status: 'QUEUED', createdAt };
         await workspace.assertUnchanged(); workspace.signal.throwIfAborted();
         transaction(() => {
           db.prepare('INSERT INTO runs(id,created_at,status,data) VALUES (?,?,?,?)').run(id, createdAt, record.status, JSON.stringify(record));
@@ -503,7 +569,7 @@ export function createBroker({ repoPath, stateDir, repoId = 'demo', executors, w
       ensureOpen();
       return db.prepare('SELECT id FROM runs ORDER BY created_at DESC, rowid DESC').all().map(row => {
         const record = required(getRun(String(row.id)), 'Run');
-        return { ...record, events: undefined, requests: record.requests.map(({ result, ...request }) => ({ ...request, result: result ? { verdict: result.verdict, summary: result.summary } : null })) };
+        return record;
       });
     },
     getRun,
@@ -527,7 +593,7 @@ export function createBroker({ repoPath, stateDir, repoId = 'demo', executors, w
       const existing = requestData(requestId);
       if (existing) reconcile(existing.runId);
       const request = required(requestData(requestId), 'request');
-      if (request.configManifest?.version !== 2) throw new Error('Historical reviews are available for result lookup only.');
+      if (request.configManifest?.version !== 2) throw new Error('Invalid stored review configuration.');
       if (request.status === 'WAITING_HUMAN' && request.claimedBy === reviewerId) return request;
       if (request.claimedBy) throw new Error('This review is already claimed by another reviewer.');
       signal?.throwIfAborted();
@@ -558,7 +624,7 @@ export function createBroker({ repoPath, stateDir, repoId = 'demo', executors, w
         ensureOpen();
         const current = requestData(requestId);
         if (!current || current.profile.kind !== 'human' || current.status !== 'WAITING_HUMAN') throw new Error('Request is not waiting for a human review.');
-        if (current.configManifest?.version !== 2) throw new Error('Historical reviews are available for result lookup only.');
+        if (current.configManifest?.version !== 2) throw new Error('Invalid stored review configuration.');
         if (!reviewerId || current.claimedBy !== reviewerId) throw new Error('Only the reviewer who claimed this request can use its tools.');
         if (!ownerAlive(ownerData(current.runId))) throw new Error('An in-place review requires its monitoring worker to remain alive.');
         return current;
@@ -608,13 +674,14 @@ export function createBroker({ repoPath, stateDir, repoId = 'demo', executors, w
     },
     async completeHuman(requestId: string, { reviewerId, result }: { reviewerId: unknown; result: unknown }) {
       ensureOpen();
-      const validated = validateResult(result);
-      if (!validated.evidence.length || validated.evidence.some(item => !item.trim())) throw new Error('Human review requires at least one nonempty evidence entry.');
+      const definition = required(requestData(requestId), 'Request');
+      validateFinalResult(result, definition);
+      const validated = validateResult(result, definition);
       const first = requestData(requestId);
       if (first) reconcile(first.runId);
       const request = requestData(requestId);
       if (!request || request.profile.kind !== 'human' || request.status !== 'WAITING_HUMAN') throw new Error('Request is not waiting for a human review.');
-      if (request.configManifest?.version !== 2) throw new Error('Historical reviews are available for result lookup only.');
+      if (request.configManifest?.version !== 2) throw new Error('Invalid stored review configuration.');
       if (!reviewerId || request.claimedBy !== reviewerId) throw new Error('Only the reviewer who claimed this request can submit its result.');
       if (!request.notifiedAt) throw new Error('Human alarm delivery is still pending.');
       let workspace: WorkspaceHandle | undefined;
@@ -671,9 +738,23 @@ export function createBroker({ repoPath, stateDir, repoId = 'demo', executors, w
       const owned = [...active.values()];
       for (const entry of owned) entry.abort.abort(codedError('The review worker stopped before completion.', 'WORKER_STOPPED'));
       await Promise.allSettled(owned.map(entry => entry.promise));
-      listeners.clear(); db.close(); closed = true;
+      submissionDeadlines.clear(); listeners.clear(); db.close(); closed = true;
     },
+  };
+  const viewRun = <T extends Parameters<typeof requesterRun>[0] | null>(value: T) => resultView({ detail }, value, () => value ? requesterRun(storedRun(db, value.id) ?? value, stateDir) : null);
+  const viewRequest = (value: ReviewRequest | null) => resultView({ detail }, value, () => value ? requesterRequest(value, stateDir) : null);
+  return {
+    ...broker,
+    submitProject: async (...args: Parameters<typeof broker.submitProject>) => viewRun(await broker.submitProject(...args))!,
+    run: async (...args: Parameters<typeof broker.run>) => viewRun(await broker.run(...args)),
+    getRun: (id: string) => viewRun(broker.getRun(id)),
+    listRuns: () => broker.listRuns().map(value => viewRun(value)!),
+    getRequest: (id: string) => viewRequest(broker.getRequest(id)),
+    claimHuman: async (...args: Parameters<typeof broker.claimHuman>) => viewRequest(await broker.claimHuman(...args))!,
+    completeHuman: async (...args: Parameters<typeof broker.completeHuman>) => viewRequest(await broker.completeHuman(...args)),
+    failRun: (...args: Parameters<typeof broker.failRun>) => viewRun(broker.failRun(...args)),
+    cancel: (...args: Parameters<typeof broker.cancel>) => viewRun(broker.cancel(...args)),
   };
 }
 
-export type Broker = ReturnType<typeof createBroker>;
+export type Broker<D extends ResultDetail = 'compact'> = ReturnType<typeof createBroker<D>>;

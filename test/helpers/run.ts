@@ -3,7 +3,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import type { createBroker, RunView } from '../../src/broker/index.js';
 
 /** Start a real worker and return when execution finishes or reaches a monitored Human wait. */
-export async function runUntilSettled(broker: ReturnType<typeof createBroker>, id: string): Promise<RunView> {
+export async function runUntilSettled(broker: ReturnType<typeof createBroker<'full'>>, id: string): Promise<RunView> {
   const running = broker.getRun(id)?.owner ? undefined : broker.run(id);
   const waiting = (async () => {
     for (let attempt = 0; attempt < 1000; attempt++) {

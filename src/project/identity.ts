@@ -4,7 +4,6 @@ import { lstat, readdir, readlink } from 'node:fs/promises';
 import path from 'node:path';
 import type { RepoConfig, WorkspaceIntegrity } from '../contracts.js';
 import { createGraphDefinition, stronglyConnectedComponents } from '../broker/graph.js';
-import { packageVersion } from '../runtime-paths.js';
 import { resolveScopePath } from '../artifact-scope.js';
 import type { ProjectSelection, ProjectSnapshot, ValidationInput } from './types.js';
 import { requiredArtifacts } from './query.js';
@@ -56,11 +55,8 @@ export async function createProjectSnapshot(config: RepoConfig, root: string, sn
   for (const [id, artifact] of Object.entries(config.artifacts)) {
     if (!required.has(id)) continue;
     if (artifact.stale?.kind === 'identity') {
-      const { inputs: identityInputs, value } = await ownerIdentity(root, artifact.path, id, artifact.stale, signal);
-      const requirements = Object.fromEntries(Object.entries(config.configManifest.envRequirements ?? {}).filter(([name]) => name.startsWith(`${id}/`)));
-      const environmentPaths = new Set(Object.values(requirements).flatMap(requirement => [requirement.script, ...requirement.inputs ?? []]));
-      const environmentInputs = config.configManifest.environmentInputs?.filter(input => environmentPaths.has(input.path));
-      ownHashes.set(id, inputHash({ version: 2, identity: 'script', definition: artifact, identityInputs, value, requirements, environmentInputs }));
+      const { value } = await ownerIdentity(root, artifact.path, id, artifact.stale, signal);
+      ownHashes.set(id, inputHash({ id, value }));
       artifactIdentities[id] = { identity: 'script', value };
       continue;
     }
@@ -94,7 +90,7 @@ export async function createProjectSnapshot(config: RepoConfig, root: string, sn
     const requirements = Object.fromEntries(Object.entries(config.configManifest.envRequirements ?? {}).filter(([name]) => name.startsWith(`${id}/`)));
     const environmentPaths = new Set(Object.values(requirements).flatMap(requirement => [requirement.script, ...requirement.inputs ?? []]));
     const environmentInputs = config.configManifest.environmentInputs?.filter(input => environmentPaths.has(input.path));
-    ownHashes.set(id, inputHash({ version: 2, definition: artifact, fingerprints, executionInputs, requirements, environmentInputs }));
+    ownHashes.set(id, inputHash({ version: 3, definition: artifact, fingerprints, executionInputs, requirements, environmentInputs, critics: config.critics.filter(critic => critic.target === id), workspaceIntegrity }));
   }
   const components = stronglyConnectedComponents(Object.keys(config.artifacts), config.relations), componentOf = new Map(components.flatMap((members, index) => members.map(id => [id, index] as const)));
   const hashes = new Map<number, string>(), reusableComponents = new Map<number, boolean>();
@@ -102,7 +98,7 @@ export async function createProjectSnapshot(config: RepoConfig, root: string, sn
     if (hashes.has(index)) return hashes.get(index)!;
     const members = components[index], edges = config.relations.filter(edge => componentOf.get(edge.target) === index).sort((a, b) => canonical(a).localeCompare(canonical(b), 'en'));
     const dependencies = [...new Set(edges.map(edge => componentOf.get(edge.source)!).filter(value => value !== index))].sort((a, b) => components[a][0].localeCompare(components[b][0], 'en'));
-    const hash = inputHash({ members: members.map(id => ({ id, hash: ownHashes.get(id) })), edges,
+    const hash = inputHash({ members: members.map(id => ({ id, hash: ownHashes.get(id) })), edges: [...new Set(edges.map(edge => `${edge.source}:${edge.target}`))].sort(),
       dependencies: dependencies.map(dependency => ({ members: components[dependency], hash: visit(dependency) })) });
     hashes.set(index, hash);
     reusableComponents.set(index, members.every(id => config.artifacts[id].stale?.kind !== 'always') && dependencies.every(dependency => reusableComponents.get(dependency)));
@@ -116,10 +112,9 @@ export async function createProjectSnapshot(config: RepoConfig, root: string, sn
   const inputs: Record<string, ValidationInput> = {};
   for (const critic of config.critics) {
     if (!required.has(critic.target)) continue;
-    const criticHash = inputHash({ version: 2, executorVersion: packageVersion, critic, workspaceIntegrity,
-      runtime: { node: process.versions.node, platform: process.platform, arch: process.arch } });
+    const criticHash = inputHash({ version: 3, criticId: critic.id });
     const target = { id: critic.target, hash: artifactHashes[critic.target] }, deps = critic.deps.slice().sort().map(id => ({ id, hash: artifactHashes[id] }));
-    inputs[critic.id] = { version: 2, key: inputHash({ criticHash, target, deps }), criticHash, target, deps, reusable: [critic.target, ...critic.deps].every(id => reusable[id]), workspaceIntegrity };
+    inputs[critic.id] = { version: 3, key: inputHash({ version: 3, criticId: critic.id, target, deps }), criticHash, target, deps, reusable: [critic.target, ...critic.deps].every(id => reusable[id]), workspaceIntegrity };
   }
-  return { version: 2, config: structuredClone(config), snapshotHash, artifactHashes, inputs, workspaceIntegrity, ...(Object.keys(artifactIdentities).length ? { artifactIdentities } : {}) };
+  return { version: 3, config: structuredClone(config), snapshotHash, artifactHashes, inputs, workspaceIntegrity, ...(Object.keys(artifactIdentities).length ? { artifactIdentities } : {}) };
 }

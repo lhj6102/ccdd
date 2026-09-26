@@ -1,5 +1,6 @@
 import type { ArtifactReference, ArtifactToolCall } from './artifacts/index.js';
 import type { WorkspaceDescriptor } from './workspaces/index.js';
+import type { ResponseSchemas } from './response-schema.js';
 import type { ConfigManifest } from './tools/contracts.js';
 import type { CriticProfile, ReviewPayload, ResolvedCriticDefinition, ArtifactDefinition, ArtifactRelation } from './definitions.js';
 import type { ValidationInput } from './project/types.js';
@@ -9,7 +10,7 @@ export type * from './definitions.js';
 export type { ArtifactReference, ArtifactToolCall } from './artifacts/index.js';
 export type { WorkspaceDescriptor, WorkspaceHandle, WorkspaceIntegrity } from './workspaces/index.js';
 
-export interface ReviewEnvelope {
+export interface ReviewEnvelope extends ResponseSchemas {
   repoId: string; snapshotHash: string; criticId: string; title: string;
   artifacts: ArtifactReference[]; references: Record<string, string>; requiredObservations: string[];
   configManifest: ConfigManifest;
@@ -22,12 +23,12 @@ export interface ReviewToolCall {
   observation?: { artifactId: string; operation: string; kind?: 'content' | 'empty'; detail?: string; startLine?: number | null; endLine?: number | null; lineCount?: number | null; totalLines?: number | null };
 }
 export interface ReviewResult {
-  verdict: 'GREEN' | 'RED'; summary: string; evidence: string[];
+  verdict: 'GREEN' | 'RED'; [field: string]: unknown;
   provider?: string; model?: string; stdout?: string; stderr?: string;
   durationMs?: number; exitCode?: number; toolCalls?: ReviewToolCall[];
 }
 export interface ReviewRequest extends ReviewEnvelope {
-  /** Identity of the input actually reviewed. Absent on historical requests. */
+  /** Identity of the input actually reviewed; provided by project validation. */
   validationInput?: ValidationInput;
   id: string; runId: string; workspace: WorkspaceDescriptor; worktreePath: string;
   status: ReviewStatus; createdAt: string;

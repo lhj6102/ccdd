@@ -13,7 +13,7 @@ async function fixture(t: TestContext) {
   t.after(() => rm(root, { recursive: true, force: true }));
   const repoPath = join(root, 'repo'), stateDir = join(root, 'state');
   await mkdir(repoPath);
-  const broker = createBroker({ repoPath, stateDir, repoId: 'fixture' });
+  const broker = createBroker({ detail: 'full', repoPath, stateDir, repoId: 'fixture' });
   await broker.close();
   return { root, repoPath, stateDir, filename: join(stateDir, 'broker.sqlite') };
 }
@@ -38,7 +38,7 @@ test('project readers wait for a transient WAL lock without changing stored data
   const before = await readFile(f.filename);
   for (const [name, read] of Object.entries({
     identity: () => assert.deepEqual(readStateContext(f.stateDir), { repoPath: f.repoPath, repoId: 'fixture', stateDir: f.stateDir }),
-    requests: () => assert.deepEqual(projectRequests(f.stateDir), []),
+    requests: () => assert.deepEqual(projectRequests(f.stateDir, undefined, { detail: 'full' }), []),
   })) {
     await t.test(name, async t => {
       const worker = await lockStore(t, f.filename);
@@ -54,7 +54,7 @@ test('project readers wait for a transient WAL lock without changing stored data
 test('a persistent WAL lock still fails after a bounded reader wait', { timeout: 10_000 }, async t => {
   const f = await fixture(t);
   const worker = await lockStore(t, f.filename);
-  try { assert.throws(() => projectRequests(f.stateDir), { code: 'ERR_SQLITE_ERROR', errcode: 5 }); }
+  try { assert.throws(() => projectRequests(f.stateDir, undefined, { detail: 'full' }), { code: 'ERR_SQLITE_ERROR', errcode: 5 }); }
   finally { await worker.terminate(); }
 });
 
@@ -64,6 +64,23 @@ test('project readers preserve read-only, missing-store and invalid-store behavi
   assert.throws(() => withProjectStore(f.stateDir, db => db.prepare('SELECT * FROM missing_table').all(), null), /no such table/);
   assert.deepEqual(projectRequests(join(f.root, 'missing')), []);
   await writeFile(f.filename, 'not a SQLite database');
-  assert.throws(() => projectRequests(f.stateDir), { errcode: 26 });
+  assert.throws(() => projectRequests(f.stateDir, undefined, { detail: 'full' }), { errcode: 26 });
   assert.throws(() => readStateContext(f.stateDir), { errcode: 26 });
+});
+
+test('all store entry points reject pre-5.0 state without migrating it', async t => {
+  const f = await fixture(t);
+  const { DatabaseSync } = await import('node:sqlite');
+  const database = new DatabaseSync(f.filename);
+  database.exec('PRAGMA user_version=0'); database.close();
+  const before = await readFile(f.filename);
+  const expected = /earlier CCDD major.*use a new state directory/;
+  assert.throws(() => createBroker({ repoPath: f.repoPath, stateDir: f.stateDir, repoId: 'fixture' }), expected);
+  assert.throws(() => readStateContext(f.stateDir), expected);
+  assert.throws(() => projectRequests(f.stateDir), expected);
+  const { createMonitorStore } = await import('../src/monitor/store.js');
+  const overview = await createMonitorStore({ stateDirs: [f.stateDir] }).overview();
+  assert.match(overview.projects[0].issue!, expected);
+  assert.equal(overview.requests.length, 0);
+  assert.deepEqual(await readFile(f.filename), before);
 });

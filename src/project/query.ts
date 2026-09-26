@@ -28,20 +28,20 @@ export function includedCritics(snapshot: Pick<ProjectSnapshot, 'config'>, selec
 
 /** Pull actual evidence once; dependency traversal never calls back into Critic evaluation. */
 export function queryProject(snapshot: ProjectSnapshot, history: readonly ValidationEvidence[], options: QueryOptions = {}): ProjectQuery {
-  if (snapshot.version !== 2) throw new Error('Historical validation inputs are available for result lookup only.');
+  if (snapshot.version !== 3) throw new Error('Invalid validation input format.');
   createGraphDefinition(snapshot.config);
   const selection = options.selection ?? { kind: 'all' }, required = requiredArtifacts(snapshot, selection);
   const byKey = new Map<string, ValidationEvidence>(), byRunKey = new Map<string, ValidationEvidence>(), byCritic = new Map<string, ValidationEvidence>();
-  for (const evidence of [...history].filter(e => e.input.version === 2).sort((a, b) => a.completedAt.localeCompare(b.completedAt))) {
+  for (const evidence of [...history].filter(e => e.input.version === 3).sort((a, b) => a.completedAt.localeCompare(b.completedAt))) {
     const key = `${evidence.criticId}:${evidence.input.key}`;
     byKey.set(key, evidence); byCritic.set(evidence.criticId, evidence);
-    if (evidence.runId === options.runId) byRunKey.set(key, evidence);
+    if (evidence.runId === options.runId || options.coalescedRequestIds?.includes(evidence.requestId)) byRunKey.set(key, evidence);
   }
   const attempts = new Map(options.attempts?.map(request => [request.criticId, request])), forced = new Set(options.forceCriticIds ?? []);
   const requiredSet = new Set(required);
   const critics: CriticValidation[] = snapshot.config.critics.filter(definition => requiredSet.has(definition.target)).map(definition => {
     const id = definition.id, input = snapshot.inputs[id];
-    if (!input || input.version !== 2) throw new Error(`Missing current validation input: ${id}`);
+    if (!input || input.version !== 3) throw new Error(`Missing current validation input: ${id}`);
     const key = `${id}:${input.key}`, evidence = (input.reusable && !forced.has(id) ? byKey : byRunKey).get(key) ?? null;
     const attempt = attempts.get(id), ownPass = evidence?.verdict === 'GREEN';
     let status: ValidationStatus, reason: string;
@@ -50,13 +50,13 @@ export function queryProject(snapshot: ProjectSnapshot, history: readonly Valida
     } else if (attempt?.status === 'ERROR') {
       status = 'ERROR'; reason = attempt.error ?? 'The review could not complete.';
     } else if (ownPass) { status = 'PASS'; reason = `Actual PASS evidence ${evidence!.requestId} matches this input.`; }
-    else if (evidence?.verdict === 'RED') { status = 'RED'; reason = evidence.summary; }
+    else if (evidence?.verdict === 'RED') { status = 'RED'; reason = `Actual RED evidence ${evidence.requestId} matches this input.`; }
     else if (forced.has(id)) { status = 'STALE'; reason = 'This request explicitly requires a new review.'; }
     else if (!input.reusable) { status = 'STALE'; reason = 'The always strategy requires a review in this validation request.'; }
     else if (byCritic.has(id)) { status = 'STALE'; reason = 'Artifact content, referenced inputs, or Critic conditions changed.'; }
     else { status = 'UNREVIEWED'; reason = 'No actual review has been recorded for this input.'; }
-    return { id, title: definition.title, target: definition.target, deps: [...definition.deps], status, isStale: status !== 'PASS', needsReview: !ownPass,
-      canExecute: !ownPass && !attempt, blockedBy: [], reason, input, result: evidence, requestId: attempt?.id ?? null };
+    return { id, title: definition.title, target: definition.target, deps: [...definition.deps], status, isStale: status !== 'PASS', needsReview: !evidence,
+      canExecute: !evidence && !attempt, blockedBy: [], reason, input, result: evidence, requestId: attempt?.id ?? null };
   });
   const own = new Map<string, CriticValidation[]>(required.map(id => [id, critics.filter(c => c.target === id)]));
   const ownSatisfied = (id: string) => snapshot.config.artifacts[id].basis === true || own.get(id)!.length > 0 && own.get(id)!.every(c => c.status === 'PASS');
@@ -77,7 +77,7 @@ export function planProject(snapshot: ProjectSnapshot, history: readonly Validat
   const selection = options.selection ?? { kind: 'all' }, selectedCriticIds = selectedCritics(snapshot, selection), includedCriticIds = includedCritics(snapshot, selection, Boolean(options.recursive));
   const query = queryProject(snapshot, history, { ...options, selection, forceCriticIds: options.force ? selectedCriticIds : options.forceCriticIds });
   const items = query.critics.filter(c => includedCriticIds.includes(c.id)).map(c => {
-    const action = (c.status === 'PASS' ? 'REUSE' : ['QUEUED', 'RUNNING', 'WAITING_HUMAN'].includes(c.status) ? 'ACTIVE' : c.canExecute ? 'EXECUTE' : c.requestId ? 'FAILED' : 'WAIT') as ProjectPlan['items'][number]['action'];
+    const action = (c.result ? 'REUSE' : ['QUEUED', 'RUNNING', 'WAITING_HUMAN'].includes(c.status) ? 'ACTIVE' : c.canExecute ? 'EXECUTE' : c.requestId ? 'FAILED' : 'WAIT') as ProjectPlan['items'][number]['action'];
     return { ...c, action };
   });
   return { ...query, recursive: Boolean(options.recursive), force: Boolean(options.force), selectedCriticIds, includedCriticIds, items,

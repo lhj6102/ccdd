@@ -11,7 +11,7 @@ const executors=createExecutorRegistry({piOptions,alarmMethods:createLocalAlarmM
 const controller=new AbortController();
 const stop=()=>controller.abort(new Error('Review worker was stopped.'));
 process.on('SIGINT',stop);process.on('SIGTERM',stop);
-let broker:ReturnType<typeof createBroker>|undefined;
+let broker:ReturnType<typeof createBroker<'full'>>|undefined;
 const notify=(message:Record<string,unknown>)=>{
   if(!process.connected)return;
   // The submitting client may disappear; IPC failure must not stop owned work.
@@ -19,7 +19,7 @@ const notify=(message:Record<string,unknown>)=>{
 };
 let notified=false;
 try {
-  broker=await createBroker({...context,executors});
+  broker=await createBroker({ detail: 'full',...context,executors});
   await broker.run(runId,{signal:controller.signal,onStarted:()=>{notified=true;notify({type:'ready',runId});}});
   if(!notified)notify({type:'ready',runId});
 } catch(error) {

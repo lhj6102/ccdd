@@ -158,12 +158,11 @@ test('refocusing the same Human Artifact preserves selected custom tool argument
   const host = node('root');
   const { app, view } = mount(await component('HumanReview'), { detail: detail(true, [tool('spec', 'preview', { type: 'object' }), tool('why')]), session: { reviewerId: 'me', csrfToken: 'csrf' }, sessionError: '' }, host); t.after(() => app.unmount());
   const textareas = all(host).filter(child => child.type === 'textarea');
-  assert.equal(textareas.length, 3);
+  assert.equal(textareas.length, 2);
   textareas[0].props['onUpdate:modelValue']('{"camera":{"frame":17}}');
-  textareas[1].props['onUpdate:modelValue']('Draft review summary');
-  textareas[2].props['onUpdate:modelValue']('Observed evidence'); await nextTick();
+  textareas[1].props['onUpdate:modelValue']('{"reasons":["Observed evidence"]}'); await nextTick();
   view.showArtifactTools('spec'); await nextTick(); view.showArtifactTools('spec'); await nextTick();
-  assert.deepEqual(all(host).filter(child => child.type === 'textarea').map(child => child.value), ['{"camera":{"frame":17}}', 'Draft review summary', 'Observed evidence']);
+  assert.deepEqual(all(host).filter(child => child.type === 'textarea').map(child => child.value), ['{"camera":{"frame":17}}', '{"reasons":["Observed evidence"]}']);
   assert.equal(calls, 0);
   assert.equal(matching(host, 'button', 'spec · preview').props['aria-pressed'], true);
   view.showArtifactTools('outside'); await nextTick();

@@ -63,7 +63,7 @@ test('Human notifications use registered alarms and never invoke the Agent trans
 
 for (const repair of [false, true]) test(`Agent accepts the exact persisted-envelope limit with its actual duration (repair=${repair})`, async t => {
   const data = await artifactFixture(t);
-  await data.write('a', { name: 'a', views: fixtureViews(), critics: [{ id: 'review', title: 'Review', profile: agentProfile, payload: { instruction: 'Read {a}.' } }] });
+  await data.write('a', { name: 'a', views: fixtureViews(), critics: [{ id: 'review', title: 'Review', profile: agentProfile, passSchema: { type: 'object', properties: { summary: { type: 'string' }, evidence: { type: 'array', items: { type: 'string' } } }, required: ['summary', 'evidence'] }, payload: { instruction: 'Read {a}.' } }] });
   const [request] = await data.requests(), toolCalls: ReviewToolCall[] = [], events: ExecutionEvent[] = [];
   let clock = 100_000, turns = 0, faux: ReturnType<typeof fauxProvider> | undefined;
   t.mock.method(Date, 'now', () => clock);

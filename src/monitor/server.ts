@@ -1,3 +1,4 @@
+import { validateFinalResult } from '../response-schema.js';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { readFile, readdir } from 'node:fs/promises';
 import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
@@ -148,7 +149,7 @@ async function decorateDetail(detail: MonitorDetail, record: MonitorStoredReques
     ...(preparation ? { preparation } : {}),
   };
   detail.tools = [];
-  detail.artifactPreview = record.request.configManifest?.version === 2 ? 'tools' : 'historical';
+  detail.artifactPreview = 'tools';
   if (detail.request.kind === 'human' && record.request.configManifest?.version === 2) {
     try {
       // GET projects saved declarations only. It never reads config or executes scripts.
@@ -230,9 +231,9 @@ export async function startMonitor(options: MonitorSources & { port?: number } =
             try { await claimReview(record, reviewerId, controller.signal); }
             finally { clearTimeout(timer); response.off('close', disconnect); active.delete(controller); }
           } else if (action[3] === 'complete') {
-            bodyShape(input, ['verdict', 'summary', 'evidence']);
-            if ((input.verdict !== 'GREEN' && input.verdict !== 'RED') || typeof input.summary !== 'string' || !input.summary.trim() || input.summary.length > 12_000 || !Array.isArray(input.evidence) || input.evidence.length < 1 || input.evidence.length > 100 || !input.evidence.every(item => typeof item === 'string' && item.trim().length > 0 && item.length <= 4_000)) throw new HttpError(400, 'Check the verdict, summary, and evidence list.');
-            await completeReview(record, reviewerId, { verdict: input.verdict, summary: input.summary, evidence: input.evidence as string[] });
+            let result;
+            try { result = validateFinalResult(input, record.request); } catch { throw new HttpError(400, 'Result does not match the owner response schema.'); }
+            await completeReview(record, reviewerId, result);
           } else {
             bodyShape(input, ['arguments']);
             if (!object(input.arguments)) throw new HttpError(400, 'Tool input must be a JSON object.');
