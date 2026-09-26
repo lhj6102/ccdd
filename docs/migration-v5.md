@@ -1,6 +1,6 @@
 # Migrating to 5.0
 
-This is an unreleased major contract change. Package metadata remains 4.3.0 until the coordinated release; do not publish these changes as 4.x.
+CCDD 5.0.0 is a major contract change. Upgrade all installed CCDD packages together to 5.0.0; Node.js 22 LTS (22.19.0 or later) remains required. See the [release notes](releases/v5.0.0.md).
 
 ## Start with fresh state
 

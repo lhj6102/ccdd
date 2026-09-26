@@ -115,7 +115,7 @@ Stored manifests contain only serializable metadata and declarations. Execution 
 
 ## Requester results and audit lookup
 
-**Unreleased, for the 5.0 line: breaking default output change.** Requester
+**5.0: breaking default output change.** Requester
 results are compact by default. This is not a 4.x-compatible change; existing
 callers that consume audit fields must explicitly request full detail.
 
@@ -207,8 +207,7 @@ Public requester surfaces:
   observation tools only, not requester review results; its tool protocol and
   audit recording are unchanged.
 
-This unreleased change leaves package metadata at 4.3.0 until the coordinated
-5.0 release. Start with a fresh state directory: all store entry points reject
+CCDD 5.0.0 requires a fresh state directory: all store entry points reject
 4.x/unmarked state without reading or migrating its records. ValidationInput
 version 3 is a one-time key transition; package/runtime version changes alone do
 not invalidate identity thereafter. See [migration](migration-v5.md).

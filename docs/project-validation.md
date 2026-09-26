@@ -15,7 +15,7 @@ ccdd-project history [ARTIFACT | --critic ARTIFACT/CRITIC]
 
 Common options are `--repo PATH`, external `--state-dir PATH`, and `--json`. Review-result commands also accept `--full`. `ccdd` is an alias for this same command set; old `ccdd run --critic` and demo selectors are removed.
 
-## Compact review results (unreleased 5.0)
+## Compact review results (5.0)
 
 **Breaking change:** requester results default to `{verdict, ...ownerFields,
 reference, reusedFrom?}`, not the full audit. There is no built-in reason,

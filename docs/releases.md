@@ -2,42 +2,41 @@
 
 CCDD packages are distributed through npm. GitHub Releases announce each version with an installation command, npm package links, and release notes. They do not host installation tarballs. GitHub still supplies automatic Source code archives; those contain source, not installable packages.
 
-See [getting started](getting-started.md) for setup and [v4.3.0 release notes](releases/v4.3.0.md) for the current changes.
+See [getting started](getting-started.md) for setup and [v5.0.0 release notes](releases/v5.0.0.md) for the current changes.
 
-## Compatibility of unreleased requester results
+## Breaking changes in 5.0
 
-[Unreleased notes](releases/unreleased.md) target the **5.0 line**: compact
-requester results change the default CLI JSON and programmatic API shapes.
-Treat removal of previously returned fields as breaking, consistent with the
-[breaking SDK change in v3](releases/v3.0.0.md#breaking-sdk-change-and-upgrade) and
-[breaking API transition in v4](migration-v4.md). This release guide provides no
-4.x exception for removing public result fields. Audit lookup and explicit full
-detail remain available; their availability does not make the default change
-backward compatible.
+[CCDD 5.0.0](releases/v5.0.0.md) changes default requester results to compact
+projections and removes built-in summary/evidence fields in favor of optional
+owner response schemas. Full audit lookup remains available. Reuse identity has
+a one-time transition to validation input version 3; subsequent package/runtime
+version changes alone no longer invalidate evidence.
 
-The feature PR does not bump versions or publish. The release commit must align
-all package versions/peer ranges and lockfile entries for 5.0.0 and add the
-versioned release notes before tagging. Do not publish this default change as
-4.x. Start with a fresh state directory: 5.0 rejects 4.x state without reading
-or migrating it. Version 3 validation keys make a one-time transition; future
-package/runtime version changes alone no longer invalidate evidence. See
-[migration to 5.0](migration-v5.md).
+Start with a fresh external state directory. CCDD 5.0 rejects 4.x/unmarked state
+without reading or migrating its records. Retain old audit state with its matching
+old installation if needed. See [migration to 5.0](migration-v5.md).
 
 ## Installing and upgrading
 
-CCDD 4.3.0 supports Node.js 22 LTS (22.19.0 or later). Install matching versions of the three packages:
+CCDD 5.0.0 supports Node.js 22 LTS (22.19.0 or later). Install matching versions of the three packages:
 
 ```sh
-npm install --ignore-scripts @ccdd/core@4.3.0 @ccdd/project@4.3.0 @ccdd/default-tools@4.3.0
+npm install --ignore-scripts @ccdd/core@5.0.0 @ccdd/project@5.0.0 @ccdd/default-tools@5.0.0
 npx ccdd-project config check
 npx ccdd-project tools check
 ```
 
-`@ccdd/core` supplies definitions. `@ccdd/project` supplies validation, the CLI, Broker, Executors, and monitor. `@ccdd/default-tools` is optional when all tools are custom. Project and default-tools 4.x target core `>=4.0.0 <5`.
+`@ccdd/core` supplies definitions. `@ccdd/project` supplies validation, the CLI, Broker, Executors, and monitor. `@ccdd/default-tools` is optional when all tools are custom. Project and default-tools 5.0.0 target core `>=5.0.0 <6`.
 
-Version 4 replaces global configuration with folder-owned `ccdd.json` files. Follow the [v4 migration guide](migration-v4.md) before upgrading an existing project; previous input versions remain available only as stored results and cannot be reused or resumed.
+Version 4 introduced folder-owned `ccdd.json` files. Projects older than v4
+must also follow the [v4 configuration migration](migration-v4.md), then the
+[5.0 contract and state migration](migration-v5.md). Prior state is not readable
+or resumable by 5.0.
 
-Finish or cancel active reviews before changing dependencies in the reviewed workspace, then restart an active monitor with the new CLI. New reviews use the supplied workspace directly. Historical copied reviews remain visible but cannot resume or accept Human actions; submit a new review against a user-provided workspace. Existing review state and old copies are not automatically deleted.
+Finish or cancel active reviews before changing dependencies in the reviewed
+workspace, then restart the monitor with the new CLI and a fresh state directory.
+Reviews use the supplied workspace directly. Old state and copies are not
+automatically deleted; inspect them only with their corresponding old installation.
 
 For older projects, follow the [package and import migration](releases/v2.0.1.md#migration), [Project migration from v1](releases/v2.0.0.md#migrating-from-v1), and, when needed, [configuration migration from before v1](releases/v1.0.0.md#migrating-existing-configuration). Use `npx ccdd doctor` in the Agent environment to check actual authentication, Provider, and model access. It calls the Provider and consumes account usage. `tools check --execute` actually runs the selected tool.
 
@@ -52,8 +51,8 @@ To publish, merge the version change and release notes, wait for that commit's
 CI to succeed, then push its version tag:
 
 ```sh
-git tag v4.3.0 COMMIT_SHA
-git push origin v4.3.0
+git tag v5.0.0 COMMIT_SHA
+git push origin v5.0.0
 ```
 
 `release.yml` runs one Node 22 LTS job. It installs npm 11.19.1 for Trusted
@@ -133,7 +132,7 @@ The three npm publications and the GitHub announcement are not one transaction. 
 If the publication scripts need a fix after tagging, merge and verify that fix first, then use the current workflow to publish the original tag:
 
 ```sh
-gh workflow run release.yml --ref main -f tag=v4.3.0
+gh workflow run release.yml --ref main -f tag=v5.0.0
 ```
 
 This recovery uses the publication scripts from main and a separate checkout of the existing tag for release metadata. It still requires that tag's successful main CI and publishes only its retained, checksum-verified packages. It never moves the tag, rebuilds packages, or substitutes the workflow commit's packages. CI also checks each completed verification report with the same asset validator used by publication.

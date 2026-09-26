@@ -100,4 +100,4 @@ See [Contributing](CONTRIBUTING.md), [the context map](CONTEXT-MAP.md), [detaile
 
 [MIT](LICENSE).
 
-Unreleased development: requester results default to a compact projection in the upcoming **5.0 breaking release**. See [migration and audit lookup](docs/project-validation.md#compact-review-results-unreleased-50) and [unreleased notes](docs/releases/unreleased.md).
+**CCDD 5.0.0:** requester results default to a compact projection. Upgrade with a fresh state directory and review the [5.0 migration guide](docs/migration-v5.md), [audit lookup](docs/project-validation.md#compact-review-results-50), and [release notes](docs/releases/v5.0.0.md).
