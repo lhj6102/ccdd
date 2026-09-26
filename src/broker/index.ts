@@ -19,7 +19,7 @@ import { createReviewTools, type ToolExecutionDiagnostic } from '../tools/runner
 import { createHumanClaims, HUMAN_PREPARATION_LEASE_MS } from './human-claims.js';
 import { prepareHumanReview } from '../executors/human-preparation.js';
 import { prepareWorkspace, reopenWorkspace, type WorkspaceDescriptor, type WorkspaceHandle, type WorkspaceIntegrity } from '../workspaces/index.js';
-import { createProjectSnapshot } from '../project/identity.js';
+import { createProjectSnapshot, DEFAULT_IDENTITY_CONCURRENCY, positiveConcurrency } from '../project/identity.js';
 import { includedCritics, planProject } from '../project/query.js';
 import { readEvidence, storedRun } from '../project/store.js';
 import type { ProjectRunDefinition, ProjectSelection } from '../project/types.js';
@@ -44,7 +44,7 @@ export interface BrokerExecutors {
   execute(request: ReviewRequest, context: ExecutionContext & { signal: AbortSignal }): Promise<unknown>;
   notifyHuman?(request: ReviewRequest, context: { signal: AbortSignal }): Promise<unknown>;
 }
-export interface BrokerOptions { repoPath: string; stateDir: string; repoId?: string; coalescingGraceMs?: number; executors?: BrokerExecutors; workspaceIntegrity?: WorkspaceIntegrity; workspaceAdapter?: { prepareWorkspace: typeof prepareWorkspace; reopenWorkspace: typeof reopenWorkspace } }
+export interface BrokerOptions { repoPath: string; stateDir: string; repoId?: string; coalescingGraceMs?: number; maxConcurrentExecutors?: number; identityConcurrency?: number; executors?: BrokerExecutors; workspaceIntegrity?: WorkspaceIntegrity; workspaceAdapter?: { prepareWorkspace: typeof prepareWorkspace; reopenWorkspace: typeof reopenWorkspace } }
 interface ActiveRun { runId: string; token: string; abort: AbortController; promise: Promise<RunRecord & { requests: ReviewRequest[] }> | null }
 const object = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === 'object' && !Array.isArray(value);
 const errorCode = (error: unknown): string | undefined => object(error) && typeof error.code === 'string' ? error.code : undefined;
@@ -57,7 +57,6 @@ const now = () => new Date().toISOString();
 const errorText = (error: unknown) => String(object(error) && typeof error.message === 'string' ? error.message : error).slice(0, 2000);
 const copy = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
 const codedError = (message: string, code: string) => Object.assign(new Error(message), { code });
-const MAX_CONCURRENT_EXECUTORS = 4;
 const fatalExecutionError = (error: unknown): boolean => {
   const code = errorCode(error);
   return Boolean(code?.startsWith('WORKSPACE_') || ['RUN_OWNERSHIP_LOST', 'REVIEW_CANCELED', 'WORKER_STOPPED', 'WORKER_EXITED', 'REVIEW_GRAPH_INVALID'].includes(code ?? ''));
@@ -123,7 +122,9 @@ function prepareStateDirectory(repoPath: string, stateDir: string) {
 }
 
 /** Durable broker operations. Merely opening the store never starts a worker. */
-export function createBroker<D extends ResultDetail = 'compact'>({ detail, repoPath, stateDir, repoId = 'demo', coalescingGraceMs = 15_000, executors, workspaceIntegrity = 'content', workspaceAdapter = { prepareWorkspace, reopenWorkspace } }: BrokerOptions & ResultOptions<D>) {
+export function createBroker<D extends ResultDetail = 'compact'>({ detail, repoPath, stateDir, repoId = 'demo', coalescingGraceMs = 15_000, maxConcurrentExecutors = 4, identityConcurrency = DEFAULT_IDENTITY_CONCURRENCY, executors, workspaceIntegrity = 'content', workspaceAdapter = { prepareWorkspace, reopenWorkspace } }: BrokerOptions & ResultOptions<D>) {
+  positiveConcurrency(maxConcurrentExecutors, 'maxConcurrentExecutors');
+  positiveConcurrency(identityConcurrency, 'identityConcurrency');
   if (!Number.isSafeInteger(coalescingGraceMs) || coalescingGraceMs < 0 || coalescingGraceMs > 300_000) throw new Error('coalescingGraceMs must be an integer from 0 to 300000.');
   if (detail !== undefined && detail !== 'compact' && detail !== 'full') throw new Error('detail must be compact or full.');
   if (!['content', 'metadata'].includes(workspaceIntegrity)) throw new Error('Workspace integrity must be content or metadata.');
@@ -509,7 +510,7 @@ export function createBroker<D extends ResultDetail = 'compact'>({ detail, repoP
           for (const row of requests.filter(request => request.status === 'QUEUED')) {
             const kind = kinds.get(row.id) ?? required(requestData(row.id), 'Request').profile.kind;
             kinds.set(row.id, kind);
-            if (kind !== 'human' && executing >= MAX_CONCURRENT_EXECUTORS) continue;
+            if (kind !== 'human' && executing >= maxConcurrentExecutors) continue;
             if (kind !== 'human') executing++;
             const promise = executeOne(row.id, workspace, token, reviewSignal).catch(error => {
               // A different task may win Promise.race before this rejection. Preserve fatal failure independently of that race.
@@ -569,15 +570,16 @@ export function createBroker<D extends ResultDetail = 'compact'>({ detail, repoP
   }
 
   const broker = {
-    async submitProject({ requesterId = 'cli', selection, recursive = false, force = false, signal, ...removed }: { requesterId?: string; selection: ProjectSelection; recursive?: boolean; force?: boolean; signal?: AbortSignal }) {
+    async submitProject({ requesterId = 'cli', selection, recursive = false, force = false, signal, identityConcurrency: submissionIdentityConcurrency = identityConcurrency, ...removed }: { requesterId?: string; selection: ProjectSelection; recursive?: boolean; force?: boolean; signal?: AbortSignal; identityConcurrency?: number }) {
       ensureOpen(); requireExecutors();
+      positiveConcurrency(submissionIdentityConcurrency, 'identityConcurrency');
       if ('mode' in removed) throw new Error('Workspace modes are no longer supported; supply an unchanged workspace.');
       if (!requesterId.trim() || requesterId.length > 200) throw new Error('requesterId is required (maximum 200 characters).');
       await requireExecutors().validateWorkspace?.(repoPath);
       const workspace = await workspaceAdapter.prepareWorkspace({ repoPath, stateDir, integrity: workspaceIntegrity, signal });
       try {
         const { config } = await readWorkspaceConfig(workspace.descriptor.path, workspace.signal);
-        const snapshot = await createProjectSnapshot(config, workspace.descriptor.path, workspace.descriptor.hash, workspace.signal, workspace.descriptor.integrity, selection);
+        const snapshot = await createProjectSnapshot(config, workspace.descriptor.path, workspace.descriptor.hash, workspace.signal, workspace.descriptor.integrity, selection, { identityConcurrency: submissionIdentityConcurrency });
         const ids = includedCritics(snapshot, selection, recursive);
         const templates: ReviewEnvelope[] = [];
         for (const id of ids) templates.push(...await prepareReviewRequests({ repoPath: workspace.descriptor.path, repoId, snapshotHash: workspace.descriptor.hash, criticId: id, preparedConfig: config }));

@@ -677,3 +677,27 @@ source lease expiry, even without a status revision. It bounds the existing
 lightweight wait timer; it does not restore full-record polling. Source-owner
 death is checked without JSON hydration and reconciled without replay. Polling
 and prune database entry points reject non-current state before table changes.
+
+## Concurrency controls
+
+`createBroker({ maxConcurrentExecutors })` accepts a positive safe integer,
+with default 4, limiting non-Human executions **per Run**, not across Brokers or
+Runs. Human preparation/alarms do not consume these slots. Project verify CLI
+accepts `--concurrency N` and persists it in worker configuration so detached
+execution and resume retain the choice. These scheduling options are not reuse
+identity inputs.
+
+Owner identity scripts run with a separate bounded pool, default 4.
+`inspectProject({ identityConcurrency })`, `createBroker({ identityConcurrency })`
+and `broker.submitProject({ identityConcurrency })` accept a positive safe
+integer; a submission override wins over the Broker default. Direct snapshots
+accept an optional seventh argument `{ identityConcurrency }` after selection.
+CLI status/plan/verify use `--identity-concurrency N`. Use 1 for sequential
+execution. Owner values are assembled in Artifact order, so successful snapshot
+keys and identity presentation are independent of script completion order.
+
+Each script retains its own timeout. Cancellation or any script failure cancels
+in-flight peers, stops dispatching queued owners, and awaits their cleanup before
+rejecting. No partial snapshot, fallback identity or review Run is returned.
+Identity scripts must compute their values independently; parallel scheduling
+does not provide synchronization for owner-created shared side effects.

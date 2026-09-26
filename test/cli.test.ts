@@ -98,3 +98,25 @@ test('stored results remain readable after the supplied workspace is deleted', a
   const data = await fixture(t), completed = await separate(['verify', '--all', '--wait', ...data.args]); await rm(data.repoPath, { recursive: true });
   const result = await separate(['run', 'show', completed.data.id, '--state-dir', data.stateDir, '--json']); assert.equal(result.code, 0); assert.equal(result.data.status, 'GREEN');
 });
+
+test('verify concurrency reaches the actual detached worker and saved configuration', async t => {
+  const data = await fixture(t), log = join(data.root, 'concurrency.log');
+  await data.edit('a', manifest => { manifest.critics = Array.from({ length: 4 }, (_, i) => runtimeCritic(`c${i}`)); });
+  await writeFile(join(data.repoPath, 'a/check.test.mjs'), `import {appendFileSync} from 'node:fs';
+    appendFileSync(${JSON.stringify(log)}, 'start\\n');
+    await new Promise(r=>setTimeout(r,200));
+    appendFileSync(${JSON.stringify(log)}, 'end\\n');`);
+  const result = await separate(['verify', '--all', '--wait', '--concurrency', '2', '--identity-concurrency', '1', ...data.args]);
+  assert.equal(result.code, 0); assert.equal(result.data.status, 'GREEN');
+  let active = 0, peak = 0;
+  const lines = (await readFile(log, 'utf8')).trim().split('\n');
+  for (const line of lines) { active += line === 'start' ? 1 : -1; peak = Math.max(peak, active); }
+  assert.equal(lines.length, 8); assert.equal(peak, 2);
+  const saved = JSON.parse(await readFile(join(data.stateDir, 'runs', result.data.id, 'worker.json'), 'utf8'));
+  assert.equal(saved.maxConcurrentExecutors, 2);
+  const { readWorkerConfiguration } = await import('../src/worker-client.js');
+  assert.equal((await readWorkerConfiguration(data.stateDir, result.data.id)).maxConcurrentExecutors, 2);
+  saved.maxConcurrentExecutors = 0;
+  await writeFile(join(data.stateDir, 'runs', result.data.id, 'worker.json'), JSON.stringify(saved));
+  await assert.rejects(readWorkerConfiguration(data.stateDir, result.data.id), /positive integer/);
+});

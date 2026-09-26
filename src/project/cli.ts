@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { positiveConcurrency } from './identity.js';
 import { requesterRun, requesterRequest, requesterPlan, requesterEvidence, type RequesterPlan } from '../result-view.js';
 import { existsSync, realpathSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
@@ -25,7 +26,7 @@ import { claimHumanFromCli } from '../review/local-claim.js';
 type Output = { write(value: string): unknown };
 const terminal = new Set(['GREEN', 'RED', 'ERROR', 'INCOMPLETE']);
 const flags = new Set(['--all', '--recursive', '--force', '--wait', '--json', '--full', '--help', '--human-inbox']);
-const values = new Set(['--repo', '--state-dir', '--critic', '--timeout-ms', '--requester', '--reviewer', '--result-file', '--tool', '--args', '--run', '--pi-auth-file', '--codex-auth-file', '--integrity']);
+const values = new Set(['--repo', '--state-dir', '--critic', '--timeout-ms', '--requester', '--reviewer', '--result-file', '--tool', '--args', '--run', '--pi-auth-file', '--codex-auth-file', '--integrity', '--concurrency', '--identity-concurrency']);
 const help = `CCDD Project — pull validation and explicit review execution
 
   ccdd-project status [ARTIFACT | --critic ID] [--json]
@@ -52,6 +53,8 @@ Individual verification runs selected Critics immediately; missing required evid
 Queries never create review tickets, send alarms or execute review tools or Providers.
 Reviews run in the supplied workspace. Keep it unchanged until completion.
 State and review output must stay outside the repository.
+verify accepts --concurrency N (non-Human executions per Run; default 4).
+verify/status/plan accept --identity-concurrency N (owner identity scripts; default 4).
 verify/status/plan accept --integrity content|metadata (default: content).
 metadata trusts unchanged filesystem metadata to reuse captured content identity;
 it is opt-in, weaker than full content checks, and its evidence cannot satisfy content verification.
@@ -102,12 +105,14 @@ export async function main(argv = process.argv.slice(2), { stdout = process.stdo
     const common = ['--repo', '--state-dir', '--json'];
     const full = Boolean(options['--full']) || command === 'run' && positional[0] === 'show';
     const permitted = new Set([...common, ...(['status', 'plan', 'verify', 'history', 'run', 'request'].includes(command) ? ['--full'] : []), ...(['status', 'plan', 'verify', 'history'].includes(command) ? ['--critic', '--all'] : []),
-      ...(['status', 'plan', 'verify'].includes(command) ? ['--integrity'] : []),
+      ...(['status', 'plan', 'verify'].includes(command) ? ['--integrity', '--identity-concurrency'] : []),
       ...(['plan', 'verify'].includes(command) ? ['--recursive', '--force'] : []),
-      ...(command === 'verify' ? ['--wait', '--timeout-ms', '--requester', '--human-inbox', '--pi-auth-file', '--codex-auth-file'] : []),
+      ...(command === 'verify' ? ['--concurrency', '--wait', '--timeout-ms', '--requester', '--human-inbox', '--pi-auth-file', '--codex-auth-file'] : []),
       ...(command === 'run' ? ['--wait', '--timeout-ms'] : []),
       ...(command === 'request' ? ['--run', '--reviewer', '--result-file', '--tool', '--args'] : [])]);
     for (const key of Object.keys(options)) if (!permitted.has(key)) throw new Error(`${key} is not supported by ${command}.`);
+    const maxConcurrentExecutors = positiveConcurrency(Number(get('--concurrency') ?? 4), '--concurrency');
+    const identityConcurrency = positiveConcurrency(Number(get('--identity-concurrency') ?? 4), '--identity-concurrency');
     const workspaceIntegrity = get('--integrity') ?? 'content';
     if (workspaceIntegrity !== 'content' && workspaceIntegrity !== 'metadata') throw new Error('--integrity must be content or metadata.');
     const timeoutMs = Number(get('--timeout-ms') ?? 600000);
@@ -173,7 +178,7 @@ export async function main(argv = process.argv.slice(2), { stdout = process.stdo
     }
     if (command === 'status' || command === 'plan') {
       const selection = select(command === 'plan');
-      const { plan } = await withCliCancellation('Project validation cancelled.', signal => inspectProject({ detail: 'full', ...context, selection, recursive: Boolean(options['--recursive']), force: Boolean(options['--force']), workspaceIntegrity, signal }));
+      const { plan } = await withCliCancellation('Project validation cancelled.', signal => inspectProject({ detail: 'full', ...context, selection, recursive: Boolean(options['--recursive']), force: Boolean(options['--force']), workspaceIntegrity, identityConcurrency, signal }));
       const output = full ? plan : requesterPlan(plan, context.stateDir);
       print(output, full ? undefined : planText(requesterPlan(plan, context.stateDir))); return command === 'plan' || plan.satisfied ? 0 : 1;
     }
@@ -201,10 +206,10 @@ export async function main(argv = process.argv.slice(2), { stdout = process.stdo
     if (codexFile) piOptions.codexAuthFile = resolve(codexFile);
     const humanInbox = Boolean(options['--human-inbox']);
     const executors = createExecutorRegistry({ piOptions, alarmMethods: createLocalAlarmMethods({ ...context, humanInbox }) });
-    broker = createBroker({ detail: 'full', ...context, executors, workspaceIntegrity });
+    broker = createBroker({ detail: 'full', ...context, executors, workspaceIntegrity, maxConcurrentExecutors, identityConcurrency });
     if (command === 'verify') {
       const run = await withCliCancellation('Project validation cancelled.', signal => broker!.submitProject({ selection: verifySelection!, recursive: Boolean(options['--recursive']), force: Boolean(options['--force']), requesterId: get('--requester') ?? 'cli', signal }));
-      if (!terminal.has(run.status)) await ensureRunWorker({ broker, context, run, initialConfig: { piOptions, humanInbox } });
+      if (!terminal.has(run.status)) await ensureRunWorker({ broker, context, run, initialConfig: { piOptions, humanInbox, maxConcurrentExecutors } });
       if (options['--wait']) return await wait(run.id);
       const view = projectRun(context.stateDir, run.id)!; printRun(view);
       return view.status === 'INCOMPLETE' ? 4 : view.status === 'ERROR' ? 2 : 0;
