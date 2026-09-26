@@ -45,3 +45,9 @@ and two-process lease-expiry races.
 - Real Broker regression coverage verifies zero hydrated JSON bytes and zero
   replans on unchanged idle ticks, plus cross-process Human completion. The
   earlier returned-byte comparison is a SQL-helper microbenchmark only.
+
+The efficiency work is integrated with the 5.0 contract/reuse changes. Status
+revision waits include a monotonic lease-deadline wake for abandoned coalesced
+sources. Actual worker lifecycle tests cover source-revision adoption and lease
+expiry without a status change; unchanged coalesced idle ticks hydrate no JSON
+and perform no plans. Polling and prune enforce the fresh-state format gate.

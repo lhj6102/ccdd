@@ -1,3 +1,4 @@
+import { assertStateFormat } from '../state-format.js';
 import { DatabaseSync } from 'node:sqlite';
 import { constants, openSync, closeSync, lstatSync, readdirSync, rmSync, renameSync, mkdtempSync, chmodSync } from 'node:fs';
 import { join, relative, sep } from 'node:path';
@@ -26,6 +27,7 @@ export function pruneProject(stateDir: string): PruneResult {
   let preserveQuarantine = false, failed = false;
   try {
     db = new DatabaseSync(join(anchor(rootFd), 'broker.sqlite'), { timeout: 5000 });
+    assertStateFormat(db);
     db.exec('CREATE TABLE IF NOT EXISTS prune_claims (id TEXT PRIMARY KEY, created_at TEXT NOT NULL)');
     const quarantine = mkdtempSync(join(anchor(rootFd), '.prune-'));
     chmodSync(quarantine, 0o700);

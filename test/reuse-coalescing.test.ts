@@ -350,3 +350,39 @@ test('actual follower worker cancellation and close leave a live source worker r
   assert.equal((await sourceWorker.exited)[0], 0, sourceWorker.errors());
   assert.equal(data.broker.getRun(source.id)!.status, 'GREEN');
 });
+
+test('actual follower worker adopts the source terminal revision after waiting idle', { timeout: 15000 }, async t => {
+  const { writeFile, readFile } = await import('node:fs/promises');
+  const data = await runtimeFixture(t, true);
+  const source = await data.broker.submitProject({ selection: { kind: 'all' } });
+  const sourceWorker = await actualWorker(t, data, source.id); await waitForCall(data.calls, 'a');
+  const follower = await data.broker.submitProject({ selection: { kind: 'all' } });
+  const followerWorker = await actualWorker(t, data, follower.id);
+  await delay(350);
+  assert.equal(data.broker.getRun(follower.id)!.status, 'RUNNING');
+  await writeFile(join(data.root, 'release'), 'go');
+  assert.equal((await sourceWorker.exited)[0], 0, sourceWorker.errors());
+  assert.equal((await followerWorker.exited)[0], 0, followerWorker.errors());
+  const result = data.broker.getRun(follower.id)!;
+  assert.equal(result.status, 'GREEN'); assert.equal(result.requests.length, 0);
+  assert.equal(result.results[0].reference.runId, source.id);
+  assert.equal(await readFile(data.calls, 'utf8'), 'a\n');
+});
+
+test('actual follower worker expires an abandoned lease without a scheduling revision', { timeout: 15000 }, async t => {
+  const { readFile } = await import('node:fs/promises');
+  const data = await runtimeFixture(t);
+  const source = await data.broker.submitProject({ selection: { kind: 'all' } }), before = storedSource(data.stateDir, source.id);
+  const follower = await data.broker.submitProject({ selection: { kind: 'all' } });
+  const db = new DatabaseSync(join(data.stateDir, 'broker.sqlite'), { readOnly: true }); t.after(() => db.close());
+  const revision = () => db.prepare('SELECT revision FROM scheduling_revision WHERE id=1').get()!.revision;
+  const initial = revision();
+  const worker = await actualWorker(t, data, follower.id);
+  await delay(150);
+  assert.equal(revision(), initial, 'ownership and idle waiting cause no request status revision');
+  assert.equal((await worker.exited)[0], 0, worker.errors());
+  assert.equal(data.broker.getRun(follower.id)!.status, 'GREEN');
+  assert.equal(data.broker.getRun(follower.id)!.requests.length, 1);
+  assert.equal(await readFile(data.calls, 'utf8'), 'a\n');
+  assert.deepEqual(storedSource(data.stateDir, source.id), before);
+});

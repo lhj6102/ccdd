@@ -1,8 +1,10 @@
+import { assertStateFormat } from '../state-format.js';
 import type { DatabaseSync } from 'node:sqlite';
 import type { ReviewStatus, RunStatus } from '../contracts.js';
 
 /** Scheduling invalidation is operational state, never Artifact/reuse identity. */
 export function createStatusPolling(db: DatabaseSync) {
+  assertStateFormat(db);
   db.exec(`
     CREATE TABLE IF NOT EXISTS scheduling_revision (id INTEGER PRIMARY KEY CHECK(id = 1), revision INTEGER NOT NULL);
     INSERT OR IGNORE INTO scheduling_revision VALUES (1, 0);

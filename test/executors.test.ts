@@ -139,12 +139,11 @@ test('consumer-sized prompt carries scope but no duplicated tool descriptions or
   assert.ok(measured);
 });
 
-for (const historical of [false, true]) test(`scope-only prompts preserve tool-less Artifacts and targetless presentation (historical=${historical})`, async t => {
+test('scope-only prompts preserve tool-less Artifacts', async t => {
   const data = await artifactFixture(t);
   await data.write('a', { name: 'a', views: fixtureViews(), critics: [{ id: 'review', title: 'Review', profile: agentProfile, payload: { instruction: 'Read {a}.' } }] });
   await data.write('a/appendix', { name: 'appendix', basis: true });
   const [request] = await data.requests();
-  if (historical) request.target = '';
   let observed = false;
   await createExecutorRegistry({ streamFn: artifactStream({ onRequest: ({ context }) => {
     const content = context.messages[0].content;
@@ -152,10 +151,9 @@ for (const historical of [false, true]) test(`scope-only prompts preserve tool-l
     const line = prompt.split('\n').find(line => line.startsWith('Artifacts: '))!;
     const scope = JSON.parse(line.slice('Artifacts: '.length));
     assert.deepEqual(scope.find((item: { id: string }) => item.id === 'appendix'), { id: 'appendix', path: 'a/appendix', role: 'basis', includedFolders: {}, mounts: {} });
-    assert.equal(scope.find((item: { id: string }) => item.id === 'a').role, historical ? 'dependency' : 'target');
+    assert.equal(scope.find((item: { id: string }) => item.id === 'a').role, 'target');
     assert.deepEqual(context.tools?.map(tool => tool.name), ['read_a']);
     assert.doesNotMatch(prompt, /Read content from a by line\.|inputSchema|resultKinds/);
-    if (historical) assert.match(prompt, /Historical review: Artifact roles are described in the review payload/);
     observed = true;
   } }) }).execute(request, { worktreePath: data.repoPath, runDir: join(data.root, 'run') });
   assert.ok(observed);

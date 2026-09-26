@@ -190,11 +190,11 @@ export function createBroker<D extends ResultDetail = 'compact'>({ detail, repoP
   const submissionDeadlines = new Map<string, number>();
   function sweepSubmissionDeadlines() {
     for (const id of submissionDeadlines.keys()) {
-      const source = runData(id);
+      const status = polling.runStatus(id);
       // Retain expired unowned sources: dropping their monotonic tombstone could
       // renew eligibility after a wall-clock rollback. Owned Runs cannot revert
       // to an abandoned submission; worker exit is reconciled as terminal.
-      if (!source || terminal.has(source.status) || ownerData(id)) submissionDeadlines.delete(id);
+      if (!status || terminal.has(status) || ownerData(id)) submissionDeadlines.delete(id);
     }
   }
   const shareable = (request: ReviewRequest): boolean => {
@@ -474,7 +474,8 @@ export function createBroker<D extends ResultDetail = 'compact'>({ detail, repoP
       let workspace: WorkspaceHandle | undefined;
       let poll: ReturnType<typeof setInterval> | undefined;
       const inFlight = new Map<string, { kind: ReviewRequest['profile']['kind']; promise: Promise<void> }>();
-      let plannedRevision = -1;
+      let plannedRevision = -1, leaseDeadline = Infinity;
+      let pendingSources: string[] = [];
       const notified = new Set<string>();
       const kinds = new Map<string, ReviewRequest['profile']['kind']>();
       try {
@@ -492,8 +493,12 @@ export function createBroker<D extends ResultDetail = 'compact'>({ detail, repoP
             break;
           }
           reviewSignal.throwIfAborted();
-          if (polling.revision() !== plannedRevision) transaction(() => {
+          const sourceExited = pendingSources.some(id => { const owner = ownerData(id); return owner !== undefined && !ownerAlive(owner); });
+          if (polling.revision() !== plannedRevision || performance.now() >= leaseDeadline || sourceExited) transaction(() => {
             refreshReadinessWithin(runId); updateRunStatus(runId);
+            const pending = sharedRequests(required(runData(runId), 'Run')).filter(request => !terminal.has(request.status));
+            pendingSources = [...new Set(pending.map(request => request.runId))];
+            leaseDeadline = Math.min(Infinity, ...pendingSources.filter(id => !ownerData(id)).map(id => submissionDeadlines.get(id) ?? performance.now()));
             plannedRevision = polling.revision();
           });
           const requests = polling.requests(runId);
@@ -515,8 +520,9 @@ export function createBroker<D extends ResultDetail = 'compact'>({ detail, repoP
             await Promise.race([...inFlight.values()].map(item => item.promise).concat(delay(50, undefined, { signal: reviewSignal })));
             continue;
           }
-          if (sharedRequests(required(runData(runId), 'Run')).some(request => !terminal.has(request.status))) {
-            await delay(100, undefined, { signal: reviewSignal });
+          if (pendingSources.length) {
+            brokerTestHooks.onIdleTick?.();
+            await delay(Math.max(1, Math.min(100, leaseDeadline - performance.now())), undefined, { signal: reviewSignal });
             continue;
           }
           const waiting = requests.filter(request => request.status === 'WAITING_HUMAN');

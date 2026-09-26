@@ -669,3 +669,11 @@ polling. A separate process submits a Human completion through the public Broker
 API and the waiting worker settles successfully. The consumer-sized SQL helper
 comparison (1,086,059 versus 51 returned bytes per tick) is only a microbenchmark,
 not a measurement of complete scheduler work or physical disk I/O.
+
+Coalesced followers use the same lightweight status revision as other idle Runs.
+Their unchanged idle ticks hydrate zero JSON bytes and make zero plans. A cached
+monotonic deadline additionally wakes planning at the earliest pending unowned
+source lease expiry, even without a status revision. It bounds the existing
+lightweight wait timer; it does not restore full-record polling. Source-owner
+death is checked without JSON hydration and reconciled without replay. Polling
+and prune database entry points reject non-current state before table changes.

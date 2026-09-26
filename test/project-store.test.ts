@@ -77,6 +77,11 @@ test('all store entry points reject pre-5.0 state without migrating it', async t
   const expected = /earlier CCDD major.*use a new state directory/;
   assert.throws(() => createBroker({ repoPath: f.repoPath, stateDir: f.stateDir, repoId: 'fixture' }), expected);
   assert.throws(() => readStateContext(f.stateDir), expected);
+  const { pruneProject } = await import('../src/project/prune.js');
+  assert.throws(() => pruneProject(f.stateDir), expected);
+  const { createStatusPolling } = await import('../src/broker/polling.js');
+  const reader = new DatabaseSync(f.filename, { readOnly: true });
+  try { assert.throws(() => createStatusPolling(reader), expected); } finally { reader.close(); }
   assert.throws(() => projectRequests(f.stateDir), expected);
   const { createMonitorStore } = await import('../src/monitor/store.js');
   const overview = await createMonitorStore({ stateDirs: [f.stateDir] }).overview();
