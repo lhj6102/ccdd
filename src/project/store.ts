@@ -11,7 +11,7 @@ import { planProject } from './query.js';
 import { findCoalescibleRequest } from '../broker/coalescing.js';
 
 export function readEvidence(database: DatabaseSync): ValidationEvidence[] {
-  const rows = database.prepare("SELECT data FROM requests WHERE status IN ('GREEN','RED') AND json_extract(data, '$.validationInput.version') = 3 ORDER BY json_extract(data, '$.completedAt'), rowid").all();
+  const rows = database.prepare("SELECT json_object('id',id,'runId',run_id,'criticId',json_extract(data,'$.criticId'),'validationInput',json_extract(data,'$.validationInput'),'result',json_extract(data,'$.result'),'status',status,'completedAt',json_extract(data,'$.completedAt')) AS data FROM requests WHERE status IN ('GREEN','RED') AND json_extract(data, '$.validationInput.version') = 3 ORDER BY json_extract(data, '$.completedAt'), rowid").all();
   return rows.flatMap(row => {
     const request = JSON.parse(String(row.data)) as ReviewRequest;
     if (!request.validationInput || !/^[a-f0-9]{64}$/.test(request.validationInput.key) || !request.result || request.result.verdict !== request.status || !request.completedAt) return [];
@@ -32,21 +32,31 @@ export function withProjectStore<T>(stateDir: string, read: (database: DatabaseS
 export function projectHistory<D extends ResultDetail = 'compact'>(stateDir: string, options: ResultOptions<D> = {}) { return withProjectStore(stateDir, db => readEvidence(db).map(evidence => resultView(options, evidence, () => requesterEvidence(evidence, stateDir))), []); }
 
 export type ProjectRunView = RunView & { validation?: ProjectPlan };
-export function storedRun(database: DatabaseSync, id: string): ProjectRunView | null {
-  const row = database.prepare('SELECT data FROM runs WHERE id = ?').get(id);
+// Compact/status consumers do not hydrate request manifests or duplicated Run
+// templates/graph. Full audit lookup remains lossless, including 5.0/5.1 records.
+const requestProjection = "json_remove(data, '$.artifacts', '$.configManifest', '$.payload', '$.references')";
+function readRun(database: DatabaseSync, id: string, full: boolean): ProjectRunView | null {
+  const runProjection = full ? 'data' : "json_remove(data, '$.graph', '$.project.templates', '$.project.snapshot.config.configManifest')";
+  const row = database.prepare(`SELECT ${runProjection} AS data FROM runs WHERE id = ?`).get(id);
   if (!row) return null;
   const run = JSON.parse(String(row.data)) as RunRecord;
-  const requests = database.prepare('SELECT data FROM requests WHERE run_id = ? ORDER BY ordinal').all(id).map(row => JSON.parse(String(row.data)) as ReviewRequest);
-  const shared = (run.project?.coalescedRequestIds ?? []).flatMap(id => { const row = database.prepare('SELECT data FROM requests WHERE id = ?').get(id); return row ? [JSON.parse(String(row.data)) as ReviewRequest] : []; });
+  const requests = database.prepare(`SELECT ${full ? 'data' : requestProjection} AS data FROM requests WHERE run_id = ? ORDER BY ordinal`).all(id).map(row => JSON.parse(String(row.data)) as ReviewRequest);
+  const shared = (run.project?.coalescedRequestIds ?? []).flatMap(id => { const row = database.prepare(`SELECT ${requestProjection} AS data FROM requests WHERE id = ?`).get(id); return row ? [JSON.parse(String(row.data)) as ReviewRequest] : []; });
   const events = database.prepare('SELECT * FROM (SELECT * FROM events WHERE run_id = ? ORDER BY id DESC LIMIT 500) ORDER BY id').all(id).map(event => ({ id: Number(event.id), runId: String(event.run_id), requestId: event.request_id === null ? null : String(event.request_id), createdAt: String(event.created_at), type: String(event.type), message: String(event.message), ...(event.data ? { data: JSON.parse(String(event.data)) as unknown } : {}) }));
   const owner = database.prepare('SELECT pid, claimed_at FROM run_owners WHERE run_id = ?').get(id);
   return { ...run, scope: run.scope ?? { kind: run.graph ? 'graph' : 'chain' }, requests, events, owner: owner ? { pid: Number(owner.pid), claimedAt: String(owner.claimed_at) } : null,
     ...(run.project?.version === 3 ? { validation: planProject(run.project.snapshot, readEvidence(database).filter(e => !run.project!.evidenceRequestIds || run.project!.evidenceRequestIds.includes(e.requestId)), { selection: run.project.selection, recursive: run.project.recursive, force: run.project.force, runId: id, coalescedRequestIds: run.project.coalescedRequestIds, attempts: [...requests, ...shared] }) } : {}) };
 }
+export function storedRun(database: DatabaseSync, id: string): ProjectRunView | null { return readRun(database, id, true); }
+export function storedRequesterRun(database: DatabaseSync, id: string, stateDir: string) {
+  const run = readRun(database, id, false); return run ? requesterRun(run, stateDir) : null;
+}
+export function storedValidation(database: DatabaseSync, id: string) { return readRun(database, id, false)?.validation; }
 export function projectRun(stateDir: string, id: string): ProjectRunView | null { return withProjectStore(stateDir, db => storedRun(db, id), null); }
-export function projectRuns<D extends ResultDetail = 'compact'>(stateDir: string, options: ResultOptions<D> = {}) { return withProjectStore(stateDir, db => db.prepare('SELECT id FROM runs ORDER BY created_at DESC, rowid DESC').all().map(row => { const run = storedRun(db, String(row.id))!; return resultView(options, run, () => requesterRun(run, stateDir)); }), []); }
+export function projectRuns<D extends ResultDetail = 'compact'>(stateDir: string, options: ResultOptions<D> = {}) { return withProjectStore(stateDir, db => db.prepare('SELECT id FROM runs ORDER BY created_at DESC, rowid DESC').all().map(row => { const run = readRun(db, String(row.id), options.detail === 'full')!; return resultView(options, run, () => requesterRun(run, stateDir)); }), []); }
 export function projectRequests<D extends ResultDetail = 'compact'>(stateDir: string, runId?: string, options: ResultOptions<D> = {}) {
-  return withProjectStore(stateDir, db => (runId ? db.prepare('SELECT data FROM requests WHERE run_id = ? ORDER BY ordinal').all(runId) : db.prepare("SELECT data FROM requests ORDER BY json_extract(data, '$.createdAt') DESC, rowid DESC").all()).map(row => { const request = JSON.parse(String(row.data)) as ReviewRequest; return resultView(options, request, () => requesterRequest(request, stateDir)); }), []);
+  const projection = options.detail === 'full' ? 'data' : requestProjection;
+  return withProjectStore(stateDir, db => (runId ? db.prepare(`SELECT ${projection} AS data FROM requests WHERE run_id = ? ORDER BY ordinal`).all(runId) : db.prepare(`SELECT ${projection} AS data FROM requests ORDER BY json_extract(data, '$.createdAt') DESC, rowid DESC`).all()).map(row => { const request = JSON.parse(String(row.data)) as ReviewRequest; return resultView(options, request, () => requesterRequest(request, stateDir)); }), []);
 }
 
 /** Evidence and active candidates belong to one readonly snapshot; never reconcile stored owners. */

@@ -7,6 +7,7 @@ import type { ArtifactViews, ConfigManifest, ScriptDefinition } from '../tools/c
 import type { RepoConfig } from '../contracts.js';
 import { metadata, environmentRequirements, object, projectInputPath } from '../tools/schema.js';
 import { hashExecutionInputs } from '../tools/inputs.js';
+import { scopedPath } from '../tools/paths.js';
 import { instructionReferences } from '../artifacts/instruction.js';
 
 export const identifier = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
@@ -104,6 +105,15 @@ function manifest(value: unknown): ArtifactManifest {
 
 /** Discover static per-folder declarations. No imports, generators, tools, or Providers run here. */
 export async function readWorkspaceConfig(repoPath: string, signal?: AbortSignal): Promise<{ config: RepoConfig }> {
+  return readConfig(repoPath, signal);
+}
+
+/** Reconnect only recorded scope folders; discovery still detects new nearest children. */
+export async function readArtifactConfig(repoPath: string, artifacts: ConfigManifest['artifacts'], criticId?: string, signal?: AbortSignal): Promise<{ config: RepoConfig }> {
+  return readConfig(repoPath, signal, { paths: Object.values(artifacts).map(artifact => artifact.path), criticId });
+}
+
+async function readConfig(repoPath: string, signal?: AbortSignal, scope?: { paths: string[]; criticId?: string }): Promise<{ config: RepoConfig }> {
   const root = await realpath(repoPath), artifacts = ownMap<ArtifactDefinition>(), declarations: ConfigManifest['declarations'] = [];
   const localCritics = ownMap<CriticDefinition[]>();
   const walk = async (relative: string, parent?: string): Promise<void> => {
@@ -130,7 +140,14 @@ export async function readWorkspaceConfig(repoPath: string, signal?: AbortSignal
     }
     for (const entry of entries) if (entry.isDirectory() && !['.git', 'node_modules'].includes(entry.name)) await walk(path.posix.join(relative, entry.name), owner);
   };
-  await walk('');
+  if (scope) {
+    const roots = [...new Set(scope.paths)].sort();
+    for (const relative of roots) {
+      if (roots.some(parent => parent !== relative && (parent === '' || relative.startsWith(`${parent}/`)))) continue;
+      await scopedPath(root, relative);
+      await walk(relative);
+    }
+  } else await walk('');
   if (!Object.keys(artifacts).length) throw new Error('Workspace must contain at least one ccdd.json Artifact.');
   const relations: ArtifactRelation[] = [], critics: ResolvedCriticDefinition[] = [];
   const envRequirements: NonNullable<ConfigManifest['envRequirements']> = ownMap();
@@ -144,6 +161,7 @@ export async function readWorkspaceConfig(repoPath: string, signal?: AbortSignal
       relations.push({ source, target: id, kind: 'mount', name: alias });
     }
     for (const declared of localCritics[id]) {
+      if (scope && `${id}/${declared.id}` !== scope.criticId) continue;
       const qualifiedId = `${id}/${declared.id}`, references = ownMap<string>();
       for (const name of instructionReferences(declared.payload.instruction)) {
         const resolved = Object.hasOwn(artifact.mounts, name) ? artifact.mounts[name] : name;

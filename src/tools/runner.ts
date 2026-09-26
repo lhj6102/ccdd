@@ -6,7 +6,7 @@ import { isDeepStrictEqual } from 'node:util';
 import type { ArtifactReference } from '../artifacts/index.js';
 import { resolveArtifactScope } from '../artifacts/scope.js';
 import type { ArtifactScope, ReviewToolCall } from '../contracts.js';
-import { readWorkspaceConfig } from '../broker/config.js';
+import { readArtifactConfig } from '../broker/config.js';
 import { bestEffortDiagnostic } from '../executors/telemetry.js';
 import { runProcess } from '../executors/process.js';
 import type { ConfigManifest, JsonSchema, ScriptToolRequest, ToolMetadata, ToolResult } from './contracts.js';
@@ -164,8 +164,10 @@ export async function toToolContent(result:unknown):Promise<Array<{type:'text';t
 export async function createReviewTools(options: ReviewToolsOptions): Promise<ReviewToolRegistry> {
   const { configManifest, audience, signal, onCall } = options;
   signal?.throwIfAborted();
-  const root = await realpath(options.worktreePath), { config } = await readWorkspaceConfig(root, signal);
+  const root = await realpath(options.worktreePath);
+  const scoped = Object.fromEntries(options.artifacts.map(({ id, ...definition }) => [id, definition]));
   const mismatch = () => Object.assign(new Error('Recorded Artifact tools do not match the snapshot configuration.'), { code: 'WORKSPACE_ARTIFACT_MISMATCH' });
+  const { config } = await readArtifactConfig(root, scoped, options.criticId, signal).catch(error => { signal?.throwIfAborted(); throw Object.assign(mismatch(), { cause: error }); });
   if (!matchesToolManifest(config, configManifest)) throw mismatch();
   const artifacts = structuredClone(options.artifacts);
   for (const { id, ...definition } of artifacts) if (!Object.hasOwn(config.artifacts, id) || !isDeepStrictEqual(definition, config.artifacts[id])) throw mismatch();

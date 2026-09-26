@@ -1,0 +1,199 @@
+{
+  "source": "Generated with CCDD 5.1.0 (01656c0); unchanged 5.0 request/validation input format.",
+  "files": {
+    "a/ccdd.json": "{\"name\":\"a\",\"views\":{\"agentTools\":{\"read\":{\"metadata\":{\"description\":\"Read a fixture.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}},\"resultKinds\":[\"text\"],\"observation\":\"content\"},\"script\":{\"command\":\"node\",\"args\":[\"view.mjs\"]}}},\"humanTools\":{\"read\":{\"metadata\":{\"description\":\"Read a fixture.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}},\"resultKinds\":[\"text\"],\"observation\":\"content\"},\"script\":{\"command\":\"node\",\"args\":[\"view.mjs\"]}}}},\"critics\":[{\"id\":\"review\",\"title\":\"Review\",\"profile\":{\"kind\":\"agent\",\"provider\":\"fixture\",\"model\":\"fixture\",\"reasoning\":\"none\"},\"payload\":{\"instruction\":\"Inspect {a}.\"}}]}",
+    "b/ccdd.json": "{\"name\":\"b\",\"basis\":true,\"views\":{\"humanTools\":{\"read\":{\"metadata\":{\"description\":\"Read a fixture.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}},\"resultKinds\":[\"text\"],\"observation\":\"content\"},\"script\":{\"command\":\"node\",\"args\":[\"view.mjs\"]}}}}}",
+    "a/view.mjs": "console.log(JSON.stringify({content:[{type:\"text\",text:\"fixture\"}],observation:{kind:\"content\"}}));",
+    "b/view.mjs": "process.exit(0);"
+  },
+  "envelope": {
+    "repoId": "fixture",
+    "snapshotHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "criticId": "a/review",
+    "title": "Review",
+    "artifacts": [
+      {
+        "id": "a",
+        "name": "a",
+        "views": {
+          "agentTools": {
+            "read": {
+              "metadata": {
+                "description": "Read a fixture.",
+                "inputSchema": {
+                  "type": "object",
+                  "properties": {}
+                },
+                "resultKinds": [
+                  "text"
+                ],
+                "observation": "content"
+              },
+              "script": {
+                "command": "node",
+                "args": [
+                  "view.mjs"
+                ]
+              }
+            }
+          },
+          "humanTools": {
+            "read": {
+              "metadata": {
+                "description": "Read a fixture.",
+                "inputSchema": {
+                  "type": "object",
+                  "properties": {}
+                },
+                "resultKinds": [
+                  "text"
+                ],
+                "observation": "content"
+              },
+              "script": {
+                "command": "node",
+                "args": [
+                  "view.mjs"
+                ]
+              }
+            }
+          }
+        },
+        "mounts": {},
+        "path": "a",
+        "children": {}
+      }
+    ],
+    "configManifest": {
+      "version": 2,
+      "configHash": "0e2d8c457b6426eecfcca54947bd94f94b6b869638c93fe2fea32758b4e112e1",
+      "artifacts": {
+        "a": {
+          "name": "a",
+          "views": {
+            "agentTools": {
+              "read": {
+                "metadata": {
+                  "description": "Read a fixture.",
+                  "inputSchema": {
+                    "type": "object",
+                    "properties": {}
+                  },
+                  "resultKinds": [
+                    "text"
+                  ],
+                  "observation": "content"
+                },
+                "script": {
+                  "command": "node",
+                  "args": [
+                    "view.mjs"
+                  ]
+                }
+              }
+            },
+            "humanTools": {
+              "read": {
+                "metadata": {
+                  "description": "Read a fixture.",
+                  "inputSchema": {
+                    "type": "object",
+                    "properties": {}
+                  },
+                  "resultKinds": [
+                    "text"
+                  ],
+                  "observation": "content"
+                },
+                "script": {
+                  "command": "node",
+                  "args": [
+                    "view.mjs"
+                  ]
+                }
+              }
+            }
+          },
+          "mounts": {},
+          "path": "a",
+          "children": {}
+        },
+        "b": {
+          "name": "b",
+          "views": {
+            "humanTools": {
+              "read": {
+                "metadata": {
+                  "description": "Read a fixture.",
+                  "inputSchema": {
+                    "type": "object",
+                    "properties": {}
+                  },
+                  "resultKinds": [
+                    "text"
+                  ],
+                  "observation": "content"
+                },
+                "script": {
+                  "command": "node",
+                  "args": [
+                    "view.mjs"
+                  ]
+                }
+              }
+            }
+          },
+          "mounts": {},
+          "basis": true,
+          "path": "b",
+          "children": {}
+        }
+      },
+      "declarations": [
+        {
+          "path": "a/ccdd.json",
+          "hash": "bde5b011ac640353f00393489492377bfc2fdcd2a38505e903337106887eb4f1"
+        },
+        {
+          "path": "b/ccdd.json",
+          "hash": "f3126ce37a6eb9fe0a8db5839bef2c8ffca8d17249d65a3422541767936e3c03"
+        }
+      ]
+    },
+    "references": {
+      "a": "a"
+    },
+    "requiredObservations": [
+      "a"
+    ],
+    "payload": {
+      "instruction": "Inspect {a}."
+    },
+    "profile": {
+      "kind": "agent",
+      "provider": "fixture",
+      "model": "fixture",
+      "reasoning": "none"
+    },
+    "target": "a",
+    "deps": []
+  },
+  "inputs": {
+    "a/review": {
+      "version": 3,
+      "key": "a4ec13645fa081f52f30760591a46567e7e6b3bf0c55e5ec81fb8603ed1fabf1",
+      "criticHash": "7a29adbd1908c730b31f717c4edc882f1dd3c1f6a47e1de6278eb5a3486ea14a",
+      "target": {
+        "id": "a",
+        "hash": "b6ab28539c4ece11d65a9cef7a1f450471fc5631d5156b10809683162367dab6"
+      },
+      "deps": [],
+      "reusable": true,
+      "workspaceIntegrity": "content"
+    }
+  },
+  "artifactHashes": {
+    "a": "b6ab28539c4ece11d65a9cef7a1f450471fc5631d5156b10809683162367dab6",
+    "b": "71c814d28db3e8a879ce752a11643588624783636ecae1c0a14ed3b6f30ab19e"
+  }
+}

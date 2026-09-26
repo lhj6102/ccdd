@@ -2,9 +2,9 @@ import { spawn } from 'node:child_process';
 import { mkdir, realpath } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { matchesToolManifest } from './manifest.js';
+import { matchesToolManifest, scopeToolManifest } from './manifest.js';
 import type { ConfigManifest } from './contracts.js';
-import { readWorkspaceConfig } from '../broker/config.js';
+import { readArtifactConfig } from '../broker/config.js';
 import { scopedPath, within } from './paths.js';
 
 export interface EnvironmentCheck { id: string; ok: boolean; message: string }
@@ -82,11 +82,13 @@ export function runEnvironmentScript({ command, args, cwd, outputDir, tmpDir, si
 export async function checkEnvironmentRequirements(options: EnvironmentCheckOptions): Promise<EnvironmentCheckResult> {
   options.signal?.throwIfAborted();
   if (options.configManifest?.envRequirements === undefined) return { ok: true, checks: [] };
-  const requirements = options.configManifest.envRequirements;
+  const manifest = scopeToolManifest(options.configManifest, options.artifactIds ?? Object.keys(options.configManifest.artifacts));
+  const requirements = manifest.envRequirements ?? {};
   const root = await realpath(options.workspacePath);
   // Reconnect declarations from this exact snapshot before executing any stored script path.
-  const { config } = await readWorkspaceConfig(root, options.signal);
-  if (!matchesToolManifest(config, options.configManifest)) throw Object.assign(new Error('Recorded environment requirements do not match this snapshot configuration.'), { code: 'WORKSPACE_ARTIFACT_MISMATCH' });
+  const mismatch = () => Object.assign(new Error('Recorded environment requirements do not match this snapshot configuration.'), { code: 'WORKSPACE_ARTIFACT_MISMATCH' });
+  const { config } = await readArtifactConfig(root, manifest.artifacts, undefined, options.signal).catch(error => { options.signal?.throwIfAborted(); throw Object.assign(mismatch(), { cause: error }); });
+  if (!matchesToolManifest(config, manifest)) throw mismatch();
   const base = await environmentOutputDirectory(root, options.outputDir), checks: EnvironmentCheck[] = [];
   for (const [id, requirement] of Object.entries(requirements)) {
     if (options.artifactIds && !options.artifactIds.includes(id.split('/')[0])) continue;

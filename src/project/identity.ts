@@ -55,7 +55,7 @@ export async function createProjectSnapshot(config: RepoConfig, root: string, sn
   positiveConcurrency(identityConcurrency, 'identityConcurrency');
   signal?.throwIfAborted();
   if (!['content', 'metadata'].includes(workspaceIntegrity)) throw new Error('Workspace integrity must be content or metadata.');
-  createGraphDefinition(config);
+  createGraphDefinition(config, false);
   // A dependency closure contains whole SCCs; keep the full definitions and hash payloads unchanged.
   const required = new Set(requiredArtifacts({ config }, selection));
   const artifactHashes: Record<string, string> = {}, reusable: Record<string, boolean> = {}, ownHashes = new Map<string, string>();

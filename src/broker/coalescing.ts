@@ -16,7 +16,7 @@ interface CoalescingOptions {
 export function coalescingEligibility(database: DatabaseSync, request: ReviewRequest, options: CoalescingOptions = {}): { leaseExpiresAt?: string } | null {
   if (!['QUEUED', 'RUNNING', 'WAITING_HUMAN'].includes(request.status)) return null;
   options.reconcile?.(request.runId);
-  const row = database.prepare('SELECT data FROM runs WHERE id = ?').get(request.runId);
+  const row = database.prepare("SELECT json_object('id',json_extract(data,'$.id'),'status',json_extract(data,'$.status'),'createdAt',json_extract(data,'$.createdAt'),'coalescingGraceMs',json_extract(data,'$.coalescingGraceMs')) AS data FROM runs WHERE id = ?").get(request.runId);
   if (!row) return null;
   const source = JSON.parse(String(row.data)) as RunRecord;
   if (terminal.has(source.status)) return null;

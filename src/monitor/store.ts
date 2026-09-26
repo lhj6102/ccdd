@@ -11,7 +11,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { promisify } from 'node:util';
 import type { CriticProfile, ReviewRequest, ReviewStatus, RunStatus } from '../contracts.js';
 import { projectGraph, validateGraphDefinition } from '../broker/graph.js';
-import { storedRun } from '../project/store.js';
+import { storedValidation } from '../project/store.js';
 import { projectValidationGraph } from '../project/graph.js';
 import type { ProjectPlan } from '../project/types.js';
 import type { MonitorDetail, MonitorLane, MonitorOverview, MonitorProject, MonitorQuery, MonitorRequest, MonitorSources, MonitorRun, MonitorRunOverview, MonitorRunQuery, MonitorGraph } from './types.js';
@@ -139,7 +139,7 @@ async function readSnapshot(source: Source, requestId?: string, runId?: string):
       if (row?.graph != null) {
         try { snapshot.graph = JSON.parse(string(row.graph)); } catch { snapshot.graph = false; }
       }
-      if (snapshot.runs.find(run => run.id === runId)?.scope?.kind === 'project') snapshot.validation = storedRun(db, runId)?.validation;
+      if (snapshot.runs.find(run => run.id === runId)?.scope?.kind === 'project') snapshot.validation = storedValidation(db, runId);
     }
     for (const owner of db.prepare('SELECT run_id,pid,process_identity FROM run_owners').all()) {
       snapshot.owners.set(string(owner.run_id), { pid: typeof owner.pid === 'number' ? owner.pid : NaN, identity: nullableString(owner.process_identity) });
