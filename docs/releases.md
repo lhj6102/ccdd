@@ -2,9 +2,18 @@
 
 CCDD packages are distributed through npm. GitHub Releases announce each version with an installation command, npm package links, and release notes. They do not host installation tarballs. GitHub still supplies automatic Source code archives; those contain source, not installable packages.
 
-See [getting started](getting-started.md) for setup and [v6.0.0 release notes](releases/v6.0.0.md) for the current changes.
+See [getting started](getting-started.md) for setup and [v6.0.1 release notes](releases/v6.0.1.md) for the current changes.
 
-## Breaking changes in 6.0
+## Current release: 6.0.1
+
+Large submissions prepare immutable records in bounded, yielding work chunks
+before a final atomic publication transaction. Compact submit/execute results
+avoid full audit reconstruction. Existing format-6 state and identities remain
+valid; no new state directory is needed for an upgrade from 6.0.0. See the
+release notes for the controlled before/after table, cancellation behavior and
+remaining output/work-sized costs.
+
+## Breaking changes when upgrading from before 6.0
 
 **Use a fresh external state directory.** State format 6 rejects all prior
 formats, including 5.x, with no migration or compatibility reads. Keep old audit
@@ -25,15 +34,15 @@ performance, integrity guarantees and stated limits.
 
 ## Installing and upgrading
 
-CCDD 6.0.0 supports Node.js 22 LTS (22.19.0 or later). Install matching versions of the three packages:
+CCDD 6.0.1 supports Node.js 22 LTS (22.19.0 or later). Install matching versions of the three packages:
 
 ```sh
-npm install --ignore-scripts @ccdd/core@6.0.0 @ccdd/project@6.0.0 @ccdd/default-tools@6.0.0
+npm install --ignore-scripts @ccdd/core@6.0.1 @ccdd/project@6.0.1 @ccdd/default-tools@6.0.1
 npx ccdd-project config check
 npx ccdd-project tools check
 ```
 
-`@ccdd/core` supplies definitions. `@ccdd/project` supplies validation, the CLI, Broker, Executors, and monitor. `@ccdd/default-tools` is optional when all tools are custom. Project and default-tools 6.0.0 target core `>=6.0.0 <7`. Keep installed CCDD packages on the same major line.
+`@ccdd/core` supplies definitions. `@ccdd/project` supplies validation, the CLI, Broker, Executors, and monitor. `@ccdd/default-tools` is optional when all tools are custom. Project and default-tools 6.0.1 target core `>=6.0.0 <7`. Keep installed CCDD packages on the same major line.
 
 Version 4 introduced folder-owned `ccdd.json` files. Projects older than v4
 must also follow the [v4 configuration migration](migration-v4.md). The
@@ -41,9 +50,10 @@ must also follow the [v4 configuration migration](migration-v4.md). The
 upgrading from 4.x; all upgrades to 6.0 must follow the [6.0 migration](migration-v6.md).
 
 Finish or cancel active reviews before changing dependencies in the reviewed
-workspace. Restart workers and the monitor with the new CLI and a fresh state
-directory. Old state is not automatically deleted and is not readable or
-resumable by 6.0; inspect it only with its corresponding old installation.
+workspace. Restart workers and the monitor with the new CLI. Use a fresh state
+directory only when upgrading from a pre-6.0 format; existing format-6 state is
+compatible with 6.0.1. Older state is not automatically deleted and is not readable
+or resumable by 6.0; inspect it only with its corresponding old installation.
 
 For older projects, follow the [package and import migration](releases/v2.0.1.md#migration), [Project migration from v1](releases/v2.0.0.md#migrating-from-v1), and, when needed, [configuration migration from before v1](releases/v1.0.0.md#migrating-existing-configuration). Use `npx ccdd doctor` in the Agent environment to check actual authentication, Provider, and model access. It calls the Provider and consumes account usage. `tools check --execute` actually runs the selected tool.
 
@@ -58,8 +68,8 @@ To publish, merge the version change and release notes, wait for that commit's
 CI to succeed, then push its version tag:
 
 ```sh
-git tag v6.0.0 COMMIT_SHA
-git push origin v6.0.0
+git tag v6.0.1 COMMIT_SHA
+git push origin v6.0.1
 ```
 
 `release.yml` runs one Node 22 LTS job. It installs npm 11.19.1 for Trusted
@@ -139,7 +149,7 @@ The three npm publications and the GitHub announcement are not one transaction. 
 If the publication scripts need a fix after tagging, merge and verify that fix first, then use the current workflow to publish the original tag:
 
 ```sh
-gh workflow run release.yml --ref main -f tag=v6.0.0
+gh workflow run release.yml --ref main -f tag=v6.0.1
 ```
 
 This recovery uses the publication scripts from main and a separate checkout of the existing tag for release metadata. It still requires that tag's successful main CI and publishes only its retained, checksum-verified packages. It never moves the tag, rebuilds packages, or substitutes the workflow commit's packages. CI also checks each completed verification report with the same asset validator used by publication.

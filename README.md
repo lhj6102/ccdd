@@ -100,4 +100,4 @@ See [Contributing](CONTRIBUTING.md), [the context map](CONTEXT-MAP.md), [detaile
 
 [MIT](LICENSE).
 
-**CCDD 6.0.0 is a breaking release:** use a fresh format-6 state directory, account for dependency-GREEN gates, and move live polling to `broker.changes`. Read the [6.0 migration guide](docs/migration-v6.md) and [release notes, measurements and limits](docs/releases/v6.0.0.md) before upgrading.
+**CCDD 6.0.1:** large submissions prepare immutable records in yielding chunks before atomic publication. See the [release notes, measurements and limits](docs/releases/v6.0.1.md). Existing format-6 state remains valid; upgrades from 5.x or earlier require the [6.0 migration guide](docs/migration-v6.md).
