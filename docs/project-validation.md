@@ -65,6 +65,33 @@ An explicit `basis: true` has no Critics. Other no-Critic Artifacts are UNREVIEW
 
 `stale: {"kind":"always"}` requires evidence from the current validation request and propagates through consuming identities. Narrow `file-hash` material paths are owner-relative, but cannot exclude configuration or script entry files. See [identity contracts](contracts.md#input-identity-and-evidence).
 
+## Planning active work
+
+`inspectProject` and CLI `plan`/`status` compare completed evidence and active
+requests in the same readonly store transaction. `REUSE` consumes a matching
+completed result. `COALESCE` means a new submission would wait for an identical
+active request, identified by the item's `requestId`, with no new ticket or
+execution. `counts.coalesce` counts these items; `counts.execute` counts only
+new executions. `ACTIVE` remains the action for an attempt already attached to a
+saved Run. `--force` keeps forced Critics at `EXECUTE` and bypasses coalescing.
+
+A live source owner makes QUEUED, RUNNING and WAITING_HUMAN requests eligible.
+Without an owner, only a QUEUED source inside its persisted submission lease is
+eligible; its item also includes `leaseExpiresAt` (ISO UTC). Zero grace,
+expired/future/invalid timestamps and invalid/missing grace fail closed. A dead
+owner is ineligible even within that lease. Inspection uses the same eligibility
+rule as submission but does not persist reconciliation: source records, owner
+rows, events and scheduling revisions stay unchanged. Actual submission still
+reconciles the dead worker before creating replacement work.
+
+This is a point-in-time quote, not a reservation or a guarantee of future reuse.
+If a lease expires or its owner exits before submission, new execution may be
+needed. The deadline is a wall-clock upper bound; a Broker that has already
+observed the source also retains a monotonic bound, which may expire sooner
+after a backward clock adjustment. Readonly inspection has no access to another
+Broker's private observation history. Pure `planProject(snapshot, history, ...)`
+uses only its supplied data; use `inspectProject` to quote current active work.
+
 ## Owner-defined equivalence
 
 ```json

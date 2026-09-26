@@ -87,8 +87,8 @@ function planText(plan: RequesterPlan): string {
   const results = new Map(plan.results.map(result => [result.reference.requestId, result]));
   return `${target}: ${plan.satisfied ? 'SATISFIED' : 'NOT SATISFIED'}\nSnapshot: ${plan.snapshotHash}\nIntegrity: ${plan.workspaceIntegrity ?? 'content'}\n` + artifacts.map(a => `  Artifact ${a.id}: ${a.status} (${a.passed}/${a.total} Critics)${a.identity ? ` · identity: ${a.identity} · value: ${a.value}` : ''}\n`).join('') + plan.items.map(c => {
     const result = c.result ? results.get(c.result.requestId) : undefined;
-    return `  ${c.id}: ${c.action} · ${c.status}\n    ${c.reason}${result ? `\n    Result: ${JSON.stringify(result)}\n    Reference: ${JSON.stringify(result.reference)}` : ''}`;
-  }).join('\n') + `\nReuse ${plan.counts.reuse} · Ready ${plan.counts.execute} · Waiting ${plan.counts.wait} · Active ${plan.counts.active} · Failed ${plan.counts.failed}`;
+    return `  ${c.id}: ${c.action} · ${c.status}\n    ${c.reason}${c.action === 'COALESCE' ? `\n    Request: ${c.requestId}${c.leaseExpiresAt ? ` · Lease expires: ${c.leaseExpiresAt}` : ''}` : ''}${result ? `\n    Result: ${JSON.stringify(result)}\n    Reference: ${JSON.stringify(result.reference)}` : ''}`;
+  }).join('\n') + `\nReuse ${plan.counts.reuse} · Coalesce ${plan.counts.coalesce} · Ready ${plan.counts.execute} · Waiting ${plan.counts.wait} · Active ${plan.counts.active} · Failed ${plan.counts.failed}`;
 }
 
 export async function main(argv = process.argv.slice(2), { stdout = process.stdout, stderr = process.stderr }: { stdout?: Output; stderr?: Output } = {}): Promise<number> {

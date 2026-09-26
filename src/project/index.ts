@@ -4,7 +4,7 @@ import { createProjectSnapshot, DEFAULT_IDENTITY_CONCURRENCY, positiveConcurrenc
 import { planProject as fullPlan, queryProject as fullQuery } from './query.js';
 import { requesterPlan, requesterQuery, resultView, type ResultDetail, type ResultOptions } from '../result-view.js';
 import type { ProjectSnapshot, ValidationEvidence, QueryOptions } from './types.js';
-import { projectHistory } from './store.js';
+import { currentProjectPlan } from './store.js';
 import type { ProjectSelection } from './types.js';
 
 export type * from './types.js';
@@ -32,8 +32,7 @@ export async function inspectProject<D extends ResultDetail = 'compact'>({ detai
   try {
     const { config } = await readWorkspaceConfig(workspace.descriptor.path, workspace.signal);
     const snapshot = await createProjectSnapshot(config, workspace.descriptor.path, workspace.descriptor.hash, workspace.signal, workspace.descriptor.integrity, selection, { identityConcurrency });
-    const history = projectHistory(stateDir, { detail: 'full' });
-    const plan = fullPlan(snapshot, history, { selection, recursive, force });
+    const plan = currentProjectPlan(stateDir, snapshot, { selection, recursive, force });
     await workspace.assertUnchanged();
     return resultView({ detail }, { snapshot, plan }, () => ({ plan: requesterPlan(plan, stateDir) }));
   } finally { await workspace.close(); }

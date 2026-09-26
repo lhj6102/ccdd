@@ -8,6 +8,7 @@ import type { ReviewRequest } from '../contracts.js';
 import type { RunRecord, RunView } from '../broker/index.js';
 import type { ValidationEvidence, ProjectPlan } from './types.js';
 import { planProject } from './query.js';
+import { findCoalescibleRequest } from '../broker/coalescing.js';
 
 export function readEvidence(database: DatabaseSync): ValidationEvidence[] {
   const rows = database.prepare("SELECT data FROM requests WHERE status IN ('GREEN','RED') AND json_extract(data, '$.validationInput.version') = 3 ORDER BY json_extract(data, '$.completedAt'), rowid").all();
@@ -46,4 +47,12 @@ export function projectRun(stateDir: string, id: string): ProjectRunView | null 
 export function projectRuns<D extends ResultDetail = 'compact'>(stateDir: string, options: ResultOptions<D> = {}) { return withProjectStore(stateDir, db => db.prepare('SELECT id FROM runs ORDER BY created_at DESC, rowid DESC').all().map(row => { const run = storedRun(db, String(row.id))!; return resultView(options, run, () => requesterRun(run, stateDir)); }), []); }
 export function projectRequests<D extends ResultDetail = 'compact'>(stateDir: string, runId?: string, options: ResultOptions<D> = {}) {
   return withProjectStore(stateDir, db => (runId ? db.prepare('SELECT data FROM requests WHERE run_id = ? ORDER BY ordinal').all(runId) : db.prepare("SELECT data FROM requests ORDER BY json_extract(data, '$.createdAt') DESC, rowid DESC").all()).map(row => { const request = JSON.parse(String(row.data)) as ReviewRequest; return resultView(options, request, () => requesterRequest(request, stateDir)); }), []);
+}
+
+/** Evidence and active candidates belong to one readonly snapshot; never reconcile stored owners. */
+export function currentProjectPlan(stateDir: string, snapshot: Parameters<typeof planProject>[0], options: Parameters<typeof planProject>[2]): ProjectPlan {
+  return withProjectStore<ProjectPlan | null>(stateDir, db => planProject(snapshot, readEvidence(db), options, critic => {
+    const source = findCoalescibleRequest(db, critic.id, critic.input.key);
+    return source ? { requestId: source.request.id, ...(source.leaseExpiresAt ? { leaseExpiresAt: source.leaseExpiresAt } : {}) } : null;
+  }), null) ?? planProject(snapshot, [], options);
 }

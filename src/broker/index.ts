@@ -4,7 +4,6 @@ import { requesterRun, requesterRequest, resultView, type ResultDetail, type Res
 import { DatabaseSync } from 'node:sqlite';
 import { randomUUID } from 'node:crypto';
 import { performance } from 'node:perf_hooks';
-import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -12,6 +11,8 @@ import { prepareReviewRequests } from '../requester/index.js';
 import { readWorkspaceConfig } from './config.js';
 import { createGraphDefinition, type GraphDefinition } from './graph.js';
 import { createStatusPolling } from './polling.js';
+import { ownerAlive, ownProcessIdentity, type OwnerRecord } from './ownership.js';
+import { coalescingEligibility, findCoalescibleRequest } from './coalescing.js';
 import { tokenUsage, toolResponseBytes } from '../executors/telemetry.js';
 import { finalResultEventData } from '../executors/final-result.js';
 import { normalizeReviewResult as validateResult, storedObservation } from '../review-result.js';
@@ -28,7 +29,6 @@ import type { ReviewEnvelope, ReviewRequest, ReviewResult, ReviewStatus, ReviewT
 
 /** Internal instrumentation for deterministic scheduler regression tests. */
 export const brokerTestHooks: { onHydrate?: (bytes: number) => void; onPlan?: () => void; onIdleTick?: () => void } = {};
-interface OwnerRecord { run_id: string; pid: number; process_identity: string | null; token: string; claimed_at: string }
 export interface RunRecord {
   id: string; repoId: string; snapshotHash: string; workspace: WorkspaceDescriptor;
   requesterId: string; scope?: { kind: 'graph' } | { kind: 'chain' } | { kind: 'critic'; criticId: string } | { kind: 'project' };
@@ -62,25 +62,6 @@ const fatalExecutionError = (error: unknown): boolean => {
   return Boolean(code?.startsWith('WORKSPACE_') || ['RUN_OWNERSHIP_LOST', 'REVIEW_CANCELED', 'WORKER_STOPPED', 'WORKER_EXITED', 'REVIEW_GRAPH_INVALID'].includes(code ?? ''));
 };
 
-
-function processIdentity(pid: number) {
-  try {
-    if (process.platform === 'linux') {
-      const stat = fs.readFileSync(`/proc/${pid}/stat`, 'utf8');
-      return `linux:${stat.slice(stat.lastIndexOf(')') + 2).split(' ')[19]}`;
-    }
-    return `ps:${execFileSync('ps', ['-p', String(pid), '-o', 'lstart='], { encoding: 'utf8', timeout: 2000, stdio: ['ignore', 'pipe', 'ignore'] }).trim()}`;
-  } catch { return null; }
-}
-const ownProcessIdentity = processIdentity(process.pid);
-
-function ownerAlive(owner: OwnerRecord | undefined) {
-  if (!owner || !Number.isSafeInteger(owner.pid) || owner.pid <= 0) return false;
-  try { process.kill(owner.pid, 0); }
-  catch (error) { if (errorCode(error) === 'ESRCH') return false; }
-  const identity = owner.pid === process.pid ? ownProcessIdentity : processIdentity(owner.pid);
-  return !owner.process_identity || !identity || owner.process_identity === identity;
-}
 
 function canonicalFuturePath(value: string) {
   let existing = path.resolve(value);
@@ -198,25 +179,8 @@ export function createBroker<D extends ResultDetail = 'compact'>({ detail, repoP
       if (!status || terminal.has(status) || ownerData(id)) submissionDeadlines.delete(id);
     }
   }
-  const shareable = (request: ReviewRequest): boolean => {
-    // Reconcile PID/token ownership at the adoption boundary, before even an
-    // unowned submission lease can make a dead worker's ticket eligible.
-    reconcileWithin(request.runId);
-    const source = required(runData(request.runId), 'Source Run');
-    if (terminal.has(source.status)) return false;
-    const owner = ownerData(source.id);
-    if (owner) return ownerAlive(owner); // Never fall back to grace for an owned source.
-    const grace = source.coalescingGraceMs;
-    if (request.status !== 'QUEUED' || typeof grace !== 'number' || !Number.isSafeInteger(grace) || grace <= 0 || grace > 300_000) return false;
-    const elapsed = typeof source.createdAt === 'string' ? Date.now() - Date.parse(source.createdAt) : NaN;
-    if (!Number.isFinite(elapsed) || elapsed < 0 || elapsed >= grace) return false;
-    // A wall-clock rollback must not extend a lease already observed here.
-    // Keep this process-local bound without changing the source Run.
-    const tick = performance.now();
-    const deadline = Math.min(submissionDeadlines.get(source.id) ?? Infinity, tick + grace - elapsed);
-    submissionDeadlines.set(source.id, deadline);
-    return tick < deadline;
-  };
+  const coalescing = { reconcile: reconcileWithin, deadlines: submissionDeadlines };
+  const shareable = (request: ReviewRequest): boolean => coalescingEligibility(db, request, coalescing) !== null;
   const saveRequest = (request: ReviewRequest) => db.prepare('UPDATE requests SET status = ?, data = ? WHERE id = ?').run(request.status, JSON.stringify(request), request.id);
   const saveRun = (run: RunRecord) => {
     db.prepare('UPDATE runs SET status = ?, data = ? WHERE id = ?').run(run.status, JSON.stringify(run), run.id);
@@ -253,8 +217,7 @@ export function createBroker<D extends ResultDetail = 'compact'>({ detail, repoP
       const plan = planProject(run.project.snapshot, readEvidence(db), { selection: run.project.selection, recursive: run.project.recursive, force: run.project.force, runId, coalescedRequestIds: run.project.coalescedRequestIds, attempts: [...requests, ...sharedRequests(run)] });
       for (const item of plan.items.filter(item => item.action === 'EXECUTE')) {
         if (!run.project.force) {
-          const candidates = db.prepare("SELECT data FROM requests WHERE status IN ('QUEUED','RUNNING','WAITING_HUMAN') AND json_extract(data, '$.criticId') = ? AND json_extract(data, '$.validationInput.key') = ? AND json_extract(data, '$.validationInput.version') = 3 ORDER BY rowid").all(item.id, item.input.key).map(row => parseStored<ReviewRequest>(row.data));
-          const shared = candidates.find(candidate => shareable(candidate));
+          const shared = findCoalescibleRequest(db, item.id, item.input.key, coalescing)?.request;
           if (shared) {
             run.project.coalescedRequestIds = [...new Set([...(run.project.coalescedRequestIds ?? []), shared.id])];
             saveRun(run);

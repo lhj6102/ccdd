@@ -23,7 +23,7 @@ async function inspect(): Promise<void> {
     if (value instanceof ApiError && value.status === 403) emit('session-expired');
   } finally { if (current === version) loading.value = false; }
 }
-const actionLabels = { REUSE: 'Reuse verdict', EXECUTE: 'Ready to review', WAIT: 'Execution not ready', ACTIVE: 'In progress', FAILED: 'Execution needs attention' };
+const actionLabels = { REUSE: 'Reuse verdict', COALESCE: 'Share active review', EXECUTE: 'Ready to review', WAIT: 'Execution not ready', ACTIVE: 'In progress', FAILED: 'Execution needs attention' };
 </script>
 
 <template>
@@ -37,14 +37,14 @@ const actionLabels = { REUSE: 'Reuse verdict', EXECUTE: 'Ready to review', WAIT:
     <p v-if="error" class="inline-error" role="alert">{{ error }}</p>
     <template v-if="result">
       <p class="validation-summary" role="status"><strong>{{ result.plan.satisfied ? 'PASS · All required reviews are satisfied.' : 'More reviews are needed.' }}</strong><span>Observed at {{ dateLabel(result.observedAt) }} · Inspect again after editing files or completing reviews.</span></p>
-      <p class="validation-counts">Reuse {{ result.plan.counts.reuse }} · Ready to review {{ result.plan.counts.execute }} · Execution not ready {{ result.plan.counts.wait }}</p>
+      <p class="validation-counts">Reuse {{ result.plan.counts.reuse }} · Coalesce {{ result.plan.counts.coalesce }} · Ready to review {{ result.plan.counts.execute }} · Execution not ready {{ result.plan.counts.wait }}</p>
       <ul class="validation-artifacts" aria-label="Artifact validation requirements"><li v-for="artifact in result.plan.artifacts" :key="artifact.id"><strong>{{ artifact.id }}</strong> · {{ artifact.status }} · {{ artifact.passed }}/{{ artifact.total }} Critics passed<span v-if="artifact.status === 'UNREVIEWED' && !artifact.total"> · No Critics or explicit basis</span></li></ul>
       <div class="validation-table-wrap"><table>
         <thead><tr><th scope="col">Critic / Target</th><th scope="col">Status</th><th scope="col">Next action and reason</th></tr></thead>
         <tbody><tr v-for="critic in result.plan.items" :key="critic.id">
           <th scope="row">{{ critic.title }}<small>{{ critic.id }} → {{ critic.target }}</small></th>
           <td><span :class="['validation-status', { passed: critic.status === 'PASS' }]">{{ critic.status }}</span></td>
-          <td><strong>{{ actionLabels[critic.action] }}</strong><p>{{ critic.reason }}</p><p v-if="critic.blockedBy.length">Final validation still needs: {{ critic.blockedBy.join(', ') }}. This does not delay this Critic's execution.</p><p v-if="critic.result">{{ JSON.stringify(result.plan.results.find(review => review.reference.requestId === critic.result?.requestId)) }}</p><button v-if="critic.result?.requestId" type="button" class="text-button" @click="emit('open-request', { projectId, id: critic.result.requestId })">View recorded verdict</button></td>
+          <td><strong>{{ actionLabels[critic.action] }}</strong><p>{{ critic.reason }}</p><p v-if="critic.action === 'COALESCE'">Request: {{ critic.requestId }}<span v-if="critic.leaseExpiresAt"> · Lease expires: {{ dateLabel(critic.leaseExpiresAt) }}</span></p><p v-if="critic.blockedBy.length">Final validation still needs: {{ critic.blockedBy.join(', ') }}. This does not delay this Critic's execution.</p><p v-if="critic.result">{{ JSON.stringify(result.plan.results.find(review => review.reference.requestId === critic.result?.requestId)) }}</p><button v-if="critic.result?.requestId" type="button" class="text-button" @click="emit('open-request', { projectId, id: critic.result.requestId })">View recorded verdict</button></td>
         </tr></tbody>
       </table></div>
     </template>

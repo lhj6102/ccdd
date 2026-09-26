@@ -19,7 +19,7 @@ export interface RequesterRequest {
 export interface ResultReference { requestId: string }
 export type RequesterCritic = Omit<CriticValidation, 'input' | 'result'> & { inputKey: string; result: ResultReference | null };
 export type RequesterQuery = Omit<ProjectQuery, 'critics'> & { critics: RequesterCritic[]; results: RequesterResult[] };
-export type RequesterPlan = Omit<ProjectPlan, 'critics' | 'items'> & { critics: RequesterCritic[]; items: (RequesterCritic & { action: ProjectPlan['items'][number]['action'] })[]; results: RequesterResult[] };
+export type RequesterPlan = Omit<ProjectPlan, 'critics' | 'items'> & { critics: RequesterCritic[]; items: (RequesterCritic & Pick<ProjectPlan['items'][number], 'action' | 'leaseExpiresAt'>)[]; results: RequesterResult[] };
 export interface RequesterRun {
   id: string; status: RunView['status']; workspaceIntegrity: 'content' | 'metadata';
   reference: ReviewReference; results: RequesterResult[];
