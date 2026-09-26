@@ -44,16 +44,24 @@ export function createReadiness(db: DatabaseSync, store: ReturnType<typeof recor
     publish(member, { ...request, status, semanticRef: status === request.status ? request.semanticRef : null });
     return status;
   };
+  let preparedTemplates: Map<string, ReviewEnvelope> | undefined;
+  let preparedWorkspace: ReviewRequest['workspace'] | undefined;
   const createRequest = (member: Member): Record<string, any> => {
     const run = header(member.run_id); if (!run || !member.envelope_ref) throw new Error('Missing prepared request.');
-    const envelope = store.get<ReviewEnvelope>(member.envelope_ref), workspace = store.get<ReviewRequest['workspace']>(run.workspaceRef);
+    // Submission supplies the scalar header once; lease-expiry fallback resolves
+    // only this one scoped envelope, never a whole Run.
+    const envelope = preparedTemplates?.get(member.critic_id) ?? store.get<ReviewEnvelope>(member.envelope_ref);
     const gate = db.prepare('SELECT unmet,red FROM gate_counts WHERE run_id=? AND critic_id=?').get(member.run_id, member.critic_id);
     const gated = Number(gate?.unmet ?? 0) > 0;
-    const request: ReviewRequest = { ...envelope, id: randomUUID(), runId: member.run_id, workspace, worktreePath: workspace.path,
-      validationInput: store.get<ValidationInput>(member.input_ref), status: gated ? Number(gate?.red) ? 'BLOCKED' : 'WAIT_DEPENDENCY' : 'QUEUED', createdAt: new Date().toISOString(), startedAt: null, completedAt: null, claimedBy: null, claimedAt: null, notifiedAt: null, result: null, error: null, blockedReason: gated ? `${Number(gate?.red) ? 'BLOCKED' : 'WAIT_DEPENDENCY'}: ${db.prepare("SELECT e.dependency,m.state FROM gate_edges e JOIN run_members m ON m.run_id=e.run_id AND m.critic_id=e.dependency WHERE e.run_id=? AND e.dependent=? AND m.state!='GREEN' LIMIT 16").all(member.run_id,member.critic_id).map(row=>`${row.dependency} (${row.state})`).join(', ')}` : null };
-    const packed = store.packRequest(request);
-    db.prepare('INSERT INTO requests(id,run_id,ordinal,status,data) VALUES (?,?,?,?,?)').run(request.id, member.run_id, member.ordinal, request.status, JSON.stringify(packed));
-    event(member.run_id, request.id, 'request.queued', 'Fixed-input Critic is ready for execution.');
+    const workspace = preparedWorkspace ?? store.get<ReviewRequest['workspace']>(run.workspaceRef);
+    const packed = { id: randomUUID(), runId: member.run_id, worktreePath: workspace.path,
+      criticId: member.critic_id, target: member.target, title: envelope.title, snapshotHash: envelope.snapshotHash, deps: envelope.deps,
+      profile: { kind: envelope.profile.kind, ...(envelope.profile.kind === 'agent' ? { provider: envelope.profile.provider, model: envelope.profile.model } : {}) },
+      envelopeRef: member.envelope_ref, workspaceRef: run.workspaceRef, inputRef: member.input_ref, inputKey: member.input_key, inputVersion: 3,
+      status: gated ? Number(gate?.red) ? 'BLOCKED' : 'WAIT_DEPENDENCY' : 'QUEUED', createdAt: new Date().toISOString(), startedAt: null, completedAt: null, claimedBy: null, claimedAt: null, notifiedAt: null,
+      resultRef: null, semanticRef: null, error: null, blockedReason: gated ? `${Number(gate?.red) ? 'BLOCKED' : 'WAIT_DEPENDENCY'}: ${db.prepare("SELECT e.dependency,m.state FROM gate_edges e JOIN run_members m ON m.run_id=e.run_id AND m.critic_id=e.dependency WHERE e.run_id=? AND e.dependent=? AND m.state!='GREEN' LIMIT 16").all(member.run_id,member.critic_id).map(row=>`${row.dependency} (${row.state})`).join(', ')}` : null };
+    db.prepare('INSERT INTO requests(id,run_id,ordinal,status,data) VALUES (?,?,?,?,?)').run(packed.id, member.run_id, member.ordinal, packed.status, JSON.stringify(packed));
+    event(member.run_id, packed.id, 'request.queued', 'Fixed-input Critic is ready for execution.');
     return packed;
   };
   const adoptOrCreate = (member: Member) => {
@@ -95,49 +103,52 @@ export function createReadiness(db: DatabaseSync, store: ReturnType<typeof recor
   };
   return {
     header,
-    initialize(run: RunRecord) {
+    initialize(run: RunRecord, prepared?: Awaited<ReturnType<typeof store.prepareRun>>) {
       const project = run.project!;
-      const plan = planProject(project.snapshot, readEvidence(db), { selection: project.selection, recursive: project.recursive, force: project.force, ignoreGates: true, runId: run.id });
-      const included = new Set(plan.includedCriticIds), templates = new Map(project.templates.map(envelope => [envelope.criticId, envelope]));
-      db.prepare('INSERT INTO run_counts(run_id) VALUES (?)').run(run.id);
-      // A non-basis Artifact without Critics is a permanent missing obligation.
-      const missing = plan.artifacts.filter(artifact => artifact.total === 0 && artifact.status !== 'BASIS').length;
-      db.prepare('UPDATE run_counts SET missing=? WHERE run_id=?').run(missing, run.id);
-      let ordinal = 0;
-      for (const critic of plan.critics) {
-        const envelope = templates.get(critic.id), state = critic.result?.verdict ?? 'MISSING';
-        const member: Member = { run_id: run.id, critic_id: critic.id, ordinal: ordinal++, target: critic.target, input_key: critic.input.key, input_ref: store.put(critic.input), envelope_ref: envelope ? store.put(envelope) : null,
-          request_id: null, evidence_id: critic.result?.requestId ?? null, state, included: included.has(critic.id) ? 1 : 0 };
-        db.prepare('INSERT INTO run_members VALUES (?,?,?,?,?,?,?,?,?,?,?)').run(...Object.values(member)); changeCount(run.id, state, 1);
-        // Populate all gate counters before adopting or creating any ticket.
-
-      }
-      for (const edge of project.snapshot.config.relations) db.prepare('INSERT OR IGNORE INTO run_dependencies VALUES (?,?,?)').run(run.id, edge.target, edge.source);
-      if (!project.ignoreGates) {
-        const gates = criticGates(project.snapshot);
-        for (const [dependent, dependencies] of gates) {
-          const member = db.prepare('SELECT * FROM run_members WHERE run_id=? AND critic_id=?').get(run.id, dependent) as unknown as Member | undefined;
-          if (!member) continue;
-          let unmet = 0, red = 0;
-          for (const dependency of dependencies) {
-            const other = db.prepare('SELECT state FROM run_members WHERE run_id=? AND critic_id=?').get(run.id, dependency);
-            if (!other) continue;
-            db.prepare('INSERT OR IGNORE INTO gate_edges VALUES (?,?,?)').run(run.id, dependent, dependency);
-            if (other.state !== 'GREEN') unmet++; if (blocked(String(other.state))) red++;
-          }
-          db.prepare('INSERT INTO gate_counts VALUES (?,?,?,?)').run(run.id, dependent, unmet, red);
-          if (unmet) gateMember(member, red ? 'BLOCKED' : 'WAIT_DEPENDENCY');
+      preparedTemplates = new Map(project.templates.map(envelope => [envelope.criticId,envelope])); preparedWorkspace = run.workspace;
+      try {
+        const plan = planProject(project.snapshot, readEvidence(db), { selection: project.selection, recursive: project.recursive, force: project.force, ignoreGates: true, runId: run.id });
+        const included = new Set(plan.includedCriticIds), templates = new Map(project.templates.map(envelope => [envelope.criticId, envelope]));
+        const members = new Map<string, Member>();
+        const counts = { queued: 0, running: 0, waiting: 0, errors: 0, red: 0, missing: plan.artifacts.filter(artifact => artifact.total === 0 && artifact.status !== 'BASIS').length };
+        let ordinal = 0;
+        for (const critic of plan.critics) {
+          const envelope = templates.get(critic.id), state = critic.result?.verdict ?? 'MISSING';
+          members.set(critic.id, { run_id: run.id, critic_id: critic.id, ordinal: ordinal++, target: critic.target, input_key: critic.input.key,
+            input_ref: prepared?.inputs.get(critic.id) ?? store.put(critic.input), envelope_ref: envelope ? prepared?.envelopes.get(critic.id) ?? store.put(envelope) : null,
+            request_id: null, evidence_id: critic.result?.requestId ?? null, state, included: included.has(critic.id) ? 1 : 0 });
         }
-      }
-      // Recompute the initial counters after all reused members have their gate
-      // state. Discovery order must not affect transitive reused-chain release.
-      for (const row of db.prepare('SELECT critic_id FROM gate_counts WHERE run_id=?').all(run.id)) {
-        const counts = db.prepare("SELECT sum(m.state!='GREEN') AS unmet,sum(m.state IN ('RED','BLOCKED')) AS red FROM gate_edges e JOIN run_members m ON m.run_id=e.run_id AND m.critic_id=e.dependency WHERE e.run_id=? AND e.dependent=?").get(run.id,row.critic_id)!;
-        db.prepare('UPDATE gate_counts SET unmet=?,red=? WHERE run_id=? AND critic_id=?').run(Number(counts.unmet??0),Number(counts.red??0),run.id,row.critic_id);
-      }
-      for (const row of db.prepare('SELECT * FROM run_members WHERE run_id=? AND included=1 AND evidence_id IS NULL ORDER BY ordinal').all(run.id)) adoptOrCreate(row as unknown as Member);
-      for (const row of db.prepare('SELECT * FROM run_members WHERE run_id=? AND evidence_id IS NOT NULL').all(run.id)) { const member = row as unknown as Member; const evidence = JSON.parse(String(db.prepare('SELECT data FROM requests WHERE id=?').get(member.evidence_id)!.data)); publish(member, { ...evidence, status: member.state, semanticRef: member.state === 'GREEN' || member.state === 'RED' ? evidence.semanticRef : null }); }
-      updateRun(run.id);
+        const gateRows: (string | number)[][] = [], edgeRows: string[][] = [];
+        if (!project.ignoreGates) {
+          // Dependency-first SCC order permits one pass; no per-edge SELECT/update.
+          for (const [dependent, dependencies] of criticGates(project.snapshot)) {
+            const member = members.get(dependent); if (!member) continue;
+            let unmet = 0, red = 0;
+            for (const dependency of dependencies) {
+              const other = members.get(dependency); if (!other) continue;
+              edgeRows.push([run.id,dependent,dependency]);
+              if (other.state !== 'GREEN') unmet++; if (blocked(other.state)) red++;
+            }
+            gateRows.push([run.id,dependent,unmet,red]);
+            if (unmet) member.state = red ? 'BLOCKED' : 'WAIT_DEPENDENCY';
+          }
+        }
+        for (const member of members.values()) { const key = bucket(member.state); if (key) counts[key as keyof typeof counts]++; }
+        const batch = (table: string, width: number, rows: (string | number | null)[][]) => {
+          for (let offset = 0; offset < rows.length; offset += 64) {
+            const part = rows.slice(offset,offset+64);
+            db.prepare(`INSERT INTO ${table} VALUES ${part.map(() => `(${Array(width).fill('?').join(',')})`).join(',')}`).run(...part.flat());
+          }
+        };
+        batch('run_members',11,[...members.values()].map(member => Object.values(member)));
+        batch('gate_edges',3,edgeRows); batch('gate_counts',4,gateRows);
+        db.prepare('INSERT INTO run_counts VALUES (?,?,?,?,?,?,?)').run(run.id,counts.queued,counts.running,counts.waiting,counts.errors,counts.red,counts.missing);
+        const relationRows = new Map(project.snapshot.config.relations.map(edge => [JSON.stringify([edge.target,edge.source]),[run.id,edge.target,edge.source]]));
+        batch('run_dependencies',3,[...relationRows.values()]);
+        for (const row of db.prepare('SELECT * FROM run_members WHERE run_id=? AND included=1 AND evidence_id IS NULL ORDER BY ordinal').all(run.id)) adoptOrCreate(row as unknown as Member);
+        for (const row of db.prepare('SELECT * FROM run_members WHERE run_id=? AND evidence_id IS NOT NULL').all(run.id)) { const member = row as unknown as Member; const evidence = JSON.parse(String(db.prepare('SELECT data FROM requests WHERE id=?').get(member.evidence_id)!.data)); publish(member, { ...evidence, status: member.state, semanticRef: member.state === 'GREEN' || member.state === 'RED' ? evidence.semanticRef : null }); }
+        updateRun(run.id);
+      } finally { preparedTemplates = undefined; preparedWorkspace = undefined; }
     },
     transition(request: Record<string, any>) {
       // Only memberships affected by this request or matching input are visited.

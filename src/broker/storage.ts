@@ -1,5 +1,6 @@
 import { semanticResult } from '../response-schema.js';
 import { canonical } from '../project/identity.js';
+import { setImmediate as yieldTurn } from 'node:timers/promises';
 import { createHash } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
 import type { ReviewEnvelope, ReviewRequest } from '../contracts.js';
@@ -95,6 +96,72 @@ export function records(db: DatabaseSync) {
     };
     return visit(hash) as T;
   };
+  /** One private immutable submission graph: memo lifetime never crosses calls. */
+  const prepare = async (roots: readonly unknown[], signal?: AbortSignal) => {
+    const memo = new WeakMap<object, { hash: string; size: number }>();
+    const staged = new Map<string, string>();
+    const encoded = new Map<string, { hash: string; size: number }>();
+    const primitives = new Map<unknown, { hash: string; size: number }>();
+    let deadline = performance.now() + 8;
+    const checkpoint = async () => { if (performance.now() >= deadline) { signal?.throwIfAborted(); await yieldTurn(); deadline = performance.now() + 8; } };
+    const visit = async (value: unknown): Promise<{ hash: string; size: number }> => {
+      const object = value !== null && typeof value === 'object';
+      if (object && memo.has(value)) return memo.get(value)!;
+      if (!object && primitives.has(value)) return primitives.get(value)!;
+      await checkpoint();
+      let node: Node, size: number;
+      if (!object) { const text = JSON.stringify(value); if (text === undefined) throw new Error('Immutable records must be JSON.'); size = text.length; node = { json: value }; }
+      else if (Array.isArray(value)) {
+        const children = []; size = 2 + Math.max(0, value.length - 1);
+        for (const child of value) { const saved = await visit(child); children.push(saved.hash); size += saved.size; }
+        node = size < 1024 ? { json: value } : { array: children };
+      } else {
+        const entries = Object.entries(value).filter(([, v]) => v !== undefined).sort(([a],[b]) => a < b ? -1 : a > b ? 1 : 0);
+        const children: [string,string][] = []; size = 2 + Math.max(0, entries.length - 1);
+        for (const [key, child] of entries) { const saved = await visit(child); children.push([key,saved.hash]); size += JSON.stringify(key).length + 1 + saved.size; }
+        node = size < 1024 ? { json: value } : { object: children };
+      }
+      const data = canonical(node);
+      let result = encoded.get(data);
+      if (!result) { const hash = createHash('sha256').update(data).digest('hex'); staged.set(hash, data); result = { hash, size }; encoded.set(data, result); }
+      if (object) memo.set(value, result); else primitives.set(value, result); return result;
+    };
+    for (const value of roots) await visit(value);
+    // Only nodes reachable through emitted references are needed. Tiny JSON
+    // leaves were traversed for size, but their children are embedded, not refs.
+    const needed = new Set<string>();
+    const queue = roots.map(value => value && typeof value === 'object' ? memo.get(value)!.hash : '');
+    while (queue.length) { const hash = queue.pop()!; if (!hash || needed.has(hash)) continue; needed.add(hash); const node = JSON.parse(staged.get(hash)!) as Node; if ('array' in node) queue.push(...node.array); else if ('object' in node) for (const [,ref] of node.object) queue.push(ref); await checkpoint(); }
+    let batch: [string,string][] = [];
+    const flush = () => {
+      db.exec('BEGIN IMMEDIATE');
+      try { for (const [hash,data] of batch) { const result = insert.run(hash,data); if (!result.changes && read.get(hash)?.data !== data) throw new Error(`Corrupt immutable definition ${hash}`); if (result.changes) storageTestHooks.write?.(Buffer.byteLength(data)); } db.exec('COMMIT'); }
+      catch (error) { db.exec('ROLLBACK'); throw error; }
+      batch = [];
+    };
+    for (const hash of needed) { signal?.throwIfAborted(); batch.push([hash,staged.get(hash)!]); if (batch.length === 128) { flush(); await yieldTurn(); } }
+    if (batch.length) flush();
+    signal?.throwIfAborted();
+    const references = new Map(roots.map(value => [value, memo.get(value as object)!.hash]));
+    return { ref: (value: unknown): string => { const ref = references.get(value); if (!ref) throw new Error('Unprepared immutable root.'); return ref; },
+      verify: () => { for (const hash of needed) { const row = read.get(hash); if (!row || row.data !== staged.get(hash)) throw new Error(`Corrupt or missing prepared definition ${hash}`); } } };
+  };
+  const runRoots = (run: RunRecord) => {
+    const { graph, project, workspace } = run;
+    const definition = { graph, ...(project ? { project: { ...project, coalescedRequestIds: undefined, evidenceRequestIds: undefined } } : {}) };
+    const projection = project ? { project: { ...project, templates: [], snapshot: { ...project.snapshot, config: { ...project.snapshot.config,
+      artifacts: Object.fromEntries(Object.entries(project.snapshot.config.artifacts).map(([id, artifact]) => [id, { ...artifact, views: {} }])), configManifest: undefined } } } } : {};
+    return { definition, projection, workspace };
+  };
+  const prepareRun = async (run: RunRecord, signal?: AbortSignal) => {
+    const roots = runRoots(run), project = run.project!;
+    const values = [...Object.values(roots), ...Object.values(project.snapshot.inputs), ...project.templates];
+    const { ref, verify } = await prepare(values, signal);
+    const { graph: _, project: __, workspace: ___, ...header } = run;
+    return { verify, header: { ...header, workspaceRef: ref(roots.workspace), definitionRef: ref(roots.definition), projectionRef: ref(roots.projection), project: { version: project.version, selection: project.selection, recursive: project.recursive, force: project.force, ignoreGates: project.ignoreGates } },
+      inputs: new Map(Object.entries(project.snapshot.inputs).map(([id,input]) => [id,ref(input)])),
+      envelopes: new Map(project.templates.map(envelope => [envelope.criticId,ref(envelope)])) };
+  };
   const packRun = (run: RunRecord) => {
     const { graph, project, workspace, ...header } = run;
     const definitionRef = put({ graph, ...(project ? { project: { ...project, coalescedRequestIds: undefined, evidenceRequestIds: undefined } } : {}) });
@@ -128,5 +195,5 @@ export function records(db: DatabaseSync) {
     if (result && (result.verdict !== header.status || !['GREEN','RED'].includes(header.status))) throw new Error('Stored result/status mismatch.');
     return { ...rest, ...(full ? get<ReviewEnvelope>(envelopeRef) : {}), workspace: get(workspaceRef), ...(inputRef ? { validationInput: get(inputRef) } : {}), result } as ReviewRequest;
   };
-  return { put, get, packRun, packRequest, run, request, clear: () => { nodes.clear(); bytes = 0; } };
+  return { put, get, packRun, prepareRun, packRequest, run, request, clear: () => { nodes.clear(); bytes = 0; } };
 }

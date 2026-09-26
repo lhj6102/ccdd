@@ -6,7 +6,7 @@ import { randomUUID } from 'node:crypto';
 import { performance } from 'node:perf_hooks';
 import fs from 'node:fs';
 import path from 'node:path';
-import { setTimeout as delay } from 'node:timers/promises';
+import { setTimeout as delay, setImmediate as yieldTurn } from 'node:timers/promises';
 import { prepareReviewRequests } from '../requester/index.js';
 import { readWorkspaceConfig } from './config.js';
 import { createGraphDefinition, type GraphDefinition } from './graph.js';
@@ -33,7 +33,7 @@ import type { RunStatus } from '../contracts.js';
 import type { ReviewEnvelope, ReviewRequest, ReviewResult, ReviewStatus, ReviewToolCall, ExecutionContext, ExecutorReadiness } from '../contracts.js';
 
 /** Internal instrumentation for deterministic scheduler regression tests. */
-export const brokerTestHooks: { onHydrate?: (bytes: number) => void; onPlan?: () => void; onIdleTick?: () => void } = {};
+export const brokerTestHooks: { onHydrate?: (bytes: number) => void; onPlan?: () => void; onIdleTick?: () => void; onSubmissionCommit?: (durationMs: number) => void } = {};
 export interface RunRecord {
   id: string; repoId: string; snapshotHash: string; workspace: WorkspaceDescriptor;
   requesterId: string; scope?: { kind: 'graph' } | { kind: 'chain' } | { kind: 'critic'; criticId: string } | { kind: 'project' };
@@ -487,13 +487,16 @@ export function createBroker<D extends ResultDetail = 'compact'>({ detail, repoP
         }
       }
       // close() can be awaiting this promise; read directly before it closes the DB.
-      return { ...copy(required(runData(runId), 'Run')), requests: runRequests(runId) };
+      return detail === 'full' ? { ...copy(required(runData(runId), 'Run')), requests: runRequests(runId) } : { ...ownedRun, requests: [] };
     })();
     return entry.promise;
   }
 
   const broker = {
     async submitProject({ requesterId = 'cli', selection, recursive = false, force = false, ignoreGates = false, signal, identityConcurrency: submissionIdentityConcurrency = identityConcurrency, ...removed }: { requesterId?: string; selection: ProjectSelection; recursive?: boolean; force?: boolean; ignoreGates?: boolean; signal?: AbortSignal; identityConcurrency?: number }) {
+      // Options are destructured before entry; selection is the sole mutable data
+      // input. Keep signal live for cancellation rather than cloning its state.
+      selection = structuredClone(selection);
       ensureOpen(); requireExecutors(); sweepSubmissionDeadlines();
       positiveConcurrency(submissionIdentityConcurrency, 'identityConcurrency');
       if ('mode' in removed) throw new Error('Workspace modes are no longer supported; supply an unchanged workspace.');
@@ -501,21 +504,31 @@ export function createBroker<D extends ResultDetail = 'compact'>({ detail, repoP
       await requireExecutors().validateWorkspace?.(repoPath);
       const workspace = await workspaceAdapter.prepareWorkspace({ repoPath, stateDir, integrity: workspaceIntegrity, signal });
       try {
-        const { config } = await readWorkspaceConfig(workspace.descriptor.path, workspace.signal);
-        const snapshot = await createProjectSnapshot(config, workspace.descriptor.path, workspace.descriptor.hash, workspace.signal, workspace.descriptor.integrity, selection, { identityConcurrency: submissionIdentityConcurrency });
+        // A custom adapter may retain a mutable descriptor. Snapshot it once,
+        // before any later await, and never store its externally owned object.
+        const descriptor = structuredClone(workspace.descriptor);
+        const { config } = await readWorkspaceConfig(descriptor.path, workspace.signal);
+        const snapshot = await createProjectSnapshot(config, descriptor.path, descriptor.hash, workspace.signal, descriptor.integrity, selection, { identityConcurrency: submissionIdentityConcurrency });
         const ids = includedCritics(snapshot, selection, recursive);
         const templates: ReviewEnvelope[] = [];
-        for (const id of ids) templates.push(...await prepareReviewRequests({ repoPath: workspace.descriptor.path, repoId, snapshotHash: workspace.descriptor.hash, criticId: id, preparedConfig: config }));
+        const critics = new Map(config.critics.map(critic => [critic.id, critic]));
+        for (const id of ids) { templates.push(...await prepareReviewRequests({ repoPath: descriptor.path, repoId, snapshotHash: descriptor.hash, criticId: id, preparedConfig: { ...config, critics: [critics.get(id)!] }, copy: false })); if (templates.length % 16 === 0) { workspace.signal.throwIfAborted(); await yieldTurn(); } }
+
         const id = randomUUID(), createdAt = now();
-        const record: RunRecord = { id, repoId, coalescingGraceMs, snapshotHash: workspace.descriptor.hash, workspace: workspace.descriptor, requesterId,
-          scope: { kind: 'project' }, graph: createGraphDefinition(config), project: { version: 3, snapshot, selection, recursive, force, ignoreGates, templates }, status: 'QUEUED', createdAt };
+        const record: RunRecord = { id, repoId, coalescingGraceMs, snapshotHash: descriptor.hash, workspace: descriptor, requesterId,
+          scope: { kind: 'project' }, graph: createGraphDefinition(config, false), project: { version: 3, snapshot, selection, recursive, force, ignoreGates, templates }, status: 'QUEUED', createdAt };
+        const prepared = await store.prepareRun(record, workspace.signal);
         await workspace.assertUnchanged(); workspace.signal.throwIfAborted();
+        ensureOpen();
+        const commitStarted = performance.now();
         transaction(() => {
-          db.prepare('INSERT INTO runs(id,created_at,status,data) VALUES (?,?,?,?)').run(id, createdAt, record.status, JSON.stringify(store.packRun(record)));
+          prepared.verify();
+          db.prepare('INSERT INTO runs(id,created_at,status,data) VALUES (?,?,?,?)').run(id, createdAt, record.status, JSON.stringify(prepared.header));
           appendEvent(id, null, 'run.submitted', 'Project validation requested against fixed input.', { selection, recursive, force });
-          brokerTestHooks.onPlan?.(); readiness.initialize(record);
+          brokerTestHooks.onPlan?.(); readiness.initialize(record, prepared);
         });
-        changed(); return required(getRun(id), 'Run');
+        brokerTestHooks.onSubmissionCommit?.(performance.now() - commitStarted);
+        changed(); return detail === 'full' ? required(getRun(id), 'Run') : { ...record, scope: record.scope!, requests: [], events: [], owner: null };
       } finally { await workspace.close(); }
     },
     run,
