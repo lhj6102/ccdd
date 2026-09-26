@@ -71,3 +71,54 @@ test('public envelopes and compact results remain detached from caller-owned sel
   assert.equal(broker.getRun(submitted.id)!.project!.selection.kind, 'critic');
   assert.equal((broker.getRun(submitted.id)!.project!.selection as typeof selected).criticId, 'a/check');
 });
+
+test('submission snapshots caller options before the first await and keeps cancellation live', async t => {
+  const data = await artifactFixture(t);
+  for (const name of ['a','b']) await data.write(name, { name, critics: [runtimeCritic()] });
+  let release!: () => void; const gate = new Promise<void>(resolve => { release = resolve; });
+  const broker = createBroker({ ...data, detail: 'full', executors: {
+    validateWorkspace: () => gate, canExecute: () => ({ ok: true }), execute: async () => ({ verdict: 'GREEN' }),
+  } }); data.cleanup(() => broker.close());
+  const options = { selection: { kind: 'all' as 'all' | 'critic', criticId: undefined as string | undefined }, requesterId: 'original', recursive: true, force: true, ignoreGates: true, identityConcurrency: 2 };
+  const pending = broker.submitProject({ ...options, selection: options.selection as import('../src/project/types.js').ProjectSelection });
+  options.selection.kind = 'critic'; options.selection.criticId = 'b/check'; options.requesterId = 'forged'; options.force = false;
+  release(); const run = await pending;
+  assert.equal(run.project!.selection.kind, 'all'); assert.equal(run.requesterId, 'original'); assert.equal(run.project!.force, true);
+  assert.deepEqual(run.requests.map(request => request.criticId), ['a/check','b/check']);
+  const abort = new AbortController(); const canceled = broker.submitProject({ selection: { kind: 'all' }, signal: abort.signal });
+  abort.abort(new Error('live cancellation')); await assert.rejects(canceled);
+});
+
+test('selection and adapter descriptor cannot race immutable preparation and publication', async t => {
+  const { storageTestHooks } = await import('../src/broker/storage.js');
+  const { prepareWorkspace, reopenWorkspace } = await import('../src/workspaces/index.js');
+  const { fixtureViews } = await import('./helpers/artifacts.js');
+  const data = await artifactFixture(t), views = fixtureViews();
+  views.agentTools!.read.metadata.inputSchema = { type: 'object', properties: Object.fromEntries(Array.from({ length: 300 }, (_, i) => [`field${i}`, { type: 'string', description: 'x'.repeat(1100) + i }])) };
+  await data.write('a', { name: 'a', views, critics: [runtimeCritic()] });
+  await data.write('b', { name: 'b', critics: [runtimeCritic()] });
+  let owned!: import('../src/workspaces/index.js').WorkspaceDescriptor, expected!: typeof owned;
+  const broker = createBroker({ ...data, detail: 'full', workspaceAdapter: { reopenWorkspace, async prepareWorkspace(options) {
+    const handle = await prepareWorkspace(options); owned = structuredClone(handle.descriptor); expected = structuredClone(owned);
+    return { ...handle, descriptor: owned };
+  } }, executors: { canExecute: () => ({ ok: true }), execute: async () => ({ verdict: 'GREEN' }) } }); data.cleanup(() => broker.close());
+  const selection = { kind: 'all' as 'all' | 'critic', criticId: undefined as string | undefined };
+  let scheduled = false, mutated = false;
+  storageTestHooks.write = () => {
+    if (scheduled) return; scheduled = true;
+    setImmediate(() => { selection.kind = 'critic'; selection.criticId = 'b/check'; owned.hash = '0'.repeat(64); owned.path = '/forged'; mutated = true; });
+  };
+  t.after(() => { delete storageTestHooks.write; });
+  const run = await broker.submitProject({ selection: selection as import('../src/project/types.js').ProjectSelection });
+  delete storageTestHooks.write;
+  assert.ok(mutated, 'mutation occurs while asynchronous preparation is pending');
+  const db = new DatabaseSync(join(data.stateDir,'broker.sqlite')); t.after(() => db.close());
+  const header = JSON.parse(String(db.prepare('SELECT data FROM runs WHERE id=?').get(run.id)!.data));
+  const stored = records(db).run(run.id)!;
+  assert.deepEqual(header.project.selection, { kind: 'all' }); assert.deepEqual(stored.project!.selection, { kind: 'all' });
+  assert.deepEqual(run.project!.selection, { kind: 'all' }); assert.deepEqual(run.workspace, expected); assert.deepEqual(stored.workspace, expected);
+  assert.deepEqual(run.requests.map(request => request.criticId), ['a/check','b/check']);
+  assert.deepEqual(run.project!.templates.map(request => request.criticId), ['a/check','b/check']);
+  assert.ok(run.requests.every(request => request.workspace.hash === expected.hash && request.worktreePath === expected.path));
+  assert.deepEqual((run.events.find(event => event.type === 'run.submitted')!.data as { selection: unknown }).selection, { kind: 'all' });
+});

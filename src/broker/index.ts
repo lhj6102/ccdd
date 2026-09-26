@@ -494,6 +494,9 @@ export function createBroker<D extends ResultDetail = 'compact'>({ detail, repoP
 
   const broker = {
     async submitProject({ requesterId = 'cli', selection, recursive = false, force = false, ignoreGates = false, signal, identityConcurrency: submissionIdentityConcurrency = identityConcurrency, ...removed }: { requesterId?: string; selection: ProjectSelection; recursive?: boolean; force?: boolean; ignoreGates?: boolean; signal?: AbortSignal; identityConcurrency?: number }) {
+      // Options are destructured before entry; selection is the sole mutable data
+      // input. Keep signal live for cancellation rather than cloning its state.
+      selection = structuredClone(selection);
       ensureOpen(); requireExecutors(); sweepSubmissionDeadlines();
       positiveConcurrency(submissionIdentityConcurrency, 'identityConcurrency');
       if ('mode' in removed) throw new Error('Workspace modes are no longer supported; supply an unchanged workspace.');
@@ -501,15 +504,18 @@ export function createBroker<D extends ResultDetail = 'compact'>({ detail, repoP
       await requireExecutors().validateWorkspace?.(repoPath);
       const workspace = await workspaceAdapter.prepareWorkspace({ repoPath, stateDir, integrity: workspaceIntegrity, signal });
       try {
-        const { config } = await readWorkspaceConfig(workspace.descriptor.path, workspace.signal);
-        const snapshot = await createProjectSnapshot(config, workspace.descriptor.path, workspace.descriptor.hash, workspace.signal, workspace.descriptor.integrity, selection, { identityConcurrency: submissionIdentityConcurrency });
+        // A custom adapter may retain a mutable descriptor. Snapshot it once,
+        // before any later await, and never store its externally owned object.
+        const descriptor = structuredClone(workspace.descriptor);
+        const { config } = await readWorkspaceConfig(descriptor.path, workspace.signal);
+        const snapshot = await createProjectSnapshot(config, descriptor.path, descriptor.hash, workspace.signal, descriptor.integrity, selection, { identityConcurrency: submissionIdentityConcurrency });
         const ids = includedCritics(snapshot, selection, recursive);
         const templates: ReviewEnvelope[] = [];
         const critics = new Map(config.critics.map(critic => [critic.id, critic]));
-        for (const id of ids) { templates.push(...await prepareReviewRequests({ repoPath: workspace.descriptor.path, repoId, snapshotHash: workspace.descriptor.hash, criticId: id, preparedConfig: { ...config, critics: [critics.get(id)!] }, copy: false })); if (templates.length % 16 === 0) { workspace.signal.throwIfAborted(); await yieldTurn(); } }
+        for (const id of ids) { templates.push(...await prepareReviewRequests({ repoPath: descriptor.path, repoId, snapshotHash: descriptor.hash, criticId: id, preparedConfig: { ...config, critics: [critics.get(id)!] }, copy: false })); if (templates.length % 16 === 0) { workspace.signal.throwIfAborted(); await yieldTurn(); } }
 
         const id = randomUUID(), createdAt = now();
-        const record: RunRecord = { id, repoId, coalescingGraceMs, snapshotHash: workspace.descriptor.hash, workspace: workspace.descriptor, requesterId,
+        const record: RunRecord = { id, repoId, coalescingGraceMs, snapshotHash: descriptor.hash, workspace: descriptor, requesterId,
           scope: { kind: 'project' }, graph: createGraphDefinition(config, false), project: { version: 3, snapshot, selection, recursive, force, ignoreGates, templates }, status: 'QUEUED', createdAt };
         const prepared = await store.prepareRun(record, workspace.signal);
         await workspace.assertUnchanged(); workspace.signal.throwIfAborted();
