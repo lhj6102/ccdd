@@ -1,5 +1,9 @@
 # Project Validation
 
+CCDD 6.0 requires fresh format-6 state and gates execution on dependency GREEN
+evidence by default. Review the [6.0 migration guide](migration-v6.md) for gated
+plan states, `retryRequest`, cursor-based live reads and the admission hook.
+
 Current validation is computed from folder material and actual review records. `status` and `plan` read JSON, derive identities and read history; they do not create state or schedule reviews. They execute owner identity scripts only when explicitly configured with `stale.kind: "identity"`; view tools, environment requirements and Providers remain unexecuted. `config check` and `graph` always remain script-free.
 
 ## Commands
@@ -7,8 +11,8 @@ Current validation is computed from folder material and actual review records. `
 ```sh
 ccdd-project config check
 ccdd-project status [ARTIFACT | --critic ARTIFACT/CRITIC]
-ccdd-project plan (ARTIFACT | --critic ARTIFACT/CRITIC | --all) [--recursive] [--force]
-ccdd-project verify (ARTIFACT | --critic ARTIFACT/CRITIC | --all) [--recursive] [--force] [--wait]
+ccdd-project plan (ARTIFACT | --critic ARTIFACT/CRITIC | --all) [--recursive] [--force] [--ignore-gates]
+ccdd-project verify (ARTIFACT | --critic ARTIFACT/CRITIC | --all) [--recursive] [--force] [--ignore-gates] [--wait]
 ccdd-project graph [ARTIFACT]
 ccdd-project history [ARTIFACT | --critic ARTIFACT/CRITIC]
 ```

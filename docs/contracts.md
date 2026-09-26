@@ -711,8 +711,10 @@ and prune database entry points reject non-current state before table changes.
 ## Concurrency controls
 
 `createBroker({ maxConcurrentExecutors })` accepts a positive safe integer,
-with default 4, limiting non-Human executions **per Run**, not across Brokers or
-Runs. Human preparation/alarms do not consume these slots. Project verify CLI
+with default 4, limiting non-Human dispatch per Run. In 6.0 the default FIFO
+admission pool also shares that capacity across Runs in the same Broker;
+separate Brokers have separate pools. A custom admission hook can impose its
+own shared capacity. Human preparation/alarms do not consume these slots. Project verify CLI
 accepts `--concurrency N` and persists it in worker configuration so detached
 execution and resume retain the choice. These scheduling options are not reuse
 identity inputs.

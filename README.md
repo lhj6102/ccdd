@@ -100,4 +100,4 @@ See [Contributing](CONTRIBUTING.md), [the context map](CONTEXT-MAP.md), [detaile
 
 [MIT](LICENSE).
 
-**CCDD 5.1.2:** bounded Broker read caches reduce synchronous lifecycle JSON work that can delay tool responses on large Runs. See the [release notes, measurements and limitations](docs/releases/v5.1.2.md). Existing 5.0 and 5.1 state and reuse keys remain valid; upgrades from 4.x require the [5.0 migration guide](docs/migration-v5.md).
+**CCDD 6.0.0 is a breaking release:** use a fresh format-6 state directory, account for dependency-GREEN gates, and move live polling to `broker.changes`. Read the [6.0 migration guide](docs/migration-v6.md) and [release notes, measurements and limits](docs/releases/v6.0.0.md) before upgrading.
