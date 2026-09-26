@@ -152,37 +152,73 @@ export function createBroker<D extends ResultDetail = 'compact'>({ detail, repoP
     if (!executors || typeof executors.canExecute !== 'function' || typeof executors.execute !== 'function') throw new Error('Review submission and execution require an executor registry.');
     return executors;
   };
+  // data_version changes for commits from other connections, not our own writes.
+  // Check inside the same SQLite snapshot as each read; rollback discards every
+  // locally published cache entry. These are bounded read caches, never evidence.
+  const versionStatement = db.prepare('PRAGMA data_version');
+  let dataVersion = Number(versionStatement.get()!.data_version);
+  const runCache = new Map<string, { value: RunRecord; bytes: number }>();
+  type Attempt = Pick<ReviewRequest, 'id' | 'criticId' | 'status' | 'error'>;
+  const attemptCache = new Map<string, Attempt>();
+  let evidenceCache: ReturnType<typeof readEvidence> | undefined;
+  const clearReadCaches = () => { runCache.clear(); attemptCache.clear(); evidenceCache = undefined; };
+  const syncReadCaches = () => {
+    const version = Number(versionStatement.get()!.data_version);
+    if (version !== dataVersion) { clearReadCaches(); dataVersion = version; }
+  };
+  const currentEvidence = () => {
+    syncReadCaches();
+    if (evidenceCache) return evidenceCache;
+    const evidence = readEvidence(db);
+    // Large histories remain authoritative reads rather than unbounded retention.
+    if (Buffer.byteLength(JSON.stringify(evidence)) <= 16 * 1024 ** 2) evidenceCache = evidence;
+    return evidence;
+  };
+  const cacheRun = (run: RunRecord, bytes: number) => {
+    runCache.delete(run.id);
+    while (runCache.size && ([...runCache.values()].reduce((sum, item) => sum + item.bytes, 0) + bytes > 96 * 1024 ** 2 || runCache.size >= 4)) runCache.delete(runCache.keys().next().value!);
+    // Keep at most four Runs / 96 MiB of serialized definitions, or one
+    // oversized current Run. Lifecycle fields are copied for each caller.
+    runCache.set(run.id, { value: { ...run, ...(run.project ? { project: { ...run.project } } : {}) }, bytes });
+  };
+  const cacheAttempt = ({ id, criticId, status, error }: Attempt) => {
+    attemptCache.delete(id);
+    if (attemptCache.size >= 4096) attemptCache.delete(attemptCache.keys().next().value!);
+    const attempt = { id, criticId, status, error }; attemptCache.set(id, attempt); return attempt;
+  };
   const transaction = <T>(callback: () => T): T => {
     db.exec('BEGIN IMMEDIATE');
-    try { const result = callback(); db.exec('COMMIT'); return result; }
-    catch (error) { db.exec('ROLLBACK'); throw error; }
+    try { syncReadCaches(); const result = callback(); db.exec('COMMIT'); return result; }
+    catch (error) { try { db.exec('ROLLBACK'); } finally { clearReadCaches(); } throw error; }
   };
   const requestData = (id: string): ReviewRequest | null => {
     const row = db.prepare('SELECT data FROM requests WHERE id = ?').get(id);
     return row ? parseStored<ReviewRequest>(row.data) : null;
   };
-  // Run definitions never change after submission. Keep one parsed definition,
-  // while re-reading mutable lifecycle/claim state on every operation (including
-  // writes from other Broker processes). Do not hydrate a whole project per Critic.
-  let runDefinition: { id: string; graph: RunRecord['graph']; snapshot: ProjectRunDefinition['snapshot']; templates: ReviewEnvelope[] } | undefined;
   const runData = (id: string): RunRecord | null => {
-    if (runDefinition?.id !== id) {
+    syncReadCaches();
+    let cached = runCache.get(id);
+    if (!cached) {
       const row = db.prepare('SELECT data FROM runs WHERE id = ?').get(id);
       if (!row) return null;
-      const run = parseStored<RunRecord>(row.data);
-      if (!run.project) return run;
-      runDefinition = { id, graph: run.graph, snapshot: run.project.snapshot, templates: run.project.templates };
-      return run;
+      cacheRun(parseStored<RunRecord>(row.data), Buffer.byteLength(String(row.data)));
+      cached = runCache.get(id)!;
     }
-    const row = db.prepare("SELECT json_remove(data, '$.graph', '$.project.snapshot', '$.project.templates') AS data FROM runs WHERE id = ?").get(id);
-    if (!row) return null;
-    const run = parseStored<RunRecord>(row.data);
-    return { ...run, graph: runDefinition.graph, ...(run.project ? { project: { ...run.project, snapshot: runDefinition.snapshot, templates: runDefinition.templates } } : {}) };
+    const run = cached.value;
+    return { ...run, ...(run.project ? { project: { ...run.project } } : {}) };
   };
   const ownerData = (id: string): OwnerRecord | undefined => db.prepare('SELECT * FROM run_owners WHERE run_id = ?').get(id) as OwnerRecord | undefined;
   const runRequests = (id: string): ReviewRequest[] => db.prepare('SELECT data FROM requests WHERE run_id = ? ORDER BY ordinal').all(id).map(row => parseStored<ReviewRequest>(row.data));
   const sharedRequests = (run: RunRecord): ReviewRequest[] => (run.project?.coalescedRequestIds ?? []).map(id => required(requestData(id), 'Shared Request'));
-  const attemptsFor = (run: RunRecord): ReviewRequest[] => [...runRequests(run.id), ...sharedRequests(run)];
+  const attemptData = (id: string): Attempt => {
+    syncReadCaches();
+    const cached = attemptCache.get(id);
+    if (cached) return cached;
+    const row = required(db.prepare("SELECT json_object('id',id,'criticId',json_extract(data,'$.criticId'),'status',status,'error',json_extract(data,'$.error')) AS data FROM requests WHERE id = ?").get(id), 'Request');
+    return cacheAttempt(parseStored<Attempt>(row.data));
+  };
+  const runAttempts = (id: string): Attempt[] => polling.requests(id).map(row => attemptData(row.id));
+  const attemptsFor = (run: RunRecord): Attempt[] => [...runAttempts(run.id), ...(run.project?.coalescedRequestIds ?? []).map(attemptData)];
   const submissionDeadlines = new Map<string, number>();
   function sweepSubmissionDeadlines() {
     for (const id of submissionDeadlines.keys()) {
@@ -195,9 +231,18 @@ export function createBroker<D extends ResultDetail = 'compact'>({ detail, repoP
   }
   const coalescing = { reconcile: reconcileWithin, deadlines: submissionDeadlines };
   const shareable = (request: ReviewRequest): boolean => coalescingEligibility(db, request, coalescing) !== null;
-  const saveRequest = (request: ReviewRequest) => db.prepare('UPDATE requests SET status = ?, data = ? WHERE id = ?').run(request.status, JSON.stringify(request), request.id);
+  const saveRequest = (request: ReviewRequest) => {
+    syncReadCaches();
+    const previous = polling.requestStatus(request.id);
+    db.prepare('UPDATE requests SET status = ?, data = ? WHERE id = ?').run(request.status, JSON.stringify(request), request.id);
+    if (previous === 'GREEN' || previous === 'RED' || request.status === 'GREEN' || request.status === 'RED') evidenceCache = undefined;
+    cacheAttempt(request);
+  };
   const saveRun = (run: RunRecord) => {
-    db.prepare('UPDATE runs SET status = ?, data = ? WHERE id = ?').run(run.status, JSON.stringify(run), run.id);
+    syncReadCaches();
+    const json = JSON.stringify(run);
+    db.prepare('UPDATE runs SET status = ?, data = ? WHERE id = ?').run(run.status, json, run.id);
+    cacheRun(run, Buffer.byteLength(json));
     if (terminal.has(run.status)) submissionDeadlines.delete(run.id);
   };
   const appendEvent = (runId: string, requestId: string | null, type: string, message: string, data: unknown = null) => {
@@ -215,7 +260,7 @@ export function createBroker<D extends ResultDetail = 'compact'>({ detail, repoP
   });
   function refreshReadinessWithin(runId: string): void {
     sweepSubmissionDeadlines();
-    const run = required(runData(runId), 'Run'), requests = runRequests(runId);
+    const run = required(runData(runId), 'Run'), requests = runAttempts(runId);
     if (run.project?.version === 3) {
       if (terminal.has(run.status)) return;
       for (const shared of sharedRequests(run)) reconcileWithin(shared.runId);
@@ -228,7 +273,7 @@ export function createBroker<D extends ResultDetail = 'compact'>({ detail, repoP
         appendEvent(runId, null, 'request.uncoalesced', 'Unowned source submission lease expired; replanning this Run.');
       }
       brokerTestHooks.onPlan?.();
-      const plan = planProject(run.project.snapshot, readEvidence(db), { selection: run.project.selection, recursive: run.project.recursive, force: run.project.force, runId, coalescedRequestIds: run.project.coalescedRequestIds, attempts: [...requests, ...sharedRequests(run)] });
+      const plan = planProject(run.project.snapshot, currentEvidence(), { selection: run.project.selection, recursive: run.project.recursive, force: run.project.force, runId, coalescedRequestIds: run.project.coalescedRequestIds, attempts: [...requests, ...(run.project.coalescedRequestIds ?? []).map(attemptData)] });
       for (const item of plan.items.filter(item => item.action === 'EXECUTE')) {
         if (!run.project.force) {
           const shared = findCoalescibleRequest(db, item.id, item.input.key, coalescing)?.request;
@@ -245,7 +290,7 @@ export function createBroker<D extends ResultDetail = 'compact'>({ detail, repoP
           workspace: run.workspace, worktreePath: run.workspace.path, status: 'QUEUED', createdAt: now(),
           startedAt: null, completedAt: null, claimedBy: null, claimedAt: null, notifiedAt: null, result: null, error: null, blockedReason: null };
         db.prepare('INSERT INTO requests(id,run_id,ordinal,status,data) VALUES (?,?,?,?,?)').run(request.id, runId, requests.length, request.status, JSON.stringify(request));
-        requests.push(request);
+        requests.push(cacheAttempt(request));
         appendEvent(runId, request.id, 'request.queued', 'Pull validation found an executable Critic requiring an actual review.');
       }
       return;
@@ -254,11 +299,11 @@ export function createBroker<D extends ResultDetail = 'compact'>({ detail, repoP
   }
   const updateRunStatus = (runId: string) => {
     const run = required(runData(runId), 'Run');
-    const states = attemptsFor(run).map(request => request.status);
+    const attempts = attemptsFor(run), states = attempts.map(request => request.status);
     if (run.project?.version === 3) {
       if (terminal.has(run.status)) return;
       brokerTestHooks.onPlan?.();
-      const plan = planProject(run.project.snapshot, readEvidence(db), { selection: run.project.selection, recursive: run.project.recursive, force: run.project.force, runId, coalescedRequestIds: run.project.coalescedRequestIds, attempts: attemptsFor(run) });
+      const plan = planProject(run.project.snapshot, currentEvidence(), { selection: run.project.selection, recursive: run.project.recursive, force: run.project.force, runId, coalescedRequestIds: run.project.coalescedRequestIds, attempts });
       const status: RunStatus = states.includes('RUNNING') ? 'RUNNING' : states.includes('QUEUED') ? 'QUEUED' : states.includes('WAITING_HUMAN') ? 'WAITING_HUMAN' :
         states.includes('ERROR') ? 'ERROR' : states.includes('RED') || plan.critics.some(critic => critic.status === 'RED') ? 'RED' : plan.satisfied ? 'GREEN' : 'INCOMPLETE';
       if (run.status !== status) {
@@ -301,7 +346,7 @@ export function createBroker<D extends ResultDetail = 'compact'>({ detail, repoP
     }
     if (run.project?.version === 3) {
       brokerTestHooks.onPlan?.();
-      const plan = planProject(run.project.snapshot, readEvidence(db), { selection: run.project.selection, recursive: run.project.recursive, force: run.project.force, runId, coalescedRequestIds: run.project.coalescedRequestIds, attempts: attemptsFor(run) });
+      const plan = planProject(run.project.snapshot, currentEvidence(), { selection: run.project.selection, recursive: run.project.recursive, force: run.project.force, runId, coalescedRequestIds: run.project.coalescedRequestIds, attempts: attemptsFor(run) });
       run.project.evidenceRequestIds = [...new Set(plan.critics.flatMap(c => c.result ? [c.result.requestId] : []))];
     }
     run.status = 'ERROR'; run.error = errorText(error); run.completedAt = now(); saveRun(run);
@@ -384,7 +429,7 @@ export function createBroker<D extends ResultDetail = 'compact'>({ detail, repoP
       const result = validateResult(await requireExecutors().execute(copy(request), {
         worktreePath: workspace.descriptor.path, workspacePath: workspace.descriptor.path, runDir, signal,
         onEvent(event) {
-          if (closed || closing || signal.aborted || !event || requestData(requestId)?.status !== 'RUNNING' || !['executor.started', 'artifact.tools.ready', 'artifact.tool.called', 'artifact.tool.completed', 'executor.usage', 'executor.final.invalid', 'executor.final.repair', 'executor.telemetry.failed', 'executor.completed'].includes(event.type)) return;
+          if (closed || closing || signal.aborted || !event || polling.requestStatus(requestId) !== 'RUNNING' || !['executor.started', 'artifact.tools.ready', 'artifact.tool.called', 'artifact.tool.completed', 'executor.usage', 'executor.final.invalid', 'executor.final.repair', 'executor.telemetry.failed', 'executor.completed'].includes(event.type)) return;
           if (event.type === 'executor.final.invalid' || event.type === 'executor.final.repair') {
             const safe = finalResultEventData(event);
             if (safe) { appendEvent(runId, requestId, event.type, event.type, safe); changed(); }
@@ -747,7 +792,7 @@ export function createBroker<D extends ResultDetail = 'compact'>({ detail, repoP
       const owned = [...active.values()];
       for (const entry of owned) entry.abort.abort(codedError('The review worker stopped before completion.', 'WORKER_STOPPED'));
       await Promise.allSettled(owned.map(entry => entry.promise));
-      runDefinition = undefined; submissionDeadlines.clear(); listeners.clear(); db.close(); closed = true;
+      clearReadCaches(); submissionDeadlines.clear(); listeners.clear(); db.close(); closed = true;
     },
   };
   const viewRun = <T extends Parameters<typeof requesterRun>[0] | null>(value: T) => resultView({ detail }, value, () => value ? storedRequesterRun(db, value.id, stateDir) ?? requesterRun(value, stateDir) : null);

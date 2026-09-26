@@ -54,5 +54,5 @@ export interface ProjectPlan extends ProjectQuery {
 }
 export interface QueryOptions {
   selection?: ProjectSelection; forceCriticIds?: readonly string[];
-  runId?: string; coalescedRequestIds?: readonly string[]; attempts?: readonly ReviewRequest[];
+  runId?: string; coalescedRequestIds?: readonly string[]; attempts?: readonly Pick<ReviewRequest, 'id' | 'criticId' | 'status' | 'error'>[];
 }

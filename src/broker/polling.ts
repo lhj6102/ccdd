@@ -20,9 +20,11 @@ export function createStatusPolling(db: DatabaseSync) {
   `);
   const run = db.prepare('SELECT status FROM runs WHERE id = ?');
   const requests = db.prepare('SELECT id, status FROM requests WHERE run_id = ? ORDER BY ordinal');
+  const request = db.prepare('SELECT status FROM requests WHERE id = ?');
   const revision = db.prepare('SELECT revision FROM scheduling_revision WHERE id = 1');
   return {
     runStatus: (id: string) => (run.get(id) as { status: RunStatus } | undefined)?.status,
+    requestStatus: (id: string) => (request.get(id) as { status: ReviewStatus } | undefined)?.status,
     requests: (id: string) => requests.all(id) as unknown as { id: string; status: ReviewStatus }[],
     revision: () => Number(revision.get()!.revision),
   };
