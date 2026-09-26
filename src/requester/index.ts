@@ -1,6 +1,7 @@
 import { readWorkspaceConfig, criticIdentifier } from '../broker/config.js';
 import { assertArtifactAudience } from '../artifacts/types.js';
 import type { ReviewEnvelope, RepoConfig } from '../contracts.js';
+import { scopeToolManifest } from '../tools/manifest.js';
 import { resolveArtifactScope } from '../artifacts/scope.js';
 
 /** Bind requests to the same static definitions and exact Artifact scope used for validation. */
@@ -12,8 +13,9 @@ export async function prepareReviewRequests({ repoPath, repoId = 'local', snapsh
   const critics = criticId === undefined ? config.critics : config.critics.filter(c => c.id === criticId);
   if (criticId !== undefined && !critics.length) throw new Error(`Unknown Critic: ${criticId}`);
   return critics.map(critic => {
+    const scope = resolveArtifactScope(config.artifacts, [critic.target, ...critic.deps]);
     const request: ReviewEnvelope = structuredClone({ repoId, snapshotHash, criticId: critic.id, title: critic.title,
-      ...resolveArtifactScope(config.artifacts, [critic.target, ...critic.deps]), configManifest: config.configManifest,
+      ...scope, configManifest: scopeToolManifest(config.configManifest, scope.artifacts.map(artifact => artifact.id)),
       references: critic.references, requiredObservations: [critic.target, ...critic.deps],
       payload: critic.payload, ...(critic.passSchema ? { passSchema: critic.passSchema } : {}), ...(critic.failSchema ? { failSchema: critic.failSchema } : {}), profile: critic.profile, target: critic.target, deps: critic.deps });
     assertArtifactAudience(request);

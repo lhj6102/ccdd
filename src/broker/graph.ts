@@ -32,8 +32,8 @@ export function validateGraphDefinition(value: unknown): asserts value is GraphD
   for (const relation of value.relations) if (!object(relation) || !Object.hasOwn(value.artifacts, relation.source) || !Object.hasOwn(value.artifacts, relation.target) || !['child', 'mount', 'instruction'].includes(relation.kind)) throw new Error('Invalid Artifact relation.');
 }
 
-export function createGraphDefinition(config: RepoConfig): GraphDefinition {
-  const graph: GraphDefinition = { version: 2, artifacts: structuredClone(config.artifacts), relations: structuredClone(config.relations),
+export function createGraphDefinition(config: RepoConfig, copy = true): GraphDefinition {
+  const graph: GraphDefinition = { version: 2, artifacts: copy ? structuredClone(config.artifacts) : config.artifacts, relations: copy ? structuredClone(config.relations) : config.relations,
     critics: config.critics.map(critic => ({ id: critic.id, title: critic.title, target: critic.target, deps: [...critic.deps], kind: critic.profile.kind })) };
   validateGraphDefinition(graph);
   return graph;

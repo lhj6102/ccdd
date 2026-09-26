@@ -127,7 +127,7 @@ export function createHumanClaims(store: ClaimStore) {
       const result = store.transaction(() => {
         const request = attempt(id, reviewerId, attemptId);
         if (!preparation || preparation.snapshotHash !== request.snapshotHash || preparation.configHash !== request.configManifest?.configHash) throw new Error('Preparation does not match the recorded snapshot and tool definitions.');
-        const envIds = Object.keys(request.configManifest?.envRequirements ?? {}).sort();
+        const envIds = Object.keys(request.configManifest?.envRequirements ?? {}).filter(id => request.artifacts.some(artifact => artifact.id === id.split('/')[0])).sort();
         if (!Array.isArray(preparation.environment) || !Array.isArray(preparation.tools) ||
             preparation.environment.some(check => !check || check.ok !== true || typeof check.id !== 'string') ||
             preparation.environment.map(check => check.id).sort().join('\0') !== envIds.join('\0') ||

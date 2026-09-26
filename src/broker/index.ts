@@ -22,7 +22,7 @@ import { prepareHumanReview } from '../executors/human-preparation.js';
 import { prepareWorkspace, reopenWorkspace, type WorkspaceDescriptor, type WorkspaceHandle, type WorkspaceIntegrity } from '../workspaces/index.js';
 import { createProjectSnapshot, DEFAULT_IDENTITY_CONCURRENCY, positiveConcurrency } from '../project/identity.js';
 import { includedCritics, planProject } from '../project/query.js';
-import { readEvidence, storedRun } from '../project/store.js';
+import { readEvidence, storedRequesterRun } from '../project/store.js';
 import type { ProjectRunDefinition, ProjectSelection } from '../project/types.js';
 import type { RunStatus } from '../contracts.js';
 import type { ReviewEnvelope, ReviewRequest, ReviewResult, ReviewStatus, ReviewToolCall, ExecutionContext, ExecutorReadiness } from '../contracts.js';
@@ -161,9 +161,23 @@ export function createBroker<D extends ResultDetail = 'compact'>({ detail, repoP
     const row = db.prepare('SELECT data FROM requests WHERE id = ?').get(id);
     return row ? parseStored<ReviewRequest>(row.data) : null;
   };
+  // Run definitions never change after submission. Keep one parsed definition,
+  // while re-reading mutable lifecycle/claim state on every operation (including
+  // writes from other Broker processes). Do not hydrate a whole project per Critic.
+  let runDefinition: { id: string; graph: RunRecord['graph']; snapshot: ProjectRunDefinition['snapshot']; templates: ReviewEnvelope[] } | undefined;
   const runData = (id: string): RunRecord | null => {
-    const row = db.prepare('SELECT data FROM runs WHERE id = ?').get(id);
-    return row ? parseStored<RunRecord>(row.data) : null;
+    if (runDefinition?.id !== id) {
+      const row = db.prepare('SELECT data FROM runs WHERE id = ?').get(id);
+      if (!row) return null;
+      const run = parseStored<RunRecord>(row.data);
+      if (!run.project) return run;
+      runDefinition = { id, graph: run.graph, snapshot: run.project.snapshot, templates: run.project.templates };
+      return run;
+    }
+    const row = db.prepare("SELECT json_remove(data, '$.graph', '$.project.snapshot', '$.project.templates') AS data FROM runs WHERE id = ?").get(id);
+    if (!row) return null;
+    const run = parseStored<RunRecord>(row.data);
+    return { ...run, graph: runDefinition.graph, ...(run.project ? { project: { ...run.project, snapshot: runDefinition.snapshot, templates: runDefinition.templates } } : {}) };
   };
   const ownerData = (id: string): OwnerRecord | undefined => db.prepare('SELECT * FROM run_owners WHERE run_id = ?').get(id) as OwnerRecord | undefined;
   const runRequests = (id: string): ReviewRequest[] => db.prepare('SELECT data FROM requests WHERE run_id = ? ORDER BY ordinal').all(id).map(row => parseStored<ReviewRequest>(row.data));
@@ -317,7 +331,7 @@ export function createBroker<D extends ResultDetail = 'compact'>({ detail, repoP
     const run = required(runData(id), 'Run');
     const owner = ownerData(id);
     const events = db.prepare('SELECT * FROM (SELECT * FROM events WHERE run_id = ? ORDER BY id DESC LIMIT 500) ORDER BY id').all(id).map(event => ({ id: Number(event.id), runId: String(event.run_id), requestId: event.request_id === null ? null : String(event.request_id), createdAt: String(event.created_at), type: String(event.type), message: String(event.message), ...(event.data ? { data: parseStored<unknown>(event.data) } : {}) }));
-    return { ...run, scope: run.scope ?? { kind: run.graph ? 'graph' : 'chain' }, owner: owner ? { pid: owner.pid, claimedAt: owner.claimed_at } : null, requests: runRequests(id), events };
+    return { ...copy(run), scope: run.scope ?? { kind: run.graph ? 'graph' : 'chain' }, owner: owner ? { pid: owner.pid, claimedAt: owner.claimed_at } : null, requests: runRequests(id), events };
   }
 
   function failOwned(runId: string, token: string, error: unknown) {
@@ -527,7 +541,7 @@ export function createBroker<D extends ResultDetail = 'compact'>({ detail, repoP
         }
       }
       // close() can be awaiting this promise; read directly before it closes the DB.
-      return { ...required(runData(runId), 'Run'), requests: runRequests(runId) };
+      return { ...copy(required(runData(runId), 'Run')), requests: runRequests(runId) };
     })();
     return entry.promise;
   }
@@ -733,10 +747,10 @@ export function createBroker<D extends ResultDetail = 'compact'>({ detail, repoP
       const owned = [...active.values()];
       for (const entry of owned) entry.abort.abort(codedError('The review worker stopped before completion.', 'WORKER_STOPPED'));
       await Promise.allSettled(owned.map(entry => entry.promise));
-      submissionDeadlines.clear(); listeners.clear(); db.close(); closed = true;
+      runDefinition = undefined; submissionDeadlines.clear(); listeners.clear(); db.close(); closed = true;
     },
   };
-  const viewRun = <T extends Parameters<typeof requesterRun>[0] | null>(value: T) => resultView({ detail }, value, () => value ? requesterRun(storedRun(db, value.id) ?? value, stateDir) : null);
+  const viewRun = <T extends Parameters<typeof requesterRun>[0] | null>(value: T) => resultView({ detail }, value, () => value ? storedRequesterRun(db, value.id, stateDir) ?? requesterRun(value, stateDir) : null);
   const viewRequest = (value: ReviewRequest | null) => resultView({ detail }, value, () => value ? requesterRequest(value, stateDir) : null);
   return {
     ...broker,
