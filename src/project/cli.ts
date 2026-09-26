@@ -14,6 +14,7 @@ import { prepareWorkspace } from '../workspaces/index.js';
 import { localContext, createLocalAlarmMethods } from '../local.js';
 import { createExecutorRegistry } from '../executors/index.js';
 import { ensureRunWorker } from '../worker-client.js';
+import { pruneProject } from './prune.js';
 import { inspectProject } from './index.js';
 import { projectHistory, projectRun, projectRuns, projectRequests, type ProjectRunView } from './store.js';
 import type { ProjectPlan, ProjectSelection } from './types.js';
@@ -30,6 +31,7 @@ const help = `CCDD Project — pull validation and explicit review execution
   ccdd-project status [ARTIFACT | --critic ID] [--json]
   ccdd-project plan (ARTIFACT | --critic ID | --all) [--recursive] [--force]
   ccdd-project verify (ARTIFACT | --critic ID | --all) [--recursive] [--force] [--wait]
+  ccdd-project prune --state-dir PATH
   ccdd-project history [ARTIFACT | --critic ID]
   ccdd-project graph [ARTIFACT]
   ccdd-project config check
@@ -96,7 +98,7 @@ export async function main(argv = process.argv.slice(2), { stdout = process.stdo
     const { options, positional } = parse(argv.slice(1)); json = Boolean(options['--json']);
     const get = (key: string) => typeof options[key] === 'string' ? options[key] as string : undefined;
     if (['help', '--help'].includes(command) || options['--help']) { stdout.write(help); return 0; }
-    if (!['status', 'plan', 'verify', 'history', 'graph', 'config', 'run', 'request'].includes(command)) throw new Error(`Unknown command: ${command}`);
+    if (!['status', 'plan', 'verify', 'history', 'graph', 'config', 'run', 'request', 'prune'].includes(command)) throw new Error(`Unknown command: ${command}`);
     const common = ['--repo', '--state-dir', '--json'];
     const full = Boolean(options['--full']) || command === 'run' && positional[0] === 'show';
     const permitted = new Set([...common, ...(['status', 'plan', 'verify', 'history', 'run', 'request'].includes(command) ? ['--full'] : []), ...(['status', 'plan', 'verify', 'history'].includes(command) ? ['--critic', '--all'] : []),
@@ -122,6 +124,12 @@ export async function main(argv = process.argv.slice(2), { stdout = process.stdo
         if (stored.repoPath !== context.repoPath) throw new Error('State directory belongs to a different repository.');
         context = stored;
       }
+    }
+    if (command === 'prune') {
+      if (positional.length) throw new Error('prune does not accept positional arguments.');
+      const result = pruneProject(context.stateDir);
+      print(result, `Removed ${result.removed.length} transient paths; skipped ${result.skippedRequests.length} active or owned requests. Audit evidence is preserved.`);
+      return 0;
     }
     const select = (required = false): ProjectSelection => {
       if (positional.length > 1 || Number(Boolean(positional[0])) + Number(Boolean(get('--critic'))) + Number(Boolean(options['--all'])) > 1) throw new Error('Choose one Artifact, --critic ID, or --all.');

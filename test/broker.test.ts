@@ -187,7 +187,7 @@ test('run telemetry survives readonly reopening but never changes identities, ev
 
 test('Broker telemetry allowlists counters and retains diagnostics on failed attempts', async t => {
   const data = await fixture(t, false, { canExecute: () => ({ ok: true }), async execute(_request, { onEvent }) {
-    await onEvent?.({ type: 'artifact.tool.completed', name: 'read_a', artifactId: 'a', operation: 'read', startedAt: '2026-09-24T12:00:00.000Z', durationMs: 12.25, outcome: 'error', stderr: 'SECRET_DIAGNOSTIC' });
+    await onEvent?.({ type: 'artifact.tool.completed', name: 'read_a', artifactId: 'a', operation: 'read', startedAt: '2026-09-24T12:00:00.000Z', durationMs: 12.25, outcome: 'error', contentBytes: 7, contentBytesByType: { text: 7, json: 0, image: 0, launch: 0, secret: 'PRIVATE' }, stderr: 'SECRET_DIAGNOSTIC' });
     await onEvent?.({ type: 'executor.usage', provider: 'fixture', model: 'fixture', usage: { input: 10, output: 2, totalTokens: 12, cacheRead: -1, cacheWrite: '3', reasoning: Infinity, cost: 1.25, response: 'SECRET_DIAGNOSTIC' } });
     await onEvent?.({ type: 'executor.usage', usage: { input: NaN } });
     throw new Error('Controlled later execution failure');
@@ -197,7 +197,7 @@ test('Broker telemetry allowlists counters and retains diagnostics on failed att
   assert.equal(run.status, 'ERROR'); assert.equal(run.requests[0].result, null);
   const usage = run.events.filter(event => event.type === 'executor.usage');
   assert.equal(usage.length, 1); assert.deepEqual((usage[0].data as { usage: unknown }).usage, { input: 10, output: 2, totalTokens: 12 });
-  assert.deepEqual(run.events.find(event => event.type === 'artifact.tool.completed')!.data, { name: 'read_a', artifactId: 'a', startedAt: '2026-09-24T12:00:00.000Z', durationMs: 12.25, outcome: 'error', operation: 'read' });
+  assert.deepEqual(run.events.find(event => event.type === 'artifact.tool.completed')!.data, { name: 'read_a', artifactId: 'a', startedAt: '2026-09-24T12:00:00.000Z', durationMs: 12.25, outcome: 'error', operation: 'read', contentBytes: 7, contentBytesByType: { text: 7, json: 0, image: 0, launch: 0 } });
   assert.doesNotMatch(JSON.stringify(run), /SECRET_DIAGNOSTIC|cost/);
 });
 

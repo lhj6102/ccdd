@@ -11,7 +11,8 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { prepareReviewRequests } from '../requester/index.js';
 import { readWorkspaceConfig } from './config.js';
 import { createGraphDefinition, type GraphDefinition } from './graph.js';
-import { tokenUsage } from '../executors/telemetry.js';
+import { createStatusPolling } from './polling.js';
+import { tokenUsage, toolResponseBytes } from '../executors/telemetry.js';
 import { finalResultEventData } from '../executors/final-result.js';
 import { normalizeReviewResult as validateResult, storedObservation } from '../review-result.js';
 import { createReviewTools, type ToolExecutionDiagnostic } from '../tools/runner.js';
@@ -25,6 +26,8 @@ import type { ProjectRunDefinition, ProjectSelection } from '../project/types.js
 import type { RunStatus } from '../contracts.js';
 import type { ReviewEnvelope, ReviewRequest, ReviewResult, ReviewStatus, ReviewToolCall, ExecutionContext, ExecutorReadiness } from '../contracts.js';
 
+/** Internal instrumentation for deterministic scheduler regression tests. */
+export const brokerTestHooks: { onHydrate?: (bytes: number) => void; onPlan?: () => void; onIdleTick?: () => void } = {};
 interface OwnerRecord { run_id: string; pid: number; process_identity: string | null; token: string; claimed_at: string }
 export interface RunRecord {
   id: string; repoId: string; snapshotHash: string; workspace: WorkspaceDescriptor;
@@ -45,7 +48,7 @@ export interface BrokerOptions { repoPath: string; stateDir: string; repoId?: st
 interface ActiveRun { runId: string; token: string; abort: AbortController; promise: Promise<RunRecord & { requests: ReviewRequest[] }> | null }
 const object = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === 'object' && !Array.isArray(value);
 const errorCode = (error: unknown): string | undefined => object(error) && typeof error.code === 'string' ? error.code : undefined;
-const parseStored = <T>(value: unknown): T => { if (typeof value !== 'string') throw new Error('Broker store contains a non-text JSON record.'); return JSON.parse(value) as T; };
+const parseStored = <T>(value: unknown): T => { if (typeof value !== 'string') throw new Error('Broker store contains a non-text JSON record.'); brokerTestHooks.onHydrate?.(Buffer.byteLength(value)); return JSON.parse(value) as T; };
 const required = <T>(value: T | null | undefined, label: string): T => { if (value == null) throw new Error(`Unknown ${label}.`); return value; };
 
 
@@ -157,6 +160,7 @@ export function createBroker<D extends ResultDetail = 'compact'>({ detail, repoP
     if (db.prepare('SELECT value FROM metadata WHERE key = ?').get('registered-repo')?.value !== identity) throw new Error('This state directory belongs to a different registered repository.');
   } catch (error) { db?.close(); throw error; }
 
+  const polling = createStatusPolling(db);
   let closed = false;
   let closing = false;
   const active = new Map<string, ActiveRun>();
@@ -186,17 +190,21 @@ export function createBroker<D extends ResultDetail = 'compact'>({ detail, repoP
   const submissionDeadlines = new Map<string, number>();
   function sweepSubmissionDeadlines() {
     for (const id of submissionDeadlines.keys()) {
-      const source = runData(id);
+      const status = polling.runStatus(id);
       // Retain expired unowned sources: dropping their monotonic tombstone could
       // renew eligibility after a wall-clock rollback. Owned Runs cannot revert
       // to an abandoned submission; worker exit is reconciled as terminal.
-      if (!source || terminal.has(source.status) || ownerData(id)) submissionDeadlines.delete(id);
+      if (!status || terminal.has(status) || ownerData(id)) submissionDeadlines.delete(id);
     }
   }
   const shareable = (request: ReviewRequest): boolean => {
+    // Reconcile PID/token ownership at the adoption boundary, before even an
+    // unowned submission lease can make a dead worker's ticket eligible.
+    reconcileWithin(request.runId);
     const source = required(runData(request.runId), 'Source Run');
     if (terminal.has(source.status)) return false;
-    if (ownerAlive(ownerData(source.id))) return true;
+    const owner = ownerData(source.id);
+    if (owner) return ownerAlive(owner); // Never fall back to grace for an owned source.
     const grace = source.coalescingGraceMs;
     if (request.status !== 'QUEUED' || typeof grace !== 'number' || !Number.isSafeInteger(grace) || grace <= 0 || grace > 300_000) return false;
     const elapsed = typeof source.createdAt === 'string' ? Date.now() - Date.parse(source.createdAt) : NaN;
@@ -240,12 +248,12 @@ export function createBroker<D extends ResultDetail = 'compact'>({ detail, repoP
         saveRun(run);
         appendEvent(runId, null, 'request.uncoalesced', 'Unowned source submission lease expired; replanning this Run.');
       }
+      brokerTestHooks.onPlan?.();
       const plan = planProject(run.project.snapshot, readEvidence(db), { selection: run.project.selection, recursive: run.project.recursive, force: run.project.force, runId, coalescedRequestIds: run.project.coalescedRequestIds, attempts: [...requests, ...sharedRequests(run)] });
       for (const item of plan.items.filter(item => item.action === 'EXECUTE')) {
         if (!run.project.force) {
           const candidates = db.prepare("SELECT data FROM requests WHERE status IN ('QUEUED','RUNNING','WAITING_HUMAN') AND json_extract(data, '$.criticId') = ? AND json_extract(data, '$.validationInput.key') = ? AND json_extract(data, '$.validationInput.version') = 3 ORDER BY rowid").all(item.id, item.input.key).map(row => parseStored<ReviewRequest>(row.data));
-          for (const candidate of candidates) reconcileWithin(candidate.runId);
-          const shared = candidates.map(candidate => required(requestData(candidate.id), 'Request')).find(candidate => !terminal.has(candidate.status) && shareable(candidate));
+          const shared = candidates.find(candidate => shareable(candidate));
           if (shared) {
             run.project.coalescedRequestIds = [...new Set([...(run.project.coalescedRequestIds ?? []), shared.id])];
             saveRun(run);
@@ -271,6 +279,7 @@ export function createBroker<D extends ResultDetail = 'compact'>({ detail, repoP
     const states = attemptsFor(run).map(request => request.status);
     if (run.project?.version === 3) {
       if (terminal.has(run.status)) return;
+      brokerTestHooks.onPlan?.();
       const plan = planProject(run.project.snapshot, readEvidence(db), { selection: run.project.selection, recursive: run.project.recursive, force: run.project.force, runId, coalescedRequestIds: run.project.coalescedRequestIds, attempts: attemptsFor(run) });
       const status: RunStatus = states.includes('RUNNING') ? 'RUNNING' : states.includes('QUEUED') ? 'QUEUED' : states.includes('WAITING_HUMAN') ? 'WAITING_HUMAN' :
         states.includes('ERROR') ? 'ERROR' : states.includes('RED') || plan.critics.some(critic => critic.status === 'RED') ? 'RED' : plan.satisfied ? 'GREEN' : 'INCOMPLETE';
@@ -313,6 +322,7 @@ export function createBroker<D extends ResultDetail = 'compact'>({ detail, repoP
       appendEvent(runId, request.id, 'request.error', request.error, { status: request.status, ...(request.errorCode ? { code: request.errorCode } : {}) });
     }
     if (run.project?.version === 3) {
+      brokerTestHooks.onPlan?.();
       const plan = planProject(run.project.snapshot, readEvidence(db), { selection: run.project.selection, recursive: run.project.recursive, force: run.project.force, runId, coalescedRequestIds: run.project.coalescedRequestIds, attempts: attemptsFor(run) });
       run.project.evidenceRequestIds = [...new Set(plan.critics.flatMap(c => c.result ? [c.result.requestId] : []))];
     }
@@ -405,6 +415,7 @@ export function createBroker<D extends ResultDetail = 'compact'>({ detail, repoP
           const safe: Record<string, unknown> = {};
           for (const key of ['name', 'provider', 'model', 'kind', 'artifactId', 'path']) if (typeof event[key] === 'string') safe[key] = (event[key] as string).slice(0, 1000);
           if (event.type === 'artifact.tool.completed') {
+            Object.assign(safe, toolResponseBytes(event));
             if (typeof event.startedAt === 'string' && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(event.startedAt) && Number.isFinite(Date.parse(event.startedAt))) safe.startedAt = event.startedAt;
             if (typeof event.durationMs === 'number' && Number.isFinite(event.durationMs) && event.durationMs >= 0) safe.durationMs = event.durationMs;
             if (event.outcome === 'success' || event.outcome === 'error') safe.outcome = event.outcome;
@@ -466,53 +477,72 @@ export function createBroker<D extends ResultDetail = 'compact'>({ detail, repoP
       let workspace: WorkspaceHandle | undefined;
       let poll: ReturnType<typeof setInterval> | undefined;
       const inFlight = new Map<string, { kind: ReviewRequest['profile']['kind']; promise: Promise<void> }>();
+      let plannedRevision = -1, leaseDeadline = Infinity;
+      let pendingSources: string[] = [];
+      const notified = new Set<string>();
+      const kinds = new Map<string, ReviewRequest['profile']['kind']>();
       try {
         onStarted?.({ runId, pid: process.pid });
         workspace = await workspaceAdapter.reopenWorkspace(ownedRun.workspace, { signal: executionSignal });
         const reviewSignal = AbortSignal.any([executionSignal, workspace.signal]);
         poll = setInterval(() => {
           if (ownerData(runId)?.token !== token) abort.abort(codedError('Review ownership was lost.', 'RUN_OWNERSHIP_LOST'));
-          else if (terminal.has(required(runData(runId), 'Run').status)) abort.abort(codedError('Review is already complete or canceled.', 'REVIEW_CANCELED'));
+          else if (terminal.has(required(polling.runStatus(runId), 'Run'))) abort.abort(codedError('Review is already complete or canceled.', 'REVIEW_CANCELED'));
         }, 100);
         while (true) {
-          const current = required(runData(runId), 'Run');
-          if (terminal.has(current.status)) {
+          const current = required(polling.runStatus(runId), 'Run');
+          if (terminal.has(current)) {
             if (inFlight.size) abort.abort(codedError('Review is already complete or canceled.', 'REVIEW_CANCELED'));
             break;
           }
           reviewSignal.throwIfAborted();
-          transaction(() => { refreshReadinessWithin(runId); updateRunStatus(runId); });
-          const requests = runRequests(runId);
+          const sourceExited = pendingSources.some(id => { const owner = ownerData(id); return owner !== undefined && !ownerAlive(owner); });
+          if (polling.revision() !== plannedRevision || performance.now() >= leaseDeadline || sourceExited) transaction(() => {
+            refreshReadinessWithin(runId); updateRunStatus(runId);
+            const pending = sharedRequests(required(runData(runId), 'Run')).filter(request => !terminal.has(request.status));
+            pendingSources = [...new Set(pending.map(request => request.runId))];
+            leaseDeadline = Math.min(Infinity, ...pendingSources.filter(id => !ownerData(id)).map(id => submissionDeadlines.get(id) ?? performance.now()));
+            plannedRevision = polling.revision();
+          });
+          const requests = polling.requests(runId);
           let executing = [...inFlight.values()].filter(item => item.kind !== 'human').length;
-          for (const queued of requests.filter(request => request.status === 'QUEUED')) {
-            if (queued.profile.kind !== 'human' && executing >= MAX_CONCURRENT_EXECUTORS) continue;
-            if (queued.profile.kind !== 'human') executing++;
-            const promise = executeOne(queued.id, workspace, token, reviewSignal).catch(error => {
+          for (const row of requests.filter(request => request.status === 'QUEUED')) {
+            const kind = kinds.get(row.id) ?? required(requestData(row.id), 'Request').profile.kind;
+            kinds.set(row.id, kind);
+            if (kind !== 'human' && executing >= MAX_CONCURRENT_EXECUTORS) continue;
+            if (kind !== 'human') executing++;
+            const promise = executeOne(row.id, workspace, token, reviewSignal).catch(error => {
               // A different task may win Promise.race before this rejection. Preserve fatal failure independently of that race.
               abort.abort(error);
               throw error;
-            }).finally(() => { inFlight.delete(queued.id); });
-            inFlight.set(queued.id, { kind: queued.profile.kind, promise });
+            }).finally(() => { inFlight.delete(row.id); });
+            inFlight.set(row.id, { kind, promise });
           }
           if (inFlight.size) {
             // Human alarms and independent evaluations progress together.
             await Promise.race([...inFlight.values()].map(item => item.promise).concat(delay(50, undefined, { signal: reviewSignal })));
             continue;
           }
-          if (sharedRequests(required(runData(runId), 'Run')).some(request => !terminal.has(request.status))) {
-            await delay(100, undefined, { signal: reviewSignal });
+          if (pendingSources.length) {
+            brokerTestHooks.onIdleTick?.();
+            await delay(Math.max(1, Math.min(100, leaseDeadline - performance.now())), undefined, { signal: reviewSignal });
             continue;
           }
           const waiting = requests.filter(request => request.status === 'WAITING_HUMAN');
           if (waiting.length) {
-            if (waiting.some(request => !request.notifiedAt)) throw new Error('Human notification did not complete; submit a new Run to retry.');
+            for (const request of waiting) {
+              if (notified.has(request.id)) continue;
+              if (!required(requestData(request.id), 'Request').notifiedAt) throw new Error('Human notification did not complete; submit a new Run to retry.');
+              notified.add(request.id);
+            }
             // The workspace observer stays alive with filesystem events and metadata polls.
             // Notification already crossed its final content boundary; idle waiting
             // must not rehash the entire workspace on every scheduling iteration.
+            brokerTestHooks.onIdleTick?.();
             await delay(100, undefined, { signal: reviewSignal });
             continue;
           }
-          if (terminal.has(required(runData(runId), 'Run').status)) break;
+          if (terminal.has(required(polling.runStatus(runId), 'Run'))) break;
           throw codedError('Run has no executable request or pending Human review.', 'REVIEW_GRAPH_INVALID');
         }
       } catch (error) {

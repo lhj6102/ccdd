@@ -1,5 +1,5 @@
 import { constants } from 'node:fs';
-import { access, lstat, mkdir, mkdtemp, readFile, realpath } from 'node:fs/promises';
+import { access, lstat, mkdir, mkdtemp, readFile, realpath, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { delimiter, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
@@ -29,6 +29,16 @@ export interface ReviewToolRegistry {
 }
 export interface ToolExecutionDiagnostic {
   name: string; artifactId: string; operation: string; startedAt: string; durationMs: number; outcome: 'success' | 'error';
+  contentBytes: number; contentBytesByType: Record<'text' | 'json' | 'image' | 'launch', number>;
+}
+/** Payload bytes, not transport framing: UTF-8 text/JSON, decoded images and launch JSON. */
+function responseBytes(result?: ToolResult) {
+  const contentBytesByType = { text: 0, json: 0, image: 0, launch: 0 };
+  for (const block of result?.content ?? []) {
+    contentBytesByType[block.type] += block.type === 'image' ? Buffer.from('data' in block ? block.data : '', 'base64').length
+      : Buffer.byteLength(block.type === 'text' ? block.text : JSON.stringify(block.type === 'json' ? block.data : { kind: 'launch', launched: block.launched }));
+  }
+  return { contentBytes: Object.values(contentBytesByType).reduce((sum, bytes) => sum + bytes, 0), contentBytesByType };
 }
 export interface ReviewToolsOptions {
   worktreePath: string; artifacts: readonly ArtifactReference[]; configManifest: ConfigManifest;
@@ -164,16 +174,32 @@ export async function createReviewTools(options: ReviewToolsOptions): Promise<Re
     if (!critic || critic.profile.kind !== audience || !isDeepStrictEqual(resolveArtifactScope(config.artifacts, [critic.target, ...critic.deps]).artifacts, artifacts)) throw mismatch();
   }
   const tools = describeReviewTools({ artifacts, configManifest, audience }), recorded: ReviewToolCall[] = [];
-  const base = await externalDirectory(root, options.runDir ?? await mkdtemp(join(tmpdir(), 'ccdd-tools-')));
-  const outputDir = await mkdtemp(join(base, 'tool-output-'));
-  const scope: ArtifactScope = Object.fromEntries(await Promise.all(artifacts.map(async artifact => [artifact.id, {
-    path: await scopedPath(root, artifact.path), children: structuredClone(artifact.children), mounts: structuredClone(artifact.mounts),
-  }])));
+  let ownedBase: string | undefined, outputDir: string | undefined;
+  let scope: ArtifactScope;
+  try {
+    if (options.runDir === undefined) ownedBase = await mkdtemp(join(tmpdir(), 'ccdd-tools-'));
+    const base = await externalDirectory(root, options.runDir ?? ownedBase!);
+    outputDir = await mkdtemp(join(base, 'tool-output-'));
+    scope = Object.fromEntries(await Promise.all(artifacts.map(async artifact => [artifact.id, {
+      path: await scopedPath(root, artifact.path), children: structuredClone(artifact.children), mounts: structuredClone(artifact.mounts),
+    }])));
+    signal?.throwIfAborted();
+  } catch (error) {
+    if (ownedBase ?? outputDir) await rm((ownedBase ?? outputDir)!, { recursive: true, force: true });
+    throw error;
+  }
   const controller = new AbortController(), active = new Set<Promise<ToolResult>>();
-  const abort = () => controller.abort(signal?.reason);
+  let closed = false, closing: Promise<void> | undefined;
+  const close = (): Promise<void> => {
+    closed = true; controller.abort(signal?.reason); signal?.removeEventListener('abort', abort);
+    return closing ??= (async () => {
+      await Promise.allSettled([...active]);
+      await rm(ownedBase ?? outputDir!, { recursive: true, force: true });
+    })();
+  };
+  const abort = () => { void close().catch(() => { /* The explicit close reports cleanup errors. */ }); };
   signal?.addEventListener('abort', abort, { once: true });
   if (signal?.aborted) abort();
-  let closed = false;
   const find = (name: string) => { const tool = tools.find(value => value.name === name); if (!tool) throw new Error('Unknown registered Artifact tool.'); return tool; };
   const args = (name: string, value: unknown) => validateArguments(find(name).inputSchema, value);
   const definition = (tool: ReviewToolDefinition) => config.artifacts[tool.artifactId].views[audience === 'agent' ? 'agentTools' : 'humanTools']![tool.operation];
@@ -181,7 +207,7 @@ export async function createReviewTools(options: ReviewToolsOptions): Promise<Re
     controller.signal.throwIfAborted();
     const cwd = scope[tool.artifactId].path, script = definition(tool).script;
     const command = await executable(script.command, cwd, root);
-    const callDir = await mkdtemp(join(outputDir, 'call-')), temporary = join(callDir, '.tmp');
+    const callDir = await mkdtemp(join(outputDir!, 'call-')), temporary = join(callDir, '.tmp');
     await mkdir(temporary);
     const request: ScriptToolRequest = { version: 1, context: { artifactId: tool.artifactId, artifactPath: cwd, outputDir: callDir, tmpDir: temporary, scope }, args: actual };
     let processResult;
@@ -203,14 +229,14 @@ export async function createReviewTools(options: ReviewToolsOptions): Promise<Re
     await onCall?.(structuredClone(call));
     return { result, call };
   };
-  return { tools, get toolCalls() { return structuredClone(recorded); }, outputDir, validateArguments: args,
+  return { tools, get toolCalls() { return structuredClone(recorded); }, outputDir: outputDir!, validateArguments: args,
     async call(name, value = {}) {
       if (closed) return Promise.reject(new Error('Artifact tool registry is closed.'));
       const tool = find(name), actual = args(name, value);
       const startedAt = new Date().toISOString(), started = performance.now();
       const task = (async () => {
         const attempt = await invoke(tool, actual).then(value => ({ ok: true as const, ...value }), error => ({ ok: false as const, error: error as unknown }));
-        const diagnostic: ToolExecutionDiagnostic = { name: tool.name, artifactId: tool.artifactId, operation: tool.operation, startedAt, durationMs: performance.now() - started, outcome: attempt.ok && !attempt.result.isError ? 'success' : 'error' };
+        const diagnostic: ToolExecutionDiagnostic = { name: tool.name, artifactId: tool.artifactId, operation: tool.operation, startedAt, durationMs: performance.now() - started, outcome: attempt.ok && !attempt.result.isError ? 'success' : 'error', ...responseBytes(attempt.ok ? attempt.result : undefined) };
         if (options.onExecution) await bestEffortDiagnostic(() => options.onExecution!(diagnostic));
         if (!attempt.ok) throw attempt.error;
         // Optional telemetry cannot withhold successfully observed content.
@@ -231,6 +257,6 @@ export async function createReviewTools(options: ReviewToolsOptions): Promise<Re
         } catch (error) { return { toolName: tool.name, artifactId: tool.artifactId, ok: false, ...safeToolFailure(error) }; }
       }));
     },
-    async close() { closed = true; controller.abort(); signal?.removeEventListener('abort', abort); await Promise.allSettled([...active]); },
+    close,
   };
 }

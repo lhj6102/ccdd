@@ -204,9 +204,10 @@ test('script timeout, cancellation and close stop active processes', async t => 
 test('a crashed script kills surviving children before its failed call settles', { skip: process.platform === 'win32' }, async t => {
   const data = await fixture(t, `const child=spawn(process.execPath,['-e','process.on("SIGTERM",()=>{});setInterval(()=>{},1000)'],{stdio:'ignore'});await writeFile(join(context.outputDir,'pid'),String(child.pid));await new Promise(r=>setTimeout(r,150));process.exit(2);`);
   const registry = await data.registry();
-  await assert.rejects(registry.call('inspect_spec')); await registry.close();
+  await assert.rejects(registry.call('inspect_spec'));
   const directories = await (await import('node:fs/promises')).readdir(registry.outputDir);
   const pid = Number(await readFile(join(registry.outputDir, directories[0], 'pid'), 'utf8'));
+  await registry.close();
   await delay(30);
   try { assert.match(execFileSync('ps', ['-o', 'stat=', '-p', String(pid)], { encoding: 'utf8' }), /^Z/); } catch (error) { if (!(error && typeof error === 'object' && 'status' in error && error.status === 1)) throw error; }
 });
@@ -340,4 +341,60 @@ test('authored error text preserves UTF-8 characters split across subprocess chu
   const result = await registry.call('inspect_spec');
   assert.equal(result.isError, true); assert.equal(result.content[0].type, 'text');
   if (result.content[0].type === 'text') assert.equal(result.content[0].text, 'x'.repeat(65532) + '\u{1f600}');
+});
+
+test('tool completion telemetry measures every content kind without copying response payloads', async t => {
+  const content = [{ type: 'text', text: 'é' }, { type: 'text', text: 'ab' }, { type: 'json', data: { value: 'λ' } },
+    { type: 'image', data: Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]).toString('base64'), mimeType: 'image/png' }, { type: 'launch', launched: true }];
+  const data = await fixture(t, `return ${JSON.stringify({ content })};`);
+  const events: import('../src/tools/runner.js').ToolExecutionDiagnostic[] = [];
+  const registry = await createReviewTools({ ...data.options, onExecution: event => { events.push(event); } }); t.after(() => registry.close());
+  await registry.call('inspect_spec');
+  const expected = { text: 4, json: Buffer.byteLength(JSON.stringify({ value: 'λ' })), image: 8, launch: Buffer.byteLength(JSON.stringify({ kind: 'launch', launched: true })) };
+  assert.deepEqual(events[0].contentBytesByType, expected);
+  assert.equal(events[0].contentBytes, Object.values(expected).reduce((a, b) => a + b));
+  assert.doesNotMatch(JSON.stringify(events), /mimeType|value|launched/);
+  assert.equal('contentBytes' in registry.toolCalls[0], false);
+});
+
+for (const authorError of [false, true]) test(`tool error payload bytes distinguish no response from author errors (${authorError})`, async t => {
+  const data = await fixture(t, authorError ? "return {isError:true,content:[{type:'text',text:'unavailable'}]};" : "throw new Error('failed');");
+  const events: import('../src/tools/runner.js').ToolExecutionDiagnostic[] = [];
+  const registry = await createReviewTools({ ...data.options, onExecution: event => { events.push(event); } }); t.after(() => registry.close());
+  if (authorError) await registry.call('inspect_spec'); else await assert.rejects(registry.call('inspect_spec'));
+  assert.equal(events[0].outcome, 'error');
+  assert.equal(events[0].contentBytes, authorError ? 11 : 0);
+  assert.deepEqual(events[0].contentBytesByType, { text: authorError ? 11 : 0, json: 0, image: 0, launch: 0 });
+});
+
+for (const outcome of ['success', 'error', 'abort'] as const) test(`registry close removes self-created roots after ${outcome} and preserves caller directories`, async t => {
+  const data = await fixture(t, outcome === 'error' ? "throw new Error('failed');" : outcome === 'abort' ? 'await new Promise(()=>setInterval(()=>{},1000));' : undefined);
+  for (const supplied of [false, true]) {
+    const signal = new AbortController();
+    const registry = await createReviewTools({ ...data.options, runDir: supplied ? data.options.runDir : undefined, signal: signal.signal });
+    const parent = (await import('node:path')).dirname(registry.outputDir);
+    if (supplied) await writeFile(join(parent, 'caller-owned'), 'keep');
+    if (outcome === 'success') await registry.call('inspect_spec');
+    else {
+      const call = registry.call('inspect_spec');
+      const rejected = assert.rejects(call);
+      if (outcome === 'abort') signal.abort();
+      await rejected;
+    }
+    await Promise.all([registry.close(), registry.close()]);
+    await assert.rejects((await import('node:fs/promises')).stat(registry.outputDir), { code: 'ENOENT' });
+    if (supplied) assert.equal(await readFile(join(parent, 'caller-owned'), 'utf8'), 'keep');
+    else await assert.rejects((await import('node:fs/promises')).stat(parent), { code: 'ENOENT' });
+  }
+});
+
+test('failed registry initialization removes an allocated temporary root', async t => {
+  const data = await fixture(t);
+  const { readdir } = await import('node:fs/promises');
+  const before = await readdir(data.repoPath), previous = process.env.TMPDIR;
+  // Force allocation to succeed but the external-output safety check to fail.
+  process.env.TMPDIR = data.repoPath;
+  try { await assert.rejects(createReviewTools({ ...data.options, runDir: undefined }), /outside reviewed input/); }
+  finally { if (previous === undefined) delete process.env.TMPDIR; else process.env.TMPDIR = previous; }
+  assert.deepEqual(await readdir(data.repoPath), before);
 });

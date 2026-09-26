@@ -350,3 +350,65 @@ test('actual follower worker cancellation and close leave a live source worker r
   assert.equal((await sourceWorker.exited)[0], 0, sourceWorker.errors());
   assert.equal(data.broker.getRun(source.id)!.status, 'GREEN');
 });
+
+test('actual follower worker adopts the source terminal revision after waiting idle', { timeout: 15000 }, async t => {
+  const { writeFile, readFile } = await import('node:fs/promises');
+  const data = await runtimeFixture(t, true);
+  const source = await data.broker.submitProject({ selection: { kind: 'all' } });
+  const sourceWorker = await actualWorker(t, data, source.id); await waitForCall(data.calls, 'a');
+  const follower = await data.broker.submitProject({ selection: { kind: 'all' } });
+  const followerWorker = await actualWorker(t, data, follower.id);
+  await delay(350);
+  assert.equal(data.broker.getRun(follower.id)!.status, 'RUNNING');
+  await writeFile(join(data.root, 'release'), 'go');
+  assert.equal((await sourceWorker.exited)[0], 0, sourceWorker.errors());
+  assert.equal((await followerWorker.exited)[0], 0, followerWorker.errors());
+  const result = data.broker.getRun(follower.id)!;
+  assert.equal(result.status, 'GREEN'); assert.equal(result.requests.length, 0);
+  assert.equal(result.results[0].reference.runId, source.id);
+  assert.equal(await readFile(data.calls, 'utf8'), 'a\n');
+});
+
+test('actual follower worker expires an abandoned lease without a scheduling revision', { timeout: 15000 }, async t => {
+  const { readFile } = await import('node:fs/promises');
+  const data = await runtimeFixture(t);
+  const source = await data.broker.submitProject({ selection: { kind: 'all' } }), before = storedSource(data.stateDir, source.id);
+  const follower = await data.broker.submitProject({ selection: { kind: 'all' } });
+  const db = new DatabaseSync(join(data.stateDir, 'broker.sqlite'), { readOnly: true }); t.after(() => db.close());
+  const revision = () => db.prepare('SELECT revision FROM scheduling_revision WHERE id=1').get()!.revision;
+  const initial = revision();
+  const worker = await actualWorker(t, data, follower.id);
+  await delay(150);
+  assert.equal(revision(), initial, 'ownership and idle waiting cause no request status revision');
+  assert.equal((await worker.exited)[0], 0, worker.errors());
+  assert.equal(data.broker.getRun(follower.id)!.status, 'GREEN');
+  assert.equal(data.broker.getRun(follower.id)!.requests.length, 1);
+  assert.equal(await readFile(data.calls, 'utf8'), 'a\n');
+  assert.deepEqual(storedSource(data.stateDir, source.id), before);
+});
+
+test('first identical submission after source worker SIGKILL executes once without a manual retry', { timeout: 15000 }, async t => {
+  const { readFile } = await import('node:fs/promises');
+  const data = await runtimeFixture(t);
+  const source = await data.broker.submitProject({ selection: { kind: 'all' } });
+  const originalCalls = join(data.root, 'killed-source-calls');
+  const sourceWorker = await worker(t, { repoPath: data.repoPath, stateDir: data.stateDir }, source.id, 'hang', originalCalls);
+  const executing = sourceWorker.message(); sourceWorker.child.send('go'); assert.equal(await executing, 'executing');
+  sourceWorker.child.kill('SIGKILL'); await sourceWorker.exited;
+  // Do not getRun/reconcile before submitting: the stale owner must still be
+  // present when the first new submission encounters this candidate.
+  const db = new DatabaseSync(join(data.stateDir, 'broker.sqlite'), { readOnly: true });
+  try { assert.ok(db.prepare('SELECT run_id FROM run_owners WHERE run_id=?').get(source.id)); } finally { db.close(); }
+  const follower = await data.broker.submitProject({ selection: { kind: 'all' } });
+  assert.equal(follower.requests.length, 1);
+  assert.equal(follower.status, 'QUEUED');
+  const replacementWorker = await actualWorker(t, data, follower.id);
+  assert.equal((await replacementWorker.exited)[0], 0, replacementWorker.errors());
+  assert.equal(data.broker.getRun(follower.id)!.status, 'GREEN');
+  assert.equal(await readFile(data.calls, 'utf8'), 'a\n', 'new submission executes exactly once');
+  assert.equal(await readFile(originalCalls, 'utf8'), 'executed\n', 'dead source is never replayed');
+  const stored = projectRun(data.stateDir, source.id)!;
+  assert.equal(stored.status, 'ERROR');
+  assert.equal(stored.requests[0].errorCode, 'WORKER_EXITED');
+  assert.equal(stored.requests[0].result, null);
+});

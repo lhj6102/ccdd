@@ -104,3 +104,57 @@ for (const oversized of [false, true]) test(`immutable result metadata is measur
   }
   assert.equal(copies, 1);
 });
+
+test('consumer-sized prompt carries scope but no duplicated tool descriptions or schemas', async t => {
+  const data = await artifactFixture(t);
+  const views = fixtureViews();
+  const description = 'TOOL_DESCRIPTION_SENTINEL ' + 'Detailed observation guidance. '.repeat(100);
+  const schemaDescription = 'SCHEMA_DESCRIPTION_SENTINEL ' + 'Detailed argument guidance. '.repeat(100);
+  views.agentTools = Object.fromEntries(Array.from({ length: 12 }, (_, index) => {
+    const tool = structuredClone(views.humanTools!.read);
+    tool.metadata.description = description;
+    tool.metadata.inputSchema = { ...tool.metadata.inputSchema, description: schemaDescription };
+    return [index === 0 ? 'read' : `inspect${index}`, tool];
+  }));
+  await data.write('basis', { name: 'basis', basis: true, views });
+  await data.write('target', { name: 'target', views, mounts: { reference: 'basis' }, critics: [{ id: 'review', title: 'Review', profile: agentProfile, payload: { instruction: 'Read {target} and {reference}.' } }] });
+  const [request] = await data.requests();
+  let measured = false;
+  await createExecutorRegistry({ streamFn: artifactStream({ onRequest: ({ context }) => {
+    if (measured) return;
+    measured = true;
+    const content = context.messages[0].content;
+    const prompt = typeof content === 'string' ? content : content.filter(block => block.type === 'text').map(block => block.text).join('');
+    assert.equal(context.tools?.length, 24);
+    assert.doesNotMatch(prompt, /TOOL_DESCRIPTION_SENTINEL|SCHEMA_DESCRIPTION_SENTINEL|inputSchema|resultKinds/);
+    assert.ok(context.tools?.every(tool => tool.description === description && JSON.stringify(tool.parameters).includes(schemaDescription)));
+    const scopeLine = prompt.split('\n').find(line => line.startsWith('Artifacts: '))!;
+    const scope = JSON.parse(scopeLine.slice('Artifacts: '.length));
+    assert.deepEqual(scope, request.artifacts.map(({ id, path, basis, children, mounts }) => ({ id, path, role: id === request.target ? 'target' : basis ? 'basis' : 'dependency', includedFolders: children, mounts })));
+    const before = prompt.replace(scopeLine, `Artifacts: ${JSON.stringify(request.artifacts)}`) + '\nViewer entry points and Artifact-owned descriptions: ' + JSON.stringify(context.tools!.map(({ name, description }) => ({ name, description })));
+    const beforeBytes = Buffer.byteLength(before), afterBytes = Buffer.byteLength(prompt);
+    assert.ok(afterBytes < beforeBytes / 10);
+    t.diagnostic(`Consumer fixture prompt bytes: before=${beforeBytes}, after=${afterBytes}, saved=${beforeBytes - afterBytes}`);
+  } }) }).execute(request, { worktreePath: data.repoPath, runDir: join(data.root, 'run') });
+  assert.ok(measured);
+});
+
+test('scope-only prompts preserve tool-less Artifacts', async t => {
+  const data = await artifactFixture(t);
+  await data.write('a', { name: 'a', views: fixtureViews(), critics: [{ id: 'review', title: 'Review', profile: agentProfile, payload: { instruction: 'Read {a}.' } }] });
+  await data.write('a/appendix', { name: 'appendix', basis: true });
+  const [request] = await data.requests();
+  let observed = false;
+  await createExecutorRegistry({ streamFn: artifactStream({ onRequest: ({ context }) => {
+    const content = context.messages[0].content;
+    const prompt = typeof content === 'string' ? content : content.filter(block => block.type === 'text').map(block => block.text).join('');
+    const line = prompt.split('\n').find(line => line.startsWith('Artifacts: '))!;
+    const scope = JSON.parse(line.slice('Artifacts: '.length));
+    assert.deepEqual(scope.find((item: { id: string }) => item.id === 'appendix'), { id: 'appendix', path: 'a/appendix', role: 'basis', includedFolders: {}, mounts: {} });
+    assert.equal(scope.find((item: { id: string }) => item.id === 'a').role, 'target');
+    assert.deepEqual(context.tools?.map(tool => tool.name), ['read_a']);
+    assert.doesNotMatch(prompt, /Read content from a by line\.|inputSchema|resultKinds/);
+    observed = true;
+  } }) }).execute(request, { worktreePath: data.repoPath, runDir: join(data.root, 'run') });
+  assert.ok(observed);
+});

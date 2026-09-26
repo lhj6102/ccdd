@@ -225,9 +225,8 @@ export function createExecutorRegistry({ piOptions, streamFn, alarmMethods = [],
           `Review payload: ${JSON.stringify({ ...request.payload, instruction: digestArtifactInstruction(request.payload.instruction, request.artifacts, tools, request.references) })}`,
           `Target Artifact: ${request.target}. Dependency Artifacts: ${JSON.stringify(request.deps)}. The target is available to read even though it is not in deps.`,
           'Artifact roles and allowed observation scope follow. Do not infer access to undeclared artifacts.',
-          `Artifacts: ${JSON.stringify(viewer.listArtifacts())}`,
+          `Artifacts: ${JSON.stringify(viewer.listArtifacts().map(({ id, path, basis, children, mounts }) => ({ id, path, role: id === request.target ? 'target' : basis ? 'basis' : 'dependency', includedFolders: children, mounts })))}`,
           'Each tool is named <operation>_<artifactName>. Tools may return text, structured data or images. Observe relevant content rather than inferring it from filenames or metadata. Follow pagination or continuation information returned by the tool.',
-          `Viewer entry points and Artifact-owned descriptions: ${JSON.stringify(tools.map(({name,description})=>({name,description})))}`,
         ].join('\n') });
         // The schema and inspection callback already validated this exact candidate.
         const verdict = final as ReviewResult;

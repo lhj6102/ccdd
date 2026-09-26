@@ -20,3 +20,34 @@ workers never host another Run. Abandoned source records remain unchanged, and
 reviving such a source may execute its original queued ticket again. Actual
 worker-entry-point tests cover close/cancellation isolation, A+B versus A scopes,
 and two-process lease-expiry races.
+
+## Critic efficiency and operations
+
+- R5: Critic prompts include only Artifact ids, paths, target/dependency/basis roles,
+  included folders and mounts. Tool descriptions and schemas appear only in the
+  provider tool channel; all review security and observation instructions remain.
+- R6: Each Pi request uses its review request id as the stable provider session
+  cache key, including tool continuations and the one format-only repair turn.
+- R7: Tool completion diagnostics include total and per-kind response payload
+  bytes, without retaining response content or changing identity/reuse/verdicts.
+- R8: Closing or aborting an Artifact tool registry removes its owned temporary
+  root and output tree, including construction failures. Caller-supplied roots
+  are retained. Explicit SDK `pruneProject(stateDir)` and CLI `ccdd-project prune`
+  remove only known scratch directories of completed, unowned runs; automatic
+  pruning remains off and all audit evidence stays intact.
+- R9: Scheduling and ownership polling read small status rows instead of full
+  run/request JSON. Durable request-state revisions trigger replanning only on
+  state changes, including changes committed by another process.
+- Review hardening: explicit prune is Linux-only and fails closed elsewhere.
+  Descriptor-anchored traversal and verified private quarantine moves prevent
+  parent-symlink substitution from redirecting deletion. Bulk deletion no longer
+  holds the SQLite writer lock; owned temporary-root cleanup remains portable.
+- Real Broker regression coverage verifies zero hydrated JSON bytes and zero
+  replans on unchanged idle ticks, plus cross-process Human completion. The
+  earlier returned-byte comparison is a SQL-helper microbenchmark only.
+
+The efficiency work is integrated with the 5.0 contract/reuse changes. Status
+revision waits include a monotonic lease-deadline wake for abandoned coalesced
+sources. Actual worker lifecycle tests cover source-revision adoption and lease
+expiry without a status change; unchanged coalesced idle ticks hydrate no JSON
+and perform no plans. Polling and prune enforce the fresh-state format gate.

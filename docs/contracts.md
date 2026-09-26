@@ -599,3 +599,81 @@ is unavailable. Underlying callbacks cannot be forcibly canceled, so consumers
 must also bound their own I/O. User cancellation still applies during the bounded
 drain. Existing mandatory observation/Human execution audit failures remain
 operational failures; that preexisting evidence requirement is not telemetry.
+
+Tool completion payload counters (`artifact.tool.completed`, and
+`human.tool.executed` for Human calls) include `contentBytes` and
+`contentBytesByType` with `text`, `json`, `image`, and `launch` counters. The total
+is the sum of those counters across every normalized response block. Text uses
+UTF-8 bytes; JSON uses UTF-8 bytes of its serialized data; images use decoded
+binary bytes (not base64 transport overhead); launch uses the serialized
+`{"kind":"launch","launched":true}` observation shown to the provider. Counts
+exclude protocol framing and observation metadata. Author-controlled errors count
+their returned text; failures with no validated response count zero. These are
+optional operational diagnostics only, never identity, reuse keys, or verdicts.
+
+### Temporary output and explicit pruning
+
+Artifact tool registries own their `tool-output-*` directory and, when no run
+root is supplied, the enclosing `ccdd-tools-*` temporary root. They remove these
+on close, abort, and failed initialization. Callers must close registries in a
+`finally` block after successful or failed calls. Output files remain usable
+until that close; normalized image responses have already loaded their bytes.
+Caller-supplied run roots are never removed by registry cleanup.
+
+Automatic history pruning is **off**. Invoke `pruneProject(stateDir)` from
+`@ccdd/project`, or `ccdd-project prune --state-dir PATH [--json]`, to remove
+transient output explicitly. Only terminal requests in terminal runs with no
+worker owner are eligible. The operation removes these known request subtrees:
+`output`, `tmp`, `home`, `cache`, `human-tools`, `preparation`, and `tool-output-*`.
+It skips active, waiting, queued, and owned runs, does not traverse directory
+symlinks, and never scans unrelated system temporary directories. Unknown paths,
+worker files, stored results, request records, events, and tool-call audit remain
+untouched. The SQLite store is never vacuumed or truncated. Keep an application
+file outside these declared scratch subtrees if it must remain as audit evidence.
+
+Explicit pruning is currently **Linux-only** and requires `/proc/self/fd`.
+Other platforms fail closed before deletion; ordinary owned temporary-root
+cleanup remains cross-platform. Prune pins the state root and opens each run and
+request directory through a parent descriptor using `O_DIRECTORY|O_NOFOLLOW`.
+Consequently, replacing a checked parent pathname with a symlink cannot redirect
+scratch deletion. Each scratch entry is atomically moved into a private mode-0700
+quarantine, then its device/inode is compared with the pre-move identity before
+any recursive removal. A mismatched entry is **preserved** in quarantine and the
+operation fails with its recovery path; it is not restored over a potentially
+replaced source. Quarantines left after failure/crash require manual inspection,
+not automatic deletion. A failed or crashed prune may also leave a
+`prune_claims` row whose `id` is the quarantine directory name (for example,
+`.prune-Ab12Cd`). Rerunning prune does not recover that directory or clear its
+claim. After verifying that its prune process has stopped, inspect and recover
+any required files, then manually remove the quarantine and delete only its
+matching row from `broker.sqlite` with a parameterized
+`DELETE FROM prune_claims WHERE id = ?` using that exact directory name. An
+interrupted transaction may have rolled the row back; deleting an absent claim
+is harmless. Do not clear claims belonging to active prune operations.
+This assumes the state root and private quarantine are
+trusted; it is not isolation against another process with the same account or
+root privileges deliberately modifying quarantine contents.
+
+Eligibility checks, the operational `prune_claims` record, and quarantine moves
+use short per-request transactions. Terminal runs cannot restart; nonterminal or
+owned runs cannot be claimed for pruning. Bulk recursive removal happens after
+commit, without holding SQLite's global writer lock, so other runs can persist
+results during slow deletion. Completed audit tables are never modified by prune.
+General bounded retry of result persistence on unrelated `SQLITE_BUSY` contention
+is a separate follow-up; this operation does not extend database lock time across
+delete latency.
+
+Scheduler regression coverage measures the actual Broker loop: unchanged Human
+waiting ticks hydrate zero JSON bytes and invoke no planner, including ownership
+polling. A separate process submits a Human completion through the public Broker
+API and the waiting worker settles successfully. The consumer-sized SQL helper
+comparison (1,086,059 versus 51 returned bytes per tick) is only a microbenchmark,
+not a measurement of complete scheduler work or physical disk I/O.
+
+Coalesced followers use the same lightweight status revision as other idle Runs.
+Their unchanged idle ticks hydrate zero JSON bytes and make zero plans. A cached
+monotonic deadline additionally wakes planning at the earliest pending unowned
+source lease expiry, even without a status revision. It bounds the existing
+lightweight wait timer; it does not restore full-record polling. Source-owner
+death is checked without JSON hydration and reconciled without replay. Polling
+and prune database entry points reject non-current state before table changes.

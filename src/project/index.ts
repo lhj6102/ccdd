@@ -21,6 +21,7 @@ export function planProject<D extends ResultDetail = 'compact'>(snapshot: Projec
   return resultView(options, plan, () => requesterPlan(plan, options.stateDir));
 }
 export { projectHistory, projectRun, projectRuns, projectRequests } from './store.js';
+export { pruneProject, type PruneResult } from './prune.js';
 export { createBroker } from '../broker/index.js';
 export { createExecutorRegistry } from '../executors/index.js';
 
