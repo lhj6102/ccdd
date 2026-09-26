@@ -100,4 +100,4 @@ See [Contributing](CONTRIBUTING.md), [the context map](CONTEXT-MAP.md), [detaile
 
 [MIT](LICENSE).
 
-**CCDD 5.0.0:** requester results default to a compact projection. Upgrade with a fresh state directory and review the [5.0 migration guide](docs/migration-v5.md), [audit lookup](docs/project-validation.md#compact-review-results-50), and [release notes](docs/releases/v5.0.0.md).
+**CCDD 5.1.0:** plans report active request reuse as `COALESCE` with `counts.coalesce`, separating adopted work from new executions. See the [release notes](docs/releases/v5.1.0.md). Existing 5.0 state remains valid; upgrades from 4.x require the [5.0 migration guide](docs/migration-v5.md).
