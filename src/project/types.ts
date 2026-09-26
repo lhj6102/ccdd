@@ -49,8 +49,8 @@ export interface ProjectQuery {
 }
 export interface ProjectPlan extends ProjectQuery {
   recursive: boolean; force: boolean; selectedCriticIds: string[]; includedCriticIds: string[];
-  items: (CriticValidation & { action: 'REUSE' | 'EXECUTE' | 'WAIT' | 'ACTIVE' | 'FAILED' })[];
-  counts: { reuse: number; execute: number; wait: number; active: number; failed: number };
+  items: (CriticValidation & { action: 'REUSE' | 'COALESCE' | 'EXECUTE' | 'WAIT' | 'ACTIVE' | 'FAILED'; leaseExpiresAt?: string })[];
+  counts: { reuse: number; coalesce: number; execute: number; wait: number; active: number; failed: number };
 }
 export interface QueryOptions {
   selection?: ProjectSelection; forceCriticIds?: readonly string[];

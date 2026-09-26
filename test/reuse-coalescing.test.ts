@@ -412,3 +412,88 @@ test('first identical submission after source worker SIGKILL executes once witho
   assert.equal(stored.requests[0].errorCode, 'WORKER_EXITED');
   assert.equal(stored.requests[0].result, null);
 });
+
+// Controlled stored lifecycle states cover lease boundaries without timing sleeps.
+// Actual worker ownership across processes is exercised separately below.
+for (const scenario of [
+  'leased queued', 'live queued', 'live running', 'live human', 'dead owner',
+  'expired lease', 'lease boundary', 'future submission', 'invalid submission',
+  'missing submission', 'zero grace', 'missing grace', 'invalid grace',
+  'unowned running', 'unowned human', 'terminal run', 'different key', 'old input', 'force',
+] as const) test(`readonly plan and submission agree: ${scenario}`, async t => {
+  const data = await artifactFixture(t); await data.write('a', { name: 'a', critics: [runtimeCritic()] });
+  const broker = createBroker({ ...data, detail: 'full', coalescingGraceMs: 300_000,
+    executors: { canExecute: () => ({ ok: true }), execute: async () => { throw new Error('Planning must not execute'); } } });
+  data.cleanup(() => broker.close());
+  const source = await broker.submitProject({ selection: { kind: 'all' } });
+  const clock = Date.now(); t.mock.method(Date, 'now', () => clock);
+  const database = new DatabaseSync(join(data.stateDir, 'broker.sqlite'));
+  try {
+    const run = JSON.parse(String(database.prepare('SELECT data FROM runs WHERE id=?').get(source.id)!.data));
+    const request = JSON.parse(String(database.prepare('SELECT data FROM requests WHERE id=?').get(source.requests[0].id)!.data));
+    run.createdAt = new Date(clock - 1000).toISOString();
+    if (scenario === 'expired lease') run.createdAt = new Date(clock - 300_001).toISOString();
+    if (scenario === 'lease boundary') run.createdAt = new Date(clock - 300_000).toISOString();
+    if (scenario === 'future submission') run.createdAt = new Date(clock + 1).toISOString();
+    if (scenario === 'invalid submission') run.createdAt = 'invalid';
+    if (scenario === 'missing submission') delete run.createdAt;
+    if (scenario === 'zero grace') run.coalescingGraceMs = 0;
+    if (scenario === 'missing grace') delete run.coalescingGraceMs;
+    if (scenario === 'invalid grace') run.coalescingGraceMs = 300_001;
+    if (scenario === 'terminal run') run.status = 'ERROR';
+    if (scenario.includes('running')) request.status = 'RUNNING';
+    if (scenario.includes('human')) request.status = 'WAITING_HUMAN';
+    if (scenario === 'different key') request.validationInput.key = '0'.repeat(64);
+    if (scenario === 'old input') request.validationInput.version = 2;
+    database.prepare('UPDATE runs SET status=?,data=? WHERE id=?').run(run.status, JSON.stringify(run), run.id);
+    database.prepare('UPDATE requests SET status=?,data=? WHERE id=?').run(request.status, JSON.stringify(request), request.id);
+    if (scenario.startsWith('live') || scenario === 'dead owner') {
+      // An identity mismatch models a recycled PID and must not fall back to grace.
+      database.prepare('INSERT INTO run_owners VALUES (?,?,?,?,?)').run(run.id, process.pid, scenario === 'dead owner' ? 'previous-process' : null, 'fixture-token', run.createdAt);
+    }
+    const state = () => ({ source: storedSource(data.stateDir, source.id),
+      owners: database.prepare('SELECT * FROM run_owners').all(),
+      revision: database.prepare('SELECT * FROM scheduling_revision').all() });
+    const before = state(), force = scenario === 'force';
+    const full = await inspectProject({ ...data, detail: 'full', force });
+    const compact = await inspectProject({ ...data, force });
+    assert.deepEqual(state(), before, 'inspection must not write records, events, owners or revisions');
+    const expected = scenario === 'leased queued' || scenario.startsWith('live');
+    for (const plan of [full.plan, compact.plan]) {
+      assert.equal(plan.items[0].action, expected ? 'COALESCE' : 'EXECUTE');
+      assert.equal(plan.counts.coalesce, expected ? 1 : 0);
+      assert.equal(plan.counts.execute, expected ? 0 : 1);
+      assert.equal(plan.items[0].requestId, expected ? source.requests[0].id : null);
+      assert.equal(plan.items[0].leaseExpiresAt, scenario === 'leased queued' ? new Date(clock - 1000 + 300_000).toISOString() : undefined);
+    }
+    assert.equal('input' in compact.plan.items[0], false);
+    assert.deepEqual(compact.plan.results, []);
+    const follower = await broker.submitProject({ selection: { kind: 'all' }, force });
+    assert.equal(follower.requests.length, compact.plan.counts.execute);
+    assert.deepEqual(follower.project!.coalescedRequestIds ?? [], expected ? [source.requests[0].id] : []);
+    if (scenario === 'dead owner') assert.equal(projectRun(data.stateDir, source.id)!.requests[0].errorCode, 'WORKER_EXITED');
+  } finally { database.close(); }
+});
+
+test('process B inspects and submits against process A ownership without reconciling its death', { timeout: 15000 }, async t => {
+  const data = await artifactFixture(t); await data.write('a', { name: 'a', critics: [runtimeCritic()] });
+  const broker = createBroker({ ...data, executors: { canExecute: () => ({ ok: true }), execute: async () => { throw new Error('Inspection must not execute'); } } });
+  data.cleanup(() => broker.close());
+  const source = await broker.submitProject({ selection: { kind: 'all' } });
+  const owner = await worker(t, { repoPath: data.repoPath, stateDir: data.stateDir }, source.id, 'hang', join(data.root, 'calls'));
+  const executing = owner.message(); owner.child.send('go'); assert.equal(await executing, 'executing');
+  const before = storedSource(data.stateDir, source.id);
+  const plan = (await inspectProject(data)).plan;
+  assert.equal(plan.items[0].action, 'COALESCE'); assert.equal(plan.items[0].requestId, source.requests[0].id);
+  assert.equal(plan.items[0].leaseExpiresAt, undefined); assert.equal(plan.counts.execute, 0);
+  assert.deepEqual(storedSource(data.stateDir, source.id), before);
+  const follower = await broker.submitProject({ selection: { kind: 'all' } });
+  assert.equal(follower.requests.length, 0);
+  owner.child.kill('SIGKILL'); await owner.exited;
+  const dead = storedSource(data.stateDir, source.id);
+  const replacement = (await inspectProject(data)).plan;
+  assert.equal(replacement.items[0].action, 'EXECUTE'); assert.equal(replacement.counts.execute, 1);
+  assert.deepEqual(storedSource(data.stateDir, source.id), dead, 'readonly plan must not persist WORKER_EXITED');
+  assert.equal((await broker.submitProject({ selection: { kind: 'all' } })).requests.length, 1);
+  assert.equal(projectRun(data.stateDir, source.id)!.requests[0].errorCode, 'WORKER_EXITED');
+});

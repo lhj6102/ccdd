@@ -289,6 +289,37 @@ rather than revive them when that is not desired. New submissions reuse matching
 GREEN/RED evidence normally. A dead source worker is reconciled as WORKER_EXITED;
 partial execution is not replayed. `--force` opts out of both stored-result reuse and active coalescing.
 
+Current-input inspection (`inspectProject`, CLI `plan`/`status`, and explicit
+monitor inspection) reads completed evidence and matching active requests in one
+readonly transaction. Plan items use `COALESCE` when submission would adopt an
+active request instead of creating a ticket. The item's existing `requestId`
+identifies that source; an unowned leased source additionally has
+`leaseExpiresAt`, the ISO UTC submission-time-plus-grace deadline. Compact output
+keeps only these references, not a source envelope or duplicate result. The
+`counts.coalesce` counter counts these items; `counts.execute` counts only new
+executions. `ACTIVE` continues to describe attempts already attached to a saved
+Run, not prospective adoption by a new submission. Forced Critics remain
+`EXECUTE`. Matching completed evidence still takes precedence as `REUSE`.
+
+Inspection and submission share candidate matching/order and one Broker-owned
+eligibility function: matching version-3 Critic/input, nonterminal source Run,
+live PID/process-identity owner, or unowned QUEUED source within its valid lease.
+Owned RUNNING and WAITING_HUMAN requests are also eligible. Inspection performs
+only the liveness check: a dead owner is treated as ineligible as if reconciled,
+but no status, owner, event or scheduling revision is written. Submission still
+persists WORKER_EXITED and removes the dead owner's token under its transaction.
+Zero grace, future/invalid timestamps and invalid/missing lease metadata fail
+closed in both paths.
+
+A plan is a point-in-time quote, not a reservation. Source completion, owner
+exit, lease expiry, or clock changes before submission can change the answer.
+`leaseExpiresAt` is the wall-clock upper bound; a waiting Broker additionally
+retains its own monotonic bound, which can expire sooner after clock rollback.
+A fresh readonly inspection has no access to another Broker's process-local
+lease observations and never renews or persists a lease. Pure `planProject`
+continues to use only its supplied history/attempts; use `inspectProject` for a
+current-state coalescing quote.
+
 Project queries compare prepared current input and actual evidence in a readonly transaction. They create no database, ticket or alarm and execute no review tools or Providers. Preparing an opted-in owner identity runs its script with disposable external output; other current-input preparation remains script-free. Completed Runs reference the evidence they consumed, preserving their historical interpretation. `run show` and stored-result queries do not need the current workspace or reconcile owners. A terminal INCOMPLETE Run does not add omitted Critics when resumed; submit a new request.
 
 ## Workspace contract

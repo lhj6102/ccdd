@@ -73,13 +73,15 @@ export function queryProject(snapshot: ProjectSnapshot, history: readonly Valida
   return { snapshotHash: snapshot.snapshotHash, workspaceIntegrity: snapshot.workspaceIntegrity ?? 'content', selection, satisfied: required.every(ownSatisfied), artifacts, critics };
 }
 
-export function planProject(snapshot: ProjectSnapshot, history: readonly ValidationEvidence[], options: QueryOptions & { recursive?: boolean; force?: boolean } = {}): ProjectPlan {
+export function planProject(snapshot: ProjectSnapshot, history: readonly ValidationEvidence[], options: QueryOptions & { recursive?: boolean; force?: boolean } = {}, coalesce?: (critic: CriticValidation) => { requestId: string; leaseExpiresAt?: string } | null): ProjectPlan {
   const selection = options.selection ?? { kind: 'all' }, selectedCriticIds = selectedCritics(snapshot, selection), includedCriticIds = includedCritics(snapshot, selection, Boolean(options.recursive));
   const query = queryProject(snapshot, history, { ...options, selection, forceCriticIds: options.force ? selectedCriticIds : options.forceCriticIds });
   const items = query.critics.filter(c => includedCriticIds.includes(c.id)).map(c => {
     const action = (c.result ? 'REUSE' : ['QUEUED', 'RUNNING', 'WAITING_HUMAN'].includes(c.status) ? 'ACTIVE' : c.canExecute ? 'EXECUTE' : c.requestId ? 'FAILED' : 'WAIT') as ProjectPlan['items'][number]['action'];
-    return { ...c, action };
+    // Force bypasses adoption for the whole submission, matching the Broker.
+    const source = action === 'EXECUTE' && !options.force && !options.forceCriticIds?.includes(c.id) ? coalesce?.(c) : null;
+    return source ? { ...c, ...source, canExecute: false, reason: 'An identical active request can supply this review.', action: 'COALESCE' as const } : { ...c, action };
   });
   return { ...query, recursive: Boolean(options.recursive), force: Boolean(options.force), selectedCriticIds, includedCriticIds, items,
-    counts: { reuse: items.filter(c => c.action === 'REUSE').length, execute: items.filter(c => c.action === 'EXECUTE').length, wait: items.filter(c => c.action === 'WAIT').length, active: items.filter(c => c.action === 'ACTIVE').length, failed: items.filter(c => c.action === 'FAILED').length } };
+    counts: { reuse: items.filter(c => c.action === 'REUSE').length, coalesce: items.filter(c => c.action === 'COALESCE').length, execute: items.filter(c => c.action === 'EXECUTE').length, wait: items.filter(c => c.action === 'WAIT').length, active: items.filter(c => c.action === 'ACTIVE').length, failed: items.filter(c => c.action === 'FAILED').length } };
 }
