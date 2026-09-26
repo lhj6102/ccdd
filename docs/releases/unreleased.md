@@ -1,0 +1,23 @@
+# Unreleased
+
+## 6.0.1: responsive submission preparation
+
+Large submissions prepare their immutable record graph outside the request-publication transaction. A submission-scoped object memo and canonical-node map avoid repeated hashing of shared definitions; schema-size decisions no longer serialize entire subtrees repeatedly. Preparation yields between bounded work chunks, and immutable nodes are inserted in short batches with no writer lock held across a yield. Before publishing any Run or request, the final transaction rechecks every prepared node against its authenticated bytes. Workspace integrity is checked after preparation; gate, evidence and coalescing decisions remain inside the final transaction.
+
+Readiness builds memberships and dependency counters in dependency-first memory passes and batches relation/member inserts. It no longer reconstructs and re-hashes each request's scoped definitions merely to create its small header. Public request envelopes and audit views remain detached; only Broker-owned submission data shares definitions during preparation. Hashing uses the existing canonical format and thresholds, so stored identities do not change.
+
+Default compact submission and execution results no longer reconstruct a full audit Run only to discard it for projection. Explicit full-detail results still pay their requested audit reconstruction cost. No schema validation, network, admission, gate, reuse or immutable-record integrity checks are weakened.
+
+Preparation may leave unreferenced immutable content-addressed nodes if canceled or if publication fails, but never a partial Run/request/event. Nodes can be reused by a later submission; this patch does not automatically delete immutable evidence. It does not change state format 6 or require a new state directory.
+
+The real-script request-manifest benchmark now supports 180 Critics / 240 Artifacts and `CRITICS=2000` over the same 240 Artifacts, and reports submission wall time, heartbeat maximum block, final publication transaction time, active execution block, and end-of-Run block separately. Heartbeat measurements include the final synchronous burst, unlike a histogram disabled immediately after resolution. Controlled executor verdicts are test fixtures, not Provider evaluations.
+
+### Controlled before/after measurements
+
+| Input | Submission wall ms, before / after | Submission max block ms, before / after | Active execution max block ms, before / after | Finish max block ms, before / after | Tool p90 ms, before / after |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Copied lab: 180 Critics / 240 Artifacts | 13265.9 / 9869.0 | 9120.7 / 476.4 | 586.2 / 569.4 | 1275.5 / 98.0 | 298.6 / 242.7 |
+| Synthetic: 180 Critics / 240 Artifacts | 4494.8 / 1603.2 | 3503.1 / 126.2 | 129.0 / 120.2 | 566.8 / 87.2 | 229.1 / 199.0 |
+| Synthetic: 2000 Critics / 240 Artifacts | 27765.3 / 2178.2 | 26288.7 / 285.4 | 702.1 / 185.4 | 3660.8 / 153.6 | 721.7 / 237.7 |
+
+Node 22.23.2, concurrency 60, metadata integrity, real child tools, no Provider calls. These are non-profiled single-run heartbeat observations, not guarantees or confidence intervals. The fixed-Artifact 180-to-2000 benchmark publication transaction measured 18.0-to-199.2 ms. Full audit reads and exceptionally large/dense inputs remain output/work-sized; the remaining lab execution burst is not claimed eliminated.

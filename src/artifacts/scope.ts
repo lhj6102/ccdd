@@ -2,7 +2,7 @@ import type { ArtifactDefinition, ArtifactRelation } from '../definitions.js';
 import type { ArtifactReference } from './index.js';
 
 /** Composition grants input access, while instruction dependencies govern verification. */
-export function resolveArtifactScope(artifacts: Record<string, ArtifactDefinition>, roots: readonly string[]): { artifacts: ArtifactReference[] } {
+export function resolveArtifactScope(artifacts: Record<string, ArtifactDefinition>, roots: readonly string[], copy = true): { artifacts: ArtifactReference[] } {
   const visited = new Set<string>();
   const visit = (id: string): void => {
     if (visited.has(id)) return;
@@ -12,7 +12,7 @@ export function resolveArtifactScope(artifacts: Record<string, ArtifactDefinitio
     for (const next of [...Object.values(artifact.children), ...Object.values(artifact.mounts)]) visit(next);
   };
   roots.forEach(visit);
-  return { artifacts: [...visited].map(id => ({ id, ...structuredClone(artifacts[id]) })) };
+  return { artifacts: [...visited].map(id => ({ id, ...(copy ? structuredClone(artifacts[id]) : artifacts[id]) })) };
 }
 
 /** A finite set of material and verification dependencies, including cycles. */

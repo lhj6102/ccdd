@@ -1,4 +1,5 @@
 // Controlled executor with real child-process tools; no Provider/model calls.
+// Defaults: 180 Critics / 240 Artifacts. CRITICS=2000 keeps 240 Artifacts and adds independent Critics per owner.
 // Run each concurrency in a fresh process: CONCURRENCY=4/16/32/60 node --cpu-prof scripts/benchmark-request-manifest.mjs
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -15,6 +16,11 @@ const root = await mkdtemp(join(process.env.BENCH_ROOT ?? tmpdir(), 'ccdd-manife
 await mkdir(repoPath);
 let peakHeap = 0, phase = 'setup', active = 0, peakConcurrency = 0, completed = 0, hydratedBytes = 0;
 const latencies = [], openings = [];
+// A heartbeat includes the final synchronous burst which a histogram can miss
+// when disabled immediately after the awaited operation resolves.
+const blocks = { submit: [], run: [], finish: [] }; let lastTick = performance.now(), finishing = false, submissionCommitMs = 0;
+const heartbeat = setInterval(() => { const now = performance.now(); if (phase === 'submit' || phase === 'run') blocks[finishing ? 'finish' : phase].push(now-lastTick); lastTick = now; }, 5);
+brokerTestHooks.onSubmissionCommit = ms => { submissionCommitMs = ms; };
 const percentile = (values, fraction) => [...values].sort((a, b) => a - b)[Math.min(values.length - 1, Math.floor(values.length * fraction))] ?? 0;
 const sample = () => { peakHeap = Math.max(peakHeap, process.memoryUsage().heapUsed); };
 const observer = new PerformanceObserver(sample); observer.observe({ entryTypes: ['gc'] });
@@ -28,7 +34,7 @@ try {
       metadata: { description: 'Synthetic schema-heavy view', inputSchema: { type: 'object', properties: Object.fromEntries(Array.from({ length: 10 }, (_, n) => [`field${n}`, { type: 'string', description: 'x'.repeat(490) }])) }, resultKinds: ['json'], observation: 'content' },
       script: { command: 'node', args: ['view.mjs'] },
     }]));
-    const definition = { ...(i >= critics ? { basis: true } : {}), name, views: { agentTools: tools }, ...(i < critics ? { critics: [{ id: 'check', title: 'Synthetic review', profile: { kind: 'agent', provider: 'fixture', model: 'fixture', reasoning: 'none' }, payload: { instruction: 'Inspect the target.' } }] } : {}) };
+    const definition = { ...(i >= critics ? { basis: true } : {}), name, views: { agentTools: tools }, ...(i < critics ? { critics: Array.from({ length: Math.floor((critics - 1 - i) / count) + 1 }, (_, n) => ({ id: n === 0 ? 'check' : `check${n}`, title: 'Synthetic review', profile: { kind: 'agent', provider: 'fixture', model: 'fixture', reasoning: 'none' }, payload: { instruction: 'Inspect the target.' } })) } : {}) };
     await writeFile(join(folder, 'ccdd.json'), JSON.stringify(definition));
     await writeFile(join(folder, 'view.mjs'), "let input=''; for await (const chunk of process.stdin) input+=chunk; const request=JSON.parse(input); process.stdout.write(JSON.stringify({content:[{type:'json',data:{artifact:request.context.artifactPath,value:42}}],observation:{kind:'content'}}));\n");
   }
@@ -36,7 +42,7 @@ try {
   { const { config } = await readWorkspaceConfig(repoPath); const [request] = await prepareReviewRequests({ repoPath, snapshotHash: 'a'.repeat(64), criticId: 'a000/check', preparedConfig: config });
     console.log(JSON.stringify({ phase, artifacts: count, critics, concurrency, definitionBytes: Buffer.byteLength(JSON.stringify(config.artifacts.a000)), envelopeBytes: Buffer.byteLength(JSON.stringify(request)), heapBytes: process.memoryUsage().heapUsed })); }
   if (!process.env.SIZE_ONLY) {
-    phase = 'submit'; const started = performance.now();
+    phase = 'submit'; await new Promise(resolve => setTimeout(resolve, 10)); blocks.submit.length=0; lastTick=performance.now(); const started = performance.now();
     broker = createBroker({ repoPath, stateDir, maxConcurrentExecutors: concurrency, workspaceIntegrity: 'metadata', executors: {
       canExecute: () => ({ ok: true }), execute: async (request, context) => {
         peakConcurrency = Math.max(peakConcurrency, ++active); sample();
@@ -52,21 +58,21 @@ try {
             if (result.isError) throw new Error('Real benchmark tool failed.');
             await new Promise(resolve => setTimeout(resolve, 10));
           }
-          sample(); completed++; return { verdict: 'GREEN', toolCalls: registry.toolCalls }; // Controlled fixture, not actual review evidence.
+          sample(); completed++; if (completed === critics) { blocks.run.push(performance.now()-lastTick); lastTick=performance.now(); finishing=true; } return { verdict: 'GREEN', toolCalls: registry.toolCalls }; // Controlled fixture, not actual review evidence.
         } finally { active--; await registry.close(); }
       },
     } });
-    const run = await broker.submitProject({ selection: { kind: 'all' }, force: true }); sample();
+    const run = await broker.submitProject({ selection: { kind: 'all' }, force: true }); const submitMs = performance.now()-started; sample(); await new Promise(resolve => setTimeout(resolve,10));
     const db = new DatabaseSync(join(stateDir, 'broker.sqlite'), { readOnly: true });
     const bytes = db.prepare('SELECT count(*) AS requests, sum(length(CAST(data AS BLOB))) AS totalBytes, avg(length(CAST(data AS BLOB))) AS bytesPerRequest FROM requests').get();
     const runBytes = db.prepare('SELECT length(CAST(data AS BLOB)) AS bytes FROM runs WHERE id = ?').get(run.id).bytes; db.close();
-    console.log(JSON.stringify({ phase, ...bytes, runBytes, peakHeapBytes: peakHeap, elapsedMs: performance.now() - started }));
-    phase = 'run'; const runStart = performance.now(), cpu = process.cpuUsage();
+    console.log(JSON.stringify({ phase, ...bytes, runBytes, peakHeapBytes: peakHeap, elapsedMs: submitMs, eventLoopBlockMs: Math.max(0,...blocks.submit), submissionCommitMs }));
+    phase = 'run'; lastTick=performance.now(); const runStart = performance.now(), cpu = process.cpuUsage();
     brokerTestHooks.onHydrate = bytes => { hydratedBytes += bytes; }; loop.enable();
-    const result = await broker.run(run.id); sample(); loop.disable();
-    console.log(JSON.stringify({ phase, status: result.status, completed, peakConcurrency, peakHeapBytes: peakHeap, maxRssKiB: process.resourceUsage().maxRSS, elapsedMs: performance.now() - runStart,
+    const result = await broker.run(run.id); const runMs = performance.now()-runStart; sample(); await new Promise(resolve => setTimeout(resolve,10)); loop.disable();
+    console.log(JSON.stringify({ phase, status: result.status, completed, peakConcurrency, peakHeapBytes: peakHeap, maxRssKiB: process.resourceUsage().maxRSS, elapsedMs: runMs, activeBlockMs: Math.max(0,...blocks.run), finishBlockMs: Math.max(0,...blocks.finish),
       cpu: process.cpuUsage(cpu), hydratedBytes, tools: { count: latencies.length, p50Ms: percentile(latencies, .5), p90Ms: percentile(latencies, .9), maxMs: Math.max(...latencies) },
       registryOpen: { p50Ms: percentile(openings, .5), p90Ms: percentile(openings, .9) }, eventLoop: { p50Ms: loop.percentile(50) / 1e6, p90Ms: loop.percentile(90) / 1e6, p99Ms: loop.percentile(99) / 1e6, maxMs: loop.max / 1e6 } }));
     if (result.status !== 'GREEN' || completed !== critics || latencies.length !== critics * calls) throw new Error('Controlled execution did not complete.');
   }
-} finally { clearInterval(timer); observer.disconnect(); loop.disable(); delete brokerTestHooks.onHydrate; await broker?.close(); await rm(root, { recursive: true, force: true }); }
+} finally { clearInterval(timer); clearInterval(heartbeat); delete brokerTestHooks.onSubmissionCommit; observer.disconnect(); loop.disable(); delete brokerTestHooks.onHydrate; await broker?.close(); await rm(root, { recursive: true, force: true }); }
