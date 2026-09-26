@@ -1,0 +1,28 @@
+# Unreleased
+
+## Broker tool latency on large Runs
+
+Fix synchronous lifecycle JSON work that can starve real tool responses when many Critics share a schema-heavy Run. The Broker now keeps a bounded connection-local Run read cache, compact planning attempts, and an evidence read cache instead of repeatedly projecting a large Run blob in SQLite and parsing every immutable request manifest on each dispatch and completion. Tool telemetry checks the live request status column, not the full request envelope.
+
+Read caches observe other connections through SQLite `data_version`, refresh after local writes, and are discarded after rollback and close. Local writes entering or leaving semantic GREEN/RED invalidate cached evidence, so repeated plans over unchanged evidence can share a read. Evidence retention is capped at 16 MiB of serialized data; larger histories are read without retention. Human claims still read authoritative request records; cross-process cancellation and coalesced completion remain visible. There is no state migration, evidence-format change, reuse-policy change, or weakening of workspace validation.
+
+### Measurements
+
+A controlled executor used copied real project input: 240 Artifacts, 12 tools per Artifact, 180 Critics, a 70.22 MB Run, and 720 actual `describe`, `tooltips`, `recommended_character`, and `damage_summary` script calls per run. Both sides used Node 22.23.2, metadata workspace integrity, CPU profiling, and the same input and harness. Times below exclude submission; bytes are decimal. Hydration counts cover instrumented Broker record parsing, not every SQLite or Project Validation allocation.
+
+| Concurrency | Run seconds, before / after | Tool p50 ms, before / after | Tool p90 ms, before / after | Tool maximum ms, before / after | Event-loop maximum ms, before / after | Broker JSON GB, before / after |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 4 | 549.60 / 27.62 | 993 / 56.5 | 2442 / 84.4 | 4930 / 148 | 4966 / 633 | 59.82 / 0.206 |
+| 16 | 351.41 / 21.57 | 94.4 / 65.7 | 2339 / 177.8 | 20480 / 342 | 20468 / 714 | 37.59 / 0.206 |
+| 32 | 321.09 / 20.50 | 198 / 141.4 | 253 / 195.5 | 44453 / 873 | 44829 / 839 | 33.86 / 0.206 |
+| 60 | 317.39 / 19.22 | 377 / 313.8 | 524 / 408.8 | 75397 / 2129 | 79457 / 2117 | 33.54 / 0.206 |
+
+The concurrency-4 CPU profile attributed 38.6% of self samples to `runData`, 23.9% to `parseStored`, 12.8% to `runRequests`, and 12.9% to garbage collection. SQLite `json_remove` still parsed the entire Run even when JavaScript received only a small projection. At concurrency 60, baseline tool p99 was 50.22 seconds: median-only summaries hide the starvation.
+
+### Limitations and follow-up
+
+This reproduces severe tool-tail starvation, **not the incident's reported 112-second median**. The controlled executor synchronizes calls differently from a Provider and omits lab executor wrappers. The historical small concurrency-4 Run was only 2.8 MB, so its latency is not a size-controlled comparison. No real Provider/model calls were made, and controlled benchmark verdicts are transport fixtures, not actual review evidence.
+
+The remaining gap to unloaded tools is not closed. The same real tools without Broker scheduling or event persistence measured p50/p90 47.6/72.7 ms at concurrency 1 and 117.4/207.9 ms at concurrency 60. The final Broker's concurrency-60 313.8/408.8 ms and 2.13-second maximum are substantially better than before, but not near unloaded; further high-concurrency lifecycle overhead is follow-up work. These are single-run measurements, not statistical confidence bounds or a memory-reduction claim.
+
+The reproducible `scripts/benchmark-request-manifest.mjs` now invokes real Node script tools (four calls per Critic by default), rather than merely opening registries. Its default fixture has 240 Artifacts, 180 Critics, 12 tools per Artifact and a 72.29 MB Run. It reports tool latency, event-loop delay, hydrated JSON bytes, CPU, and wall time. Run separate processes with `CONCURRENCY=4`, `16`, `32`, or `60`; `BENCH_ROOT` selects the external temporary parent. Its simpler tools are not the real-project measurement above.
