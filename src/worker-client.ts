@@ -1,3 +1,4 @@
+import { positiveConcurrency } from './project/identity.js';
 import { fork } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
@@ -8,12 +9,12 @@ import { errorCode } from './executors/errors.js';
 
 type Broker = ReturnType<typeof createBroker<'full'>>;
 type Run = NonNullable<ReturnType<Broker['getRun']>>;
-export interface WorkerConfiguration { piOptions?: PiOptions; humanInbox: boolean }
+export interface WorkerConfiguration { piOptions?: PiOptions; humanInbox: boolean; maxConcurrentExecutors?: number }
 export interface WorkerContext { repoPath: string; repoId: string; stateDir: string }
 export interface WorkerOptions extends WorkerContext, WorkerConfiguration { runId: string }
 
-export async function launchWorker({runId,repoPath,repoId,stateDir,piOptions,humanInbox}:WorkerOptions){
-  const worker=fork(fileURLToPath(new URL('./worker.js',import.meta.url)),[JSON.stringify({runId,repoPath,repoId,stateDir,piOptions,humanInbox})],{
+export async function launchWorker({runId,repoPath,repoId,stateDir,piOptions,humanInbox,maxConcurrentExecutors}:WorkerOptions){
+  const worker=fork(fileURLToPath(new URL('./worker.js',import.meta.url)),[JSON.stringify({runId,repoPath,repoId,stateDir,piOptions,humanInbox,maxConcurrentExecutors})],{
     detached:true,stdio:['ignore','ignore','ignore','ipc'],execArgv:[],
     env:Object.fromEntries(Object.entries(process.env).filter(([key])=>key!=='NODE_TEST_CONTEXT')),
   });
@@ -36,7 +37,8 @@ export async function readWorkerConfiguration(stateDir: string, runId: string): 
   const input: unknown = JSON.parse(await readFile(join(stateDir, 'runs', runId, 'worker.json'), 'utf8'));
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('Invalid saved worker configuration.');
   const value = input as Record<string, unknown>;
-  if (Object.keys(value).some(key => !['piOptions', 'humanInbox'].includes(key)) || typeof value.humanInbox !== 'boolean') throw new Error('Invalid saved worker configuration.');
+  if (Object.keys(value).some(key => !['piOptions', 'humanInbox', 'maxConcurrentExecutors'].includes(key)) || typeof value.humanInbox !== 'boolean') throw new Error('Invalid saved worker configuration.');
+  if (value.maxConcurrentExecutors !== undefined) positiveConcurrency(value.maxConcurrentExecutors as number, 'maxConcurrentExecutors');
   let piOptions: PiOptions | undefined;
   if (value.piOptions !== undefined) {
     if (!value.piOptions || typeof value.piOptions !== 'object' || Array.isArray(value.piOptions)) throw new Error('Invalid saved Provider settings.');
@@ -50,7 +52,7 @@ export async function readWorkerConfiguration(stateDir: string, runId: string): 
       }
     }
   }
-  return { humanInbox: value.humanInbox, ...(piOptions ? { piOptions } : {}) };
+  return { humanInbox: value.humanInbox, ...(value.maxConcurrentExecutors !== undefined ? { maxConcurrentExecutors: value.maxConcurrentExecutors as number } : {}), ...(piOptions ? { piOptions } : {}) };
 }
 
 /** CLI and explicit monitor completion share durable, detached successor startup. */

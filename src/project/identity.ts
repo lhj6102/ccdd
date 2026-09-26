@@ -44,7 +44,16 @@ async function hashMaterial(root: string, relative: string, childPaths: Set<stri
   return inputHash(entries);
 }
 
-export async function createProjectSnapshot(config: RepoConfig, root: string, snapshotHash: string, signal?: AbortSignal, workspaceIntegrity: WorkspaceIntegrity = 'content', selection: ProjectSelection = { kind: 'all' }): Promise<ProjectSnapshot> {
+export interface SnapshotOptions { identityConcurrency?: number }
+export const DEFAULT_IDENTITY_CONCURRENCY = 4;
+export function positiveConcurrency(value: number, name: string): number {
+  if (!Number.isSafeInteger(value) || value < 1) throw new Error(`${name} must be a positive integer.`);
+  return value;
+}
+
+export async function createProjectSnapshot(config: RepoConfig, root: string, snapshotHash: string, signal?: AbortSignal, workspaceIntegrity: WorkspaceIntegrity = 'content', selection: ProjectSelection = { kind: 'all' }, { identityConcurrency = DEFAULT_IDENTITY_CONCURRENCY }: SnapshotOptions = {}): Promise<ProjectSnapshot> {
+  positiveConcurrency(identityConcurrency, 'identityConcurrency');
+  signal?.throwIfAborted();
   if (!['content', 'metadata'].includes(workspaceIntegrity)) throw new Error('Workspace integrity must be content or metadata.');
   createGraphDefinition(config);
   // A dependency closure contains whole SCCs; keep the full definitions and hash payloads unchanged.
@@ -52,10 +61,30 @@ export async function createProjectSnapshot(config: RepoConfig, root: string, sn
   const artifactHashes: Record<string, string> = {}, reusable: Record<string, boolean> = {}, ownHashes = new Map<string, string>();
   const artifactIdentities: NonNullable<ProjectSnapshot['artifactIdentities']> = {};
   const scope = Object.fromEntries(Object.entries(config.artifacts).map(([id, artifact]) => [id, { ...artifact, path: path.join(root, artifact.path) }]));
+  const owners = Object.entries(config.artifacts).filter(([id, artifact]) => required.has(id) && artifact.stale?.kind === 'identity');
+  const values = new Map<string, string>();
+  const controller = new AbortController();
+  const identitySignal = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal;
+  let cursor = 0;
+  const workers = Array.from({ length: Math.min(identityConcurrency, owners.length) }, async () => {
+    try {
+      while (cursor < owners.length) {
+        identitySignal.throwIfAborted();
+        const [id, artifact] = owners[cursor++];
+        if (artifact.stale?.kind !== 'identity') throw new Error('Invalid owner identity strategy.');
+        const { value } = await ownerIdentity(root, artifact.path, id, artifact.stale, identitySignal);
+        values.set(id, value);
+      }
+    } catch (error) { if (!controller.signal.aborted) controller.abort(error); throw error; }
+  });
+  // Wait for every in-flight script's cancellation and temporary-output cleanup.
+  await Promise.allSettled(workers);
+  identitySignal.throwIfAborted();
   for (const [id, artifact] of Object.entries(config.artifacts)) {
+    signal?.throwIfAborted();
     if (!required.has(id)) continue;
     if (artifact.stale?.kind === 'identity') {
-      const { value } = await ownerIdentity(root, artifact.path, id, artifact.stale, signal);
+      const value = values.get(id)!;
       ownHashes.set(id, inputHash({ id, value }));
       artifactIdentities[id] = { identity: 'script', value };
       continue;

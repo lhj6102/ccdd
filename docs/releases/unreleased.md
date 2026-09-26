@@ -51,3 +51,13 @@ revision waits include a monotonic lease-deadline wake for abandoned coalesced
 sources. Actual worker lifecycle tests cover source-revision adoption and lease
 expiry without a status change; unchanged coalesced idle ticks hydrate no JSON
 and perform no plans. Polling and prune enforce the fresh-state format gate.
+
+## Public concurrency (R12/R13)
+
+- Configure non-Human executors per Run with `maxConcurrentExecutors` (default 4)
+  or CLI verify `--concurrency`; detached/resumed workers retain the setting.
+- Configure bounded owner identity script evaluation with `identityConcurrency`
+  (default 4) on inspect, Broker verify submission, and snapshot options, or CLI
+  status/plan/verify `--identity-concurrency`. Successful keys are order-independent;
+  failures/cancellation stop queued work and cancel/clean up in-flight scripts.
+- Both controls require positive safe integers and are excluded from reuse keys.
