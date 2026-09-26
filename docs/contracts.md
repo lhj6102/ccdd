@@ -696,6 +696,12 @@ CLI status/plan/verify use `--identity-concurrency N`. Use 1 for sequential
 execution. Owner values are assembled in Artifact order, so successful snapshot
 keys and identity presentation are independent of script completion order.
 
+The bound applies to owner identity invocations within one snapshot call. It is
+not a global process limit: an identity script that starts P child processes
+allows about `identityConcurrency × (1 + P)` processes, plus their threads, and
+concurrent inspect or submit calls each have their own pool. Consumers with
+heavy identity probes should start with a small value.
+
 Each script retains its own timeout. Cancellation or any script failure cancels
 in-flight peers, stops dispatching queued owners, and awaits their cleanup before
 rejecting. No partial snapshot, fallback identity or review Run is returned.
