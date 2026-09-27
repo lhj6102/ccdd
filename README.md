@@ -104,7 +104,7 @@ See [Contributing](CONTRIBUTING.md), [the context map](CONTEXT-MAP.md), [detaile
 
 [MIT](LICENSE).
 
-**CCDD 6.2.0:** install `@ccdd/ccdd` once for the existing CCDD modules and use unchanged Pi AI APIs through public subpaths. See the [release notes](docs/releases/v6.2.0.md). This release adds no new authentication CLI, store or policy; existing review behavior and format-6 evidence remain unchanged.
+**CCDD 6.2.1:** existing timeout declarations accept 20 minutes without arbitrary policy ceilings. Values remain bounded by Node timer representability; see the [release notes](docs/releases/v6.2.1.md).
 
 
 ### Existing Pi AI API

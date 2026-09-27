@@ -84,7 +84,7 @@ test('Pi profile rejects unknown model/provider and reasoning substitutions befo
   for (const settings of [
     { ...profile, provider: 'codex' }, { ...profile, model: 'ccdd-nonexistent-model' },
     { ...profile, reasoning: 'ultra' }, { ...profile, reasoning: 'minimal' }, { ...profile, reasoning: 'off' },
-    { ...profile, timeoutMs: 1 },
+    { ...profile, timeoutMs: 0 },
   ]) assert.throws(() => validatePiProfile(settings));
   assert.equal(validatePiProfile({ ...profile, provider: 'openai', model: 'gpt-4.1', reasoning: 'off' }).id, 'gpt-4.1');
   assert.throws(() => validatePiProfile({ ...profile, provider: 'anthropic', model: 'claude-fable-5', reasoning: 'minimal' }));
@@ -644,4 +644,16 @@ test('many unexpected object keys receive category-only diagnostics without prop
   } });
   assert.deepEqual(result.final, verdict); assert.equal(calls, 2);
   assert.match(prompt, /schema_mismatch/); assert.doesNotMatch(prompt, /schemaPath|PRIVATE_KEY/);
+});
+
+
+test('Agent profile accepts twenty minutes and rejects Node timer overflow without waiting', async t => {
+  const data = await fixture(t);
+  for (const timeoutMs of [1, 1_200_000, 86_400_001, 2_147_483_647]) {
+    assert.equal(validatePiProfile({ ...profile, timeoutMs }).id, profile.model);
+    await assert.rejects(invokePi({ ...data, request: { ...data.request, profile: { ...profile, timeoutMs } }, signal: AbortSignal.abort(), streamFn: artifactStream() }), { code: 'ABORTED' });
+  }
+  for (const timeoutMs of [0, -1, 0.5, NaN, Infinity, 2_147_483_648, Number.MAX_SAFE_INTEGER]) {
+    assert.throws(() => validatePiProfile({ ...profile, timeoutMs }), { code: 'EXECUTOR_PROFILE_INVALID' });
+  }
 });

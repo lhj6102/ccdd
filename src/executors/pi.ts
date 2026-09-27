@@ -39,7 +39,7 @@ export function validatePiProfile(profile: CriticProfile, options: PiOptions = {
   const mapped = model.thinkingLevelMap?.[requested as ReasoningLevel];
   const adaptiveMinimalAlias = hasApi(model, 'anthropic-messages') && model.compat?.forceAdaptiveThinking === true && requested === 'minimal' && mapped === undefined;
   if (!noReasoning && (!supported || adaptiveMinimalAlias || (typeof mapped === 'string' && levels.includes(mapped as ReasoningLevel) && mapped !== requested))) throw diagnosticError('REASONING_NOT_SUPPORTED', 'The requested reasoning level cannot be applied to this model exactly.', 'Specify a reasoning level supported by the model. CCDD does not substitute unsupported levels.');
-  if (profile.timeoutMs !== undefined && (!Number.isInteger(profile.timeoutMs) || profile.timeoutMs < 10 || profile.timeoutMs > 900_000)) throw diagnosticError('EXECUTOR_PROFILE_INVALID', 'timeoutMs must be an integer between 10 and 900000.', 'Check the Critic timeoutMs setting.');
+  if (profile.timeoutMs !== undefined && (!Number.isSafeInteger(profile.timeoutMs) || profile.timeoutMs < 1 || profile.timeoutMs > 2_147_483_647)) throw diagnosticError('EXECUTOR_PROFILE_INVALID', 'timeoutMs must be an integer between 1 and 2147483647.', 'Check the Critic timeoutMs setting.');
   const exact = structuredClone(model);
   // Catalog fallback permission is optional in Pi; CCDD requests one exact model.
   if (hasApi(exact, 'anthropic-messages') && exact.compat?.allowedFallbackModels) exact.compat.allowedFallbackModels = [];

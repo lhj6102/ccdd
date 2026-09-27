@@ -61,7 +61,7 @@ function critic(value: unknown): CriticDefinition {
     fields(profile, ['kind', 'command', 'args', 'timeoutMs'], 'Runtime profile');
     validateScript({ command: profile.command, args: profile.args });
   }
-  if (profile.timeoutMs !== undefined && (!Number.isSafeInteger(profile.timeoutMs) || profile.timeoutMs < 1 || profile.timeoutMs > 86400000)) throw new Error('Invalid Critic timeoutMs.');
+  if (profile.timeoutMs !== undefined && (!Number.isSafeInteger(profile.timeoutMs) || profile.timeoutMs < 1 || profile.timeoutMs > 2_147_483_647)) throw new Error('Invalid Critic timeoutMs.');
   return structuredClone(value) as CriticDefinition;
 }
 function manifest(value: unknown): ArtifactManifest {
@@ -93,7 +93,7 @@ function manifest(value: unknown): ArtifactManifest {
         if (!Array.isArray(value.stale.inputs) || value.stale.inputs.length > 64 || new Set(value.stale.inputs).size !== value.stale.inputs.length) throw new Error('stale.inputs must contain at most 64 unique owner-relative paths.');
         value.stale.inputs.forEach(projectInputPath);
       }
-      if (value.stale.timeoutMs !== undefined && (!Number.isSafeInteger(value.stale.timeoutMs) || value.stale.timeoutMs < 1 || value.stale.timeoutMs > 900000)) throw new Error('Identity timeoutMs must be 1–900000.');
+      if (value.stale.timeoutMs !== undefined && (!Number.isSafeInteger(value.stale.timeoutMs) || value.stale.timeoutMs < 1 || value.stale.timeoutMs > 2_147_483_647)) throw new Error('Identity timeoutMs must be 1–2147483647.');
     }
     if (value.stale.paths !== undefined) {
       if (!Array.isArray(value.stale.paths) || !value.stale.paths.length) throw new Error('stale.paths must be a nonempty array.');

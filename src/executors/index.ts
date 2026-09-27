@@ -20,7 +20,7 @@ import { nodeRequirement, supportsNodeVersion } from '../node-version.js';
 
 function timeout(profile: { timeoutMs?: number }, fallback: number) {
   const value = profile.timeoutMs ?? fallback;
-  if (!Number.isInteger(value) || value < 10 || value > 900_000) throw new Error('timeoutMs must be between 10 and 900000');
+  if (!Number.isSafeInteger(value) || value < 1 || value > 2_147_483_647) throw new Error('timeoutMs must be between 1 and 2147483647');
   return value;
 }
 

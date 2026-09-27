@@ -54,7 +54,7 @@ export async function diagnosticsMain(argv: string[], { stdout, stderr }: { stdo
     if (authFile) piOptions.authFile = resolve(authFile);
     if (codexAuthFile) piOptions.codexAuthFile = resolve(codexAuthFile);
     const timeout = Number(get('--timeout-ms') ?? 900000);
-    if (!Number.isSafeInteger(timeout) || timeout < 1 || timeout > 86400000) throw new Error('Invalid timeout.');
+    if (!Number.isSafeInteger(timeout) || timeout < 1 || timeout > 2_147_483_647) throw new Error('Invalid timeout.');
     const executors = createExecutorRegistry({ piOptions, alarmMethods: createLocalAlarmMethods({ ...context, humanInbox: Boolean(options['--human-inbox']) }) });
     const report = await diagnoseProject({ ...context, criticId: get('--critic'), executors, signal: AbortSignal.timeout(timeout) });
     print(report); return report.ok ? 0 : 1;

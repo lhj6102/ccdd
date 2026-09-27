@@ -332,3 +332,5 @@ Identity capture temp directories and tool CCDD_TMP_DIR directories stay within
 that diagnostic/output scope; the report and per-process guard proofs record
 the observed temporary root. Parallel diagnostic workers have distinct temp
 roots. Evidence and source are not removed by temporary script cleanup.
+
+Timeout values use positive safe-integer milliseconds up to 2,147,483,647, the Node timer limit; existing defaults and cancellation semantics are unchanged.
