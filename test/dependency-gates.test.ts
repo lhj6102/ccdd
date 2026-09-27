@@ -179,15 +179,27 @@ for (const verdict of ['GREEN','RED'] as const) test(`external reused evidence c
   assert.equal(calls.includes('wait:c'),verdict === 'GREEN');
 });
 
-test('ignore-gates follower rejects blocked sources in both quote and submission', async t => {
-  const data = await artifactFixture(t); let release!: () => void; const hold = new Promise<void>(r => { release = r; }), calls: string[] = [];
+test('ignore-gates follower rejects blocked sources in both quote and submission', { timeout: 10000 }, async t => {
+  const data = await artifactFixture(t); let release!: () => void, enteredA!: () => void, enteredB!: () => void;
+  const hold = new Promise<void>(resolve => { release = resolve; }), calls: string[] = [];
+  const sourceEntered = new Promise<void>(resolve => { enteredA = resolve; });
+  const independentEntered = new Promise<void>(resolve => { enteredB = resolve; });
   await data.write('a',{name:'a',critics:[runtimeCritic()]}); await data.write('b',{name:'b',critics:[runtimeCritic('check','Inspect {a}.')]});
-  const broker = createBroker({ ...data, executors: { canExecute:()=>({ok:true}), execute: async request => { calls.push(request.target); if(request.target==='a'){await hold;return {verdict:'RED'};}return {verdict:'GREEN'};} } });
+  const broker = createBroker({ ...data, executors: { canExecute:()=>({ok:true}), execute: async request => {
+    calls.push(request.target);
+    if(request.target==='a'){ enteredA(); await hold; return {verdict:'RED'}; }
+    enteredB(); return {verdict:'GREEN'};
+  } } });
   data.cleanup(async()=>{release();await broker.close();});
-  const source = await broker.submitProject({selection:{kind:'all'}}), running = broker.run(source.id); await delay(10);
-  const plan=(await inspectProject({...data,ignoreGates:true})).plan;
-  assert.equal(plan.items.find(c=>c.id==='b/check')!.action,'EXECUTE');
-  const follower=await broker.submitProject({selection:{kind:'all'},ignoreGates:true}), following=broker.run(follower.id);
-  assert.ok(follower.requests.some(c=>c.criticId==='b/check')); await delay(20); assert.ok(calls.includes('b'));
-  release();await running;await following;
+  const source = await broker.submitProject({selection:{kind:'all'}}), running = broker.run(source.id);
+  let following: ReturnType<typeof broker.run> | undefined;
+  try {
+    await sourceEntered;
+    const plan=(await inspectProject({...data,ignoreGates:true})).plan;
+    assert.equal(plan.items.find(c=>c.id==='b/check')!.action,'EXECUTE');
+    const follower=await broker.submitProject({selection:{kind:'all'},ignoreGates:true}); following=broker.run(follower.id);
+    assert.ok(follower.requests.some(c=>c.criticId==='b/check'));
+    // b must actually enter while a is still held, regardless of scheduling latency.
+    await independentEntered; assert.ok(calls.includes('b'));
+  } finally { release(); await running; await following; }
 });
