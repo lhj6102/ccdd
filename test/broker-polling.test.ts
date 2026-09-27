@@ -106,10 +106,14 @@ test('coalesced idle ticks hydrate zero bytes and make zero plans', { timeout: 1
   const { artifactFixture, runtimeCritic } = await import('./helpers/artifacts.js');
   const { createBroker, brokerTestHooks } = await import('../src/broker/index.js');
   const data = await artifactFixture(t); await data.write('a', { name: 'a', critics: [runtimeCritic()] });
-  let release!: () => void; const gate = new Promise<void>(resolve => { release = resolve; });
-  const broker = createBroker({ ...data, executors: { canExecute: () => ({ ok: true }), execute: async () => { await gate; return { verdict: 'GREEN' }; } } });
+  let release!: () => void, entered!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const sourceEntered = new Promise<void>(resolve => { entered = resolve; });
+  const broker = createBroker({ ...data, executors: { canExecute: () => ({ ok: true }), execute: async () => { entered(); await gate; return { verdict: 'GREEN' }; } } });
   data.cleanup(async () => { release(); await broker.close(); });
   const source = await broker.submitProject({ selection: { kind: 'all' } }), running = broker.run(source.id);
+  // Measure unchanged idle work only after actual source startup has settled.
+  await sourceEntered;
   const follower = await broker.submitProject({ selection: { kind: 'all' } });
   let bytes = 0, plans = 0, ticks = 0, previous: { bytes: number; plans: number } | undefined;
   const samples: { bytes: number; plans: number }[] = [];
