@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { compareVersions, packedManifest, tagCommit, validateAssets } from './release.mjs';
+import { compareVersions, packedManifest, tagCommit, validateAssets, releasePackages } from './release.mjs';
 import { planNpmRelease, publishNpmRelease } from './npm-release.mjs';
 import { nodeRequirement, supportedNodeRange } from '../src/node-version.ts';
 
@@ -30,10 +30,10 @@ export function npmAnnouncementBody({ metadata, sourceCommit, repository, nodeRa
   return [
     `CCDD ${metadata.tag} is available from npm. Install the matching package versions:`, '',
     '```sh',
-    `npm install --ignore-scripts @ccdd/core@${metadata.version} @ccdd/project@${metadata.version} @ccdd/default-tools@${metadata.version}`,
+    metadata.umbrellaFile ? `npm install --ignore-scripts @ccdd/ccdd@${metadata.version}` : `npm install --ignore-scripts @ccdd/core@${metadata.version} @ccdd/project@${metadata.version} @ccdd/default-tools@${metadata.version}`,
     '```', '',
     `${requirement ? `${requirement} is required. ` : ''}Install only core and Project if you use custom tools exclusively.`, '',
-    ...['@ccdd/core', '@ccdd/project', '@ccdd/default-tools'].map(name => `- [${name}@${metadata.version}](https://www.npmjs.com/package/${name}/v/${metadata.version})`), '',
+    ...releasePackages(metadata).map(([name]) => `- [${name}@${metadata.version}](https://www.npmjs.com/package/${name}/v/${metadata.version})`), '',
     `[Release notes](${source}/docs/releases/${metadata.tag}.md) · [Getting started](${source}/docs/getting-started.md)`, '',
     `Source commit: [${sourceCommit}](https://github.com/${repository}/commit/${sourceCommit}).`, '',
     "Package downloads are distributed through npm. GitHub's automatic Source code archives contain source, not installable packages.", '',
@@ -43,7 +43,7 @@ export function npmAnnouncementBody({ metadata, sourceCommit, repository, nodeRa
 export async function publishNpmAnnouncement({ assetsDir, metadata, sourceCommit, repository, client, api }) {
   const files = await validateAssets(assetsDir, metadata, sourceCommit);
   const packages = await planNpmRelease({ files, metadata, client });
-  assert.ok(packages.every(pkg => pkg.alreadyPublished), 'All three matching npm packages must be published before announcing the release');
+  assert.ok(packages.every(pkg => pkg.alreadyPublished), 'All matching npm packages must be published before announcing the release');
   // Recovery may announce an older release; use its verified package requirement.
   const nodeRange = packedManifest(files.get(metadata.projectFile ?? metadata.coreFile)).engines?.node;
   const body = npmAnnouncementBody({ metadata, sourceCommit, repository, nodeRange });

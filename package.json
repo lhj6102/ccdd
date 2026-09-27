@@ -1,6 +1,6 @@
 {
   "name": "@ccdd/core",
-  "version": "6.1.0",
+  "version": "6.2.0",
   "license": "MIT",
   "publishConfig": {
     "access": "public",
@@ -21,13 +21,14 @@
   },
   "workspaces": [
     "packages/default-tools",
-    "packages/project"
+    "packages/project",
+    "packages/ccdd"
   ],
   "engines": {
     "node": "^22.19.0"
   },
   "scripts": {
-    "build": "node scripts/clean-build.mjs && npm run build:core && npm run build:tools && node node_modules/typescript/bin/tsc -p tsconfig.json && npm run build:ui && npm run build:project",
+    "build": "node scripts/clean-build.mjs && npm run build:core && npm run build:tools && node node_modules/typescript/bin/tsc -p tsconfig.json && npm run build:ui && npm run build:project && npm run build:umbrella",
     "build:core": "node node_modules/typescript/bin/tsc -p tsconfig.runtime.json",
     "build:tools": "npm run build --workspace @ccdd/default-tools",
     "build:project": "node scripts/build-project.mjs",
@@ -41,7 +42,8 @@
     "release": "node scripts/local-release.mjs",
     "release:npm": "node scripts/local-release.mjs --npm",
     "release:npm:check": "node scripts/check-npm.mjs",
-    "demo:prepare": "npm run build && node dist/src/cli.js prepare-demo"
+    "demo:prepare": "npm run build && node dist/src/cli.js prepare-demo",
+    "build:umbrella": "npm run build --workspace @ccdd/ccdd"
   },
   "files": [
     "dist/src/sdk.*",
@@ -66,6 +68,7 @@
     "typescript": "7.0.2",
     "typescript-ui": "npm:typescript@6.0.3",
     "vite": "8.2.2",
-    "vue-tsc": "3.3.11"
+    "vue-tsc": "3.3.11",
+    "pnpm": "10.30.2"
   }
 }

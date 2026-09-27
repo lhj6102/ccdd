@@ -8,7 +8,7 @@ import { join } from 'node:path';
 
 // The release driver intentionally stays executable before npm ci / TypeScript build.
 const driverUrl = new URL('../../scripts/release.mjs', import.meta.url);
-const { compareVersions, createGitHubClient, validateAssets } = await import(driverUrl.href);
+const { compareVersions, createGitHubClient, validateAssets, readReleaseMetadata, releasePackages } = await import(driverUrl.href);
 const { publishNpmRelease, createNpmClient } = await import(new URL('../../scripts/npm-release.mjs', import.meta.url).href);
 const { publishNpmAndAnnounce, publishNpmAnnouncement } = await import(new URL('../../scripts/npm-announcement.mjs', import.meta.url).href);
 const { publishFromCi } = await import(new URL('../../scripts/publish-ci.mjs', import.meta.url).href);
@@ -36,7 +36,7 @@ async function fixture(t: TestContext) {
 }
 
 function tarball(name: string, version = '1.0.0', publishConfig?: Record<string, unknown>, nodeRange = '>=24') {
-  const contents = Buffer.from(JSON.stringify({ name, version, publishConfig, engines: { node: nodeRange } })), header = Buffer.alloc(512);
+  const contents = Buffer.from(JSON.stringify({ name, version, publishConfig, engines: { node: nodeRange }, ...(name === '@ccdd/ccdd' ? { dependencies: { '@ccdd/core': version, '@ccdd/project': version, '@ccdd/default-tools': version, '@earendil-works/pi-ai': '0.87.1' } } : {}) })), header = Buffer.alloc(512);
   header.write('package/package.json');
   header.write('0000644\0', 100); header.write('0000000\0', 108); header.write('0000000\0', 116);
   header.write(`${contents.length.toString(8).padStart(11, '0')}\0`, 124);
@@ -48,7 +48,7 @@ function tarball(name: string, version = '1.0.0', publishConfig?: Record<string,
 
 async function assets(root: string, reportOverrides: Record<string, unknown> = {}, releaseMetadata = metadata) {
   const assetsDir = join(root, 'assets'); await mkdir(assetsDir, { recursive: true });
-  const packages = [[coreName, releaseMetadata.coreFile], [toolsName, releaseMetadata.toolsFile], ...(typeof reportOverrides.projectFile === 'string' ? [['@ccdd/project', reportOverrides.projectFile]] : [])].map(([name, file]) => {
+  const packages = [[coreName, releaseMetadata.coreFile], [toolsName, releaseMetadata.toolsFile], ...(typeof reportOverrides.projectFile === 'string' ? [['@ccdd/project', reportOverrides.projectFile]] : []), ...(typeof reportOverrides.umbrellaFile === 'string' ? [['@ccdd/ccdd', reportOverrides.umbrellaFile]] : [])].map(([name, file]) => {
     const bytes = tarball(name, releaseMetadata.version, reportOverrides.publishConfig as Record<string, unknown> | undefined, reportOverrides.nodeRange as string | undefined); return { name, version: releaseMetadata.version, file, sha256: hash(bytes), bytes: bytes.length, content: bytes };
   });
   for (const item of packages) await writeFile(join(assetsDir, item.file), item.content);
@@ -85,7 +85,7 @@ test('version 4 release assets require actual in-place tool and Runtime verifica
 async function npmFixture(t: TestContext, nodeRange = '>=24') {
   const data = await fixture(t), npmMetadata = { ...metadata, projectFile: 'ccdd-project-1.0.0.tgz' };
   const manifests = versions();
-  const project = { name: '@ccdd/project', version: '1.0.0', peerDependencies: { [coreName]: '>=1.0.0 <2' } };
+  const project = { name: '@ccdd/project', version: '1.0.0', dependencies: { '@earendil-works/pi-ai': '0.87.1' }, peerDependencies: { [coreName]: '>=1.0.0 <2' } };
   await mkdir(join(data.root, 'packages/project'));
   await writeFile(join(data.root, 'packages/project/package.json'), JSON.stringify(project));
   await writeFile(join(data.root, 'package-lock.json'), JSON.stringify({ ...manifests.lock,
@@ -269,7 +269,7 @@ test('dry runs, partial npm publication and tag conflicts cannot create an annou
   await publishNpmAndAnnounce({ ...data, api, dryRun: true });
   assert.equal(api.events.length, 0);
   assert.equal(data.published.size, 0);
-  await assert.rejects(publishNpmAndAnnounce({ ...data, api, announceOnly: true }), /All three matching/);
+  await assert.rejects(publishNpmAndAnnounce({ ...data, api, announceOnly: true }), /All matching/);
   assert.ok(api.events.every(event => event.startsWith('GET')));
   api.setTag(otherSha); data.events.length = 0;
   await assert.rejects(publishNpmAndAnnounce({ ...data, api }), /different commit/);
@@ -413,4 +413,64 @@ test('CD cannot download or publish without successful CI for the tagged main co
   await assert.rejects(publishFromCi({ ...options, ref: 'refs/tags/v9.0.0' }), /tag must match/);
   assert.deepEqual(data.events, []);
   assert.ok(api.events.every(event => event === 'GET git/ref/tags/v1.0.0'));
+});
+
+
+async function unifiedFixture(t: TestContext) {
+  const data = await npmFixture(t);
+  const metadata = { ...data.metadata, umbrellaFile: 'ccdd-ccdd-1.0.0.tgz', piVersion: '0.87.1' };
+  const old = JSON.parse(await (await import('node:fs/promises')).readFile(join(data.assetsDir, 'verification.json'), 'utf8'));
+  const installations = [...old.installations, ...['npm', 'pnpm'].map(manager => ({ name: `umbrella-${manager}`, productionInstall: true, installScripts: false, onlyDirectDependency: '@ccdd/ccdd', cliHelpVersion: '1.0.0', publicImports: true, typeImports: true, piPublicApi: true, defaultToolExecution: true, customToolExecution: true, binExecution: true, runtime: 'GREEN', projectValidation: true }))];
+  await assets(data.root, { projectFile: metadata.projectFile, umbrellaFile: metadata.umbrellaFile, installations, publishConfig: { access: 'public', registry: 'https://registry.npmjs.org/' } }, metadata);
+  const files = await validateAssets(data.assetsDir, metadata, sha);
+  const events: string[] = [], published = new Map<string, any>();
+  const client = {
+    async version(name: string) { events.push(`GET ${name}`); return published.get(name) ?? null; },
+    async publish(file: string, bytes: Buffer, { dryRun }: { dryRun: boolean }) {
+      assert.deepEqual(bytes, files.get(file)); events.push(`${dryRun ? 'DRY_RUN' : 'PUBLISH'} ${file}`);
+      if (!dryRun) { const name = releasePackages(metadata).find(([, expected]: string[]) => expected === file)![0]; published.set(name, { name, version: metadata.version, dist: { integrity: `sha512-${createHash('sha512').update(bytes).digest('base64')}` } }); }
+    },
+  };
+  return { ...data, metadata, installations, files, events, published, client };
+}
+
+test('unified release publishes exact dependency modules before the single-install package', async t => {
+  const data = await unifiedFixture(t);
+  await publishNpmRelease(data);
+  assert.deepEqual(data.events.filter(e => e.startsWith('PUBLISH')), ['ccdd-core-1.0.0.tgz', 'ccdd-project-1.0.0.tgz', 'ccdd-default-tools-1.0.0.tgz', 'ccdd-ccdd-1.0.0.tgz'].map(file => `PUBLISH ${file}`));
+});
+
+test('first-package bootstrap resumes only an identical umbrella and rejects mismatches before any publication', async t => {
+  const data = await unifiedFixture(t), file = data.metadata.umbrellaFile;
+  data.published.set('@ccdd/ccdd', { name: '@ccdd/ccdd', version: '1.0.0', dist: { integrity: `sha512-${createHash('sha512').update(data.files.get(file)!).digest('base64')}` } });
+  await publishNpmRelease(data);
+  assert.equal(data.events.filter(e => e.startsWith('PUBLISH')).length, 3);
+  assert.ok(!data.events.includes(`PUBLISH ${file}`));
+  data.events.length = 0; data.published.get('@ccdd/ccdd').dist.integrity = 'sha512-different';
+  await assert.rejects(publishNpmRelease(data), /different bytes/);
+  assert.equal(data.events.filter(e => e.startsWith('PUBLISH')).length, 0);
+});
+
+test('unified release refuses missing strict installer evidence without every required installer result', async t => {
+  const data = await unifiedFixture(t);
+  for (const manager of ['npm', 'pnpm']) {
+    await assets(data.root, { projectFile: data.metadata.projectFile, umbrellaFile: data.metadata.umbrellaFile, installations: data.installations.map(run => run.name === `umbrella-${manager}` ? { ...run, onlyDirectDependency: '@ccdd/project' } : run) }, data.metadata);
+    await assert.rejects(validateAssets(data.assetsDir, data.metadata, sha), /umbrella installation evidence/);
+  }
+});
+
+test('unified release metadata requires exact coordinated dependencies and lockfile entries', async t => {
+  const data = await npmFixture(t), { readFile } = await import('node:fs/promises');
+  const core = JSON.parse(await readFile(join(data.root, 'package.json'), 'utf8'));
+  core.workspaces = ['packages/project', 'packages/default-tools', 'packages/ccdd'];
+  await writeFile(join(data.root, 'package.json'), JSON.stringify(core));
+  const umbrella = { name: '@ccdd/ccdd', version: '1.0.0', dependencies: { '@ccdd/core': '1.0.0', '@ccdd/project': '1.0.0', '@ccdd/default-tools': '1.0.0', '@earendil-works/pi-ai': '0.87.1' } };
+  await mkdir(join(data.root, 'packages/ccdd'));
+  await writeFile(join(data.root, 'packages/ccdd/package.json'), JSON.stringify(umbrella));
+  const lock = JSON.parse(await readFile(join(data.root, 'package-lock.json'), 'utf8')); lock.packages['packages/ccdd'] = { ...umbrella, dependencies: { '@ccdd/default-tools': '1.0.0', '@ccdd/project': '1.0.0', '@ccdd/core': '1.0.0', '@earendil-works/pi-ai': '0.87.1' } };
+  await writeFile(join(data.root, 'package-lock.json'), JSON.stringify(lock));
+  assert.equal((await readReleaseMetadata(data.root)).umbrellaFile, 'ccdd-ccdd-1.0.0.tgz');
+  umbrella.dependencies['@ccdd/core'] = '^1.0.0';
+  await writeFile(join(data.root, 'packages/ccdd/package.json'), JSON.stringify(umbrella));
+  await assert.rejects(readReleaseMetadata(data.root), /exact coordinated/);
 });

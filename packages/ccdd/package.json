@@ -1,0 +1,66 @@
+{
+  "name": "@ccdd/ccdd",
+  "version": "6.2.0",
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lhj6102/ccdd.git",
+    "directory": "packages/ccdd"
+  },
+  "description": "Single-install CCDD CLI, definitions, project runtime and common tools",
+  "type": "module",
+  "engines": {
+    "node": "^22.19.0"
+  },
+  "types": "./dist/core.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/core.d.ts",
+      "import": "./dist/core.js"
+    },
+    "./core": {
+      "types": "./dist/core.d.ts",
+      "import": "./dist/core.js"
+    },
+    "./project": {
+      "types": "./dist/project.d.ts",
+      "import": "./dist/project.js"
+    },
+    "./tools": {
+      "types": "./dist/tools.d.ts",
+      "import": "./dist/tools.js"
+    },
+    "./pi": {
+      "types": "./dist/pi.d.ts",
+      "import": "./dist/pi.js"
+    },
+    "./pi/providers/all": {
+      "types": "./dist/pi-providers.d.ts",
+      "import": "./dist/pi-providers.js"
+    }
+  },
+  "bin": {
+    "ccdd": "./dist/cli.js",
+    "ccdd-project": "./dist/cli.js",
+    "ccdd-view": "./dist/view.js"
+  },
+  "files": [
+    "dist/",
+    "LICENSE",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "node ../../node_modules/typescript/bin/tsc -p tsconfig.json",
+    "prepack": "npm run build"
+  },
+  "dependencies": {
+    "@ccdd/core": "6.2.0",
+    "@ccdd/project": "6.2.0",
+    "@ccdd/default-tools": "6.2.0",
+    "@earendil-works/pi-ai": "0.87.1"
+  }
+}

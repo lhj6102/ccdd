@@ -40,10 +40,11 @@ These relationships define required input, verification and default dependency-G
 Use Node.js 22 LTS, version 22.19.0 or later.
 
 ```sh
-npm install --ignore-scripts @ccdd/core@6.1.0 @ccdd/project@6.1.0
+npm install --ignore-scripts @ccdd/ccdd
+# or: pnpm add --ignore-scripts @ccdd/ccdd
 ```
 
-This single command installs the definitions and Project runtime, including their dependencies. Common view tools are optional and installed separately; see [installation choices](docs/getting-started.md#installation-choices).
+The single public package installs exact matching core, Project and default-tools modules as normal dependencies. Its `ccdd`, `ccdd-project` and `ccdd-view` commands delegate to those modules. Use `@ccdd/ccdd/core`, `/project` and `/tools` imports; see [installation choices](docs/getting-started.md#installation-choices).
 
 Inside an Artifact folder, create `ccdd.json`:
 
@@ -92,6 +93,7 @@ The optional local monitor shows folders, relationships, cycles, review progress
 
 | Package | Responsibility |
 | --- | --- |
+| `@ccdd/ccdd` | Single-install entrypoint, public module subpaths and CLI delegates. |
 | `@ccdd/core` | Public definitions and logical path resolution. |
 | `@ccdd/project` | Validation, CLI, Broker, Executors and monitor. |
 | `@ccdd/default-tools` | Optional common view scripts; no automatic registration. |
@@ -102,7 +104,22 @@ See [Contributing](CONTRIBUTING.md), [the context map](CONTEXT-MAP.md), [detaile
 
 [MIT](LICENSE).
 
-**CCDD 6.1.0:** adds shared machine resource admission, durable execution budgets, pinned runtime provenance and guarded load checks, with native Pi model catalogs. See the [release notes](docs/releases/v6.1.0.md) and [upgrade steps](docs/releases.md#upgrading-to-61). Stop old workers before upgrading; completed format-6 evidence remains reusable.
+**CCDD 6.2.0:** install `@ccdd/ccdd` once for the existing CCDD modules and use unchanged Pi AI APIs through public subpaths. See the [release notes](docs/releases/v6.2.0.md). This release adds no new authentication CLI, store or policy; existing review behavior and format-6 evidence remain unchanged.
+
+
+### Existing Pi AI API
+
+`@ccdd/ccdd/pi` re-exports Pi AI unchanged; `@ccdd/ccdd/pi/providers/all`
+re-exports its public `builtinModels` and `builtinProviders` catalog API. These
+are ESM and type forwards, not a new authentication manager or coding agent.
+The umbrella declares Pi AI directly, so both paths work under strict pnpm.
+
+The existing official CLI remains `npx @earendil-works/pi-ai@0.87.1 list` and
+`npx @earendil-works/pi-ai@0.87.1 login [provider]`. Its current CLI lists/logs
+in OAuth providers and saves `auth.json` in the current directory; use it only
+from an appropriate private directory outside reviewed input. API-key login
+is available through Pi's library API, not that OAuth-only CLI. These exports
+do not create new CCDD login commands, persistence or credential precedence.
 
 ## Review resources and budgets
 

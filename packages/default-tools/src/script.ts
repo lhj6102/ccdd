@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 import { readdir } from 'node:fs/promises';
+import { realpathSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { resolveScopePath } from '@ccdd/core';
 import type { JsonValue, ScriptToolRequest, ToolResult } from '@ccdd/core';
 import { readerRequest, scopedTarget, objectArguments, internalPath } from './reader.js';
@@ -46,12 +48,19 @@ export async function scriptRequest(operation: string, input: ScriptToolRequest,
   throw new Error('Select read, list, image or open.');
 }
 
-try {
-  let text = '';
-  for await (const chunk of process.stdin) { text += chunk; if (Buffer.byteLength(text) > 8 * 1024 * 1024) throw new Error('Script request exceeds 8 MiB.'); }
-  const result = await scriptRequest(process.argv[2], JSON.parse(text), process.argv[3] ? JSON.parse(process.argv[3]) : {});
-  process.stdout.write(`${JSON.stringify(result)}\n`);
-} catch (error) {
-  process.stderr.write(`${error instanceof Error ? error.message : 'Artifact tool failed.'}\n`);
-  process.exitCode = 1;
+/** Public CLI delegate; importing scriptRequest never consumes stdin. */
+export async function main(argv = process.argv.slice(2)): Promise<number> {
+  try {
+    let text = '';
+    for await (const chunk of process.stdin) { text += chunk; if (Buffer.byteLength(text) > 8 * 1024 * 1024) throw new Error('Script request exceeds 8 MiB.'); }
+    const result = await scriptRequest(argv[0], JSON.parse(text), argv[1] ? JSON.parse(argv[1]) : {});
+    process.stdout.write(`${JSON.stringify(result)}\n`);
+    return 0;
+  } catch (error) {
+    process.stderr.write(`${error instanceof Error ? error.message : 'Artifact tool failed.'}\n`);
+    return 1;
+  }
 }
+let entrypoint = false;
+try { entrypoint = Boolean(process.argv[1]) && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url); } catch {}
+if (entrypoint) process.exitCode = await main();

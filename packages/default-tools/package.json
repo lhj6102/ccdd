@@ -1,6 +1,6 @@
 {
   "name": "@ccdd/default-tools",
-  "version": "6.1.0",
+  "version": "6.2.0",
   "license": "MIT",
   "publishConfig": {
     "access": "public",
@@ -20,6 +20,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./cli": {
+      "types": "./dist/script.d.ts",
+      "import": "./dist/script.js"
     }
   },
   "types": "./dist/index.d.ts",

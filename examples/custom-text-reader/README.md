@@ -2,7 +2,7 @@
 
 `why/ccdd.json` declares an explicit basis. `spec/ccdd.json` owns its alignment Critic and reader. The instruction `{why}` derives the dependency; no `target`, `deps`, type registry or config factory is needed.
 
-Install `@ccdd/core` and `@ccdd/project` in this example directory. The custom `view.mjs` requires only Node; default tools are optional.
+Install `@ccdd/ccdd` in this example directory. The custom `view.mjs` requires only Node; default tools are optional.
 
 ```sh
 ccdd-project config check

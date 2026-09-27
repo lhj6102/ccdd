@@ -1,6 +1,6 @@
 # @ccdd/project
 
-Project validation, review history, CLI, Broker, Executors and optional local monitor. Use Node 22 LTS, at least 22.19.0. Install with `npm install --ignore-scripts @ccdd/core@6.1.0 @ccdd/project@6.1.0`; default tools are optional and are not installed by Project. Regular dependencies install automatically; core is a non-optional peer, declared explicitly here to keep the installed versions aligned. See [installation choices](https://github.com/lhj6102/ccdd/blob/main/docs/getting-started.md#installation-choices).
+Project validation, review history, CLI, Broker, Executors and optional local monitor. Use Node 22 LTS, at least 22.19.0. Install with `npm install --ignore-scripts @ccdd/core@6.2.0 @ccdd/project@6.2.0`; default tools are optional and are not installed by Project. Regular dependencies install automatically; core is a non-optional peer, declared explicitly here to keep the installed versions aligned. See [installation choices](https://github.com/lhj6102/ccdd/blob/main/docs/getting-started.md#installation-choices).
 
 Each folder with `ccdd.json` is an Artifact that owns its Critics and script views. Child folders, mounts and instruction references derive dependencies. Cycles are supported. By default, Critics wait for current GREEN evidence from dependencies outside their strongly connected component (SCC). SCC peers can execute together after external gates pass; final validation needs matching actual evidence throughout the required scope.
 
@@ -25,7 +25,7 @@ With `--wait`: 0=fulfilled, 1=RED, 2=ERROR, 3=timeout, 4=incomplete. Without wai
 
 Use core `>=6.1.0 <7`; its declarations include identity weights, root review
 policy and pinned script execution paths. All installed CCDD packages should
-use the matching 6.1 release. Stop all 6.0 workers before upgrading; completed
+use the matching release. Stop all 6.0 workers before upgrading; completed
 format-6 evidence remains usable and older missing provenance stays `null`.
 
 Machine provider/model pools and weighted identities share one local authority.

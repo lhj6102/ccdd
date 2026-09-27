@@ -6,35 +6,39 @@ Use Node 22 LTS, at least 22.19.0. Create an empty project and install matching 
 mkdir my-ccdd-project
 cd my-ccdd-project
 npm init -y
-npm install --ignore-scripts @ccdd/core@6.1.0 @ccdd/project@6.1.0
+npm install --ignore-scripts @ccdd/ccdd
 mkdir implementation
 ```
 
 ## Installation choices
 
-`@ccdd/core` supplies definitions; `@ccdd/project` supplies the CLI and review runtime. The command above installs both in one step. npm and pnpm install their regular `dependencies` transitively; consumers do not install their development-only dependencies.
-
-Project and default-tools declare core `>=6.1.0 <7` as a non-optional `peerDependency`. npm 7+ and pnpm 10 with its default `autoInstallPeers` setting install missing non-optional peers when resolvable. Disabled peer installation or conflicting ranges can prevent that, and the range does not select the same patch version as Project. Declare core explicitly, as shown above, for a predictable matching installation and direct imports.
-
-Project does **not** depend on `@ccdd/default-tools`. When you want common view scripts, install all three together:
-
-```sh
-npm install --ignore-scripts @ccdd/core@6.1.0 @ccdd/project@6.1.0 @ccdd/default-tools@6.1.0
-```
-
-With pnpm 10, the equivalent is:
+`@ccdd/ccdd` is the default installation entrypoint. It declares exact-version
+normal dependencies on core, Project and default-tools. npm/pnpm install these
+modules automatically; no peer auto-install setting or installation script is
+required. The modules remain separate packages, not a bundled monolith.
 
 ```sh
-pnpm add --ignore-scripts @ccdd/core@6.1.0 @ccdd/project@6.1.0 @ccdd/default-tools@6.1.0
+pnpm add --ignore-scripts @ccdd/ccdd
 ```
 
-Omit default-tools when using only custom tools or Runtime Critics. Installation never registers tools; declare views in `ccdd.json`. One installation command is enough; these remain separate packages, not a bundled monolith. Node.js is still a prerequisite.
+Use `@ccdd/ccdd` or `@ccdd/ccdd/core` for definitions,
+`@ccdd/ccdd/project` for project/Broker APIs, and `@ccdd/ccdd/tools` for common
+tools and `scriptRequest`. The umbrella owns `ccdd`, `ccdd-project` and
+`ccdd-view` bins. These paths work when only the umbrella is directly installed,
+including strict pnpm; do not rely on undeclared transitive module imports.
+Installing common tools does not register views in `ccdd.json`.
 
-See the package managers' [peer dependency](https://docs.npmjs.com/cli/v11/configuring-npm/package-json#peerdependencies) and [automatic peer installation](https://pnpm.io/10.x/settings#auto-install-peers) documentation.
+### Advanced module-only installations
+
+Consumers deliberately omitting common tools can install core and Project
+directly, using matching release versions; add default-tools only when needed.
+Project and default-tools declare core `>=6.1.0 <7` as a peer. The umbrella is
+not needed for these advanced module-specific installs, and Project alone still
+does not install default-tools. Keep each directly imported module declared.
 
 ## Resource settings and upgrades
 
-Use the matching 6.1 package set. Core adds owner identity weights, root review
+Use matching package versions (6.2.0 for this release). Core adds owner identity weights, root review
 policy and pinned script execution-path declarations; mixed 6.0 core with 6.1
 Project/default-tools is not a supported installation. For upgrades, stop all
 old workers first and follow [the upgrade steps](releases.md#upgrading-to-61).
@@ -93,7 +97,7 @@ State defaults to `~/.local/state/ccdd/<workspace-path-hash>`. Use `--state-dir 
 
 ## Add observation tools
 
-Agent and Human Critics need their own registered views. Install `@ccdd/default-tools@6.1.0` and copy/adapt its [JSON example](../packages/default-tools/examples/document/ccdd.json). A tool declares metadata and a fixed script, such as `{"command":"ccdd-view","args":["read"]}`. Reviewer arguments are validated and supplied as JSON stdin. Installing the library alone does not register it.
+Agent and Human Critics need their own registered views. The umbrella already installs default-tools; copy/adapt its [JSON example](../packages/default-tools/examples/document/ccdd.json). A tool declares metadata and a fixed script, such as `{"command":"ccdd-view","args":["read"]}`. Reviewer arguments are validated and supplied as JSON stdin. Installing the library alone does not register it.
 
 For a custom implementation, see [the standalone reader](../examples/custom-text-reader/README.md). It uses only Node and standard JSON, with no TypeScript config or mandatory tool library. Other languages can implement the same protocol.
 
