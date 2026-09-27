@@ -4,7 +4,7 @@
 - [Broker](src/broker/CONTEXT.md) owns review tickets, worker ownership, Human claims and recorded results.
 - [Executors](src/executors/CONTEXT.md) perform actual Runtime, Agent and Human evaluation.
 
-`@ccdd/core` provides definitions and a pure scope resolver. `@ccdd/project` packages the three contexts. Optional `@ccdd/default-tools` supplies ordinary scripts; installing it registers no tool.
+`@ccdd/ccdd` is the single-install facade with exact dependencies and public subpaths; it owns no independent runtime. `@ccdd/core` provides definitions and a pure scope resolver. `@ccdd/project` packages the three contexts. Optional `@ccdd/default-tools` supplies ordinary scripts; installing it registers no tool.
 
 Each Artifact folder owns `ccdd.json`, its views and its Critics. Project Validation discovers markers and derives child, mount and instruction relations. Cycles are allowed. Strongly connected components provide finite content identities, and per-query traversal collects required actual evidence. In 6.0, dependency Critics outside the same SCC must have current GREEN evidence before execution; basis/no-Critic inputs do not gate. Explicit ignoreGates bypasses this default.
 

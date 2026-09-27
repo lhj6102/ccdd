@@ -12,7 +12,7 @@ npm test
 npm run test:packages
 ```
 
-`npm test` checks repository language, builds the project, and runs Node's built-in test runner. The build includes TypeScript and UI type checking, so a separate `npm run typecheck` is unnecessary after a successful `npm test`. `npm run test:packages` uses that existing build to install the real tarballs and exercise both default-tool and custom-tool configurations. They may need the npm registry or a populated local cache.
+`npm test` checks repository language, builds the project, and runs Node's built-in test runner. The build includes TypeScript and UI type checking, so a separate `npm run typecheck` is unnecessary after a successful `npm test`. `npm run test:packages` uses that existing build to install the real tarballs and exercise both direct-module configurations and single-umbrella production installs under npm and strict pnpm, including public type imports, CLI bins and actual default/custom tools. They may need the npm registry or a populated local cache.
 
 CI runs once per push to main in one Node 22 LTS job. It installs dependencies, runs `npm test`, verifies the packed production installations, and retains the verified packages for 14 days. Pull requests and release tags do not repeat the tests. CD publishes those exact CI packages without installing project dependencies, rebuilding, or running tests. Run local checks with Node 22 LTS, selected by `.nvmrc`. Node 22.19.0 is the minimum required by the Pi libraries; CCDD also uses native SQLite, TypeScript loading, and synchronous module hooks. Other Node major versions are unsupported. Node 22 support starts with CCDD 3.1.0; older packages retain their original Node requirement.
 

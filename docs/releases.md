@@ -58,15 +58,16 @@ performance, integrity guarantees and stated limits.
 
 ## Installing and upgrading
 
-CCDD 6.1.0 supports Node.js 22 LTS (22.19.0 or later). Install matching versions of the three packages:
+CCDD 6.1.0 supports Node.js 22 LTS (22.19.0 or later). The default is one public installation package:
 
 ```sh
-npm install --ignore-scripts @ccdd/core@6.1.0 @ccdd/project@6.1.0 @ccdd/default-tools@6.1.0
+npm install --ignore-scripts @ccdd/ccdd
+# or: pnpm add --ignore-scripts @ccdd/ccdd
 npx ccdd-project config check
 npx ccdd-project tools check
 ```
 
-`@ccdd/core` supplies definitions. `@ccdd/project` supplies validation, the CLI, Broker, Executors, and monitor. `@ccdd/default-tools` is optional when all tools are custom. Project and default-tools 6.1.0 target core `>=6.1.0 <7`. Keep installed CCDD packages on the same major line.
+`@ccdd/ccdd` installs the three exact matching modules and exposes their public subpaths and CLI bins. Advanced module-only consumers may omit the umbrella. `@ccdd/core` supplies definitions. `@ccdd/project` supplies validation, the CLI, Broker, Executors, and monitor. `@ccdd/default-tools` is optional when all tools are custom. Project and default-tools 6.1.0 target core `>=6.1.0 <7`. Keep installed CCDD packages on the same major line.
 
 Version 4 introduced folder-owned `ccdd.json` files. Projects older than v4
 must also follow the [v4 configuration migration](migration-v4.md). The
@@ -85,7 +86,7 @@ For older projects, follow the [package and import migration](releases/v2.0.1.md
 
 CI runs once on each push to main. Its single Node 22 LTS job builds and tests
 the commit, verifies the packed production installations, and uploads
-`release-<commit SHA>` containing the three tarballs and verification files.
+`release-<commit SHA>` containing the four tarballs and verification files.
 PR creation and version tags do not trigger another test run.
 
 To publish, merge the version change and release notes, wait for that commit's
@@ -112,7 +113,7 @@ and skips identical packages already published to npm.
 ### Trusted Publisher setup
 
 Register the following GitHub Actions publisher on each of `@ccdd/core`,
-`@ccdd/project`, and `@ccdd/default-tools`:
+`@ccdd/project`, `@ccdd/default-tools`, and `@ccdd/ccdd`:
 
 - Repository: `lhj6102/ccdd`
 - Workflow filename: `release.yml`
@@ -124,11 +125,32 @@ With npm 11.15.0 or later and package owner access:
 npm trust github @ccdd/core --repository=lhj6102/ccdd --file=release.yml --allow-publish --yes
 npm trust github @ccdd/project --repository=lhj6102/ccdd --file=release.yml --allow-publish --yes
 npm trust github @ccdd/default-tools --repository=lhj6102/ccdd --file=release.yml --allow-publish --yes
+npm trust github @ccdd/ccdd --repository=lhj6102/ccdd --file=release.yml --allow-publish --yes
 ```
 
 npm requires account two-factor authentication for registration. The release
 workflow uses OIDC; it does not require an npm token stored in GitHub secrets.
 See [npm trusted publishing](https://docs.npmjs.com/trusted-publishers/).
+
+### First publication of the umbrella
+
+A new package name returning npm 404 is not a configured Trusted Publisher.
+[npm trust requires an existing package](https://docs.npmjs.com/cli/v11/commands/npm-trust/).
+Do not publish the current development-version umbrella or a placeholder. Wait
+for the combined feature release, its final version and independently reviewed
+main CI artifacts. Before that first umbrella release, an authorized package maintainer must publish
+**the exact reviewed CI umbrella tarball**, not a placeholder or locally rebuilt
+archive, using their ordinary npm authentication. Then configure its Trusted
+Publisher in npm package settings: GitHub repository `lhj6102/ccdd`, workflow
+`release.yml`, direct publication allowed. No new token is requested by CCDD.
+
+The publisher checks every existing package's SHA-512 before writing anything.
+It skips only identical already-published bytes, so rerunning the same release
+can finish modules and announcement after a manual umbrella bootstrap. Normally
+modules publish first; if the umbrella was bootstrapped first, users must wait
+until all its exact dependency versions are confirmed before installing. A
+partial release is not announced as complete. Never overwrite a published
+version, publish a dummy version, or substitute a different CI artifact.
 
 ## Local verification and publication
 
@@ -136,7 +158,7 @@ The independent local release command remains available when publishing without 
 
 CCDD 3.1.0 adds Node 22 LTS support and the MIT license. Older packages retain their original requirements. Run release verification locally with Node 22 LTS, selected by `.nvmrc`.
 
-Keep all three package versions and their lockfile entries aligned. Commit `docs/releases/v<version>.md` with the release notes and push the requested commit to origin. Published npm versions cannot be replaced; use a new coordinated version for changed package contents.
+Keep all four package versions and the umbrella dependency versions and their lockfile entries aligned. Commit `docs/releases/v<version>.md` with the release notes and push the requested commit to origin. Published npm versions cannot be replaced; use a new coordinated version for changed package contents.
 
 ```sh
 nvm use # With nvm, select Node 22 LTS from .nvmrc.
@@ -156,11 +178,11 @@ Use a new empty output directory outside the repository for each build. `--outpu
 
 `release:npm:check` uses read-only operations to check Node/npm versions, the logged-in account, email verification, 2FA settings, and the `ccdd` organization role. It does not print tokens or email addresses. An individual npm login does not automatically grant organization publication rights.
 
-Local publication checks the GitHub source commit and tag, then the logged-in npm account and organization role before building. Build and test children receive isolated configuration without publisher or Provider credentials. The command clones the requested commit, installs locked dependencies, builds, runs the full test suite, packs all three packages, and verifies production installations and actual tool and Runtime behavior in separate projects. Uncommitted caller changes are excluded. No external LLM or desktop application is called by release verification.
+Local publication checks the GitHub source commit and tag, then the logged-in npm account and organization role before building. Build and test children receive isolated configuration without publisher or Provider credentials. The command clones the requested commit, installs locked dependencies, builds, runs the full test suite, packs all four packages, and verifies production installations and actual tool and Runtime behavior in separate projects. Uncommitted caller changes are excluded. No external LLM or desktop application is called by release verification.
 
-Before writing to npm, every existing target package version must match the verified tarball's SHA-512 integrity. Matching versions are skipped; a mismatch stops publication. Packages publish in core → Project → default tools order with public access and the `latest` npm tag. Fresh public metadata confirms each published version. npm scans accepted publishes before making them available, typically taking about five minutes and sometimes 15 minutes or more; see [npm's publish-time scanning announcement](https://github.blog/changelog/2026-07-28-npm-publish-time-malware-scanning-and-dual-use-metadata/). Confirmation checks every ten seconds for about twenty minutes per package, remains cancellable, and stops without claiming success if the version is still unavailable. Rerun after availability to continue with matching packages skipped.
+Before writing to npm, every existing target package version must match the verified tarball's SHA-512 integrity. Matching versions are skipped; a mismatch stops publication. Packages publish in core → Project → default tools → umbrella order with public access and the `latest` npm tag. Fresh public metadata confirms each published version. npm scans accepted publishes before making them available, typically taking about five minutes and sometimes 15 minutes or more; see [npm's publish-time scanning announcement](https://github.blog/changelog/2026-07-28-npm-publish-time-malware-scanning-and-dual-use-metadata/). Confirmation checks every ten seconds for about twenty minutes per package, remains cancellable, and stops without claiming success if the version is still unavailable. Rerun after availability to continue with matching packages skipped.
 
-**After all three exact package versions are confirmed, the same command creates or updates the matching GitHub Release.** Its tag points to the verified source commit and is never moved. The announcement includes the versioned npm install command, package links, and source-linked release notes. Its Node requirement comes from the verified Project tarball, so recovery of an older release retains that version's requirement. GitHub selects Latest on the server using its automatic version/date policy, so an older retry never explicitly overrides a newer announcement. Retrying an unchanged announcement performs no writes. Future versions keep their own announcement entries; historical tarball releases were removed once during the npm migration, preserving their Git tags and commit history.
+**After all four exact package versions are confirmed, the same command creates or updates the matching GitHub Release.** Its tag points to the verified source commit and is never moved. The announcement includes the versioned npm install command, package links, and source-linked release notes. Its Node requirement comes from the verified Project tarball, so recovery of an older release retains that version's requirement. GitHub selects Latest on the server using its automatic version/date policy, so an older retry never explicitly overrides a newer announcement. Retrying an unchanged announcement performs no writes. Future versions keep their own announcement entries; historical tarball releases were removed once during the npm migration, preserving their Git tags and commit history.
 
 This automation runs through `npm run release:npm` (equivalent to `npm run release -- --npm`). A manual `npm publish` outside this workflow does not update GitHub. GitHub notification behavior is documented in its [release API](https://docs.github.com/en/rest/releases/releases#create-a-release).
 
@@ -168,7 +190,7 @@ This automation runs through `npm run release:npm` (equivalent to `npm run relea
 
 ## Recovering a partial publication
 
-The three npm publications and the GitHub announcement are not one transaction. For GitHub Actions, rerun Release to reuse the verified CI artifact. For local publication, rerun the same commit with a new empty output directory. Identical versions already in npm are skipped. Never increment versions just to retry unchanged bytes.
+The four npm publications and the GitHub announcement are not one transaction. For GitHub Actions, rerun Release to reuse the verified CI artifact. For local publication, rerun the same commit with a new empty output directory. Identical versions already in npm are skipped. Never increment versions just to retry unchanged bytes.
 
 If the publication scripts need a fix after tagging, merge and verify that fix first, then use the current workflow to publish the original tag:
 
@@ -184,7 +206,7 @@ If npm succeeded but the GitHub announcement failed, use the retained verified f
 npm run release:npm -- --commit COMMIT_SHA --announce-only --assets-dir /tmp/ccdd-npm-release
 ```
 
-This command requires GitHub authentication but no npm login. It loads metadata from the exact committed snapshot, validates the retained checksums and verification record, and confirms all three matching npm versions before any GitHub write. It does not rebuild or publish npm packages. A missing or mismatched package, moved source tag, or existing Release with uploaded assets stops the operation. The command never silently deletes historical downloads.
+This command requires GitHub authentication but no npm login. It loads metadata from the exact committed snapshot, validates the retained checksums and verification record, and confirms all four matching npm versions before any GitHub write. It does not rebuild or publish npm packages. A missing or mismatched package, moved source tag, or existing Release with uploaded assets stops the operation. The command never silently deletes historical downloads.
 
 ## Local verification files
 
@@ -192,6 +214,7 @@ These files remain local release evidence and recovery inputs:
 
 | File | Purpose |
 | --- | --- |
+| `ccdd-ccdd-<version>.tgz` | Single-install facade with exact module dependencies |
 | `ccdd-core-<version>.tgz` | Definition-only SDK package |
 | `ccdd-project-<version>.tgz` | Project execution package |
 | `ccdd-default-tools-<version>.tgz` | Optional default tool library |

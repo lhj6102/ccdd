@@ -20,6 +20,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./cli": {
+      "types": "./dist/script.d.ts",
+      "import": "./dist/script.js"
     }
   },
   "types": "./dist/index.d.ts",

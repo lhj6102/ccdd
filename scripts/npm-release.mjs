@@ -5,7 +5,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
-import { packedManifest, validateAssets } from './release.mjs';
+import { packedManifest, validateAssets, releasePackages } from './release.mjs';
 
 const registry = 'https://registry.npmjs.org/';
 const integrity = bytes => `sha512-${createHash('sha512').update(bytes).digest('base64')}`;
@@ -60,13 +60,13 @@ export function createNpmClient({ environment = process.env, signal, confirmatio
 function matchesPublished(published, name, version, bytes) {
   assert.ok(published, `npm has not confirmed ${name}@${version} yet. Rerun the same commit to check and resume publication.`);
   assert.ok(published.name === name && published.version === version && published.dist?.integrity === integrity(bytes),
-    `npm already contains different bytes for ${name}@${version}. Choose a new version for all three packages; published versions cannot be replaced.`);
+    `npm already contains different bytes for ${name}@${version}. Choose a new version for all coordinated packages; published versions cannot be replaced.`);
 }
 
 export async function planNpmRelease({ files, metadata, client }) {
   assert.ok(metadata.projectFile, 'npm publication requires core, Project and default-tools packages');
   // Core must be available before packages that declare it as a peer dependency.
-  const packages = [['@ccdd/core', metadata.coreFile], ['@ccdd/project', metadata.projectFile], ['@ccdd/default-tools', metadata.toolsFile]];
+  const packages = releasePackages(metadata);
   const plan = [];
   for (const [name, file] of packages) {
     const bytes = files.get(file), manifest = packedManifest(bytes);

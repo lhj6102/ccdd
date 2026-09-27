@@ -40,10 +40,11 @@ These relationships define required input, verification and default dependency-G
 Use Node.js 22 LTS, version 22.19.0 or later.
 
 ```sh
-npm install --ignore-scripts @ccdd/core@6.1.0 @ccdd/project@6.1.0
+npm install --ignore-scripts @ccdd/ccdd
+# or: pnpm add --ignore-scripts @ccdd/ccdd
 ```
 
-This single command installs the definitions and Project runtime, including their dependencies. Common view tools are optional and installed separately; see [installation choices](docs/getting-started.md#installation-choices).
+The single public package installs exact matching core, Project and default-tools modules as normal dependencies. Its `ccdd`, `ccdd-project` and `ccdd-view` commands delegate to those modules. Use `@ccdd/ccdd/core`, `/project` and `/tools` imports; see [installation choices](docs/getting-started.md#installation-choices).
 
 Inside an Artifact folder, create `ccdd.json`:
 
@@ -92,6 +93,7 @@ The optional local monitor shows folders, relationships, cycles, review progress
 
 | Package | Responsibility |
 | --- | --- |
+| `@ccdd/ccdd` | Single-install entrypoint, public module subpaths and CLI delegates. |
 | `@ccdd/core` | Public definitions and logical path resolution. |
 | `@ccdd/project` | Validation, CLI, Broker, Executors and monitor. |
 | `@ccdd/default-tools` | Optional common view scripts; no automatic registration. |

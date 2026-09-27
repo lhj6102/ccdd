@@ -13,6 +13,7 @@ const commitPattern = /^[0-9a-f]{40}(?![\s\S])/;
 const hashPattern = /^[0-9a-f]{64}(?![\s\S])/;
 const repositoryPattern = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+(?![\s\S])/;
 const sha256 = bytes => createHash('sha256').update(bytes).digest('hex');
+const sameDependencies = (actual, expected) => actual && Object.keys(actual).length === Object.keys(expected).length && Object.entries(expected).every(([name, version]) => actual[name] === version);
 const invariant = (condition, message) => { if (!condition) throw new Error(message); };
 const jsonFile = async file => JSON.parse(await readFile(file, 'utf8'));
 
@@ -59,9 +60,17 @@ export async function readReleaseMetadata(root) {
     invariant(range && compareVersions(version, range[1]) >= 0 && BigInt(version.split('.')[0]) < BigInt(range[2]), 'Project peer range must include this core version.');
     invariant(lock.packages?.['packages/project']?.version === version && lock.packages['packages/project'].peerDependencies?.[packageNames.core] === peer, 'Project package-lock version or peer range is stale.');
   }
+  const umbrella = core.workspaces?.includes('packages/ccdd') ? await jsonFile(resolve(root, 'packages/ccdd/package.json')) : null;
+  if (umbrella) {
+    invariant(umbrella.name === '@ccdd/ccdd' && umbrella.version === version, 'Umbrella package name or version differs from core.');
+    invariant(lock.packages?.['packages/ccdd']?.version === version, 'Umbrella package-lock version is stale.');
+    const expected = { [packageNames.core]: version, [packageNames.project]: version, [packageNames.tools]: version };
+    invariant(sameDependencies(umbrella.dependencies, expected), 'Umbrella must depend on the exact coordinated module versions.');
+    invariant(sameDependencies(lock.packages['packages/ccdd'].dependencies, expected), 'Umbrella lockfile dependencies differ from the coordinated modules.');
+  }
   const notes = await readFile(resolve(root, `docs/releases/${tag}.md`), 'utf8');
   invariant(notes.trim(), `Release notes docs/releases/${tag}.md must not be empty.`);
-  return { version, tag, notes, packageNames, coreFile: tarballFile(core.name, version), toolsFile: tarballFile(tools.name, version), ...(project ? { projectFile: tarballFile(project.name, version) } : {}) };
+  return { version, tag, notes, packageNames, coreFile: tarballFile(core.name, version), toolsFile: tarballFile(tools.name, version), ...(project ? { projectFile: tarballFile(project.name, version) } : {}), ...(umbrella ? { umbrellaFile: tarballFile(umbrella.name, version) } : {}) };
 }
 
 function validateRepository(repository) {
@@ -161,9 +170,15 @@ export function packedManifest(bytes) {
   return manifest;
 }
 
+/** Dependency-first package order shared by verification, publication and announcements. */
+export function releasePackages(metadata) {
+  const names = metadata.packageNames ?? namesForCore(coreName);
+  return [[names.core, metadata.coreFile], ...(metadata.projectFile ? [[names.project, metadata.projectFile]] : []),
+    [names.tools, metadata.toolsFile], ...(metadata.umbrellaFile ? [['@ccdd/ccdd', metadata.umbrellaFile]] : [])];
+}
+
 export async function validateAssets(directory, metadata, sha) {
-  const namesForRelease = metadata.packageNames ?? namesForCore(coreName);
-  const packages = [[namesForRelease.core, metadata.coreFile], [namesForRelease.tools, metadata.toolsFile], ...(metadata.projectFile ? [[namesForRelease.project, metadata.projectFile]] : [])];
+  const packages = releasePackages(metadata);
   const names = [...packages.map(([, file]) => file), 'verification.json', 'SHA256SUMS'].sort();
   invariant(JSON.stringify((await readdir(directory)).sort()) === JSON.stringify(names), 'Release assets must contain exactly the declared package tarballs, verification.json and SHA256SUMS.');
   const files = new Map();
@@ -184,7 +199,7 @@ export async function validateAssets(directory, metadata, sha) {
   const tests = report.tests;
   invariant(tests && Number.isSafeInteger(tests.total) && tests.total > 0 && tests.passed === tests.total && tests.failed === 0 && tests.cancelled === 0 && tests.skipped === 0 && tests.todo === 0 && hashPattern.test(tests.reportSha256), 'Verification report must prove a complete passing test run.');
   invariant(report.providerCalls === false && report.desktopLaunches === false, 'Release verification must not call Providers or launch desktop applications.');
-  invariant(Array.isArray(report.installations) && report.installations.length === 2, 'Verification report must prove both production installation modes.');
+  invariant(Array.isArray(report.installations) && report.installations.length === (metadata.umbrellaFile ? 4 : 2), 'Verification report must prove both production installation modes.');
   const inPlace = compareVersions(metadata.version, '4.0.0') >= 0;
   for (const [name, defaults, tool] of [['core-and-default-tools', true, 'read_spec'], ['core-only-custom-tool', false, 'inspect_spec']]) {
     const run = report.installations.find(item => item.name === name);
@@ -193,10 +208,18 @@ export async function validateAssets(directory, metadata, sha) {
     invariant(run?.productionInstall === true && run.installScripts === false && run.cliHelpVersion === metadata.version && run.defaultToolsInstalled === defaults && run.tool === tool && run.actualToolExecution === true && workspaceVerified, `Verification report is missing the ${name} installation check.`);
     if (metadata.projectFile) invariant(run.projectValidation === true, 'Project package must prove actual validation and reuse in both installation modes.');
   }
+  if (metadata.umbrellaFile) for (const manager of ['npm', 'pnpm']) {
+    const run = report.installations.find(item => item.name === `umbrella-${manager}`);
+    invariant(run?.productionInstall === true && run.installScripts === false && run.onlyDirectDependency === '@ccdd/ccdd'
+      && run.cliHelpVersion === metadata.version && run.publicImports === true && run.typeImports === true
+      && run.defaultToolExecution === true && run.customToolExecution === true && run.binExecution === true
+      && run.runtime === 'GREEN' && run.projectValidation === true, `Missing strict ${manager} umbrella installation evidence.`);
+  }
   invariant(Array.isArray(report.packages) && report.packages.length === packages.length, 'Verification report must identify all declared packages.');
   for (const [name, file] of packages) {
     const bytes = files.get(file), record = report.packages.find(item => item.name === name), manifest = packedManifest(bytes);
     invariant(record?.file === file && record.version === metadata.version && record.sha256 === sha256(bytes) && record.bytes === bytes.length && manifest.name === name && manifest.version === metadata.version, `Packed ${name} does not match the verification report.`);
+    if (name === '@ccdd/ccdd') invariant(sameDependencies(manifest.dependencies, { '@ccdd/core': metadata.version, '@ccdd/project': metadata.version, '@ccdd/default-tools': metadata.version }), 'Packed umbrella must lock the exact release modules.');
   }
   return files;
 }
