@@ -1,6 +1,6 @@
 import type { RepoConfig, ReviewEnvelope, ReviewResult, ReviewRequest, WorkspaceIntegrity } from '../contracts.js';
 
-export type ProjectSelection = { kind: 'all' } | { kind: 'artifact'; artifactId: string } | { kind: 'critic'; criticId: string };
+export type ProjectSelection = { kind: 'all' } | { kind: 'artifact'; artifactId: string } | { kind: 'critic'; criticId: string } | { kind: 'critics'; criticIds: string[] } | { kind: 'artifacts'; artifactIds: string[] };
 export interface ValidationInput {
   version: 3; key: string; criticHash: string;
   target: { id: string; hash: string }; deps: { id: string; hash: string }[];
@@ -17,6 +17,7 @@ export interface ProjectSnapshot {
   workspaceIntegrity?: WorkspaceIntegrity;
 }
 export interface ValidationEvidence {
+  executionProvenance?: import('../provenance.js').ExecutionProvenance | null;
   requestId: string; runId: string; criticId: string; input: ValidationInput;
   completedAt: string; verdict: ReviewResult['verdict']; result: ReviewResult;
 }

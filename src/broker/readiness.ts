@@ -28,7 +28,8 @@ export function createReadiness(db: DatabaseSync, store: ReturnType<typeof recor
     event(id, null, 'run.status', `Run ${status}`, { status });
   };
   const publish = (member: Member, request: Record<string, any>) => {
-    db.prepare('INSERT INTO request_changes(run_id,request_id,critic_id,status,result_ref,error,error_code) VALUES (?,?,?,?,?,?,?)').run(member.run_id, request.id, member.critic_id, request.status, request.semanticRef ?? null, request.error ?? null, request.errorCode ?? null);
+    const change = db.prepare('INSERT INTO request_changes(run_id,request_id,critic_id,status,result_ref,error,error_code) VALUES (?,?,?,?,?,?,?)').run(member.run_id, request.id, member.critic_id, request.status, request.semanticRef ?? null, request.error ?? null, request.errorCode ?? null);
+    db.prepare('INSERT INTO change_attempts(cursor,attempt_id,provenance_ref) VALUES(?,?,?)').run(change.lastInsertRowid, request.attemptId ?? null, request.executionProvenance ? store.put(request.executionProvenance) : null);
   };
   const effectiveState = (member: Member, request: Record<string, any>) => {
     const gate = db.prepare('SELECT unmet,red FROM gate_counts WHERE run_id=? AND critic_id=?').get(member.run_id,member.critic_id);

@@ -1,3 +1,6 @@
+import { diagnosticScope } from '../diagnostic-scope.js';
+import { executionScope } from '../execution-scope.js';
+import { pinnedArgument } from '../provenance.js';
 import { constants } from 'node:fs';
 import { access, lstat, mkdir, mkdtemp, readFile, realpath, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -101,6 +104,7 @@ async function executable(command: string, cwd: string, workspace: string): Prom
 function toolEnvironment(outputDir: string, temporary: string): NodeJS.ProcessEnv {
   const names = ['PATH', 'LANG', 'LC_ALL', 'SYSTEMROOT', 'WINDIR', 'DISPLAY', 'WAYLAND_DISPLAY', 'XAUTHORITY', 'XDG_RUNTIME_DIR', 'DBUS_SESSION_BUS_ADDRESS'];
   return { ...Object.fromEntries(names.flatMap(name => process.env[name] === undefined ? [] : [[name, process.env[name]!]])),
+    ...(diagnosticScope.getStore() ? { NODE_OPTIONS: `--import=${diagnosticScope.getStore()!.guard}`, CCDD_OFFLINE_GUARD_LOG: process.env.CCDD_OFFLINE_GUARD_LOG } : {}),
     HOME: temporary, USERPROFILE: temporary, TMPDIR: temporary, TMP: temporary, TEMP: temporary,
     XDG_CACHE_HOME: join(temporary, 'cache'), CARGO_TARGET_DIR: join(outputDir, 'cargo-target'),
     CCDD_OUTPUT_DIR: outputDir, CCDD_TMP_DIR: temporary };
@@ -208,13 +212,16 @@ export async function createReviewTools(options: ReviewToolsOptions): Promise<Re
   const invoke = async (tool: ReviewToolDefinition, actual: Record<string, unknown>): Promise<{ result: ToolResult; call: ReviewToolCall }> => {
     controller.signal.throwIfAborted();
     const cwd = scope[tool.artifactId].path, script = definition(tool).script;
-    const command = await executable(script.command, cwd, root);
+    const execution = executionScope.getStore();
+    const pin = (value: string) => execution ? pinnedArgument(value, cwd, root, execution.runtimeRoot, execution.declaredPaths) : value;
+    const command = pin(await executable(script.command, cwd, root));
+    const scriptArgs = [...(diagnosticScope.getStore() && command === process.execPath ? ['--import', diagnosticScope.getStore()!.guard] : []), ...script.args.map(pin)];
     const callDir = await mkdtemp(join(outputDir!, 'call-')), temporary = join(callDir, '.tmp');
     await mkdir(temporary);
-    const request: ScriptToolRequest = { version: 1, context: { artifactId: tool.artifactId, artifactPath: cwd, outputDir: callDir, tmpDir: temporary, scope }, args: actual };
+    const request: ScriptToolRequest = { version: 1, context: { artifactId: tool.artifactId, artifactPath: cwd, outputDir: callDir, tmpDir: temporary, scope, ...(execution ? { executionPaths: Object.fromEntries((tool.metadata.executionPaths ?? []).map(name => [name, join(execution.runtimeRoot, name)])) } : {}) }, args: actual };
     let processResult;
     try {
-      processResult = await runProcess(command, script.args, { cwd, input: JSON.stringify(request), env: toolEnvironment(callDir, temporary), signal: controller.signal,
+      processResult = await runProcess(command, scriptArgs, { cwd, input: JSON.stringify(request), env: toolEnvironment(callDir, temporary), signal: controller.signal,
         timeoutMs: tool.metadata.timeoutMs ?? 120000, maxOutputBytes: 16 * 1024 * 1024 });
     } catch (error) {
       controller.signal.throwIfAborted();

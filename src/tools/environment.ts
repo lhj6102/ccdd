@@ -1,3 +1,5 @@
+import { diagnosticScope } from '../diagnostic-scope.js';
+import { executionScope } from '../execution-scope.js';
 import { spawn } from 'node:child_process';
 import { mkdir, realpath } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
@@ -32,6 +34,7 @@ function checkEnvironment(outputDir: string, tmpDir: string): NodeJS.ProcessEnv 
   return {
     ...Object.fromEntries(names.flatMap(name => process.env[name] === undefined ? [] : [[name, process.env[name]!] ])),
     CCDD_OUTPUT_DIR: outputDir, CCDD_TMP_DIR: tmpDir, TMPDIR: tmpDir, TMP: tmpDir, TEMP: tmpDir,
+    ...(diagnosticScope.getStore() ? { NODE_OPTIONS: `--import=${diagnosticScope.getStore()!.guard}`, CCDD_OFFLINE_GUARD_LOG: process.env.CCDD_OFFLINE_GUARD_LOG } : {}),
     XDG_CACHE_HOME: join(tmpDir, 'cache'), CARGO_TARGET_DIR: join(outputDir, 'cargo-target'),
   };
 }
@@ -43,9 +46,12 @@ export function runEnvironmentScript({ command, args, cwd, outputDir, tmpDir, si
 }): Promise<{ ok: boolean; message: string; stdout: string }> {
   signal?.throwIfAborted();
   return new Promise(resolveCheck => {
-    const child = spawn(command, args, {
-      cwd, env: checkEnvironment(outputDir, tmpDir), shell: false, detached: process.platform !== 'win32', stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true,
-    });
+    const guarded = !!executionScope.getStore();
+    let child: ReturnType<typeof spawn>;
+    try { child = spawn(guarded ? process.execPath : command, guarded ? [fileURLToPath(new URL('../executors/launch-host.js', import.meta.url)), command, ...args] : args, {
+      cwd, env: checkEnvironment(outputDir, tmpDir), shell: false, detached: process.platform !== 'win32', stdio: guarded ? ['ignore', 'pipe', 'pipe', 'ipc'] : ['ignore', 'pipe', 'pipe'], windowsHide: true,
+    }); } catch (error) { resolveCheck({ ok: false, stdout: '', message: `${label} could not be started: ${error instanceof Error ? error.message : String(error)}` }); return; }
+    let untrack: (() => void) | undefined;
     const chunks: Buffer[] = [], stdout: Buffer[] = [];
     let bytes = 0, retained = 0, settled = false, failure: string | undefined, killTimer: NodeJS.Timeout | undefined;
     const kill = (kind: NodeJS.Signals): void => { try { if (process.platform !== 'win32' && child.pid) process.kill(-child.pid, kind); else child.kill(kind); } catch { /* Already exited. */ } };
@@ -59,7 +65,7 @@ export function runEnvironmentScript({ command, args, cwd, outputDir, tmpDir, si
     const stop = (message: string): void => {
       if (settled || failure) return;
       failure = message; kill('SIGTERM');
-      killTimer = setTimeout(() => { kill('SIGKILL'); finish(false, message); }, 500);
+      killTimer = setTimeout(() => { kill('SIGKILL'); }, 500);
     };
     const abort = (): void => stop(`${label} was cancelled.`);
     const timer = setTimeout(() => stop(`${label} timed out after ${timeoutMs} ms.`), timeoutMs);
@@ -68,13 +74,17 @@ export function runEnvironmentScript({ command, args, cwd, outputDir, tmpDir, si
       if (retained < 8192) { const part = chunk.subarray(0, 8192 - retained); chunks.push(part); retained += part.length; }
       if (bytes > 65536) stop(`${label} output exceeded 64 KiB.`);
     };
-    child.stdout.on('data', (chunk: Buffer) => { if (bytes < 65536) stdout.push(chunk.subarray(0, 65536 - bytes)); capture(chunk); }); child.stderr.on('data', capture);
+    child.stdout!.on('data', (chunk: Buffer) => { if (bytes < 65536) stdout.push(chunk.subarray(0, 65536 - bytes)); capture(chunk); }); child.stderr!.on('data', capture);
     signal?.addEventListener('abort', abort, { once: true });
-    child.on('error', () => { kill('SIGKILL'); finish(false, failure ?? `${label} could not be started.`); });
+    child.on('error', () => { failure ??= `${label} could not be started.`; kill('SIGKILL'); });
     // A readiness check may not leave a background process after its script exits.
     child.on('exit', () => kill('SIGKILL'));
-    child.on('close', code => finish(!failure && code === 0, failure ?? (code === 0 ? description : `${label} failed (exit ${code ?? 'signal'}): ${description}`)));
-    if (signal?.aborted) abort();
+    child.on('close', code => { untrack?.(); finish(!failure && code === 0, failure ?? (code === 0 ? description : `${label} failed (exit ${code ?? 'signal'}): ${description}`)); });
+    try {
+      if (child.pid) untrack = executionScope.getStore()?.trackChild(child.pid);
+      if (signal?.aborted) abort();
+      else if (guarded) child.send?.('admitted', error => { if (error) stop(`${label} launch admission failed: ${error.message}`); });
+    } catch (error) { stop(`${label} child registration failed: ${error instanceof Error ? error.message : String(error)}`); }
   });
 }
 

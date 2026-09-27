@@ -2,17 +2,39 @@
 
 CCDD packages are distributed through npm. GitHub Releases announce each version with an installation command, npm package links, and release notes. They do not host installation tarballs. GitHub still supplies automatic Source code archives; those contain source, not installable packages.
 
-See [getting started](getting-started.md) for setup and [v6.0.2 release notes](releases/v6.0.2.md) for the current changes.
+See [getting started](getting-started.md) for setup and [v6.1.0 release notes](releases/v6.1.0.md) for current changes.
 
-## Current release: 6.0.2
+## Current release: 6.1.0
 
-This documentation-only patch corrects stale installation commands and packaged
-READMEs, explains explicit core/Project installation and optional default tools,
-and aligns introductory dependency-gate wording with the existing runtime.
-Runtime behavior, identity rules and state format are unchanged. Existing
-format-6 state remains valid; no new state directory is needed when upgrading
-from 6.0.0 or 6.0.1. The [6.0.1 release notes](releases/v6.0.1.md) retain the
-submission-performance measurements and limits.
+Machine-wide provider/model admission, weighted identity capacity, durable
+submission budgets, original pinned-runtime provenance and guarded offline
+load checks now belong to CCDD. Pi AI and Agent Core are both 0.87.1. See
+[review management](review-management.md) for the precise contracts and limits.
+
+## Upgrading to 6.1
+
+1. Finish or cancel reviews with their old installation and **stop all 6.0 workers**.
+   New code cannot make an already-running old executable obey machine admission.
+2. Install matching core, Project and any default-tools packages at 6.1.0. Project
+   and default-tools require core `>=6.1.0 <7`; mixed 6.0 core is unsupported.
+   Core now declares identity weights, root review policy and pinned script
+   execution-path context. Default-tools follows the aligned support policy;
+   this is not a claim that every older individual tool call necessarily fails.
+3. Remove `identityConcurrency` / `--identity-concurrency`. Set local
+   `identityCapacity` and per-Artifact `stale.weight` instead. Optional executor
+   concurrency is an additional tighter cap, never an independent provider pool.
+4. Keep one shared local resource configuration and machine state root across
+   processes/repositories. Use per-repository `--state-dir` for review history;
+   do not give each repository a different `CCDD_STATE_HOME`. Restart with the
+   new CLI and `resources-1` workers; old saved worker files cannot resume.
+5. Preserve format-6 completed evidence. There is no migration, forced semantic
+   identity salt or new state-directory requirement for 6.0 completed history.
+   Missing historical execution provenance is `null`, never filled from current
+   files. Preserve the machine database while Runs refer to its durable budgets.
+
+Declared runtime tools must use pinned entrypoints, relative captured siblings,
+or `context.executionPaths`; the runtime cache is not an OS sandbox. See the
+[full upgrade and resource contract](review-management.md#repository-policy-and-migration).
 
 ## Breaking changes when upgrading from before 6.0
 
@@ -29,21 +51,22 @@ Live subscribers should drain `broker.changes` cursors. Compact `getRun` and
 `listRuns` are explicit whole-Run snapshots, not per-event polling APIs.
 Normalized content-addressed storage authenticates immutable records and keeps
 large definitions off lifecycle transitions. The optional admission hook is
-cancellable; default admission is local FIFO, not a machine-wide provider pool.
+cancellable; in 6.1 it adds a precondition to the mandatory shared machine
+admission rather than replacing it.
 See the [6.0 migration guide](migration-v6.md) and release notes for the measured
 performance, integrity guarantees and stated limits.
 
 ## Installing and upgrading
 
-CCDD 6.0.2 supports Node.js 22 LTS (22.19.0 or later). Install matching versions of the three packages:
+CCDD 6.1.0 supports Node.js 22 LTS (22.19.0 or later). Install matching versions of the three packages:
 
 ```sh
-npm install --ignore-scripts @ccdd/core@6.0.2 @ccdd/project@6.0.2 @ccdd/default-tools@6.0.2
+npm install --ignore-scripts @ccdd/core@6.1.0 @ccdd/project@6.1.0 @ccdd/default-tools@6.1.0
 npx ccdd-project config check
 npx ccdd-project tools check
 ```
 
-`@ccdd/core` supplies definitions. `@ccdd/project` supplies validation, the CLI, Broker, Executors, and monitor. `@ccdd/default-tools` is optional when all tools are custom. Project and default-tools 6.0.2 target core `>=6.0.0 <7`. Keep installed CCDD packages on the same major line.
+`@ccdd/core` supplies definitions. `@ccdd/project` supplies validation, the CLI, Broker, Executors, and monitor. `@ccdd/default-tools` is optional when all tools are custom. Project and default-tools 6.1.0 target core `>=6.1.0 <7`. Keep installed CCDD packages on the same major line.
 
 Version 4 introduced folder-owned `ccdd.json` files. Projects older than v4
 must also follow the [v4 configuration migration](migration-v4.md). The
@@ -53,7 +76,7 @@ upgrading from 4.x; all upgrades to 6.0 must follow the [6.0 migration](migratio
 Finish or cancel active reviews before changing dependencies in the reviewed
 workspace. Restart workers and the monitor with the new CLI. Use a fresh state
 directory only when upgrading from a pre-6.0 format; existing format-6 state is
-compatible with 6.0.2. Older state is not automatically deleted and is not readable
+compatible with 6.1.0. Older state is not automatically deleted and is not readable
 or resumable by 6.0; inspect it only with its corresponding old installation.
 
 For older projects, follow the [package and import migration](releases/v2.0.1.md#migration), [Project migration from v1](releases/v2.0.0.md#migrating-from-v1), and, when needed, [configuration migration from before v1](releases/v1.0.0.md#migrating-existing-configuration). Use `npx ccdd doctor` in the Agent environment to check actual authentication, Provider, and model access. It calls the Provider and consumes account usage. `tools check --execute` actually runs the selected tool.
@@ -69,8 +92,8 @@ To publish, merge the version change and release notes, wait for that commit's
 CI to succeed, then push its version tag:
 
 ```sh
-git tag v6.0.2 COMMIT_SHA
-git push origin v6.0.2
+git tag v6.1.0 COMMIT_SHA
+git push origin v6.1.0
 ```
 
 `release.yml` runs one Node 22 LTS job. It installs npm 11.19.1 for Trusted
@@ -150,7 +173,7 @@ The three npm publications and the GitHub announcement are not one transaction. 
 If the publication scripts need a fix after tagging, merge and verify that fix first, then use the current workflow to publish the original tag:
 
 ```sh
-gh workflow run release.yml --ref main -f tag=v6.0.2
+gh workflow run release.yml --ref main -f tag=v6.1.0
 ```
 
 This recovery uses the publication scripts from main and a separate checkout of the existing tag for release metadata. It still requires that tag's successful main CI and publishes only its retained, checksum-verified packages. It never moves the tag, rebuilds packages, or substitutes the workflow commit's packages. CI also checks each completed verification report with the same asset validator used by publication.

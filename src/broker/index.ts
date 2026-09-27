@@ -1,3 +1,7 @@
+import { diagnosticScope } from '../diagnostic-scope.js';
+import { captureExecution } from '../provenance.js';
+import { executionScope } from '../execution-scope.js';
+import { openResources, canonicalRepositoryId, rejectIdentityConcurrency, validateMaxExecutions, type ResourceLease } from '../resources.js';
 import { assertStateFormat, initializeStateFormat } from '../state-format.js';
 import { semanticResult, validateFinalResult } from '../response-schema.js';
 import { requesterRun, requesterRequest, resultView, type ResultDetail, type ResultOptions } from '../result-view.js';
@@ -10,7 +14,7 @@ import { setTimeout as delay, setImmediate as yieldTurn } from 'node:timers/prom
 import { prepareReviewRequests } from '../requester/index.js';
 import { readWorkspaceConfig } from './config.js';
 import { createGraphDefinition, type GraphDefinition } from './graph.js';
-import { localAdmission, type Admission, type AdmissionLease } from './admission.js';
+import { type Admission, type AdmissionLease } from './admission.js';
 export type { Admission, AdmissionLease, AdmissionRequest } from './admission.js';
 import { readChanges, type ChangeOptions } from './changes.js';
 import { initializeRecords, records } from './storage.js';
@@ -25,7 +29,7 @@ import { createReviewTools, type ToolExecutionDiagnostic } from '../tools/runner
 import { createHumanClaims, HUMAN_PREPARATION_LEASE_MS } from './human-claims.js';
 import { prepareHumanReview } from '../executors/human-preparation.js';
 import { prepareWorkspace, reopenWorkspace, type WorkspaceDescriptor, type WorkspaceHandle, type WorkspaceIntegrity } from '../workspaces/index.js';
-import { createProjectSnapshot, DEFAULT_IDENTITY_CONCURRENCY, positiveConcurrency } from '../project/identity.js';
+import { createProjectSnapshot, positiveConcurrency } from '../project/identity.js';
 import { includedCritics, planProject } from '../project/query.js';
 import { readEvidence, storedRequesterRun } from '../project/store.js';
 import type { ProjectRunDefinition, ProjectSelection } from '../project/types.js';
@@ -39,7 +43,7 @@ export interface RunRecord {
   requesterId: string; scope?: { kind: 'graph' } | { kind: 'chain' } | { kind: 'critic'; criticId: string } | { kind: 'project' };
   project?: ProjectRunDefinition;
   graph?: GraphDefinition;
-  status: RunStatus; coalescingGraceMs?: number; createdAt: string; completedAt?: string; error?: string;
+  workerProtocol?: 'resources-1'; maxExecutions?: number; repoExecutorCap?: number; status: RunStatus; coalescingGraceMs?: number; createdAt: string; completedAt?: string; error?: string;
 }
 export interface BrokerEvent { id: number; runId: string; requestId: string | null; createdAt: string; type: string; message: string; data?: unknown }
 export interface RunView extends RunRecord { scope: NonNullable<RunRecord['scope']>; owner: { pid: number; claimedAt: string } | null; requests: ReviewRequest[]; events: BrokerEvent[] }
@@ -108,9 +112,9 @@ function prepareStateDirectory(repoPath: string, stateDir: string) {
 }
 
 /** Durable broker operations. Merely opening the store never starts a worker. */
-export function createBroker<D extends ResultDetail = 'compact'>({ detail, repoPath, stateDir, repoId = 'demo', coalescingGraceMs = 15_000, maxConcurrentExecutors = 4, admission = localAdmission(maxConcurrentExecutors), identityConcurrency = DEFAULT_IDENTITY_CONCURRENCY, executors, workspaceIntegrity = 'content', workspaceAdapter = { prepareWorkspace, reopenWorkspace } }: BrokerOptions & ResultOptions<D>) {
-  positiveConcurrency(maxConcurrentExecutors, 'maxConcurrentExecutors');
-  positiveConcurrency(identityConcurrency, 'identityConcurrency');
+export function createBroker<D extends ResultDetail = 'compact'>({ detail, repoPath, stateDir, repoId = 'demo', coalescingGraceMs = 15_000, maxConcurrentExecutors, admission, identityConcurrency, executors, workspaceIntegrity = 'content', workspaceAdapter = { prepareWorkspace, reopenWorkspace } }: BrokerOptions & ResultOptions<D>) {
+  if (maxConcurrentExecutors !== undefined) positiveConcurrency(maxConcurrentExecutors, 'maxConcurrentExecutors');
+  rejectIdentityConcurrency(identityConcurrency);
   if (!Number.isSafeInteger(coalescingGraceMs) || coalescingGraceMs < 0 || coalescingGraceMs > 300_000) throw new Error('coalescingGraceMs must be an integer from 0 to 300000.');
   if (detail !== undefined && detail !== 'compact' && detail !== 'full') throw new Error('detail must be compact or full.');
   if (!['content', 'metadata'].includes(workspaceIntegrity)) throw new Error('Workspace integrity must be content or metadata.');
@@ -141,6 +145,12 @@ export function createBroker<D extends ResultDetail = 'compact'>({ detail, repoP
       CREATE TABLE IF NOT EXISTS metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS run_owners (run_id TEXT PRIMARY KEY REFERENCES runs(id), pid INTEGER NOT NULL, process_identity TEXT, token TEXT NOT NULL, claimed_at TEXT NOT NULL);`);
     initializeRecords(db);
+    for (const row of db.prepare("SELECT o.*,r.data FROM run_owners o JOIN runs r ON r.id=o.run_id WHERE json_extract(r.data,'$.workerProtocol') IS NOT 'resources-1'").all()) {
+      if (ownerAlive(row as unknown as OwnerRecord)) throw new Error('An old worker is still active in this state. Stop all 6.0 workers before using machine resource admission.');
+    }
+    const diagnostic = db.prepare("SELECT value FROM metadata WHERE key='diagnostic-only'").get();
+    if (diagnostic && !diagnosticScope.getStore()) throw new Error('Offline diagnostic state cannot be opened as review evidence.');
+    if (diagnosticScope.getStore()) db.prepare("INSERT OR IGNORE INTO metadata(key,value) VALUES('diagnostic-only','true')").run();
     const previousRepo = db.prepare('SELECT value FROM metadata WHERE key = ?').get('registered-repo');
     const identity = JSON.stringify({ repoPath, repoId });
     if (previousRepo && previousRepo.value !== identity) throw new Error('This state directory belongs to a different registered repository.');
@@ -149,6 +159,9 @@ export function createBroker<D extends ResultDetail = 'compact'>({ detail, repoP
     if (db.prepare('SELECT value FROM metadata WHERE key = ?').get('registered-repo')?.value !== identity) throw new Error('This state directory belongs to a different registered repository.');
   } catch (error) { db?.close(); throw error; }
 
+  const resources = openResources();
+  const repositoryKey = canonicalRepositoryId(repoPath);
+  const localCap = maxConcurrentExecutors ?? Number.MAX_SAFE_INTEGER;
   const polling = createStatusPolling(db);
   let closed = false;
   let closing = false;
@@ -189,7 +202,7 @@ export function createBroker<D extends ResultDetail = 'compact'>({ detail, repoP
   };
   const saveRequest = (request: ReviewRequest) => {
     const packed = required(requestHeader(request.id), 'Request');
-    for (const key of ['status','startedAt','completedAt','claimedBy','claimedAt','tryClaim','preparationAttempt','claimAttemptId','notifiedAt','error','errorCode','blockedReason'] as const) {
+    for (const key of ['status','startedAt','completedAt','claimedBy','claimedAt','tryClaim','preparationAttempt','claimAttemptId','notifiedAt','error','errorCode','blockedReason','executionProvenance'] as const) {
       if (request[key] === undefined) delete packed[key]; else packed[key] = request[key];
     }
     packed.resultRef = request.result ? store.put(request.result) : null;
@@ -213,10 +226,11 @@ export function createBroker<D extends ResultDetail = 'compact'>({ detail, repoP
   const refreshReadinessWithin = (id: string) => readiness.refresh(id);
   const updateRunStatus = (id: string) => readiness.updateRun(id);
 
-  function finishWithin(requestId: string, outcome: { result?: ReviewResult; error?: unknown }, expectedStates: ReviewStatus[] = ['RUNNING', 'WAITING_HUMAN']) {
+  function finishWithin(requestId: string, outcome: { result?: ReviewResult; error?: unknown; executionProvenance?: ReviewRequest['executionProvenance'] }, expectedStates: ReviewStatus[] = ['RUNNING', 'WAITING_HUMAN']) {
     const { result, error } = outcome, hasError = Object.hasOwn(outcome, 'error');
     const request = requestHeader(requestId);
     if (!request || !expectedStates.includes(request.status) || terminal.has(required(polling.runStatus(request.runId), 'Run'))) return false;
+    if (outcome.executionProvenance !== undefined) request.executionProvenance = outcome.executionProvenance;
     request.status = hasError ? 'ERROR' : required(result, 'review result').verdict;
     request.resultRef = result ? store.put(result) : null;
     request.semanticRef = result ? store.put(semanticResult(result)) : null;
@@ -281,11 +295,18 @@ export function createBroker<D extends ResultDetail = 'compact'>({ detail, repoP
   async function executeOne(requestId: string, workspace: WorkspaceHandle, token: string, signal: AbortSignal) {
     const initial = required(requestHeader(requestId), 'Request');
     const runId = initial.runId;
-    let lease: AdmissionLease | undefined;
+    let lease: ResourceLease | undefined;
+    let customLease: AdmissionLease | undefined;
     try {
-      if (initial.profile.kind !== 'human') lease = await admission.acquire({ requestId, runId, kind: initial.profile.kind, provider: initial.profile.provider, model: initial.profile.model }, { signal, waiting(reason) {
+      if (initial.profile.kind !== 'human') {
+        const admissionRequest = { requestId, runId, kind: initial.profile.kind, provider: initial.profile.provider, model: initial.profile.model };
+        // Optional admission is a stricter precondition, never the machine authority.
+        customLease = await admission?.acquire(admissionRequest, { signal, waiting(reason) { transaction(() => { const current = required(requestHeader(requestId), 'Request'); if (current.status !== 'QUEUED') return; current.blockedReason = reason.slice(0, 2000); saveHeader(current); }); changed(); } });
+        const caps = [maxConcurrentExecutors, readiness.header(runId)?.repoExecutorCap].filter((value): value is number => value !== undefined);
+        lease = await resources.acquire({ ...admissionRequest, repo: repositoryKey, ...(caps.length ? { repoCap: Math.min(...caps) } : {}) }, { signal, waiting(reason) {
         transaction(() => { const current = required(requestHeader(requestId), 'Request'); if (current.status !== 'QUEUED') return; current.blockedReason = reason.slice(0, 2000); saveHeader(current); }); changed();
       } });
+      }
       signal.throwIfAborted();
     transaction(() => {
       const request = required(requestHeader(requestId), 'Request');
@@ -326,7 +347,20 @@ export function createBroker<D extends ResultDetail = 'compact'>({ detail, repoP
         changed();
         return;
       }
-      const result = validateResult(await requireExecutors().execute(copy(request), {
+      const capture = await captureExecution(request, lease!.token, signal);
+      // Fence cancellation and ownership after every preparation await. Holding the
+      // repository write lock orders remote cancel against the committed start marker.
+      // There is no await or user callback between this guard and invocation.
+      transaction(() => {
+        signal.throwIfAborted();
+        const header = required(requestHeader(requestId), 'Request');
+        if (ownerData(runId)?.token !== token) throw codedError('Review ownership changed before executor start.', 'RUN_OWNERSHIP_LOST');
+        if (header.status !== 'RUNNING' || terminal.has(required(polling.runStatus(runId), 'Run'))) throw codedError('Review was canceled before executor start.', 'REVIEW_CANCELED');
+        lease!.started(capture?.provenance ?? null);
+        header.attemptId = lease!.token; header.executionProvenance = capture?.provenance ?? null;
+        db.prepare('UPDATE requests SET data=? WHERE id=?').run(JSON.stringify(header), requestId);
+      });
+      const result = validateResult(await executionScope.run({ runtimeRoot: capture?.root ?? workspace.descriptor.path, declaredPaths: capture?.paths ?? [], trackChild: pid => lease!.trackChild(pid) }, () => requireExecutors().execute(copy(request), {
         worktreePath: workspace.descriptor.path, workspacePath: workspace.descriptor.path, runDir, signal,
         onEvent(event) {
           if (closed || closing || signal.aborted || !event || polling.requestStatus(requestId) !== 'RUNNING' || !['executor.started', 'artifact.tools.ready', 'artifact.tool.called', 'artifact.tool.completed', 'executor.usage', 'executor.final.invalid', 'executor.final.repair', 'executor.telemetry.failed', 'executor.completed'].includes(event.type)) return;
@@ -360,11 +394,12 @@ export function createBroker<D extends ResultDetail = 'compact'>({ detail, repoP
           appendEvent(runId, requestId, event.type, event.type === 'executor.telemetry.failed' ? 'Some optional execution diagnostics could not be recorded.' : String(event.message ?? event.type).slice(0, 2000), safe);
           changed();
         },
-      }));
+      })));
+      await capture?.verify();
       validateFinalResult(semanticResult(result), request);
       await workspace.assertUnchanged();
       signal.throwIfAborted();
-      transaction(() => { if (ownerData(runId)?.token === token) finishWithin(requestId, { result }); });
+      transaction(() => { if (ownerData(runId)?.token === token) finishWithin(requestId, { result, executionProvenance: capture?.provenance ?? null }); });
       changed();
     } catch (error) {
       const reason = signal.aborted ? signal.reason : error;
@@ -372,7 +407,13 @@ export function createBroker<D extends ResultDetail = 'compact'>({ detail, repoP
       transaction(() => { if (ownerData(runId)?.token === token) finishWithin(requestId, { error: reason }); });
       changed();
     }
-    } catch (error) { if (signal.aborted || fatalExecutionError(error)) throw error; transaction(() => { if (ownerData(runId)?.token === token) finishWithin(requestId, { error }, ['QUEUED']); }); changed(); } finally { await lease?.release(); }
+    } catch (error) { if (signal.aborted || fatalExecutionError(error)) throw error; transaction(() => { if (ownerData(runId)?.token === token) finishWithin(requestId, { error }, ['QUEUED']); }); changed(); } finally {
+      const cleanupErrors: string[] = [];
+      try { lease?.terminal(); } catch (error) { cleanupErrors.push(errorText(error)); }
+      try { await lease?.release(); } catch (error) { cleanupErrors.push(errorText(error)); }
+      try { await customLease?.release(); } catch (error) { cleanupErrors.push(errorText(error)); }
+      if (cleanupErrors.length) { appendEvent(runId, requestId, 'resource.cleanup.error', 'Execution resource cleanup failed; retained leases stay authoritative.', { errors: cleanupErrors }); changed(); }
+    }
   }
 
   async function run(runId: string, { signal, onStarted }: { signal?: AbortSignal; onStarted?: (value: { runId: string; pid: number }) => void } = {}) {
@@ -384,6 +425,7 @@ export function createBroker<D extends ResultDetail = 'compact'>({ detail, repoP
       const header = readiness.header(runId);
       stored = header ? { ...header, workspace: store.get(header.workspaceRef) } : null;
       if (!stored) throw new Error('Unknown Run.');
+      if (stored.workerProtocol !== 'resources-1') throw new Error('This Run uses an old worker protocol. Stop all 6.0 workers, preserve their history, and submit a new Run.');
       if (stored.project?.version !== 3) throw new Error('Invalid stored Run format; submit a new validation request.');
       if (terminal.has(stored.status)) return false;
       if (!stored.workspace) throw new Error('Invalid Run: no workspace descriptor.');
@@ -429,11 +471,11 @@ export function createBroker<D extends ResultDetail = 'compact'>({ detail, repoP
             leaseDeadline = Math.min(Infinity, ...pendingSources.filter(id => !ownerData(id)).map(id => submissionDeadlines.get(id) ?? performance.now()));
             plannedRevision = polling.revision();
           });
-          const requests = db.prepare("SELECT id,status,json_extract(data,'$.profile.kind') AS kind FROM requests WHERE run_id=? AND status='QUEUED' ORDER BY ordinal LIMIT ?").all(runId, maxConcurrentExecutors + inFlight.size + 1) as unknown as { id: string; status: ReviewStatus; kind: ReviewRequest['profile']['kind'] }[];
+          const requests = db.prepare("SELECT id,status,json_extract(data,'$.profile.kind') AS kind FROM requests WHERE run_id=? AND status='QUEUED' ORDER BY ordinal LIMIT ?").all(runId, Math.min(localCap + inFlight.size + 1, 2147483647)) as unknown as { id: string; status: ReviewStatus; kind: ReviewRequest['profile']['kind'] }[];
           let executing = [...inFlight.values()].filter(item => item.kind !== 'human').length;
           for (const row of requests.filter(request => request.status === 'QUEUED' && !inFlight.has(request.id))) {
             const kind = row.kind;
-            if (kind !== 'human' && executing >= maxConcurrentExecutors) continue;
+            if (kind !== 'human' && executing >= localCap) continue;
             if (kind !== 'human') executing++;
             const promise = executeOne(row.id, workspace, token, reviewSignal).catch(error => {
               // A different task may win Promise.race before this rejection. Preserve fatal failure independently of that race.
@@ -493,12 +535,12 @@ export function createBroker<D extends ResultDetail = 'compact'>({ detail, repoP
   }
 
   const broker = {
-    async submitProject({ requesterId = 'cli', selection, recursive = false, force = false, ignoreGates = false, signal, identityConcurrency: submissionIdentityConcurrency = identityConcurrency, ...removed }: { requesterId?: string; selection: ProjectSelection; recursive?: boolean; force?: boolean; ignoreGates?: boolean; signal?: AbortSignal; identityConcurrency?: number }) {
+    async submitProject({ requesterId = 'cli', selection, recursive = false, force = false, ignoreGates, maxExecutions, signal, identityConcurrency: submissionIdentityConcurrency = identityConcurrency, ...removed }: { requesterId?: string; selection: ProjectSelection; recursive?: boolean; force?: boolean; ignoreGates?: boolean; maxExecutions?: number; signal?: AbortSignal; identityConcurrency?: number }) {
       // Options are destructured before entry; selection is the sole mutable data
       // input. Keep signal live for cancellation rather than cloning its state.
       selection = structuredClone(selection);
       ensureOpen(); requireExecutors(); sweepSubmissionDeadlines();
-      positiveConcurrency(submissionIdentityConcurrency, 'identityConcurrency');
+      rejectIdentityConcurrency(submissionIdentityConcurrency); validateMaxExecutions(maxExecutions);
       if ('mode' in removed) throw new Error('Workspace modes are no longer supported; supply an unchanged workspace.');
       if (!requesterId.trim() || requesterId.length > 200) throw new Error('requesterId is required (maximum 200 characters).');
       await requireExecutors().validateWorkspace?.(repoPath);
@@ -508,6 +550,7 @@ export function createBroker<D extends ResultDetail = 'compact'>({ detail, repoP
         // before any later await, and never store its externally owned object.
         const descriptor = structuredClone(workspace.descriptor);
         const { config } = await readWorkspaceConfig(descriptor.path, workspace.signal);
+        ignoreGates ??= config.reviewPolicy?.dependencyGates === 'ignore';
         const snapshot = await createProjectSnapshot(config, descriptor.path, descriptor.hash, workspace.signal, descriptor.integrity, selection, { identityConcurrency: submissionIdentityConcurrency });
         const ids = includedCritics(snapshot, selection, recursive);
         const templates: ReviewEnvelope[] = [];
@@ -515,23 +558,29 @@ export function createBroker<D extends ResultDetail = 'compact'>({ detail, repoP
         for (const id of ids) { templates.push(...await prepareReviewRequests({ repoPath: descriptor.path, repoId, snapshotHash: descriptor.hash, criticId: id, preparedConfig: { ...config, critics: [critics.get(id)!] }, copy: false })); if (templates.length % 16 === 0) { workspace.signal.throwIfAborted(); await yieldTurn(); } }
 
         const id = randomUUID(), createdAt = now();
-        const record: RunRecord = { id, repoId, coalescingGraceMs, snapshotHash: descriptor.hash, workspace: descriptor, requesterId,
+        const record: RunRecord = { id, repoId, workerProtocol: 'resources-1', maxExecutions, repoExecutorCap: config.reviewPolicy?.maxConcurrentExecutors, coalescingGraceMs, snapshotHash: descriptor.hash, workspace: descriptor, requesterId,
           scope: { kind: 'project' }, graph: createGraphDefinition(config, false), project: { version: 3, snapshot, selection, recursive, force, ignoreGates, templates }, status: 'QUEUED', createdAt };
         const prepared = await store.prepareRun(record, workspace.signal);
         await workspace.assertUnchanged(); workspace.signal.throwIfAborted();
         ensureOpen();
         const commitStarted = performance.now();
+        resources.registerSubmission(id, maxExecutions);
         transaction(() => {
           prepared.verify();
           db.prepare('INSERT INTO runs(id,created_at,status,data) VALUES (?,?,?,?)').run(id, createdAt, record.status, JSON.stringify(prepared.header));
           appendEvent(id, null, 'run.submitted', 'Project validation requested against fixed input.', { selection, recursive, force });
           brokerTestHooks.onPlan?.(); readiness.initialize(record, prepared);
+          if (maxExecutions !== undefined) {
+            const starts = Number(db.prepare("SELECT count(*) AS n FROM requests WHERE run_id=? AND status='QUEUED' AND json_extract(data,'$.profile.kind')!='human'").get(id)!.n);
+            if (starts > maxExecutions) throw codedError(`Plan requires ${starts} new executions, exceeding maxExecutions ${maxExecutions}.`, 'EXECUTION_BUDGET_EXCEEDED');
+          }
         });
         brokerTestHooks.onSubmissionCommit?.(performance.now() - commitStarted);
         changed(); return detail === 'full' ? required(getRun(id), 'Run') : { ...record, scope: record.scope!, requests: [], events: [], owner: null };
       } finally { await workspace.close(); }
     },
     run,
+    executionBudget(id: string) { ensureOpen(); return resources.budget(id); },
     reconcile,
     listRuns() {
       ensureOpen();
@@ -708,7 +757,7 @@ export function createBroker<D extends ResultDetail = 'compact'>({ detail, repoP
         run.status = 'QUEUED'; delete run.completedAt; delete run.error;
         db.prepare('UPDATE runs SET status=?,data=? WHERE id=?').run(run.status, JSON.stringify(run), run.id);
         const gate = db.prepare('SELECT unmet,red FROM gate_counts WHERE run_id=? AND critic_id=?').get(request.runId,request.criticId);
-        request.status = Number(gate?.unmet ?? 0) ? Number(gate?.red ?? 0) ? 'BLOCKED' : 'WAIT_DEPENDENCY' : 'QUEUED'; request.error = null; request.errorCode = null; request.resultRef = null; request.semanticRef = null; request.startedAt = null; request.completedAt = null;
+        request.status = Number(gate?.unmet ?? 0) ? Number(gate?.red ?? 0) ? 'BLOCKED' : 'WAIT_DEPENDENCY' : 'QUEUED'; request.error = null; request.errorCode = null; request.resultRef = null; request.semanticRef = null; request.startedAt = null; request.completedAt = null; delete request.executionProvenance; delete request.attemptId;
         saveHeader(request);
         appendEvent(run.id, request.id, 'request.retried', 'Retry requested against the same immutable input.');
       });
@@ -727,7 +776,7 @@ export function createBroker<D extends ResultDetail = 'compact'>({ detail, repoP
       const owned = [...active.values()];
       for (const entry of owned) entry.abort.abort(codedError('The review worker stopped before completion.', 'WORKER_STOPPED'));
       await Promise.allSettled(owned.map(entry => entry.promise));
-      clearReadCaches(); submissionDeadlines.clear(); listeners.clear(); db.close(); closed = true;
+      clearReadCaches(); submissionDeadlines.clear(); listeners.clear(); db.close(); resources.close(); closed = true;
     },
   };
   const viewRun = <T extends Parameters<typeof requesterRun>[0] | null>(value: T) => resultView({ detail }, value, () => value ? storedRequesterRun(db, value.id, stateDir) ?? requesterRun(value, stateDir) : null);

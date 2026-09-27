@@ -40,7 +40,7 @@ These relationships define required input, verification and default dependency-G
 Use Node.js 22 LTS, version 22.19.0 or later.
 
 ```sh
-npm install --ignore-scripts @ccdd/core@6.0.2 @ccdd/project@6.0.2
+npm install --ignore-scripts @ccdd/core@6.1.0 @ccdd/project@6.1.0
 ```
 
 This single command installs the definitions and Project runtime, including their dependencies. Common view tools are optional and installed separately; see [installation choices](docs/getting-started.md#installation-choices).
@@ -102,4 +102,11 @@ See [Contributing](CONTRIBUTING.md), [the context map](CONTEXT-MAP.md), [detaile
 
 [MIT](LICENSE).
 
-**CCDD 6.0.2:** corrects installation guides and npm package READMEs to use matching current packages. Runtime behavior, identity rules and state format are unchanged. See the [release notes](docs/releases/v6.0.2.md); upgrades from before 6.0 still require the [6.0 migration guide](docs/migration-v6.md).
+**CCDD 6.1.0:** adds shared machine resource admission, durable execution budgets, pinned runtime provenance and guarded load checks, with native Pi model catalogs. See the [release notes](docs/releases/v6.1.0.md) and [upgrade steps](docs/releases.md#upgrading-to-61). Stop old workers before upgrading; completed format-6 evidence remains reusable.
+
+## Review resources and budgets
+
+Machine-wide provider pools, weighted owner identities, submission execution
+budgets, original runtime provenance and guarded offline load checks share one
+review-management contract. See [the guide](docs/review-management.md), including
+the required old-worker shutdown and option migration.

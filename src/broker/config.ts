@@ -1,3 +1,4 @@
+import { validateIdentityWeight } from '../resources.js';
 import { validateResponseSchema } from '../response-schema.js';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
@@ -65,7 +66,7 @@ function critic(value: unknown): CriticDefinition {
 }
 function manifest(value: unknown): ArtifactManifest {
   if (!object(value)) throw new Error('ccdd.json must contain an Artifact object.');
-  fields(value, ['name', 'critics', 'views', 'mounts', 'basis', 'stale', 'envRequirements'], 'Artifact');
+  fields(value, ['name', 'critics', 'views', 'mounts', 'basis', 'stale', 'envRequirements', 'reviewPolicy'], 'Artifact');
   if (typeof value.name !== 'string' || !identifier.test(value.name)) throw new Error('Artifact name must be a safe identifier.');
   if (value.basis !== undefined && typeof value.basis !== 'boolean') throw new Error('basis must be a boolean.');
   if (value.critics !== undefined && !Array.isArray(value.critics)) throw new Error('critics must be an array.');
@@ -80,8 +81,9 @@ function manifest(value: unknown): ArtifactManifest {
   }
   if (value.stale !== undefined) {
     if (!object(value.stale) || !['always', 'file-hash', 'identity'].includes(value.stale.kind)) throw new Error('Invalid stale strategy.');
-    fields(value.stale, value.stale.kind === 'always' ? ['kind'] : value.stale.kind === 'identity' ? ['kind', 'script', 'inputs', 'timeoutMs'] : ['kind', 'paths'], 'stale');
+    fields(value.stale, value.stale.kind === 'always' ? ['kind'] : value.stale.kind === 'identity' ? ['kind', 'script', 'inputs', 'timeoutMs', 'weight'] : ['kind', 'paths'], 'stale');
     if (value.stale.kind === 'identity') {
+      validateIdentityWeight(value.stale.weight);
       validateScript(value.stale.script);
       // A concrete owner-relative entry is mandatory; inline programs cannot be fingerprinted.
       const entry = value.stale.script.command === 'node' ? value.stale.script.args[0] : value.stale.script.command;
@@ -98,7 +100,13 @@ function manifest(value: unknown): ArtifactManifest {
       value.stale.paths.forEach(projectInputPath);
     }
   }
-  return { name: value.name, critics, views: views(value.views), mounts,
+  if (value.reviewPolicy !== undefined) {
+    if (!object(value.reviewPolicy)) throw new Error('reviewPolicy must be an object.');
+    fields(value.reviewPolicy, ['dependencyGates', 'maxConcurrentExecutors'], 'reviewPolicy');
+    if (value.reviewPolicy.dependencyGates !== undefined && !['green', 'ignore'].includes(value.reviewPolicy.dependencyGates)) throw new Error('reviewPolicy.dependencyGates must be green or ignore.');
+    if (value.reviewPolicy.maxConcurrentExecutors !== undefined && (!Number.isSafeInteger(value.reviewPolicy.maxConcurrentExecutors) || value.reviewPolicy.maxConcurrentExecutors < 1)) throw new Error('reviewPolicy.maxConcurrentExecutors must be a positive integer.');
+  }
+  return { ...(value.reviewPolicy === undefined ? {} : { reviewPolicy: structuredClone(value.reviewPolicy) }), name: value.name, critics, views: views(value.views), mounts,
     ...(value.basis === undefined ? {} : { basis: value.basis }), ...(value.stale === undefined ? {} : { stale: structuredClone(value.stale) }),
     ...(value.envRequirements === undefined ? {} : { envRequirements: environmentRequirements(value.envRequirements) }) };
 }
@@ -128,6 +136,7 @@ async function readConfig(repoPath: string, signal?: AbortSignal, scope?: { path
       let declared: ArtifactManifest;
       try { declared = manifest(JSON.parse(text)); } catch (error) { throw new Error(`${file}: ${error instanceof Error ? error.message : String(error)}`); }
       if (Object.hasOwn(artifacts, declared.name)) throw new Error(`Duplicate Artifact name: ${declared.name}`);
+      if (relative && declared.reviewPolicy !== undefined) throw new Error('reviewPolicy belongs only to the repository root ccdd.json.');
       const { critics = [], ...definition } = declared;
       artifacts[declared.name] = { ...definition, path: relative, views: definition.views ?? {}, mounts: definition.mounts ?? {}, children: ownMap<string>() };
       localCritics[declared.name] = critics;
@@ -183,6 +192,6 @@ async function readConfig(repoPath: string, signal?: AbortSignal, scope?: { path
   const environmentInputs = environmentPaths.size ? await hashExecutionInputs(root, [...environmentPaths], signal) : undefined;
   const configManifest: ConfigManifest = { version: 2, configHash: hash(JSON.stringify({ artifacts, critics, relations, declarations, executionInputs, environmentInputs })), artifacts: structuredClone(artifacts), declarations,
     ...(executionInputs ? { executionInputs } : {}), ...(environmentInputs ? { environmentInputs, envRequirements } : {}) };
-  const config: RepoConfig = { artifacts, critics, relations, configManifest };
+  const config: RepoConfig = { artifacts, critics, relations, configManifest, ...Object.values(artifacts).find(artifact => artifact.path === '')?.reviewPolicy ? { reviewPolicy: Object.values(artifacts).find(artifact => artifact.path === '')!.reviewPolicy } : {} };
   return { config: JSON.parse(JSON.stringify(config)) as RepoConfig };
 }

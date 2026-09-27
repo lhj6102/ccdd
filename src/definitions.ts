@@ -8,16 +8,17 @@ export type CriticProfile = AgentProfile | HumanProfile | RuntimeProfile;
 export interface ReviewPayload { instruction: string; [key: string]: unknown }
 export interface CriticDefinition { id: string; title: string; profile: CriticProfile; payload: ReviewPayload; passSchema?: JsonSchema; failSchema?: JsonSchema }
 export type StaleStrategy = { kind: 'file-hash'; paths?: string[] } | { kind: 'always' }
-  | { kind: 'identity'; script: ScriptDefinition; inputs?: string[]; timeoutMs?: number };
+  | { kind: 'identity'; script: ScriptDefinition; inputs?: string[]; timeoutMs?: number; weight?: number };
+export interface ReviewPolicy { dependencyGates?: 'green' | 'ignore'; maxConcurrentExecutors?: number }
 export interface ArtifactManifest {
   name: string; critics?: CriticDefinition[]; views?: ArtifactViews; mounts?: Record<string, string>;
-  basis?: boolean; stale?: StaleStrategy; envRequirements?: Record<string, EnvironmentRequirement>;
+  reviewPolicy?: ReviewPolicy; basis?: boolean; stale?: StaleStrategy; envRequirements?: Record<string, EnvironmentRequirement>;
 }
 export interface ArtifactDefinition {
   name: string; path: string; views: ArtifactViews; mounts: Record<string, string>;
   /** Nearest marked descendants, indexed by their physical relative paths. */
   children: Record<string, string>;
-  basis?: boolean; stale?: StaleStrategy; envRequirements?: Record<string, EnvironmentRequirement>;
+  reviewPolicy?: ReviewPolicy; basis?: boolean; stale?: StaleStrategy; envRequirements?: Record<string, EnvironmentRequirement>;
 }
 export interface ResolvedCriticDefinition extends CriticDefinition {
   localId: string; target: string; deps: string[];

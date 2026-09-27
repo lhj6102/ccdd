@@ -46,7 +46,12 @@ test('operational failure waits without a child verdict and same-input retry rel
 });
 
 test('independent chains start in parallel while SCC peers have no internal gate', async t => {
-  const data = await artifactFixture(t); let active = 0, maximum = 0; const calls: string[] = [];
+  const data = await artifactFixture(t);
+  const { mkdir, writeFile } = await import('node:fs/promises');
+  const { join } = await import('node:path');
+  const previous = process.env.CCDD_STATE_HOME; process.env.CCDD_STATE_HOME = join(data.root, 'isolated-machine');
+  data.cleanup(() => { if (previous === undefined) delete process.env.CCDD_STATE_HOME; else process.env.CCDD_STATE_HOME = previous; });
+ let active = 0, maximum = 0; const calls: string[] = [];
   for (const [id, dependency] of [['a','b'],['b','a'],['c',''],['d','c']]) await data.write(id, { name: id, critics: [runtimeCritic('check', dependency ? `Inspect {${dependency}}.` : 'Inspect.')] });
   const broker = createBroker({ ...data, maxConcurrentExecutors: 60, executors: { canExecute: () => ({ ok: true }), execute: async request => {
     calls.push(request.target); maximum = Math.max(maximum, ++active); await delay(20); active--; return { verdict: 'GREEN' };

@@ -41,7 +41,7 @@ test('requester defaults reference unchanged stored audit evidence and full API 
   const data = await fixture(t), { completed, broker, stateDir } = data;
   compact(completed);
   assert.equal(completed.results.length, 1);
-  assert.deepEqual(completed.requests[0].result, { requestId: completed.results[0].reference.requestId });
+  assert.deepEqual(completed.requests[0].result, { requestId: completed.results[0].reference.requestId, executionProvenance: null });
   assert.deepEqual(completed.validation!.critics[0].result, completed.requests[0].result);
   assert.deepEqual(completed.validation!.items[0].result, completed.requests[0].result);
   assert.equal(JSON.stringify(completed).split(audit.evidence[0]).length - 1, 1);
@@ -70,8 +70,8 @@ test('requester defaults reference unchanged stored audit evidence and full API 
   const standalonePlan = planProject(inspected.snapshot, history, { stateDir });
   compact(standalonePlan);
   assert.equal(standalonePlan.results.length, 1);
-  assert.deepEqual(standalonePlan.critics[0].result, { requestId: request.id });
-  assert.deepEqual(standalonePlan.items[0].result, { requestId: request.id });
+  assert.deepEqual(standalonePlan.critics[0].result, { requestId: request.id, executionProvenance: null });
+  assert.deepEqual(standalonePlan.items[0].result, { requestId: request.id, executionProvenance: null });
   assert.equal(JSON.stringify(standalonePlan).split(audit.evidence[0]).length - 1, 1);
   assert.equal(Object.hasOwn(completed.validation!, 'results'), false);
   assert.deepEqual(bytes(), before, 'Request JSON bytes are identical before and after all projections'); db.close();

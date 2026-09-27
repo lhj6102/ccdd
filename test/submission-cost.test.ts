@@ -79,7 +79,7 @@ test('submission snapshots caller options before the first await and keeps cance
   const broker = createBroker({ ...data, detail: 'full', executors: {
     validateWorkspace: () => gate, canExecute: () => ({ ok: true }), execute: async () => ({ verdict: 'GREEN' }),
   } }); data.cleanup(() => broker.close());
-  const options = { selection: { kind: 'all' as 'all' | 'critic', criticId: undefined as string | undefined }, requesterId: 'original', recursive: true, force: true, ignoreGates: true, identityConcurrency: 2 };
+  const options = { selection: { kind: 'all' as 'all' | 'critic', criticId: undefined as string | undefined }, requesterId: 'original', recursive: true, force: true, ignoreGates: true, maxExecutions: 2 };
   const pending = broker.submitProject({ ...options, selection: options.selection as import('../src/project/types.js').ProjectSelection });
   options.selection.kind = 'critic'; options.selection.criticId = 'b/check'; options.requesterId = 'forged'; options.force = false;
   release(); const run = await pending;

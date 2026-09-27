@@ -8,7 +8,7 @@ import { imageContent, MAX_IMAGE_BYTES } from './image-result.js';
 import { internalPath, objectArguments, scopedTarget } from './reader.js';
 
 /** Pi receives one virtual file, never a workspace path or an unrestricted Node execution environment. */
-function imageEnvironment(root: string, directory: boolean, path: string): ExecutionEnv {
+export function imageEnvironment(root: string, directory: boolean, path: string): ExecutionEnv {
   const virtualPath = '/ccdd-image';
   const checkPath = (candidate: string): void => {
     if (candidate !== virtualPath) throw new Error('Pi image read is outside the bound Artifact');
@@ -49,7 +49,7 @@ function imageEnvironment(root: string, directory: boolean, path: string): Execu
         return bytes.subarray(0, length);
       } finally { await file.close(); }
     }),
-    joinPath: disabled, readTextFile: disabled, readTextLines: disabled,
+    joinPath: disabled, readTextFile: disabled, readTextLines: disabled, openTextLineReader: disabled,
     writeFile: disabled, appendFile: disabled, renameFile: disabled, fileInfo: disabled,
     listDir: disabled, canonicalPath: disabled, createDir: disabled, remove: disabled,
     createTempDir: disabled, createTempFile: disabled,

@@ -1,3 +1,4 @@
+import { diagnosticScope } from '../diagnostic-scope.js';
 import { records } from '../broker/storage.js';
 import { assertStateFormat } from '../state-format.js';
 import { semanticResult } from '../response-schema.js';
@@ -22,7 +23,7 @@ export function readEvidence(database: DatabaseSync, runId?: string): Validation
     const input = store.get<ValidationEvidence['input']>(header.inputRef), result = store.get<ReviewRequest['result']>(header.semanticRef);
     if (!result || result.verdict !== header.status) throw new Error('Stored result/status mismatch.');
     if (input.version !== 3 || !/^[a-f0-9]{64}$/.test(input.key)) return [];
-    return [{ requestId: header.id, runId: header.runId, criticId: header.criticId, input, completedAt: header.completedAt, verdict: result.verdict, result: semanticResult(result) as NonNullable<ReviewRequest['result']> }];
+    return [{ executionProvenance: header.executionProvenance ?? null, requestId: header.id, runId: header.runId, criticId: header.criticId, input, completedAt: header.completedAt, verdict: result.verdict, result: semanticResult(result) as NonNullable<ReviewRequest['result']> }];
   });
 }
 
@@ -32,7 +33,7 @@ export function withProjectStore<T>(stateDir: string, read: (database: DatabaseS
   if (!existsSync(filename)) return empty;
   // A worker closing the last WAL connection can briefly lock even read-only queries.
   const database = new DatabaseSync(filename, { readOnly: true, timeout: 5000 });
-  try { database.exec('BEGIN'); assertStateFormat(database); const result = read(database); database.exec('COMMIT'); return result; }
+  try { database.exec('BEGIN'); assertStateFormat(database); if (!diagnosticScope.getStore() && database.prepare("SELECT value FROM metadata WHERE key='diagnostic-only'").get()) throw new Error('Offline diagnostic state cannot supply review evidence.'); const result = read(database); database.exec('COMMIT'); return result; }
   finally { database.close(); }
 }
 

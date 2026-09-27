@@ -4,7 +4,7 @@ import { mkdtemp, mkdir, writeFile, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Readable, Writable } from 'node:stream';
-import { fauxProvider, fauxAssistantMessage, fauxToolCall, type ToolResultMessage } from '@earendil-works/pi-ai';
+import { getCurrentTools, type JsonObject, fauxProvider, fauxAssistantMessage, fauxToolCall, type ToolResultMessage } from '@earendil-works/pi-ai';
 import { createExecutorRegistry } from '../src/executors/index.js';
 import { createBroker } from '../src/broker/index.js';
 import type { StreamFn } from '../src/executors/pi.js';
@@ -46,11 +46,11 @@ function frameStream({ args = { frame: 2, transparent: false, channels: ['color'
     faux ??= fauxProvider({ provider: model.provider, api: model.api });
     for (const message of context.messages) if (message.role === 'toolResult') onResult?.(message);
     if (!started) {
-      const [tool] = context.tools ?? [];
+      const [tool] = getCurrentTools(context.messages);
       assert.equal(tool?.name, 'frame_clip');
       assert.match(tool.description, /Observe the specified frame in clip/);
       started = true;
-      faux.appendResponses([fauxAssistantMessage([fauxToolCall('frame_clip', args)], { stopReason: 'toolUse' }), fauxAssistantMessage(JSON.stringify(verdict))]);
+      faux.appendResponses([fauxAssistantMessage([fauxToolCall('frame_clip', args as JsonObject)], { stopReason: 'toolUse' }), fauxAssistantMessage(JSON.stringify(verdict))]);
     }
     return faux.provider.streamSimple(model, context, options);
   };

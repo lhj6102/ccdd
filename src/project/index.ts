@@ -1,6 +1,7 @@
+import { rejectIdentityConcurrency } from '../resources.js';
 import { readWorkspaceConfig } from '../broker/config.js';
 import { prepareWorkspace, type WorkspaceIntegrity } from '../workspaces/index.js';
-import { createProjectSnapshot, DEFAULT_IDENTITY_CONCURRENCY, positiveConcurrency } from './identity.js';
+import { createProjectSnapshot } from './identity.js';
 import { planProject as fullPlan, queryProject as fullQuery } from './query.js';
 import { requesterPlan, requesterQuery, resultView, type ResultDetail, type ResultOptions } from '../result-view.js';
 import type { ProjectSnapshot, ValidationEvidence, QueryOptions } from './types.js';
@@ -26,14 +27,19 @@ export { createBroker } from '../broker/index.js';
 export { createExecutorRegistry } from '../executors/index.js';
 
 /** Explicit CLI query: briefly observe the current workspace without creating a store. */
-export async function inspectProject<D extends ResultDetail = 'compact'>({ detail, repoPath, stateDir, selection, recursive = false, force = false, ignoreGates = false, signal, identityConcurrency = DEFAULT_IDENTITY_CONCURRENCY, workspaceIntegrity = 'content' }: { repoPath: string; stateDir: string; selection?: ProjectSelection; recursive?: boolean; force?: boolean; ignoreGates?: boolean; signal?: AbortSignal; identityConcurrency?: number; workspaceIntegrity?: WorkspaceIntegrity } & ResultOptions<D>) {
-  positiveConcurrency(identityConcurrency, 'identityConcurrency');
+export async function inspectProject<D extends ResultDetail = 'compact'>({ detail, repoPath, stateDir, selection, recursive = false, force = false, ignoreGates, signal, identityConcurrency, workspaceIntegrity = 'content' }: { repoPath: string; stateDir: string; selection?: ProjectSelection; recursive?: boolean; force?: boolean; ignoreGates?: boolean; signal?: AbortSignal; identityConcurrency?: number; workspaceIntegrity?: WorkspaceIntegrity } & ResultOptions<D>) {
+  rejectIdentityConcurrency(identityConcurrency);
   const workspace = await prepareWorkspace({ repoPath, stateDir, signal, integrity: workspaceIntegrity });
   try {
     const { config } = await readWorkspaceConfig(workspace.descriptor.path, workspace.signal);
     const snapshot = await createProjectSnapshot(config, workspace.descriptor.path, workspace.descriptor.hash, workspace.signal, workspace.descriptor.integrity, selection, { identityConcurrency });
-    const plan = currentProjectPlan(stateDir, snapshot, { selection, recursive, force, ignoreGates });
+    const plan = currentProjectPlan(stateDir, snapshot, { selection, recursive, force, ignoreGates: ignoreGates ?? config.reviewPolicy?.dependencyGates === 'ignore' });
     await workspace.assertUnchanged();
     return resultView({ detail }, { snapshot, plan }, () => ({ plan: requesterPlan(plan, stateDir) }));
   } finally { await workspace.close(); }
 }
+
+export { readResourceConfiguration, resourcePaths } from '../resources.js';
+export type { ResourceConfiguration } from '../resources.js';
+export type { ExecutionProvenance } from '../provenance.js';
+export { loadCheck, type LoadCheckOptions, type LoadCheckProject, type LoadCheckStep } from './load-check.js';

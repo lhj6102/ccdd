@@ -1,3 +1,5 @@
+import { fileURLToPath } from 'node:url';
+import { executionScope } from '../execution-scope.js';
 import { spawn } from 'node:child_process';
 import type { ChildProcessWithoutNullStreams, SpawnOptionsWithoutStdio } from 'node:child_process';
 export type SpawnImplementation = (command: string, args: readonly string[], options: SpawnOptionsWithoutStdio) => ChildProcessWithoutNullStreams;
@@ -9,8 +11,10 @@ export function runProcess(command: string, args: string[], { cwd, env, input, s
   return new Promise((resolve, reject) => {
     if (signal?.aborted) { reject(new Error('Execution aborted')); return; }
     let child: ChildProcessWithoutNullStreams;
-    try { child = spawnImpl(command, args, { cwd, env, stdio: ['pipe', 'pipe', 'pipe'], detached: process.platform !== 'win32', windowsHide: true }); }
+    const guarded = !!executionScope.getStore() && spawnImpl === spawn;
+    try { child = spawnImpl(guarded ? process.execPath : command, guarded ? [fileURLToPath(new URL('./launch-host.js', import.meta.url)), command, ...args] : args, { cwd, env, stdio: guarded ? ['pipe', 'pipe', 'pipe', 'ipc'] as any : ['pipe', 'pipe', 'pipe'], detached: process.platform !== 'win32', windowsHide: true }); }
     catch (error) { reject(error); return; }
+    let untrack: (() => void) | undefined;
     const output = { stdout: { chunks: [] as Buffer[], size: 0 }, stderr: { chunks: [] as Buffer[], size: 0 } };
     let outputTruncated = false;
     let failure: Error | undefined, killTimer: NodeJS.Timeout | undefined;
@@ -39,8 +43,8 @@ export function runProcess(command: string, args: string[], { cwd, env, input, s
     child.stdout.on('data', collect('stdout'));
     child.stderr.on('data', collect('stderr'));
     child.stdin.on('error', () => {});
-    const cleanup = () => { clearTimeout(timer); clearTimeout(killTimer); signal?.removeEventListener('abort', abort); };
-    child.on('error', error => { cleanup(); reject(error); });
+    const cleanup = () => { untrack?.(); clearTimeout(timer); clearTimeout(killTimer); signal?.removeEventListener('abort', abort); };
+    child.on('error', error => { failure ??= error; try { child.kill('SIGKILL'); } catch {} });
     // A review command may not leave descendants running after its main process exits.
     child.on('exit', () => {
       if (process.platform !== 'win32' && child.pid) { try { process.kill(-child.pid, 'SIGKILL'); } catch {} }
@@ -50,6 +54,11 @@ export function runProcess(command: string, args: string[], { cwd, env, input, s
       if (failure) reject(failure);
       else resolve({ exitCode, exitSignal, stdout: Buffer.concat(output.stdout.chunks).toString('utf8'), stderr: Buffer.concat(output.stderr.chunks).toString('utf8'), outputTruncated });
     });
+    try {
+      if (child.pid) untrack = executionScope.getStore()?.trackChild(child.pid);
+      if (signal?.aborted) abort();
+      else if (guarded) child.send?.('admitted', error => { if (error) stop(`Execution launch admission failed: ${error.message}`); });
+    } catch (error) { stop(`Execution child registration failed: ${error instanceof Error ? error.message : String(error)}`); }
     child.stdin.end(input ?? '');
   });
 }

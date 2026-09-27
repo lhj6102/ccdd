@@ -26,6 +26,7 @@ export function initializeRecords(db: DatabaseSync) {
       running INTEGER NOT NULL DEFAULT 0, waiting INTEGER NOT NULL DEFAULT 0, errors INTEGER NOT NULL DEFAULT 0,
       red INTEGER NOT NULL DEFAULT 0, missing INTEGER NOT NULL DEFAULT 0);
     CREATE TABLE IF NOT EXISTS request_changes(cursor INTEGER PRIMARY KEY AUTOINCREMENT,run_id TEXT NOT NULL,request_id TEXT NOT NULL,critic_id TEXT NOT NULL,status TEXT NOT NULL,result_ref TEXT,error TEXT,error_code TEXT);
+    CREATE TABLE IF NOT EXISTS change_attempts(cursor INTEGER PRIMARY KEY REFERENCES request_changes(cursor),attempt_id TEXT,provenance_ref TEXT);
     CREATE INDEX IF NOT EXISTS changes_run_cursor ON request_changes(run_id,cursor);
     CREATE TABLE IF NOT EXISTS gate_edges(run_id TEXT NOT NULL,dependent TEXT NOT NULL,dependency TEXT NOT NULL,PRIMARY KEY(run_id,dependent,dependency));
     CREATE INDEX IF NOT EXISTS gates_reverse ON gate_edges(run_id,dependency,dependent);

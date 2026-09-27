@@ -1,5 +1,8 @@
 # Migrating to 6.0
 
+This guide records the 6.0 transition. For the current 6.1 resource authority,
+worker shutdown and option migration, also follow [upgrading to 6.1](releases.md#upgrading-to-61).
+
 CCDD 6.0.0 is a breaking release. Upgrade all installed CCDD packages together;
 Project and default-tools require core `>=6.0.0 <7`. Node.js 22 LTS (22.19.0 or
 later) remains required. See the [release notes](releases/v6.0.0.md) for measured

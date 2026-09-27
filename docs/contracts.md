@@ -6,7 +6,7 @@ Version 4 replaces global configuration with folder-owned Artifacts. `@ccdd/core
 
 A regular `ccdd.json` marks its containing folder as an Artifact. A root marker follows the same rule; it is never a workspace-wide configuration object. Discovery recursively searches `--repo`, excluding `.git`, `node_modules` and symlink directories. These discovery exclusions do not change whole-workspace integrity monitoring.
 
-Allowed fields are `name`, `critics`, `views`, `mounts`, `basis`, `stale` and `envRequirements`. Unknown fields fail validation. Omitted Critics, views and mounts are empty. Names are unique across the workspace and match `[A-Za-z0-9][A-Za-z0-9_-]{0,63}`. Critic IDs use that grammar locally and are unique within their owner. Public CLI, history and graph IDs are `artifact/local-critic`.
+Allowed fields are `name`, `critics`, `views`, `mounts`, `basis`, `stale`, `envRequirements`, and root-only `reviewPolicy`. Unknown fields fail validation. Omitted Critics, views and mounts are empty. Names are unique across the workspace and match `[A-Za-z0-9][A-Za-z0-9_-]{0,63}`. Critic IDs use that grammar locally and are unique within their owner. Public CLI, history and graph IDs are `artifact/local-critic`.
 
 Critics declare `id`, `title`, `profile` and `payload.instruction`. Their target is the owner. Users do not declare `target` or `deps`. Agent, Human and Runtime profiles retain their existing evaluation contracts. A basis is an explicit accepted input with no Critics. An ordinary Artifact without Critics is UNREVIEWED, including an empty folder.
 
@@ -710,36 +710,12 @@ and prune database entry points reject non-current state before table changes.
 
 ## Concurrency controls
 
-`createBroker({ maxConcurrentExecutors })` accepts a positive safe integer,
-with default 4, limiting non-Human dispatch per Run. In 6.0 the default FIFO
-admission pool also shares that capacity across Runs in the same Broker;
-separate Brokers have separate pools. A custom admission hook can impose its
-own shared capacity. Human preparation/alarms do not consume these slots. Project verify CLI
-accepts `--concurrency N` and persists it in worker configuration so detached
-execution and resume retain the choice. These scheduling options are not reuse
-identity inputs.
-
-Owner identity scripts run with a separate bounded pool, default 4.
-`inspectProject({ identityConcurrency })`, `createBroker({ identityConcurrency })`
-and `broker.submitProject({ identityConcurrency })` accept a positive safe
-integer; a submission override wins over the Broker default. Direct snapshots
-accept an optional seventh argument `{ identityConcurrency }` after selection.
-CLI status/plan/verify use `--identity-concurrency N`. Use 1 for sequential
-execution. Owner values are assembled in Artifact order, so successful snapshot
-keys and identity presentation are independent of script completion order.
-
-The bound applies to owner identity invocations within one snapshot call. It is
-not a global process limit: an identity script that starts P child processes
-allows about `identityConcurrency × (1 + P)` processes, plus their threads, and
-concurrent inspect or submit calls each have their own pool. Consumers with
-heavy identity probes should start with a small value.
-
-Each script retains its own timeout. Cancellation or any script failure cancels
-in-flight peers, stops dispatching queued owners, and awaits their cleanup before
-rejecting. No partial snapshot, fallback identity or review Run is returned.
-Identity scripts must compute their values independently; parallel scheduling
-does not provide synchronization for owner-created shared side effects.
-
+Machine-wide SQLite admission now owns provider/model slots, weighted owner
+identity capacity, and durable per-submission execution budgets. Repository
+caps can only tighten machine limits. The removed identityConcurrency option
+fails with migration instructions. See [review management](review-management.md)
+for local configuration, FIFO/lease cleanup, gate policy, worker protocol,
+original execution provenance and isolated offline diagnostics.
 
 ## Normalized state and live requester changes (6.0)
 
@@ -751,7 +727,7 @@ Use `onChange` to schedule a coalesced cursor drain, not `getRun` on each teleme
 
 `broker.retryRequest(id)` requeues only ERROR against the same immutable input after its worker settles. Dependent WAIT_DEPENDENCY requests receive no verdict and release once the retry is GREEN. Changed source input requires a new submission and is re-planned under its new identity; an existing Run never silently changes its snapshot. Blocked reused descendant evidence remains auditable but is not current satisfaction. `--force` does not bypass gates.
 
-The admission boundary follows dependency readiness and precedes QUEUED-to-RUNNING. An optional `Admission.acquire({requestId,runId,kind,provider?,model?}, {signal,waiting})` returns a lease with idempotent `release()`. Waiting reports a bounded QUEUED admission reason, supports cancellation, and releases a late-acquired slot or any terminal execution path. The default is FIFO local admission at maxConcurrentExecutors. Machine-wide provider pools and holder leases are reserved for 6.1, not implemented here.
+The admission boundary follows dependency readiness and precedes QUEUED-to-RUNNING. An optional `Admission.acquire({requestId,runId,kind,provider?,model?}, {signal,waiting})` returns a lease with idempotent `release()`. Waiting reports a bounded QUEUED admission reason, supports cancellation, and releases a late-acquired slot or any terminal execution path. Machine-wide provider admission is always authoritative; optional custom admission only adds a precondition. See [review management](review-management.md).
 
 Gate construction uses only direct edges of the SCC condensation, not a materialized transitive closure. BLOCKED and release states propagate through those edges; SCC peers share external gates. Construction visits each Artifact relation once plus emitted Critic gate references. Transitions visit affected memberships/edges, independent of unrelated Run/project size. Multiple Critics on an Artifact still require one obligation per dependency Critic.
 

@@ -5,7 +5,8 @@ import { tmpdir } from 'node:os';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { agent } from '@ccdd/default-tools';
-import { fauxAssistantMessage, fauxProvider, fauxToolCall } from '@earendil-works/pi-ai';
+import { BACKGROUND_CONTEXT, type ExecutionEnv } from '@earendil-works/pi-agent-core';
+import { getCurrentTools, fauxAssistantMessage, fauxProvider, fauxToolCall } from '@earendil-works/pi-ai';
 import type { ToolContext } from '../src/sdk.js';
 import { createExecutorRegistry } from '../src/executors/index.js';
 import type { StreamFn } from '../src/executors/pi.js';
@@ -138,7 +139,7 @@ test('explicit default view_image registration reaches the scoped Runner and Pi 
       sawImage = true;
     }
     if (!started) {
-      assert.deepEqual(context.tools?.map(tool => tool.name), ['view_image_preview']);
+      assert.deepEqual(getCurrentTools(context.messages).map(tool => tool.name), ['view_image_preview']);
       started = true;
       transport.appendResponses([
         fauxAssistantMessage([fauxToolCall('view_image_preview', {})], { stopReason: 'toolUse' }),
@@ -152,4 +153,18 @@ test('explicit default view_image registration reaches the scoped Runner and Pi 
   assert.equal(result.verdict, 'GREEN');
   assert.deepEqual(result.toolCalls?.[0].observation, { artifactId: 'preview', operation: 'view_image', kind: 'content' });
   assert.doesNotMatch(JSON.stringify(result), /iVBOR|preview\.png/);
+});
+
+test('image-only Pi environment rejects streaming text reads without consulting the file path', async t => {
+  const data = await fixture(t);
+  const { imageEnvironment } = await import(new URL('./image.js', import.meta.resolve('@ccdd/default-tools')).href);
+  const env: ExecutionEnv = imageEnvironment(data.artifactPath, false, '');
+  for (const path of ['/ccdd-image', join(data.root, 'outside-text.txt'), '/missing/arbitrary/text']) {
+    const result = await env.openTextLineReader(path, BACKGROUND_CONTEXT);
+    assert.equal(result.ok, false);
+    if (!result.ok) { assert.equal(result.error.code, 'not_supported'); assert.equal(result.error.message, 'Only the bound image read is available'); }
+  }
+  const image = await env.readBinaryFile('/ccdd-image', BACKGROUND_CONTEXT);
+  assert.equal(image.ok, true);
+  if (image.ok) assert.deepEqual(Buffer.from(image.value), png);
 });

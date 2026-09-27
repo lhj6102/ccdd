@@ -30,6 +30,8 @@ export interface ReviewResult {
 export interface ReviewRequest extends ReviewEnvelope {
   /** Identity of the input actually reviewed; provided by project validation. */
   validationInput?: ValidationInput;
+  attemptId?: string;
+  executionProvenance?: import('./provenance.js').ExecutionProvenance | null;
   id: string; runId: string; workspace: WorkspaceDescriptor; worktreePath: string;
   status: ReviewStatus; createdAt: string;
   startedAt?: string | null; completedAt?: string | null; claimedBy?: string | null; claimedAt?: string | null;
@@ -41,7 +43,7 @@ export interface ReviewRequest extends ReviewEnvelope {
 }
 export interface RepoConfig {
   artifacts: Record<string, ArtifactDefinition>; critics: ResolvedCriticDefinition[];
-  relations: ArtifactRelation[]; configManifest: ConfigManifest;
+  relations: ArtifactRelation[]; configManifest: ConfigManifest; reviewPolicy?: import('./definitions.js').ReviewPolicy;
 }
 export interface ExecutionEvent { type: string; [key: string]: unknown }
 export interface ExecutionContext { worktreePath: string; workspacePath?: string; runDir: string; signal?: AbortSignal; onEvent?: (event: ExecutionEvent) => void | Promise<void> }
