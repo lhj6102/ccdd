@@ -104,7 +104,7 @@ See [Contributing](CONTRIBUTING.md), [the context map](CONTEXT-MAP.md), [detaile
 
 [MIT](LICENSE).
 
-**CCDD 6.1.0:** adds shared machine resource admission, durable execution budgets, pinned runtime provenance and guarded load checks, with native Pi model catalogs. See the [release notes](docs/releases/v6.1.0.md) and [upgrade steps](docs/releases.md#upgrading-to-61). Stop old workers before upgrading; completed format-6 evidence remains reusable.
+**CCDD 6.2.0:** install `@ccdd/ccdd` once for the existing CCDD modules and use unchanged Pi AI APIs through public subpaths. See the [release notes](docs/releases/v6.2.0.md). This release adds no new authentication CLI, store or policy; existing review behavior and format-6 evidence remain unchanged.
 
 
 ### Existing Pi AI API
