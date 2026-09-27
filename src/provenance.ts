@@ -33,6 +33,7 @@ async function files(root: string, paths: string[], signal?: AbortSignal): Promi
 const changed = () => Object.assign(new Error('Declared runtime changed while capturing or executing pinned bytes.'), { code: 'WORKSPACE_RUNTIME_CHANGED' });
 /** Pin only declared runtime material, never the reviewed workspace. Equal captures share immutable content-addressed storage. */
 export async function captureExecution(request: ReviewRequest, attemptId: string, signal?: AbortSignal) {
+  signal?.throwIfAborted();
   const declared = request.configManifest.executionInputs ?? [];
   const paths = declared.map(input => input.path).sort();
   if (!paths.length) return null;

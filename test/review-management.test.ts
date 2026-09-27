@@ -230,3 +230,32 @@ test('forked real-project diagnostics choose private temp roots and filter unrel
   for (const entry of records) { assert.ok(reports.some(report => entry.tmp.startsWith(join(report.output, '..') + '/') || entry.tmp.startsWith(report.temporaryRoot + '/'))); assert.equal(entry.tmp.startsWith(parentTmp), false); }
   assert.ok(await readFile(join(data.repoPath, 'a', 'ccdd.json')));
 });
+
+for (const runtime of [false, true]) for (const cancel of ['local', 'remote', 'owner-loss'] as const) test(`prestart ${cancel} during readiness with declared runtime=${runtime} refunds without executor invocation`, async t => {
+  const data = await fixture(t), views = fixtureViews();
+  if (runtime) { views.agentTools!.read.metadata.executionPaths = ['runtime.txt']; await writeFile(join(data.repoPath, 'runtime.txt'), 'declared runtime'); }
+  await data.write('a', { name: 'a', views, critics: [runtimeCritic()] });
+  let release!: () => void, entered!: () => void, executing = false, calls = 0;
+  const ready = new Promise<void>(resolve => entered = resolve), gate = new Promise<void>(resolve => release = resolve);
+  const broker = createBroker({ detail: 'full', ...data, executors: { async canExecute() { if (executing) { entered(); await gate; } return { ok: true }; }, async execute() { calls++; return { verdict: 'GREEN' }; } } }); data.cleanup(async () => { release(); await broker.close(); });
+  const run = await broker.submitProject({ selection: { kind: 'all' }, maxExecutions: 1 }); executing = true; const pending = broker.run(run.id); await ready;
+  if (cancel === 'local') broker.cancel(run.id);
+  else if (cancel === 'remote') { const other = createBroker({ detail: 'full', ...data }); try { other.cancel(run.id); } finally { await other.close(); } }
+  else { const db = new DatabaseSync(join(data.stateDir, 'broker.sqlite')); db.prepare('DELETE FROM run_owners WHERE run_id=?').run(run.id); db.close(); }
+  release(); await pending;
+  assert.equal(calls, 0); const budget = broker.executionBudget(run.id)!; assert.equal(budget.attempts.length, 1); assert.equal(budget.attempts[0].state, 'refunded'); assert.equal(Reflect.get(budget.attempts[0], 'started_at'), null);
+  assert.equal(broker.getRun(run.id)!.requests[0].attemptId, undefined);
+  const machine = new DatabaseSync(resourcePaths().database); assert.equal(machine.prepare('SELECT count(*) n FROM resource_leases WHERE run_id=?').get(run.id)!.n, 0); machine.close();
+});
+
+test('failed repository attempt commit never invokes executor but preserves the conservative machine start', async t => {
+  const data = await fixture(t); await data.write('a', { name: 'a', critics: [runtimeCritic()] });
+  let ready = false, calls = 0;
+  const broker = createBroker({ detail: 'full', ...data, executors: { async canExecute() {
+    if (ready) { const db = new DatabaseSync(join(data.stateDir, 'broker.sqlite')); db.exec("CREATE TRIGGER reject_attempt BEFORE UPDATE ON requests WHEN json_extract(NEW.data,'$.attemptId') IS NOT NULL BEGIN SELECT RAISE(ABORT,'injected attempt commit failure'); END"); db.close(); }
+    return { ok: true };
+  }, async execute() { calls++; return { verdict: 'GREEN' }; } } }); data.cleanup(() => broker.close());
+  const run = await broker.submitProject({ selection: { kind: 'all' }, maxExecutions: 1 }); ready = true; await broker.run(run.id);
+  assert.equal(calls, 0); assert.match(broker.getRun(run.id)!.requests[0].error!, /injected attempt commit failure/);
+  const attempts = broker.executionBudget(run.id)!.attempts; assert.equal(attempts.length, 1); assert.equal(attempts[0].state, 'terminal'); assert.ok(Reflect.get(attempts[0], 'started_at'));
+});

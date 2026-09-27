@@ -348,8 +348,18 @@ export function createBroker<D extends ResultDetail = 'compact'>({ detail, repoP
         return;
       }
       const capture = await captureExecution(request, lease!.token, signal);
-      lease!.started(capture?.provenance ?? null);
-      transaction(() => { const header = required(requestHeader(requestId), 'Request'); header.attemptId = lease!.token; header.executionProvenance = capture?.provenance ?? null; db.prepare('UPDATE requests SET data=? WHERE id=?').run(JSON.stringify(header), requestId); });
+      // Fence cancellation and ownership after every preparation await. Holding the
+      // repository write lock orders remote cancel against the committed start marker.
+      // There is no await or user callback between this guard and invocation.
+      transaction(() => {
+        signal.throwIfAborted();
+        const header = required(requestHeader(requestId), 'Request');
+        if (ownerData(runId)?.token !== token) throw codedError('Review ownership changed before executor start.', 'RUN_OWNERSHIP_LOST');
+        if (header.status !== 'RUNNING' || terminal.has(required(polling.runStatus(runId), 'Run'))) throw codedError('Review was canceled before executor start.', 'REVIEW_CANCELED');
+        lease!.started(capture?.provenance ?? null);
+        header.attemptId = lease!.token; header.executionProvenance = capture?.provenance ?? null;
+        db.prepare('UPDATE requests SET data=? WHERE id=?').run(JSON.stringify(header), requestId);
+      });
       const result = validateResult(await executionScope.run({ runtimeRoot: capture?.root ?? workspace.descriptor.path, declaredPaths: capture?.paths ?? [], trackChild: pid => lease!.trackChild(pid) }, () => requireExecutors().execute(copy(request), {
         worktreePath: workspace.descriptor.path, workspacePath: workspace.descriptor.path, runDir, signal,
         onEvent(event) {
