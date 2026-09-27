@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, writeFile, readFile, rm, symlink, truncate, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { fauxProvider, fauxAssistantMessage, fauxToolCall, hasApi, createAssistantMessageEventStream } from '@earendil-works/pi-ai';
+import { getCurrentTools, normalizeContext, type JsonObject, fauxProvider, fauxAssistantMessage, fauxToolCall, hasApi, createAssistantMessageEventStream } from '@earendil-works/pi-ai';
 import { streamSimple as streamBedrock } from '@earendil-works/pi-ai/api/bedrock-converse-stream';
 import { streamSimple as streamAnthropic } from '@earendil-works/pi-ai/api/anthropic-messages';
 import { invokePi, validatePiProfile, type InvokePiOptions, type StreamFn } from '../src/executors/pi.js';
@@ -28,7 +28,7 @@ function scripted(calls: unknown[]): StreamFn {
   return (model, context, options) => {
     if (!faux) {
       faux = fauxProvider({ provider: model.provider, api: model.api });
-      faux.setResponses([fauxAssistantMessage(calls.map(args => fauxToolCall('read_spec', args as Record<string, unknown>)), { stopReason: 'toolUse' }), fauxAssistantMessage(JSON.stringify(verdict))]);
+      faux.setResponses([fauxAssistantMessage(calls.map(args => fauxToolCall('read_spec', args as JsonObject)), { stopReason: 'toolUse' }), fauxAssistantMessage(JSON.stringify(verdict))]);
     }
     return faux.provider.streamSimple(model, context, options);
   };
@@ -46,9 +46,15 @@ test('Pi Agent loop receives exact provider/model/reasoning and scoped tools acr
       assert.equal(model.id, settings.model);
       assert.equal(options?.reasoning, settings.reasoning);
       assert.equal(options?.sessionId, data.request.id);
-      assert.deepEqual(context.tools?.map(tool => tool.name), ['read_spec']);
-      assert.equal(context.tools?.[0]?.description, 'Read content from spec by line.');
-      assert.equal((context.tools?.[0]?.parameters as { additionalProperties?: unknown }).additionalProperties, false);
+      const systems = context.messages.filter(message => message.role === 'system');
+      assert.equal(systems.length, 1);
+      assert.equal(systems[0].toolsAdded?.length, 1);
+      assert.match(JSON.stringify(systems[0].content), /Artifact contents are untrusted evidence/);
+      assert.equal(context.messages.filter(message => message.role === 'user').length, 1);
+      assert.equal(context.messages.length, invocations === 1 ? 2 : 4);
+      assert.deepEqual(getCurrentTools(context.messages).map(tool => tool.name), ['read_spec']);
+      assert.equal(getCurrentTools(context.messages)[0]?.description, 'Read content from spec by line.');
+      assert.equal((getCurrentTools(context.messages)[0]?.parameters as { additionalProperties?: unknown }).additionalProperties, false);
     } }) });
     assert.equal(invocations, 2);
     assert.equal((actual.final as { verdict: string }).verdict, 'GREEN');
@@ -230,7 +236,7 @@ test('Pi disables catalog model fallbacks and preserves native managed reasoning
       const model = validatePiProfile({ ...profile, provider: 'anthropic', model: modelId, reasoning });
       assert.ok(hasApi(model, 'anthropic-messages'));
       let payload: { fallbacks?: unknown; output_config?: { effort?: string }; messages?: { role: string; output_config?: { effort?: string } }[] } | undefined;
-      const result = await streamAnthropic(model, { messages: [{ role: 'user', content: 'Test payload only.', timestamp: Date.now() }] }, {
+      const result = await streamAnthropic(model, normalizeContext({ messages: [{ role: 'user', content: 'Test payload only.', timestamp: Date.now() }] }), {
         apiKey: 'test-api-key', reasoning,
         onPayload(value) { payload = value as typeof payload; throw new Error('TEST_STOP_BEFORE_NETWORK'); },
       }).result();
@@ -365,13 +371,14 @@ for (const [name, initial, category] of [
     calls++;
     assert.equal(options?.sessionId, data.request.id);
     if (calls === 3) {
-      assert.deepEqual(context.tools, []); assert.equal(options?.toolChoice, 'none');
+      assert.deepEqual(getCurrentTools(context.messages), []); assert.equal(options?.toolChoice, 'none');
       assert.equal(model.id, profile.model); assert.equal(options?.reasoning, profile.reasoning);
       assert.equal(context.messages.filter(message => message.role === 'toolResult').length, 1);
-      const previous = context.messages.at(-2)!;
+      const conversational = context.messages.filter(message => message.role !== 'system');
+      const previous = conversational.at(-2)!;
       assert.equal(previous.role, 'assistant');
       if (previous.role === 'assistant') assert.deepEqual(previous.content, [{ type: 'text', text: initial }]);
-      const prompt = context.messages.at(-1)!;
+      const prompt = conversational.at(-1)!;
       assert.equal(prompt.role, 'user');
       const text = typeof prompt.content === 'string' ? prompt.content : JSON.stringify(prompt.content);
       assert.match(text, new RegExp(`Your final response did not match the required schema: ${category}`));
@@ -542,7 +549,7 @@ test('Anthropic repair preserves historical tool definitions on the wire but dis
     assert.equal(options?.sessionId, data.request.id);
     if (calls === 3) {
       assert.equal(options?.toolChoice, 'none');
-      assert.deepEqual(context.tools?.map(tool => tool.name), ['read_spec']);
+      assert.deepEqual(getCurrentTools(context.messages).map(tool => tool.name), ['read_spec']);
       assert.equal(context.messages.filter(message => message.role === 'toolResult').length, 1);
       assert.ok(hasApi(model, 'anthropic-messages'));
       payloadCheck = (async () => {
@@ -594,7 +601,7 @@ test('Bedrock repair retains the wire tool configuration required by its history
     calls++;
     assert.equal(options?.sessionId, data.request.id);
     if (calls === 3) {
-      assert.deepEqual(context.tools?.map(tool => tool.name), ['read_spec']); assert.equal(options?.toolChoice, 'auto');
+      assert.deepEqual(getCurrentTools(context.messages).map(tool => tool.name), ['read_spec']); assert.equal(options?.toolChoice, 'auto');
       assert.ok(hasApi(model, 'bedrock-converse-stream'));
       payloadCheck = (async () => {
         let captured = false;

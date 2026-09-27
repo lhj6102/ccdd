@@ -22,6 +22,38 @@ Use `--pi-auth-file`/`CCDD_PI_AUTH_FILE` for a Pi auth store, or `--codex-auth-f
 
 Agents receive only scoped tools and return structured GREEN/RED plus fields required by the Critic's optional passSchema/failSchema (verdict-only when no schema applies). Each target and explicit instruction reference must have a successful content or empty observation. Listing files, mentioning a reference or launching an app does not count. An admitted child or mount is not automatically a mandatory observation. Image views require a model supporting image input.
 
+### Native Pi model profiles and transport
+
+The installed Pi catalog provides these exact profiles, without local model aliases:
+
+```json
+{"kind":"agent","provider":"openai-codex","model":"gpt-6-luna","reasoning":"xhigh"}
+{"kind":"agent","provider":"opencode-go","model":"deepseek-v4.1-flash","reasoning":"high"}
+```
+
+DeepSeek V4.1 Flash supports `low`, `high` and `max`; `xhigh` is rejected before
+transport rather than clamped. Luna keeps the requested `xhigh`. These effort
+names do not establish equal reasoning budgets or quality across models.
+
+OpenCode Go accepts an API key from `OPENCODE_API_KEY` or the `opencode-go` entry
+in an external Pi auth file passed through `--pi-auth-file`. Do not put credentials
+in `ccdd.json`, reviewed material or logs. CCDD's explicit credential stores remain
+read-only: renewal belongs to the issuing login tool, not to a review worker.
+
+The native Pi Provider wrapper supplies OpenCode's `x-opencode-session` header
+from the review session ID. It remains stable through tool turns and the single
+format-repair continuation; different reviews use different IDs. Pi supplies its
+own identifiable User-Agent, not another client's identity. See the
+[OpenCode Go client requirements](https://opencode.ai/docs/go/).
+
+HTTP-adapter regressions use intercepted fetch responses, synthetic credentials
+and actual local tools. They cover serialized headers and reasoning/tool history,
+SSE parsing, final JSON repair, cancellation and read-only authentication. They
+are offline transport evidence, not a claim of live Provider access or model quality.
+See the [executor identity limitation](../src/executors/CONTEXT.md#provider-identity-visibility):
+the current Pi Codex parser does not expose server response-model metadata, so
+missing identity is unknown rather than server-model attestation.
+
 ## Human
 
 Set a Critic profile to `{"kind":"human"}` and register `views.humanTools`. These can return text/JSON/images or launch a local desktop application. [Default tools](../packages/default-tools/README.md) and [computed views](../examples/computed-views/README.md) show both forms.

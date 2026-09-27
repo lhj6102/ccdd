@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { Agent, type AgentTool, type StreamFn } from '@earendil-works/pi-agent-core';
-import { Type, getSupportedThinkingLevels, hasApi, type Api, type Model, type TSchema } from '@earendil-works/pi-ai';
+import { Type, getSupportedThinkingLevels, hasApi, normalizeContext, toToolDeclaration, type Api, type Model, type TSchema } from '@earendil-works/pi-ai';
 import { builtinModels } from '@earendil-works/pi-ai/providers/all';
 import type { ArtifactReference } from '../artifacts/index.js';
 import { createReviewTools, toToolContent, type ReviewToolRegistry, type ReviewToolDefinition } from '../tools/runner.js';
@@ -150,7 +150,7 @@ export async function invokePi({ request, worktreePath, runDir, schema, inspectR
       streamFn: (selectedModel, context, options) => invoke!(selectedModel,
         // Anthropic requires definitions for historical tool-use messages. Keep only
         // the wire definitions there; the Agent has no executable tools during repair.
-        repairing && (hasApi(selectedModel, 'anthropic-messages') || hasApi(selectedModel, 'bedrock-converse-stream')) ? { ...context, tools } : context,
+        repairing && (hasApi(selectedModel, 'anthropic-messages') || hasApi(selectedModel, 'bedrock-converse-stream')) ? normalizeContext({ messages: [...context.messages, { role: 'system', content: '', toolsAdded: tools.map(toToolDeclaration), timestamp: Date.now() }] }) : context,
         // Bedrock has no no-tools choice compatible with historical toolUse blocks.
         // It retains its wire configuration, but executable tools remain absent.
         repairing ? { ...options, toolChoice: hasApi(selectedModel, 'bedrock-converse-stream') ? 'auto' : 'none' } : options),
@@ -158,7 +158,7 @@ export async function invokePi({ request, worktreePath, runDir, schema, inspectR
       toolExecution: 'sequential',
       transport: 'sse',
       maxRetryDelayMs: 10_000,
-      shouldStopAfterTurn: () => repairing || identityMismatch || controller.signal.aborted,
+      finishTurn: () => repairing || identityMismatch || controller.signal.aborted ? { action: 'end' } : undefined,
     });
     agent.subscribe(event => {
       // message_end settles before Pi executes that assistant's tool batch.

@@ -1,10 +1,10 @@
-import { fauxProvider, fauxAssistantMessage, fauxToolCall, fauxThinking, type Context, type Model, type SimpleStreamOptions, type ToolResultMessage } from '@earendil-works/pi-ai';
+import { getCurrentTools, fauxProvider, fauxAssistantMessage, fauxToolCall, fauxThinking, type TranscriptContext, type Model, type SimpleStreamOptions, type ToolResultMessage } from '@earendil-works/pi-ai';
 import type { StreamFn } from '../src/executors/pi.js';
 
 export interface ArtifactStreamOptions {
   mode?: 'valid' | 'partial' | 'no-tools' | 'beyond-eof' | 'list-only' | 'malformed' | 'auth-error' | 'model-error' | 'network-error' | 'unknown-error' | 'throw' | 'hang' | 'wrong-nonce';
   result?: unknown;
-  onRequest?: (input: { model: Model<string>; context: Context; options?: SimpleStreamOptions }) => void;
+  onRequest?: (input: { model: Model<string>; context: TranscriptContext; options?: SimpleStreamOptions }) => void;
 }
 
 /** Scripted transport only; callers still run Pi's real Agent loop and CCDD's real tools. */
@@ -27,7 +27,7 @@ export function artifactStream({ mode = 'valid', result, onRequest }: ArtifactSt
       const has = (name: string) => seen.some(message => message.toolName === name);
       const calls = [];
       if (mode !== 'no-tools') {
-        for (const tool of context.tools ?? []) {
+        for (const tool of getCurrentTools(context.messages)) {
           if (has(tool.name)) continue;
           if (tool.name.startsWith('list_')) {
             calls.push(fauxToolCall(tool.name, {}));

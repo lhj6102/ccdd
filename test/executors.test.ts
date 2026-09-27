@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { getCurrentTools } from '@earendil-works/pi-ai';
 import { writeFile, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { createExecutorRegistry } from '../src/executors/index.js';
@@ -17,7 +18,7 @@ test('Agent evaluates only required target and explicit references and keeps its
   await data.write('service/assets', { name: 'assets', basis: true });
   const [request] = await data.requests(), original = structuredClone(request), events: ExecutionEvent[] = [];
   let prompt = '';
-  const result = await createExecutorRegistry({ streamFn: artifactStream({ onRequest: ({ context }) => { prompt = JSON.stringify(context.messages[0]?.content); } }) }).execute(request, { worktreePath: data.repoPath, runDir: join(data.root, 'run'), onEvent: event => { events.push(event); } });
+  const result = await createExecutorRegistry({ streamFn: artifactStream({ onRequest: ({ context }) => { prompt = JSON.stringify(context.messages.find(message => message.role === 'user')?.content); } }) }).execute(request, { worktreePath: data.repoPath, runDir: join(data.root, 'run'), onEvent: event => { events.push(event); } });
   assert.equal(result.verdict, 'GREEN'); assert.deepEqual(result.toolCalls?.map(call => call.name), ['read_service', 'read_style']);
   assert.deepEqual(request, original); assert.match(prompt, /read_style/); assert.match(prompt, /literal/);
   assert.equal(events.filter(event => event.type === 'artifact.tool.called').length, 2);
@@ -123,15 +124,15 @@ test('consumer-sized prompt carries scope but no duplicated tool descriptions or
   await createExecutorRegistry({ streamFn: artifactStream({ onRequest: ({ context }) => {
     if (measured) return;
     measured = true;
-    const content = context.messages[0].content;
+    const content = context.messages.find(message => message.role === 'user')!.content;
     const prompt = typeof content === 'string' ? content : content.filter(block => block.type === 'text').map(block => block.text).join('');
-    assert.equal(context.tools?.length, 24);
+    assert.equal(getCurrentTools(context.messages).length, 24);
     assert.doesNotMatch(prompt, /TOOL_DESCRIPTION_SENTINEL|SCHEMA_DESCRIPTION_SENTINEL|inputSchema|resultKinds/);
-    assert.ok(context.tools?.every(tool => tool.description === description && JSON.stringify(tool.parameters).includes(schemaDescription)));
+    assert.ok(getCurrentTools(context.messages).every(tool => tool.description === description && JSON.stringify(tool.parameters).includes(schemaDescription)));
     const scopeLine = prompt.split('\n').find(line => line.startsWith('Artifacts: '))!;
     const scope = JSON.parse(scopeLine.slice('Artifacts: '.length));
     assert.deepEqual(scope, request.artifacts.map(({ id, path, basis, children, mounts }) => ({ id, path, role: id === request.target ? 'target' : basis ? 'basis' : 'dependency', includedFolders: children, mounts })));
-    const before = prompt.replace(scopeLine, `Artifacts: ${JSON.stringify(request.artifacts)}`) + '\nViewer entry points and Artifact-owned descriptions: ' + JSON.stringify(context.tools!.map(({ name, description }) => ({ name, description })));
+    const before = prompt.replace(scopeLine, `Artifacts: ${JSON.stringify(request.artifacts)}`) + '\nViewer entry points and Artifact-owned descriptions: ' + JSON.stringify(getCurrentTools(context.messages).map(({ name, description }) => ({ name, description })));
     const beforeBytes = Buffer.byteLength(before), afterBytes = Buffer.byteLength(prompt);
     assert.ok(afterBytes < beforeBytes / 10);
     t.diagnostic(`Consumer fixture prompt bytes: before=${beforeBytes}, after=${afterBytes}, saved=${beforeBytes - afterBytes}`);
@@ -146,13 +147,13 @@ test('scope-only prompts preserve tool-less Artifacts', async t => {
   const [request] = await data.requests();
   let observed = false;
   await createExecutorRegistry({ streamFn: artifactStream({ onRequest: ({ context }) => {
-    const content = context.messages[0].content;
+    const content = context.messages.find(message => message.role === 'user')!.content;
     const prompt = typeof content === 'string' ? content : content.filter(block => block.type === 'text').map(block => block.text).join('');
     const line = prompt.split('\n').find(line => line.startsWith('Artifacts: '))!;
     const scope = JSON.parse(line.slice('Artifacts: '.length));
     assert.deepEqual(scope.find((item: { id: string }) => item.id === 'appendix'), { id: 'appendix', path: 'a/appendix', role: 'basis', includedFolders: {}, mounts: {} });
     assert.equal(scope.find((item: { id: string }) => item.id === 'a').role, 'target');
-    assert.deepEqual(context.tools?.map(tool => tool.name), ['read_a']);
+    assert.deepEqual(getCurrentTools(context.messages).map(tool => tool.name), ['read_a']);
     assert.doesNotMatch(prompt, /Read content from a by line\.|inputSchema|resultKinds/);
     observed = true;
   } }) }).execute(request, { worktreePath: data.repoPath, runDir: join(data.root, 'run') });
