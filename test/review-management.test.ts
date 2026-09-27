@@ -205,3 +205,11 @@ test('required diagnostic pass payload is explicit and validated before identity
   const report = await loadCheck({ project: { ...project, scenario: { ...project.scenario, syntheticResult: { verdict: 'GREEN', reason: 'Explicit synthetic diagnostic payload, not a review.' } } }, outputDir: data.root });
   assert.equal(report.completed, 2); assert.equal(report.status, 'GREEN'); assert.equal(report.diagnosticOnly, true); assert.equal(report.maxActive, 1);
 });
+
+test('cleanup failures retain the original execution error and release custom admission exactly once', async t => {
+  const data = await fixture(t); await data.write('a', { name: 'a', critics: [runtimeCritic()] });
+  let released = 0;
+  const broker = createBroker({ detail: 'full', ...data, admission: { async acquire() { return { release() { released++; throw new Error('separate cleanup failure'); } }; } }, executors: { ...simple, async execute() { throw new Error('original failure'); } } }); data.cleanup(() => broker.close());
+  const run = await broker.submitProject({ selection: { kind: 'all' } }); await broker.run(run.id);
+  const final = broker.getRun(run.id)!; assert.equal(final.requests[0].error, 'original failure'); assert.equal(released, 1); assert.equal(final.events.filter(event => event.type === 'resource.cleanup.error').length, 1);
+});

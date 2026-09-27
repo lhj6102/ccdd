@@ -130,3 +130,22 @@ test('release waits for tracked child termination and frees next waiter without 
   assert.equal(admitted, false); await lease.release(); await exited; await lease.release();
   const held = await next; assert.equal(admitted, true); await held.release();
 });
+
+test('model and canonical repository caps only tighten provider admission across clients', async t => {
+  const data = await fixture(t, { defaultProviderCapacity: 4, providers: { p: { capacity: 3, models: { m: 1 } } } }), a = data.store(), b = data.store();
+  for (const run of ['a', 'b', 'c']) a.registerSubmission(run);
+  const held = await a.acquire({ ...request('a'), repoCap: 1 }, options());
+  let sameModel = false, sameRepo = false;
+  const model = b.acquire(request('b', 'p', 'other-repo'), options()).then(lease => { sameModel = true; return lease; });
+  const repo = b.acquire({ ...request('c', 'q'), model: 'different' }, options()).then(lease => { sameRepo = true; return lease; });
+  await delay(60); assert.equal(sameModel, false); assert.equal(sameRepo, false);
+  await held.release(); const admitted = await Promise.all([model, repo]); for (const lease of admitted) await lease.release();
+});
+
+test('identity weights and FIFO are machine-wide across two processes', async t => {
+  const data = await fixture(t, { identityCapacity: 100 }), store = data.store();
+  const held = await store.acquire({ ...request(''), identityWeight: 75 }, options());
+  const script = `import {openResources} from ${JSON.stringify(moduleUrl)};const s=openResources();const l=await s.acquire({...${JSON.stringify(request(''))},identityWeight:50},{signal:new AbortController().signal,waiting(){console.log('WAIT')}});console.log('START');await new Promise(r=>setTimeout(r,40));await l.release();s.close();`;
+  const c = child(script); t.after(() => c.process.kill('SIGKILL')); await until(() => c.output().includes('WAIT'));
+  assert.equal(c.output().includes('START'), false); await held.release(); assert.equal(await c.exited, 0, c.error()); assert.equal(c.output().includes('START'), true);
+});
