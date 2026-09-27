@@ -36,7 +36,7 @@ async function fixture(t: TestContext) {
 }
 
 function tarball(name: string, version = '1.0.0', publishConfig?: Record<string, unknown>, nodeRange = '>=24') {
-  const contents = Buffer.from(JSON.stringify({ name, version, publishConfig, engines: { node: nodeRange }, ...(name === '@ccdd/ccdd' ? { dependencies: { '@ccdd/core': version, '@ccdd/project': version, '@ccdd/default-tools': version } } : {}) })), header = Buffer.alloc(512);
+  const contents = Buffer.from(JSON.stringify({ name, version, publishConfig, engines: { node: nodeRange }, ...(name === '@ccdd/ccdd' ? { dependencies: { '@ccdd/core': version, '@ccdd/project': version, '@ccdd/default-tools': version, '@earendil-works/pi-ai': '0.87.1' } } : {}) })), header = Buffer.alloc(512);
   header.write('package/package.json');
   header.write('0000644\0', 100); header.write('0000000\0', 108); header.write('0000000\0', 116);
   header.write(`${contents.length.toString(8).padStart(11, '0')}\0`, 124);
@@ -85,7 +85,7 @@ test('version 4 release assets require actual in-place tool and Runtime verifica
 async function npmFixture(t: TestContext, nodeRange = '>=24') {
   const data = await fixture(t), npmMetadata = { ...metadata, projectFile: 'ccdd-project-1.0.0.tgz' };
   const manifests = versions();
-  const project = { name: '@ccdd/project', version: '1.0.0', peerDependencies: { [coreName]: '>=1.0.0 <2' } };
+  const project = { name: '@ccdd/project', version: '1.0.0', dependencies: { '@earendil-works/pi-ai': '0.87.1' }, peerDependencies: { [coreName]: '>=1.0.0 <2' } };
   await mkdir(join(data.root, 'packages/project'));
   await writeFile(join(data.root, 'packages/project/package.json'), JSON.stringify(project));
   await writeFile(join(data.root, 'package-lock.json'), JSON.stringify({ ...manifests.lock,
@@ -418,9 +418,9 @@ test('CD cannot download or publish without successful CI for the tagged main co
 
 async function unifiedFixture(t: TestContext) {
   const data = await npmFixture(t);
-  const metadata = { ...data.metadata, umbrellaFile: 'ccdd-ccdd-1.0.0.tgz' };
+  const metadata = { ...data.metadata, umbrellaFile: 'ccdd-ccdd-1.0.0.tgz', piVersion: '0.87.1' };
   const old = JSON.parse(await (await import('node:fs/promises')).readFile(join(data.assetsDir, 'verification.json'), 'utf8'));
-  const installations = [...old.installations, ...['npm', 'pnpm'].map(manager => ({ name: `umbrella-${manager}`, productionInstall: true, installScripts: false, onlyDirectDependency: '@ccdd/ccdd', cliHelpVersion: '1.0.0', publicImports: true, typeImports: true, defaultToolExecution: true, customToolExecution: true, binExecution: true, runtime: 'GREEN', projectValidation: true }))];
+  const installations = [...old.installations, ...['npm', 'pnpm'].map(manager => ({ name: `umbrella-${manager}`, productionInstall: true, installScripts: false, onlyDirectDependency: '@ccdd/ccdd', cliHelpVersion: '1.0.0', publicImports: true, typeImports: true, piPublicApi: true, defaultToolExecution: true, customToolExecution: true, binExecution: true, runtime: 'GREEN', projectValidation: true }))];
   await assets(data.root, { projectFile: metadata.projectFile, umbrellaFile: metadata.umbrellaFile, installations, publishConfig: { access: 'public', registry: 'https://registry.npmjs.org/' } }, metadata);
   const files = await validateAssets(data.assetsDir, metadata, sha);
   const events: string[] = [], published = new Map<string, any>();
@@ -464,10 +464,10 @@ test('unified release metadata requires exact coordinated dependencies and lockf
   const core = JSON.parse(await readFile(join(data.root, 'package.json'), 'utf8'));
   core.workspaces = ['packages/project', 'packages/default-tools', 'packages/ccdd'];
   await writeFile(join(data.root, 'package.json'), JSON.stringify(core));
-  const umbrella = { name: '@ccdd/ccdd', version: '1.0.0', dependencies: { '@ccdd/core': '1.0.0', '@ccdd/project': '1.0.0', '@ccdd/default-tools': '1.0.0' } };
+  const umbrella = { name: '@ccdd/ccdd', version: '1.0.0', dependencies: { '@ccdd/core': '1.0.0', '@ccdd/project': '1.0.0', '@ccdd/default-tools': '1.0.0', '@earendil-works/pi-ai': '0.87.1' } };
   await mkdir(join(data.root, 'packages/ccdd'));
   await writeFile(join(data.root, 'packages/ccdd/package.json'), JSON.stringify(umbrella));
-  const lock = JSON.parse(await readFile(join(data.root, 'package-lock.json'), 'utf8')); lock.packages['packages/ccdd'] = { ...umbrella, dependencies: { '@ccdd/default-tools': '1.0.0', '@ccdd/project': '1.0.0', '@ccdd/core': '1.0.0' } };
+  const lock = JSON.parse(await readFile(join(data.root, 'package-lock.json'), 'utf8')); lock.packages['packages/ccdd'] = { ...umbrella, dependencies: { '@ccdd/default-tools': '1.0.0', '@ccdd/project': '1.0.0', '@ccdd/core': '1.0.0', '@earendil-works/pi-ai': '0.87.1' } };
   await writeFile(join(data.root, 'package-lock.json'), JSON.stringify(lock));
   assert.equal((await readReleaseMetadata(data.root)).umbrellaFile, 'ccdd-ccdd-1.0.0.tgz');
   umbrella.dependencies['@ccdd/core'] = '^1.0.0';

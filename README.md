@@ -106,6 +106,21 @@ See [Contributing](CONTRIBUTING.md), [the context map](CONTEXT-MAP.md), [detaile
 
 **CCDD 6.1.0:** adds shared machine resource admission, durable execution budgets, pinned runtime provenance and guarded load checks, with native Pi model catalogs. See the [release notes](docs/releases/v6.1.0.md) and [upgrade steps](docs/releases.md#upgrading-to-61). Stop old workers before upgrading; completed format-6 evidence remains reusable.
 
+
+### Existing Pi AI API
+
+`@ccdd/ccdd/pi` re-exports Pi AI unchanged; `@ccdd/ccdd/pi/providers/all`
+re-exports its public `builtinModels` and `builtinProviders` catalog API. These
+are ESM and type forwards, not a new authentication manager or coding agent.
+The umbrella declares Pi AI directly, so both paths work under strict pnpm.
+
+The existing official CLI remains `npx @earendil-works/pi-ai@0.87.1 list` and
+`npx @earendil-works/pi-ai@0.87.1 login [provider]`. Its current CLI lists/logs
+in OAuth providers and saves `auth.json` in the current directory; use it only
+from an appropriate private directory outside reviewed input. API-key login
+is available through Pi's library API, not that OAuth-only CLI. These exports
+do not create new CCDD login commands, persistence or credential precedence.
+
 ## Review resources and budgets
 
 Machine-wide provider pools, weighted owner identities, submission execution

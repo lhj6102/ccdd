@@ -26,6 +26,21 @@ remains optional for those consumers.
 See [getting started](https://github.com/lhj6102/ccdd/blob/main/docs/getting-started.md)
 and [review management](https://github.com/lhj6102/ccdd/blob/main/docs/review-management.md).
 
+
+### Existing Pi AI API
+
+`@ccdd/ccdd/pi` re-exports Pi AI unchanged; `@ccdd/ccdd/pi/providers/all`
+re-exports its public `builtinModels` and `builtinProviders` catalog API. These
+are ESM and type forwards, not a new authentication manager or coding agent.
+The umbrella declares Pi AI directly, so both paths work under strict pnpm.
+
+The existing official CLI remains `npx @earendil-works/pi-ai@0.87.1 list` and
+`npx @earendil-works/pi-ai@0.87.1 login [provider]`. Its current CLI lists/logs
+in OAuth providers and saves `auth.json` in the current directory; use it only
+from an appropriate private directory outside reviewed input. API-key login
+is available through Pi's library API, not that OAuth-only CLI. These exports
+do not create new CCDD login commands, persistence or credential precedence.
+
 ## License
 
 [MIT](LICENSE).

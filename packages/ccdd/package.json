@@ -33,6 +33,14 @@
     "./tools": {
       "types": "./dist/tools.d.ts",
       "import": "./dist/tools.js"
+    },
+    "./pi": {
+      "types": "./dist/pi.d.ts",
+      "import": "./dist/pi.js"
+    },
+    "./pi/providers/all": {
+      "types": "./dist/pi-providers.d.ts",
+      "import": "./dist/pi-providers.js"
     }
   },
   "bin": {
@@ -52,6 +60,7 @@
   "dependencies": {
     "@ccdd/core": "6.1.0",
     "@ccdd/project": "6.1.0",
-    "@ccdd/default-tools": "6.1.0"
+    "@ccdd/default-tools": "6.1.0",
+    "@earendil-works/pi-ai": "0.87.1"
   }
 }

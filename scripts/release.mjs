@@ -64,13 +64,14 @@ export async function readReleaseMetadata(root) {
   if (umbrella) {
     invariant(umbrella.name === '@ccdd/ccdd' && umbrella.version === version, 'Umbrella package name or version differs from core.');
     invariant(lock.packages?.['packages/ccdd']?.version === version, 'Umbrella package-lock version is stale.');
-    const expected = { [packageNames.core]: version, [packageNames.project]: version, [packageNames.tools]: version };
+    const expected = { [packageNames.core]: version, [packageNames.project]: version, [packageNames.tools]: version, '@earendil-works/pi-ai': project?.dependencies?.['@earendil-works/pi-ai'] };
+    invariant(typeof expected['@earendil-works/pi-ai'] === 'string' && stable.test(expected['@earendil-works/pi-ai']), 'Umbrella Pi dependency must match the exact Project Pi version.');
     invariant(sameDependencies(umbrella.dependencies, expected), 'Umbrella must depend on the exact coordinated module versions.');
     invariant(sameDependencies(lock.packages['packages/ccdd'].dependencies, expected), 'Umbrella lockfile dependencies differ from the coordinated modules.');
   }
   const notes = await readFile(resolve(root, `docs/releases/${tag}.md`), 'utf8');
   invariant(notes.trim(), `Release notes docs/releases/${tag}.md must not be empty.`);
-  return { version, tag, notes, packageNames, coreFile: tarballFile(core.name, version), toolsFile: tarballFile(tools.name, version), ...(project ? { projectFile: tarballFile(project.name, version) } : {}), ...(umbrella ? { umbrellaFile: tarballFile(umbrella.name, version) } : {}) };
+  return { version, tag, notes, packageNames, coreFile: tarballFile(core.name, version), toolsFile: tarballFile(tools.name, version), ...(project ? { projectFile: tarballFile(project.name, version) } : {}), ...(umbrella ? { umbrellaFile: tarballFile(umbrella.name, version), piVersion: umbrella.dependencies['@earendil-works/pi-ai'] } : {}) };
 }
 
 function validateRepository(repository) {
@@ -212,6 +213,7 @@ export async function validateAssets(directory, metadata, sha) {
     const run = report.installations.find(item => item.name === `umbrella-${manager}`);
     invariant(run?.productionInstall === true && run.installScripts === false && run.onlyDirectDependency === '@ccdd/ccdd'
       && run.cliHelpVersion === metadata.version && run.publicImports === true && run.typeImports === true
+      && (!metadata.piVersion || run.piPublicApi === true)
       && run.defaultToolExecution === true && run.customToolExecution === true && run.binExecution === true
       && run.runtime === 'GREEN' && run.projectValidation === true, `Missing strict ${manager} umbrella installation evidence.`);
   }
@@ -219,7 +221,7 @@ export async function validateAssets(directory, metadata, sha) {
   for (const [name, file] of packages) {
     const bytes = files.get(file), record = report.packages.find(item => item.name === name), manifest = packedManifest(bytes);
     invariant(record?.file === file && record.version === metadata.version && record.sha256 === sha256(bytes) && record.bytes === bytes.length && manifest.name === name && manifest.version === metadata.version, `Packed ${name} does not match the verification report.`);
-    if (name === '@ccdd/ccdd') invariant(sameDependencies(manifest.dependencies, { '@ccdd/core': metadata.version, '@ccdd/project': metadata.version, '@ccdd/default-tools': metadata.version }), 'Packed umbrella must lock the exact release modules.');
+    if (name === '@ccdd/ccdd') invariant(sameDependencies(manifest.dependencies, { '@ccdd/core': metadata.version, '@ccdd/project': metadata.version, '@ccdd/default-tools': metadata.version, '@earendil-works/pi-ai': metadata.piVersion }), 'Packed umbrella must lock the exact release modules.');
   }
   return files;
 }

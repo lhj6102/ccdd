@@ -63,7 +63,7 @@ export function packageFileAllowed(packageName, path) {
   if (path.split('/').some(part => /^(?:node_modules|output|worktrees?|snapshots?|state|sources|\.git|\.ccdd|\.codex|\.ssh|\.aws|\.npmrc)$/i.test(part))) return false;
   if (/(?:^|\/)(?:\.env(?:\..*)?|auth\.json|credentials(?:\.[^/]*)?)$/i.test(path) || /\.(?:db|sqlite(?:3)?|pem|key|tgz|zip)$/i.test(path)) return false;
   if (/^(?:package\.json|README\.md|LICENSE(?:\.[A-Za-z]+)?)$/.test(path)) return true;
-  if (packageName === umbrellaName) return /^dist\/(?:core|project|tools|cli|view)\.(?:js|js\.map|d\.ts)$/.test(path);
+  if (packageName === umbrellaName) return /^dist\/(?:core|project|tools|cli|view|pi|pi-providers)\.(?:js|js\.map|d\.ts)$/.test(path);
   if (packageName === toolsName) return /^dist\/.+\.(?:js|js\.map|d\.ts)$/.test(path) || /^examples\/.+\.(?:md|json)$/.test(path);
   if (packageName === coreName) return /^dist\/src\/(?:sdk|definitions|artifact-scope|tools\/contracts)\.(?:js|js\.map|d\.ts)$/.test(path) || /^examples\/.+\.(?:md|ts|mjs|json|png|jpg|jpeg|webp)$/.test(path);
   return /^dist\/(?:src|scripts)\/.+\.(?:js|js\.map|d\.ts)$/.test(path)
@@ -119,7 +119,7 @@ export async function packPackage(cwd, expectedName, version, outputDirectory, e
   assert.deepEqual(manifest.publishConfig, sourceManifest.publishConfig, 'Packing must preserve npm registry and access settings');
   const required = expectedName === coreName
     ? ['dist/src/sdk.js', 'dist/src/sdk.d.ts', 'dist/src/definitions.d.ts', 'dist/src/tools/contracts.d.ts', 'examples/custom-text-reader/spec/ccdd.json']
-    : expectedName === umbrellaName ? ['dist/core.js', 'dist/core.d.ts', 'dist/project.js', 'dist/tools.js', 'dist/cli.js', 'dist/view.js']
+    : expectedName === umbrellaName ? ['dist/core.js', 'dist/core.d.ts', 'dist/project.js', 'dist/tools.js', 'dist/cli.js', 'dist/view.js', 'dist/pi.js', 'dist/pi.d.ts', 'dist/pi-providers.js', 'dist/pi-providers.d.ts']
     : expectedName === projectName ? ['dist/src/cli.js', 'dist/src/project/cli.js', 'dist/src/project/index.js', 'dist/src/worker.js', 'dist/scripts/prepare-demo.js', 'dist/monitor-ui/index.html']
     : ['dist/index.js', 'dist/index.d.ts', 'dist/cli.js', 'dist/script.js', 'dist/reader.js', 'dist/process.js'];
   if (expectedName === coreName) { assert.equal(manifest.bin, undefined); assert.equal(Object.keys(manifest.dependencies ?? {}).length, 0); }
@@ -274,9 +274,9 @@ export async function verifyUmbrellaInstallation({ scratch, outputDirectory, pac
     const manifest = JSON.parse(await readFile(join(project, 'package.json'), 'utf8'));
     assert.deepEqual(Object.keys(manifest.dependencies), [umbrellaName]);
     if (manager === 'pnpm') for (const dependency of [coreName, projectName, toolsName]) await assert.rejects(lstat(join(project, 'node_modules', dependency)), { code: 'ENOENT' });
-    await writeFile(join(project, 'imports.mjs'), `import assert from 'node:assert/strict';import * as root from '@ccdd/ccdd';import * as core from '@ccdd/ccdd/core';import {createBroker} from '@ccdd/ccdd/project';import {agent,scriptRequest} from '@ccdd/ccdd/tools';assert.equal(root.resolveScopePath,core.resolveScopePath);assert.equal(typeof createBroker,'function');assert.equal(typeof agent.text.read,'function');assert.equal(typeof scriptRequest,'function');`);
+    await writeFile(join(project, 'imports.mjs'), `import assert from 'node:assert/strict';import * as root from '@ccdd/ccdd';import * as core from '@ccdd/ccdd/core';import {createBroker} from '@ccdd/ccdd/project';import {agent,scriptRequest} from '@ccdd/ccdd/tools';assert.equal(root.resolveScopePath,core.resolveScopePath);assert.equal(typeof createBroker,'function');assert.equal(typeof agent.text.read,'function');assert.equal(typeof scriptRequest,'function');globalThis.fetch=()=>{throw Error('No network allowed in catalog exposure check')};const {getSupportedThinkingLevels}=await import('@ccdd/ccdd/pi');const {builtinModels,builtinProviders}=await import('@ccdd/ccdd/pi/providers/all');const models=builtinModels();for(const name of ['getProviders','getModels','getModel','checkAuth','login','logout','streamSimple'])assert.equal(typeof models[name],'function');assert.ok(builtinProviders().some(p=>p.id==='opencode-go'));assert.equal(models.getModel('opencode-go','deepseek-v4.1-flash').id,'deepseek-v4.1-flash');assert.ok(getSupportedThinkingLevels(models.getModel('openai-codex','gpt-6-luna')).includes('xhigh'));`);
     await command(process.execPath, [join(project, 'imports.mjs')], { cwd: project, env });
-    await writeFile(join(project, 'imports.ts'), `import type {ArtifactManifest} from '@ccdd/ccdd';import type {ToolResult} from '@ccdd/ccdd/core';import {createBroker} from '@ccdd/ccdd/project';import {agent,scriptRequest} from '@ccdd/ccdd/tools';const artifact:ArtifactManifest={name:'test'};const result:ToolResult={content:[]};void [artifact,result,createBroker,agent,scriptRequest];`);
+    await writeFile(join(project, 'imports.ts'), `import type {ArtifactManifest} from '@ccdd/ccdd';import type {ToolResult} from '@ccdd/ccdd/core';import {createBroker} from '@ccdd/ccdd/project';import {agent,scriptRequest} from '@ccdd/ccdd/tools';const artifact:ArtifactManifest={name:'test'};const result:ToolResult={content:[]};import type {Models,AuthInteraction,CredentialStore} from '@ccdd/ccdd/pi';import {builtinModels,builtinProviders} from '@ccdd/ccdd/pi/providers/all';const models:Models=builtinModels();type Interaction=AuthInteraction;type Store=CredentialStore;void [artifact,result,createBroker,agent,scriptRequest,models,builtinProviders];`);
     await command(process.execPath, [join(sourceDirectory, 'node_modules/typescript/bin/tsc'), '--noEmit', '--strict', '--skipLibCheck', '--target', 'es2023', '--module', 'nodenext', '--moduleResolution', 'nodenext', join(project, 'imports.ts')], { cwd: project, env });
     for (const bin of ['ccdd', 'ccdd-project']) assert.match((await runManager(manager === 'npm' ? ['exec', '--offline', '--', bin, 'help'] : ['exec', bin, 'help'])).stdout, /CCDD Project/);
     await writeFile(join(project, 'forwarding.mjs'), `import assert from 'node:assert/strict';import {execFile} from 'node:child_process';import {promisify} from 'node:util';const exec=promisify(execFile);const cli=new URL('./node_modules/@ccdd/ccdd/dist/cli.js',import.meta.url).pathname;try{await exec(process.execPath,[cli,'not-a-command','--json']);assert.fail('Unknown command must fail');}catch(error){assert.equal(error.code,2);assert.equal(typeof JSON.parse(error.stdout).error,'string');}`);
@@ -297,7 +297,7 @@ export async function verifyUmbrellaInstallation({ scratch, outputDirectory, pac
     const args = ['verify', '--repo', input, '--state-dir', state, '--critic', 'spec/runtime', '--wait', '--json'];
     const actual = await jsonCommand(cli, args, { cwd: project, env }); assert.equal(actual.status, 'GREEN');
     const reused = await jsonCommand(cli, [...args, '--max-executions', '0'], { cwd: project, env }); assert.equal(reused.status, 'GREEN'); assert.equal(reused.requests.length, 0);
-    return { name, productionInstall: true, installScripts: false, onlyDirectDependency: umbrellaName, cliHelpVersion: version, publicImports: true, typeImports: true, defaultToolExecution: true, customToolExecution: true, binExecution: true, runtime: 'GREEN', projectValidation: true };
+    return { name, productionInstall: true, installScripts: false, onlyDirectDependency: umbrellaName, cliHelpVersion: version, publicImports: true, typeImports: true, piPublicApi: true, defaultToolExecution: true, customToolExecution: true, binExecution: true, runtime: 'GREEN', projectValidation: true };
   } finally { await new Promise(resolve => server.close(resolve)); }
 }
 
