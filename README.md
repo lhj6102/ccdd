@@ -33,15 +33,17 @@ flowchart LR
   style CCDD fill:#eef9ef,stroke:#588060
 ```
 
-These relationships define required input and verification, not execution order. Mutual dependencies are allowed: both Critics may run together, and final validation requires both matching results. Child Artifact folders are automatic dependencies. Logical `mounts` connect other folders without copies or symlinks.
+These relationships define required input, verification and default dependency-GREEN gates. A Critic waits for current GREEN evidence from dependencies outside its cycle. Mutual dependencies are allowed: Critics in the same cycle may run together after external gates pass, and final validation requires all matching results. Child Artifact folders are automatic dependencies. Logical `mounts` connect other folders without copies or symlinks.
 
 ## Start with a runtime check
 
 Use Node.js 22 LTS, version 22.19.0 or later.
 
 ```sh
-npm install --ignore-scripts @ccdd/core@^4 @ccdd/project@^4
+npm install --ignore-scripts @ccdd/core@6.0.2 @ccdd/project@6.0.2
 ```
+
+This single command installs the definitions and Project runtime, including their dependencies. Common view tools are optional and installed separately; see [installation choices](docs/getting-started.md#installation-choices).
 
 Inside an Artifact folder, create `ccdd.json`:
 
@@ -66,7 +68,7 @@ npx ccdd-project verify implementation --recursive --wait
 npx ccdd-project status implementation
 ```
 
-The [getting-started guide](docs/getting-started.md) includes a complete runnable example. Version 4 is a breaking change; existing projects should follow the [migration guide](docs/migration-v4.md).
+The [getting-started guide](docs/getting-started.md) includes a complete runnable example. For an existing installation, follow the [upgrade instructions](docs/releases.md#installing-and-upgrading).
 
 ## Read the result
 
@@ -100,4 +102,4 @@ See [Contributing](CONTRIBUTING.md), [the context map](CONTEXT-MAP.md), [detaile
 
 [MIT](LICENSE).
 
-**CCDD 6.0.1:** large submissions prepare immutable records in yielding chunks before atomic publication. See the [release notes, measurements and limits](docs/releases/v6.0.1.md). Existing format-6 state remains valid; upgrades from 5.x or earlier require the [6.0 migration guide](docs/migration-v6.md).
+**CCDD 6.0.2:** corrects installation guides and npm package READMEs to use matching current packages. Runtime behavior, identity rules and state format are unchanged. See the [release notes](docs/releases/v6.0.2.md); upgrades from before 6.0 still require the [6.0 migration guide](docs/migration-v6.md).

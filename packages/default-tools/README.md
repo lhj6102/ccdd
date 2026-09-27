@@ -1,6 +1,6 @@
 # @ccdd/default-tools
 
-Optional common view scripts for CCDD 4. Use Node 22 LTS, at least 22.19.0. Install `@ccdd/core@^4`, `@ccdd/project@^4` and `@ccdd/default-tools@^4`. Installation and imports register no tools.
+Optional common view scripts for CCDD. Use Node 22 LTS, at least 22.19.0. Install `@ccdd/core@6.0.2`, `@ccdd/project@6.0.2` and `@ccdd/default-tools@6.0.2`. Project does not install this optional package. Its regular dependencies install automatically; core is a non-optional peer. Declare all three packages explicitly for matching versions. Installation and imports register no tools.
 
 Declare each view explicitly in the owning folder's `ccdd.json`:
 

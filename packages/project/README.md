@@ -1,8 +1,8 @@
 # @ccdd/project
 
-Version 4 project validation, review history, CLI, Broker, Executors and optional local monitor. Use Node 22 LTS, at least 22.19.0. Install with `npm install --ignore-scripts @ccdd/core@^4 @ccdd/project@^4`; default tools are optional.
+Project validation, review history, CLI, Broker, Executors and optional local monitor. Use Node 22 LTS, at least 22.19.0. Install with `npm install --ignore-scripts @ccdd/core@6.0.2 @ccdd/project@6.0.2`; default tools are optional and are not installed by Project. Regular dependencies install automatically; core is a non-optional peer, declared explicitly here to keep the installed versions aligned. See [installation choices](https://github.com/lhj6102/ccdd/blob/main/docs/getting-started.md#installation-choices).
 
-Each folder with `ccdd.json` is an Artifact that owns its Critics and script views. Child folders, mounts and instruction references derive dependencies. Cycles are supported. A ready Critic never waits for another PASS, while final validation needs matching actual evidence throughout the required scope.
+Each folder with `ccdd.json` is an Artifact that owns its Critics and script views. Child folders, mounts and instruction references derive dependencies. Cycles are supported. By default, Critics wait for current GREEN evidence from dependencies outside their strongly connected component (SCC). SCC peers can execute together after external gates pass; final validation needs matching actual evidence throughout the required scope.
 
 ```sh
 ccdd-project config check
