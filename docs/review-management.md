@@ -1,7 +1,8 @@
 # Machine resources and review management
 
-These are the current development contracts. Package versions remain at the
-last release until integrated verification and release preparation complete.
+CCDD 6.1 provides these machine resource and review-management contracts.
+Install matching packages and follow the [upgrade steps](releases.md#upgrading-to-61)
+before replacing a running 6.0 installation.
 
 ## Local configuration
 
