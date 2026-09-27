@@ -323,3 +323,11 @@ opts into the existing machine authority/configuration without changing either;
 `concurrency` never raises that shared authority. Reports distinguish these
 modes. A Node import/network guard covers the driver and Node identity/tool
 children, not arbitrary native network code or a hostile OS-level bypass.
+
+Diagnostic drivers use a runner-owned `tmp/` beneath their unique output root,
+passed explicitly as TMPDIR/TMP/TEMP through the filtered child environment.
+They do not inherit a caller's arbitrary temp root or unrelated secrets.
+Identity capture temp directories and tool CCDD_TMP_DIR directories stay within
+that diagnostic/output scope; the report and per-process guard proofs record
+the observed temporary root. Parallel diagnostic workers have distinct temp
+roots. Evidence and source are not removed by temporary script cleanup.

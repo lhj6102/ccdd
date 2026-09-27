@@ -213,3 +213,20 @@ test('cleanup failures retain the original execution error and release custom ad
   const run = await broker.submitProject({ selection: { kind: 'all' } }); await broker.run(run.id);
   const final = broker.getRun(run.id)!; assert.equal(final.requests[0].error, 'original failure'); assert.equal(released, 1); assert.equal(final.events.filter(event => event.type === 'resource.cleanup.error').length, 1);
 });
+
+test('forked real-project diagnostics choose private temp roots and filter unrelated environment secrets', async t => {
+  const data = await fixture(t), evidence = join(data.root, 'temp-evidence.jsonl'), parentTmp = join(data.root, 'untrusted-parent-temp'); await mkdir(parentTmp);
+  const previousTmp = process.env.TMPDIR, previousSecret = process.env.CCDD_TEST_UNRELATED_SECRET;
+  process.env.TMPDIR = parentTmp; process.env.CCDD_TEST_UNRELATED_SECRET = 'must-not-reach-diagnostic';
+  data.cleanup(() => { for (const [key, value] of [['TMPDIR', previousTmp], ['CCDD_TEST_UNRELATED_SECRET', previousSecret]]) { if (value === undefined) delete process.env[key!]; else process.env[key!] = value; } });
+  const record = `import {appendFileSync} from 'node:fs';import {tmpdir} from 'node:os';if(process.env.CCDD_TEST_UNRELATED_SECRET)throw Error('secret leaked');appendFileSync(${JSON.stringify(evidence)},JSON.stringify({tmp:tmpdir(),output:process.env.CCDD_OUTPUT_DIR})+'\\n');`;
+  const views = fixtureViews(); views.agentTools!.read.metadata.resultKinds = ['text'];
+  await data.write('a', { name: 'a', views, stale: { kind: 'identity', script: { command: 'node', args: ['identity.mjs'] } }, critics: [{ id: 'review', title: 'Review', profile: agentProfile, payload: { instruction: 'Read.' } }] }, { 'identity.mjs': record + "console.log('same')", 'view.mjs': record + "for await(const c of process.stdin){};console.log(JSON.stringify({content:[{type:'text',text:'diagnostic'}],observation:{kind:'content'}}));" });
+  const project = { repoPath: data.repoPath, selection: { kind: 'all' as const }, scenario: { steps: [{ operation: 'read', args: {} }] } };
+  const reports = await Promise.all([loadCheck({ project, outputDir: data.root }), loadCheck({ project, outputDir: data.root })]);
+  assert.notEqual(reports[0].temporaryRoot, reports[1].temporaryRoot);
+  for (const report of reports) { assert.ok(report.temporaryRoot.startsWith(data.root + '/ccdd-load-check-')); assert.notEqual(report.temporaryRoot, parentTmp); assert.equal(report.status, 'GREEN'); assert.ok(await readFile(report.output)); }
+  const records = (await readFile(evidence, 'utf8')).trim().split('\n').map(line => JSON.parse(line)); assert.equal(records.length, 4);
+  for (const entry of records) { assert.ok(reports.some(report => entry.tmp.startsWith(join(report.output, '..') + '/') || entry.tmp.startsWith(report.temporaryRoot + '/'))); assert.equal(entry.tmp.startsWith(parentTmp), false); }
+  assert.ok(await readFile(join(data.repoPath, 'a', 'ccdd.json')));
+});

@@ -73,10 +73,11 @@ export async function loadCheck({ concurrency = 60, requests = concurrency, proc
   const started = performance.now();
   const workers = await Promise.all(Array.from({ length: processes }, async (_, index) => {
     const workerRoot = processes === 1 ? root : join(root, `process-${index}`); await mkdir(workerRoot, { recursive: true });
+    const temporaryRoot = join(workerRoot, 'tmp'); await mkdir(temporaryRoot, { mode: 0o700 });
     return new Promise<Record<string, any>>((resolveResult, reject) => {
       const child = fork(fileURLToPath(new URL('./load-check-worker.js', import.meta.url)), [JSON.stringify({ root: workerRoot, concurrency, requests, project } satisfies WorkerOptions)], {
         execArgv: ['--import', fileURLToPath(new URL('../offline-guard.js', import.meta.url))], stdio: ['ignore', 'ignore', 'pipe', 'ipc'],
-        env: { PATH: process.env.PATH, HOME: process.env.HOME, NODE_NO_WARNINGS: '1', CCDD_OFFLINE_GUARD_LOG: join(workerRoot, 'guard.jsonl'),
+        env: { PATH: process.env.PATH, HOME: process.env.HOME, NODE_NO_WARNINGS: '1', TMPDIR: temporaryRoot, TMP: temporaryRoot, TEMP: temporaryRoot, CCDD_OFFLINE_GUARD_LOG: join(workerRoot, 'guard.jsonl'),
           ...(resourceMode === 'isolated' ? { CCDD_STATE_HOME: join(root, 'machine'), CCDD_CONFIG_HOME: config } : Object.fromEntries(['CCDD_STATE_HOME', 'CCDD_CONFIG_HOME', 'XDG_CONFIG_HOME'].flatMap(key => process.env[key] ? [[key, process.env[key]]] : []))) },
       });
       let result: Record<string, any> | undefined, stderr = '';
@@ -153,7 +154,7 @@ export async function runDiagnostic({ root, concurrency, requests, project }: Wo
       const final = broker.getRun(run.id)!;
       const elapsedMs = performance.now() - started;
       const proofs = (await readFile(join(root, 'guard.jsonl'), 'utf8')).trim().split('\n').filter(Boolean).map(line => JSON.parse(line));
-      const report = { diagnosticOnly: true, realProject: !!project, changeCursor: cursor, changeCount, terminalChanges: Object.fromEntries(terminalChanges), requestedConcurrency: concurrency, requests: ids.length, completed, maxActive, toolLatencyMs: distribution(latencies), eventLoopMaxMs: loop.max / 1e6,
+      const report = { diagnosticOnly: true, temporaryRoot: tmpdir(), realProject: !!project, changeCursor: cursor, changeCount, terminalChanges: Object.fromEntries(terminalChanges), requestedConcurrency: concurrency, requests: ids.length, completed, maxActive, toolLatencyMs: distribution(latencies), eventLoopMaxMs: loop.max / 1e6,
         elapsedMs, throughputPerSecond: completed / (elapsedMs / 1000), status: final.status, errors: final.requests.filter(request => request.error).map(request => ({ criticId: request.criticId, error: request.error, code: request.errorCode })),
         providerGuard: { driverNetworkBlocked: networkBlocked, driverProviderImportBlocked: providerBlocked, guardedToolCalls: latencies.length, guardedNodeProcesses: proofs.length, proofFile: join(root, 'guard.jsonl'), scope: 'Node module imports and standard network APIs in driver, identity and tool Node children; not an OS sandbox or arbitrary native executable network isolation' },
         stateDir, runId: run.id, output: join(root, 'report.json') };
