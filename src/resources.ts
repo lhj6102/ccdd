@@ -1,8 +1,9 @@
+import type { ExecutionProvenance } from './provenance.js';
 import { DatabaseSync } from 'node:sqlite';
 import { randomUUID, createHash } from 'node:crypto';
 import { mkdirSync, readFileSync, realpathSync, readdirSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { ownerAlive, ownProcessIdentity, processIdentity } from './broker/ownership.js';
 import type { Admission, AdmissionRequest, AdmissionLease } from './broker/admission.js';
@@ -37,7 +38,7 @@ export function readResourceConfiguration(): ResourceConfiguration {
   }
   return { identityCapacity: integer(input.identityCapacity ?? 100, 'identityCapacity'), defaultProviderCapacity: integer(input.defaultProviderCapacity ?? 4, 'defaultProviderCapacity'), providers };
 }
-export function canonicalRepositoryId(repoPath: string): string { return createHash('sha256').update(realpathSync(repoPath)).digest('hex'); }
+export function canonicalRepositoryId(repoPath: string): string { let canonical: string; try { canonical = realpathSync(repoPath); } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; canonical = resolve(repoPath); } return createHash('sha256').update(canonical).digest('hex'); }
 export function rejectIdentityConcurrency(value: unknown): void { if (value !== undefined) throw new Error('identityConcurrency/--identity-concurrency was removed. Set local resources.json identityCapacity (default 100) and Artifact stale.weight (1–100, default 25).'); }
 export function validateIdentityWeight(weight = 25, config = readResourceConfiguration()): number {
   integer(weight, 'Identity weight');
@@ -47,7 +48,7 @@ export function validateIdentityWeight(weight = 25, config = readResourceConfigu
 }
 export function validateMaxExecutions(value: number | undefined): void { if (value !== undefined) integer(value, 'maxExecutions', 0); }
 interface LeaseRow { token: string; pid: number; process_identity: string | null; lane: string; state: string; run_id: string | null; weight: number; provider: string | null; model: string | null; repo: string; repo_cap: number | null; seq: number }
-export interface ResourceLease extends AdmissionLease { token: string; started(): void; terminal(): void; trackChild(pid: number): () => void }
+export interface ResourceLease extends AdmissionLease { token: string; started(provenance?: ExecutionProvenance | null): void; terminal(): void; trackChild(pid: number): () => void }
 /** One machine database is authoritative. No repository store transaction encloses a wait. */
 export function openResources() {
   const filename = resourcePaths().database;
@@ -61,6 +62,8 @@ export function openResources() {
     CREATE TABLE IF NOT EXISTS execution_attempts (token TEXT PRIMARY KEY, run_id TEXT NOT NULL REFERENCES submissions(id), request_id TEXT NOT NULL, state TEXT NOT NULL, reserved_at TEXT NOT NULL, started_at TEXT, terminal_at TEXT);
     CREATE INDEX IF NOT EXISTS budget_attempts ON execution_attempts(run_id,state);
     CREATE TABLE IF NOT EXISTS resource_children (token TEXT NOT NULL, pid INTEGER NOT NULL, process_identity TEXT, PRIMARY KEY(token,pid));`);
+  if (!db.prepare('PRAGMA table_info(execution_attempts)').all().some(row => row.name === 'provenance')) { transactionInit(); }
+  function transactionInit() { db.exec('BEGIN IMMEDIATE'); try { if (!db.prepare('PRAGMA table_info(execution_attempts)').all().some(row => row.name === 'provenance')) db.exec('ALTER TABLE execution_attempts ADD COLUMN provenance TEXT'); db.exec('COMMIT'); } catch (error) { db.exec('ROLLBACK'); throw error; } }
   let closed = false;
   const transaction = <T>(fn: () => T): T => { db.exec('BEGIN IMMEDIATE'); try { const result = fn(); db.exec('COMMIT'); return result; } catch (error) { db.exec('ROLLBACK'); throw error; } };
   function childrenGone(token: string): boolean {
@@ -89,6 +92,12 @@ export function openResources() {
     return gone;
   }
   function reclaim() {
+    // A bounded release failure leaves an accountable cleanup row, not an eternal live-owner slot.
+    for (const row of db.prepare("SELECT token FROM resource_leases WHERE state='releasing'").all()) {
+      if (!childrenGone(String(row.token))) continue;
+      db.prepare("UPDATE execution_attempts SET state='refunded',terminal_at=? WHERE token=? AND state='reserved'").run(new Date().toISOString(), row.token);
+      db.prepare('DELETE FROM resource_leases WHERE token=?').run(row.token);
+    }
     const owners = db.prepare('SELECT DISTINCT pid,process_identity FROM resource_leases').all() as unknown as LeaseRow[];
     for (const owner of owners) {
       if (ownerAlive({ ...owner, run_id: '', token: '', claimed_at: '' })) continue;
@@ -136,7 +145,7 @@ export function openResources() {
           if (identity) validateIdentityWeight(weight, limits);
           const earlier = db.prepare("SELECT token FROM resource_leases WHERE lane=? AND state='waiting' AND seq<? LIMIT 1").get(lane, current.seq);
           if (earlier) return false;
-          const active = db.prepare("SELECT * FROM resource_leases WHERE state='active'").all() as unknown as LeaseRow[];
+          const active = db.prepare("SELECT * FROM resource_leases WHERE state IN ('active','releasing')").all() as unknown as LeaseRow[];
           if (identity) { if (active.filter(row => row.lane === lane).reduce((sum, row) => sum + row.weight, 0) + weight > limits.identityCapacity) return false; }
           else {
             const pool = limits.providers[provider!], capacity = pool?.capacity ?? limits.defaultProviderCapacity;
@@ -166,15 +175,21 @@ export function openResources() {
         trackChild(pid: number) {
           const identity = processIdentity(pid);
           db.prepare('INSERT INTO resource_children(token,pid,process_identity) VALUES(?,?,?)').run(token, pid, identity);
-          return () => { db.prepare('DELETE FROM resource_children WHERE token=? AND pid=? AND process_identity IS ?').run(token, pid, identity); };
+          return () => { if (process.platform !== 'linux') db.prepare('DELETE FROM resource_children WHERE token=? AND pid=? AND process_identity IS ?').run(token, pid, identity); };
         },
-        started() { transaction(() => {
+        started(provenance = null) { transaction(() => {
           const lease = db.prepare("SELECT token FROM resource_leases WHERE token=? AND pid=? AND process_identity IS ? AND state='active'").get(token, process.pid, ownProcessIdentity);
           if (!lease) throw new Error('Resource ownership lost before execution start.');
-          db.prepare("UPDATE execution_attempts SET state='started',started_at=? WHERE token=? AND state='reserved'").run(new Date().toISOString(), token);
+          db.prepare("UPDATE execution_attempts SET state='started',started_at=?,provenance=? WHERE token=? AND state='reserved'").run(new Date().toISOString(), provenance === null ? null : JSON.stringify(provenance), token);
         }); },
         terminal() { transaction(() => { db.prepare("UPDATE execution_attempts SET state='terminal',terminal_at=? WHERE token=? AND state='started'").run(new Date().toISOString(), token); }); },
-        release() { if (released) return; release(token); released = true; clearInterval(heartbeat); },
+        async release() {
+          if (released) return;
+          db.prepare("UPDATE resource_leases SET state='releasing' WHERE token=? AND pid=? AND process_identity IS ?").run(token, process.pid, ownProcessIdentity);
+          const deadline = Date.now() + 5000;
+          while (!transaction(() => childrenGone(token))) { if (Date.now() >= deadline) throw new Error('Tracked child cleanup exceeded 5000 ms; resource lease remains held.'); await delay(10); }
+          release(token); released = true; clearInterval(heartbeat);
+        },
       };
     } catch (error) { clearInterval(heartbeat); release(token); throw error; }
   }
@@ -183,7 +198,7 @@ export function openResources() {
       db.prepare('INSERT OR IGNORE INTO submissions(id,max_executions,created_at) VALUES(?,?,?)').run(id, maxExecutions ?? null, new Date().toISOString());
       if (db.prepare('SELECT max_executions FROM submissions WHERE id=?').get(id)!.max_executions !== (maxExecutions ?? null)) throw new Error('A submission budget is immutable.');
     }); },
-    budget(id: string) { const row = db.prepare('SELECT max_executions FROM submissions WHERE id=?').get(id); return row ? { maxExecutions: row.max_executions, attempts: db.prepare('SELECT * FROM execution_attempts WHERE run_id=? ORDER BY reserved_at,token').all(id) } : null; },
+    budget(id: string) { const row = db.prepare('SELECT max_executions FROM submissions WHERE id=?').get(id); return row ? { maxExecutions: row.max_executions, attempts: db.prepare('SELECT * FROM execution_attempts WHERE run_id=? ORDER BY reserved_at,token').all(id).map(attempt => ({ ...attempt, state: String(attempt.state), token: String(attempt.token), requestId: String(attempt.request_id), executionProvenance: attempt.provenance ? JSON.parse(String(attempt.provenance)) as ExecutionProvenance : null })) } : null; },
     acquire,
     admission(repo: string, repoCap?: number): Admission { return { acquire: (request, options) => acquire({ ...request, repo, repoCap }, options) }; },
     close() { if (closed) return; closed = true; db.close(); },

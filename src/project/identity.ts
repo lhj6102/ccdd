@@ -53,7 +53,6 @@ export function semanticDefinition<T extends { reviewPolicy?: unknown; stale?: {
 }
 
 export interface SnapshotOptions { identityConcurrency?: number }
-export const DEFAULT_IDENTITY_CONCURRENCY = 4;
 export function positiveConcurrency(value: number, name: string): number {
   if (!Number.isSafeInteger(value) || value < 1) throw new Error(`${name} must be a positive integer.`);
   return value;

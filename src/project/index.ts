@@ -1,7 +1,7 @@
 import { rejectIdentityConcurrency } from '../resources.js';
 import { readWorkspaceConfig } from '../broker/config.js';
 import { prepareWorkspace, type WorkspaceIntegrity } from '../workspaces/index.js';
-import { createProjectSnapshot, DEFAULT_IDENTITY_CONCURRENCY, positiveConcurrency } from './identity.js';
+import { createProjectSnapshot } from './identity.js';
 import { planProject as fullPlan, queryProject as fullQuery } from './query.js';
 import { requesterPlan, requesterQuery, resultView, type ResultDetail, type ResultOptions } from '../result-view.js';
 import type { ProjectSnapshot, ValidationEvidence, QueryOptions } from './types.js';
@@ -42,4 +42,4 @@ export async function inspectProject<D extends ResultDetail = 'compact'>({ detai
 export { readResourceConfiguration, resourcePaths } from '../resources.js';
 export type { ResourceConfiguration } from '../resources.js';
 export type { ExecutionProvenance } from '../provenance.js';
-export { loadCheck, type LoadCheckOptions } from './load-check.js';
+export { loadCheck, type LoadCheckOptions, type LoadCheckProject, type LoadCheckStep } from './load-check.js';

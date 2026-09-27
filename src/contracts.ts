@@ -30,6 +30,7 @@ export interface ReviewResult {
 export interface ReviewRequest extends ReviewEnvelope {
   /** Identity of the input actually reviewed; provided by project validation. */
   validationInput?: ValidationInput;
+  attemptId?: string;
   executionProvenance?: import('./provenance.js').ExecutionProvenance | null;
   id: string; runId: string; workspace: WorkspaceDescriptor; worktreePath: string;
   status: ReviewStatus; createdAt: string;

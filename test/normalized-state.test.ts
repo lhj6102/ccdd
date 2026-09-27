@@ -81,6 +81,11 @@ test('fresh state rejects every previous major before touching records', async t
 
 test('sixty concurrent executors tolerate a changed-results read on every telemetry event', async t => {
   const data = await artifactFixture(t);
+  const { mkdir, writeFile } = await import('node:fs/promises');
+  const previousState = process.env.CCDD_STATE_HOME, previousConfig = process.env.CCDD_CONFIG_HOME;
+  process.env.CCDD_STATE_HOME = join(data.root, 'machine'); process.env.CCDD_CONFIG_HOME = join(data.root, 'config');
+  await mkdir(process.env.CCDD_CONFIG_HOME); await writeFile(join(process.env.CCDD_CONFIG_HOME, 'resources.json'), JSON.stringify({ defaultProviderCapacity: 60 }));
+  data.cleanup(() => { for (const [key, value] of [['CCDD_STATE_HOME', previousState], ['CCDD_CONFIG_HOME', previousConfig]]) { if (value === undefined) delete process.env[key!]; else process.env[key!] = value; } });
   await data.write('a', { name: 'a', critics: Array.from({ length: 180 }, (_, n) => runtimeCritic(`c${n}`)) });
   const { monitorEventLoopDelay } = await import('node:perf_hooks'); const { setTimeout: delay } = await import('node:timers/promises');
   let active = 0, maximum = 0, pages = 0, cursor = 0;

@@ -1,3 +1,4 @@
+import { appendFileSync } from 'node:fs';
 import { registerHooks, syncBuiltinESMExports } from 'node:module';
 import http from 'node:http';
 import https from 'node:https';
@@ -13,3 +14,5 @@ net.connect = denied; net.createConnection = denied; net.Socket.prototype.connec
 globalThis.fetch = denied;
 syncBuiltinESMExports();
 Reflect.set(globalThis, Symbol.for('ccdd.offline-guard'), true);
+
+if (process.env.CCDD_OFFLINE_GUARD_LOG) appendFileSync(process.env.CCDD_OFFLINE_GUARD_LOG, JSON.stringify({ pid: process.pid, active: true, networkBlocked: true, providerImportBlocked: true }) + '\n');

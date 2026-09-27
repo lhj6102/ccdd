@@ -1,6 +1,6 @@
 export interface AdmissionRequest { requestId: string; runId: string; provider?: string; model?: string; kind: string }
 export interface AdmissionLease { release(): void | Promise<void> }
-/** A future machine-wide provider pool implements this same cancellable boundary. */
+/** Optional admission adds a stricter precondition; the Broker always enforces machine admission as well. */
 export interface Admission {
   acquire(request: AdmissionRequest, options: { signal: AbortSignal; waiting(reason: string): void }): Promise<AdmissionLease>;
 }

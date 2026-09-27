@@ -101,7 +101,7 @@ test('a dead source owner is reconciled and its follower settles without replayi
 async function actualWorker(t: Parameters<typeof artifactFixture>[0], data: { repoPath: string; stateDir: string }, runId: string) {
   const { fork } = await import('node:child_process');
   const { fileURLToPath } = await import('node:url');
-  const child = fork(fileURLToPath(new URL('../src/worker.js', import.meta.url)), [JSON.stringify({ ...data, repoId: 'demo', runId, humanInbox: false })], {
+  const child = fork(fileURLToPath(new URL('../src/worker.js', import.meta.url)), [JSON.stringify({ ...data, repoId: 'demo', runId, humanInbox: false, workerProtocol: 'resources-1' })], {
     stdio: ['ignore', 'ignore', 'pipe', 'ipc'], execArgv: [],
     env: Object.fromEntries(Object.entries(process.env).filter(([key]) => key !== 'NODE_TEST_CONTEXT')),
   });

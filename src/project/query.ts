@@ -5,6 +5,11 @@ import type { ProjectSnapshot, ProjectSelection, QueryOptions, ValidationEvidenc
 
 export function selectedCritics(snapshot: Pick<ProjectSnapshot, 'config'>, selection: ProjectSelection): string[] {
   const config = snapshot.config;
+  if (selection.kind === 'critics' || selection.kind === 'artifacts') {
+    const ids = selection.kind === 'critics' ? selection.criticIds : selection.artifactIds;
+    if (!Array.isArray(ids) || !ids.length || ids.some(id => typeof id !== 'string')) throw new Error('Multi-root selection requires a nonempty array of IDs.');
+    return [...new Set(ids.flatMap(id => selectedCritics(snapshot, selection.kind === 'critics' ? { kind: 'critic', criticId: id } : { kind: 'artifact', artifactId: id })))];
+  }
   if (selection.kind === 'all') return config.critics.map(c => c.id);
   if (selection.kind === 'critic') {
     if (!config.critics.some(c => c.id === selection.criticId)) throw new Error(`Unknown Critic: ${selection.criticId}`);
@@ -16,7 +21,7 @@ export function selectedCritics(snapshot: Pick<ProjectSnapshot, 'config'>, selec
 
 export function requiredArtifacts(snapshot: Pick<ProjectSnapshot, 'config'>, selection: ProjectSelection): string[] {
   selectedCritics(snapshot, selection);
-  const roots = selection.kind === 'all' ? Object.keys(snapshot.config.artifacts) : selection.kind === 'artifact' ? [selection.artifactId] : [snapshot.config.critics.find(c => c.id === selection.criticId)!.target];
+  const roots = selection.kind === 'all' ? Object.keys(snapshot.config.artifacts) : selection.kind === 'artifact' ? [selection.artifactId] : selection.kind === 'artifacts' ? selection.artifactIds : selectedCritics(snapshot, selection).map(id => snapshot.config.critics.find(c => c.id === id)!.target);
   return dependencyClosure(snapshot.config.relations, roots);
 }
 

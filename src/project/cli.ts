@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { rejectIdentityConcurrency, validateMaxExecutions } from '../resources.js';
 import { loadCheck } from './load-check.js';
+import { requiredArtifacts } from './query.js';
 import { positiveConcurrency } from './identity.js';
 import { requesterRun, requesterRequest, requesterPlan, requesterEvidence, type RequesterPlan } from '../result-view.js';
 import { existsSync, realpathSync } from 'node:fs';
@@ -28,7 +29,7 @@ import { claimHumanFromCli } from '../review/local-claim.js';
 type Output = { write(value: string): unknown };
 const terminal = new Set(['GREEN', 'RED', 'ERROR', 'INCOMPLETE']);
 const flags = new Set(['--all', '--recursive', '--force', '--ignore-gates', '--wait', '--json', '--full', '--help', '--human-inbox']);
-const values = new Set(['--repo', '--state-dir', '--critic', '--timeout-ms', '--requester', '--reviewer', '--result-file', '--tool', '--args', '--run', '--pi-auth-file', '--codex-auth-file', '--integrity', '--concurrency', '--identity-concurrency', '--max-executions', '--requests', '--output-dir']);
+const values = new Set(['--repo', '--state-dir', '--critic', '--timeout-ms', '--requester', '--reviewer', '--result-file', '--tool', '--args', '--run', '--pi-auth-file', '--codex-auth-file', '--integrity', '--concurrency', '--identity-concurrency', '--max-executions', '--requests', '--output-dir', '--critics', '--artifacts', '--scenario-file', '--processes', '--resource-mode']);
 const help = `CCDD Project — pull validation and explicit review execution
 
   ccdd-project load-check [--concurrency 60] [--requests 60] [--output-dir PATH] [--json]
@@ -57,8 +58,9 @@ Dependency Critics must have current GREEN evidence before execution. RED blocks
 Queries never create review tickets, send alarms or execute review tools or Providers.
 Reviews run in the supplied workspace. Keep it unchanged until completion.
 State and review output must stay outside the repository.
-verify accepts --concurrency N (non-Human executions per Run; default 4).
-verify/status/plan accept --identity-concurrency N (owner identity scripts; default 4).
+verify accepts --max-executions N (durable submission starts; 0 means reuse-only).
+verify accepts optional --concurrency N as a tighter cap; it never raises machine capacity.
+Identity scheduling uses local resources.json identityCapacity and Artifact stale.weight.
 verify/status/plan accept --integrity content|metadata (default: content).
 metadata trusts unchanged filesystem metadata to reuse captured content identity;
 it is opt-in, weaker than full content checks, and its evidence cannot satisfy content verification.
@@ -106,14 +108,17 @@ export async function main(argv = process.argv.slice(2), { stdout = process.stdo
     const get = (key: string) => typeof options[key] === 'string' ? options[key] as string : undefined;
     if (['help', '--help'].includes(command) || options['--help']) { stdout.write(help); return 0; }
     if (command === 'load-check') {
-      for (const key of Object.keys(options)) if (!['--concurrency', '--requests', '--output-dir', '--json'].includes(key)) throw new Error(`${key} is not supported by load-check.`);
-      const report = await withCliCancellation('Offline load check cancelled.', signal => loadCheck({ concurrency: get('--concurrency') === undefined ? undefined : Number(get('--concurrency')), requests: get('--requests') === undefined ? undefined : Number(get('--requests')), outputDir: get('--output-dir'), signal }));
+      for (const key of Object.keys(options)) if (!['--concurrency', '--requests', '--output-dir', '--json', '--repo', '--scenario-file', '--processes', '--resource-mode'].includes(key)) throw new Error(`${key} is not supported by load-check.`);
+      const scenarioFile = get('--scenario-file');
+      if (get('--repo') && !scenarioFile) throw new Error('Real-project load-check requires --scenario-file (selection, recursive, ignoreGates, scenario).');
+      const project = scenarioFile ? { ...JSON.parse(await readFile(resolve(scenarioFile), 'utf8')), repoPath: resolve(get('--repo') ?? process.cwd()) } : undefined;
+      const report = await withCliCancellation('Offline load check cancelled.', signal => loadCheck({ concurrency: get('--concurrency') === undefined ? undefined : Number(get('--concurrency')), requests: get('--requests') === undefined ? undefined : Number(get('--requests')), processes: get('--processes') === undefined ? undefined : Number(get('--processes')), resourceMode: get('--resource-mode') as 'isolated' | 'shared' | undefined, project, outputDir: get('--output-dir'), signal }));
       print(report); return report.status === 'GREEN' ? 0 : 2;
     }
     if (!['status', 'plan', 'verify', 'history', 'graph', 'config', 'run', 'request', 'prune'].includes(command)) throw new Error(`Unknown command: ${command}`);
     const common = ['--repo', '--state-dir', '--json'];
     const full = Boolean(options['--full']) || command === 'run' && positional[0] === 'show';
-    const permitted = new Set([...common, ...(['status', 'plan', 'verify', 'history', 'run', 'request'].includes(command) ? ['--full'] : []), ...(['status', 'plan', 'verify', 'history'].includes(command) ? ['--critic', '--all'] : []),
+    const permitted = new Set([...common, ...(['status', 'plan', 'verify', 'history', 'run', 'request'].includes(command) ? ['--full'] : []), ...(['status', 'plan', 'verify', 'history'].includes(command) ? ['--critic', '--critics', '--artifacts', '--all'] : []),
       ...(['status', 'plan', 'verify'].includes(command) ? ['--integrity', '--identity-concurrency'] : []),
       ...(['plan', 'verify'].includes(command) ? ['--recursive', '--force', '--ignore-gates'] : []),
       ...(command === 'verify' ? ['--max-executions', '--concurrency', '--wait', '--timeout-ms', '--requester', '--human-inbox', '--pi-auth-file', '--codex-auth-file'] : []),
@@ -148,8 +153,10 @@ export async function main(argv = process.argv.slice(2), { stdout = process.stdo
       return 0;
     }
     const select = (required = false): ProjectSelection => {
-      if (positional.length > 1 || Number(Boolean(positional[0])) + Number(Boolean(get('--critic'))) + Number(Boolean(options['--all'])) > 1) throw new Error('Choose one Artifact, --critic ID, or --all.');
+      if (positional.length > 1 || Number(Boolean(positional[0])) + Number(Boolean(get('--critic'))) + Number(Boolean(get('--critics'))) + Number(Boolean(get('--artifacts'))) + Number(Boolean(options['--all'])) > 1) throw new Error('Choose one Artifact, --critic ID, or --all.');
       if (positional[0]) return { kind: 'artifact', artifactId: positional[0] };
+      if (get('--critics')) return { kind: 'critics', criticIds: get('--critics')!.split(',') };
+      if (get('--artifacts')) return { kind: 'artifacts', artifactIds: get('--artifacts')!.split(',') };
       if (get('--critic')) return { kind: 'critic', criticId: get('--critic')! };
       if (required && !options['--all']) throw new Error('An Artifact, --critic ID, or --all is required.');
       return { kind: 'all' };
@@ -177,9 +184,7 @@ export async function main(argv = process.argv.slice(2), { stdout = process.stdo
         if (command === 'config') { print({ ok: true, artifacts: Object.keys(config.artifacts).length, critics: config.critics.length, snapshotHash: workspace.descriptor.hash }, 'Folder configuration and Artifact references are valid.'); return 0; }
         const graph = createGraphDefinition(config);
         if (selection.kind !== 'all') {
-          const target = selection.kind === 'artifact' ? selection.artifactId : config.critics.find(c => c.id === selection.criticId)?.target;
-          if (!target || !Object.hasOwn(config.artifacts, target)) throw new Error(selection.kind === 'artifact' ? `Unknown Artifact: ${selection.artifactId}` : `Unknown Critic: ${selection.criticId}`);
-          const artifacts = new Set(dependencyClosure(config.relations, [target]));
+          const artifacts = new Set(requiredArtifacts({ config }, selection));
           graph.critics = graph.critics.filter(c => artifacts.has(c.target));
           graph.artifacts = Object.fromEntries(Object.entries(graph.artifacts).filter(([id]) => artifacts.has(id)));
           graph.relations = graph.relations.filter(edge => artifacts.has(edge.source) && artifacts.has(edge.target));
@@ -195,7 +200,7 @@ export async function main(argv = process.argv.slice(2), { stdout = process.stdo
     }
     if (command === 'history') {
       const selection = select();
-      const entries = projectHistory(context.stateDir, { detail: 'full' }).filter(e => selection.kind === 'all' || selection.kind === 'critic' && e.criticId === selection.criticId || selection.kind === 'artifact' && e.input.target.id === selection.artifactId);
+      const entries = projectHistory(context.stateDir, { detail: 'full' }).filter(e => selection.kind === 'all' || selection.kind === 'critic' && e.criticId === selection.criticId || selection.kind === 'artifact' && e.input.target.id === selection.artifactId || selection.kind === 'critics' && selection.criticIds.includes(e.criticId) || selection.kind === 'artifacts' && selection.artifactIds.includes(e.input.target.id));
       print(full ? entries : entries.map(e => requesterEvidence(e, context.stateDir)), full ? undefined : entries.map(e => `${e.completedAt} ${e.criticId} ${e.verdict} · ${e.requestId}\n  ${JSON.stringify(e.result)}`).join('\n') || 'No recorded validation evidence.'); return 0;
     }
     if (command === 'run' || command === 'request') {
@@ -219,7 +224,7 @@ export async function main(argv = process.argv.slice(2), { stdout = process.stdo
     const executors = createExecutorRegistry({ piOptions, alarmMethods: createLocalAlarmMethods({ ...context, humanInbox }) });
     broker = createBroker({ detail: 'full', ...context, executors, workspaceIntegrity, maxConcurrentExecutors, identityConcurrency });
     if (command === 'verify') {
-      const run = await withCliCancellation('Project validation cancelled.', signal => broker!.submitProject({ selection: verifySelection!, recursive: Boolean(options['--recursive']), force: Boolean(options['--force']), ignoreGates: options['--ignore-gates'] ? true : undefined, requesterId: get('--requester') ?? 'cli', signal }));
+      const run = await withCliCancellation('Project validation cancelled.', signal => broker!.submitProject({ maxExecutions, selection: verifySelection!, recursive: Boolean(options['--recursive']), force: Boolean(options['--force']), ignoreGates: options['--ignore-gates'] ? true : undefined, requesterId: get('--requester') ?? 'cli', signal }));
       if (!terminal.has(run.status)) await ensureRunWorker({ broker, context, run, initialConfig: { piOptions, humanInbox, maxConcurrentExecutors } });
       if (options['--wait']) return await wait(run.id);
       const view = projectRun(context.stateDir, run.id)!; printRun(view);

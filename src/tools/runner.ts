@@ -104,6 +104,7 @@ async function executable(command: string, cwd: string, workspace: string): Prom
 function toolEnvironment(outputDir: string, temporary: string): NodeJS.ProcessEnv {
   const names = ['PATH', 'LANG', 'LC_ALL', 'SYSTEMROOT', 'WINDIR', 'DISPLAY', 'WAYLAND_DISPLAY', 'XAUTHORITY', 'XDG_RUNTIME_DIR', 'DBUS_SESSION_BUS_ADDRESS'];
   return { ...Object.fromEntries(names.flatMap(name => process.env[name] === undefined ? [] : [[name, process.env[name]!]])),
+    ...(diagnosticScope.getStore() ? { NODE_OPTIONS: `--import=${diagnosticScope.getStore()!.guard}`, CCDD_OFFLINE_GUARD_LOG: process.env.CCDD_OFFLINE_GUARD_LOG } : {}),
     HOME: temporary, USERPROFILE: temporary, TMPDIR: temporary, TMP: temporary, TEMP: temporary,
     XDG_CACHE_HOME: join(temporary, 'cache'), CARGO_TARGET_DIR: join(outputDir, 'cargo-target'),
     CCDD_OUTPUT_DIR: outputDir, CCDD_TMP_DIR: temporary };

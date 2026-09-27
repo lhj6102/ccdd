@@ -1,6 +1,7 @@
+import { resourcePaths } from '../src/resources.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFile, writeFile } from 'node:fs/promises';
+import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { createBroker } from '../src/broker/index.js';
@@ -8,14 +9,22 @@ import { inspectProject, createProjectSnapshot } from '../src/project/index.js';
 import { main } from '../src/project/cli.js';
 import { artifactFixture, fixtureViews, runtimeCritic } from './helpers/artifacts.js';
 
+async function localCapacity(data: Awaited<ReturnType<typeof artifactFixture>>, capacity = 100) {
+  const previousState = process.env.CCDD_STATE_HOME, previousConfig = process.env.CCDD_CONFIG_HOME;
+  process.env.CCDD_STATE_HOME = join(data.root, 'machine'); process.env.CCDD_CONFIG_HOME = join(data.root, 'local-config');
+  await mkdir(process.env.CCDD_CONFIG_HOME, { recursive: true });
+  await writeFile(resourcePaths().config, JSON.stringify({ identityCapacity: capacity, defaultProviderCapacity: 4 }));
+  data.cleanup(() => { for (const [key, value] of [['CCDD_STATE_HOME', previousState], ['CCDD_CONFIG_HOME', previousConfig]]) { if (value === undefined) delete process.env[key!]; else process.env[key!] = value; } });
+}
+
 for (const cap of [1, 2, 6, undefined]) test(`non-Human executor concurrency cap ${cap ?? 'default 4'} is observed per Run`, async t => {
-  const data = await artifactFixture(t); await data.write('a', { name: 'a', critics: Array.from({ length: 8 }, (_, i) => runtimeCritic(`c${i}`)) });
+  const data = await artifactFixture(t); await localCapacity(data); await data.write('a', { name: 'a', critics: Array.from({ length: 8 }, (_, i) => runtimeCritic(`c${i}`)) });
   let active = 0, peak = 0, calls = 0;
   const broker = createBroker({ ...data, maxConcurrentExecutors: cap, executors: { canExecute: () => ({ ok: true }), execute: async () => {
     calls++; peak = Math.max(peak, ++active); try { await delay(60); return { verdict: 'GREEN' }; } finally { active--; }
   } } }); data.cleanup(() => broker.close());
   const run = await broker.submitProject({ selection: { kind: 'all' } });
-  assert.equal((await broker.run(run.id))!.status, 'GREEN'); assert.equal(calls, 8); assert.equal(peak, cap ?? 4);
+  assert.equal((await broker.run(run.id))!.status, 'GREEN'); assert.equal(calls, 8); assert.equal(peak, Math.min(cap ?? 4, 4));
 });
 
 async function identities(t: Parameters<typeof artifactFixture>[0], mode = 'normal') {
@@ -34,28 +43,33 @@ async function events(log: string) { return (await readFile(log, 'utf8').catch((
 function peak(events: { event: string }[]) { let active = 0, max = 0; for (const event of events) { active += event.event === 'start' ? 1 : -1; max = Math.max(max, active); } return max; }
 
 test('parallel owner identities obey the cap and produce identical keys regardless of completion order', async t => {
-  const data = await identities(t);
-  const sequential = await inspectProject({ ...data, detail: 'full', identityConcurrency: 1 });
+  const data = await identities(t); await localCapacity(data, 25);
+  const sequential = await inspectProject({ ...data, detail: 'full' });
   assert.equal(peak(await events(data.log)), 1); await writeFile(data.log, '');
-  const parallel = await inspectProject({ ...data, detail: 'full', identityConcurrency: 2 });
+  await writeFile(resourcePaths().config, JSON.stringify({ identityCapacity: 50 }));
+  const parallel = await inspectProject({ ...data, detail: 'full' });
   const observed = await events(data.log); assert.equal(peak(observed), 2);
   assert.notDeepEqual(observed.filter(e => e.event === 'end').map(e => e.id), ['a', 'b', 'c', 'd']);
   assert.deepEqual(parallel.snapshot, sequential.snapshot);
   await writeFile(data.log, '');
-  const direct = await createProjectSnapshot(await data.config(), data.repoPath, sequential.snapshot.snapshotHash, undefined, 'content', { kind: 'all' }, { identityConcurrency: 3 });
+  await writeFile(resourcePaths().config, JSON.stringify({ identityCapacity: 75 }));
+  const direct = await createProjectSnapshot(await data.config(), data.repoPath, sequential.snapshot.snapshotHash, undefined, 'content', { kind: 'all' });
   assert.deepEqual(direct, sequential.snapshot); assert.equal(peak(await events(data.log)), 3);
   await writeFile(data.log, '');
-  const broker = createBroker({ ...data, identityConcurrency: 3, executors: { canExecute: () => ({ ok: true }), execute: async () => ({ verdict: 'GREEN' }) } }); data.cleanup(() => broker.close());
-  await broker.submitProject({ selection: { kind: 'all' }, identityConcurrency: 1 });
-  assert.equal(peak(await events(data.log)), 1, 'verify submission override reaches snapshot');
+  const broker = createBroker({ ...data, executors: { canExecute: () => ({ ok: true }), execute: async () => ({ verdict: 'GREEN' }) } }); data.cleanup(() => broker.close());
+  await writeFile(resourcePaths().config, JSON.stringify({ identityCapacity: 25 }));
+  await broker.submitProject({ selection: { kind: 'all' } });
+  assert.equal(peak(await events(data.log)), 1, 'machine identity capacity reaches snapshot');
   await writeFile(data.log, '');
+  await writeFile(resourcePaths().config, JSON.stringify({ identityCapacity: 75 }));
   await broker.submitProject({ selection: { kind: 'all' } });
   assert.equal(peak(await events(data.log)), 3, 'Broker identity default reaches verify');
 });
 
 for (const mode of ['cancel', 'fail', 'timeout']) test(`parallel owner identities ${mode} fail closed and stop queued work`, { timeout: 10000 }, async t => {
   const data = await identities(t, mode), controller = new AbortController();
-  const broker = createBroker({ ...data, identityConcurrency: 2, executors: { canExecute: () => ({ ok: true }), execute: async () => ({ verdict: 'GREEN' }) } }); data.cleanup(() => broker.close());
+  await localCapacity(data, 50);
+  const broker = createBroker({ ...data, executors: { canExecute: () => ({ ok: true }), execute: async () => ({ verdict: 'GREEN' }) } }); data.cleanup(() => broker.close());
   const pending = broker.submitProject({ selection: { kind: 'all' }, signal: controller.signal });
   const rejected = assert.rejects(pending, mode === 'cancel' ? /cancel fixture/ : /Identity script/);
   if (mode === 'cancel') {
@@ -73,12 +87,12 @@ test('concurrency rejects non-positive, fractional and nonnumeric settings', asy
   const data = await artifactFixture(t);
   for (const value of [0, -1, 1.5, NaN, Infinity]) {
     assert.throws(() => createBroker({ ...data, maxConcurrentExecutors: value }), /positive integer/);
-    assert.throws(() => createBroker({ ...data, identityConcurrency: value }), /positive integer/);
-    await assert.rejects(inspectProject({ ...data, identityConcurrency: value }), /positive integer/);
+    assert.throws(() => createBroker({ ...data, identityConcurrency: value }), /was removed/);
+    await assert.rejects(inspectProject({ ...data, identityConcurrency: value }), /was removed/);
   }
   for (const option of ['--concurrency', '--identity-concurrency']) for (const value of ['0', '-1', '1.5', 'wat']) {
     let output = ''; const code = await main(['verify', '--all', option, value, '--json'], { stdout: { write: text => { output += text; } }, stderr: { write() {} } });
-    assert.equal(code, 2); assert.match(output, /positive integer/);
+    assert.equal(code, 2); assert.match(output, option === '--identity-concurrency' ? /was removed/ : /positive integer/);
   }
 });
 

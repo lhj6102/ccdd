@@ -2,6 +2,9 @@
 
 CCDD packages are distributed through npm. GitHub Releases announce each version with an installation command, npm package links, and release notes. They do not host installation tarballs. GitHub still supplies automatic Source code archives; those contain source, not installable packages.
 
+Development changes are described in [review management](review-management.md);
+the version below remains the last published release until release verification.
+
 See [getting started](getting-started.md) for setup and [v6.0.2 release notes](releases/v6.0.2.md) for the current changes.
 
 ## Current release: 6.0.2

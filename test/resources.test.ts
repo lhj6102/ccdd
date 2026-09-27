@@ -119,3 +119,14 @@ test('dead owner cleanup retains the slot until its tracked child group is no lo
   const stat = await readFile(`/proc/${pid}/stat`, 'utf8').catch(() => null);
   assert.ok(stat === null || stat.slice(stat.lastIndexOf(')') + 2).startsWith('Z ')); await next.release();
 });
+
+test('release waits for tracked child termination and frees next waiter without a second release', async t => {
+  const data = await fixture(t, { defaultProviderCapacity: 1 }), store = data.store(); store.registerSubmission('release');
+  const lease = await store.acquire(request('release'), options()); lease.started();
+  const c = spawn(process.execPath, ['-e', 'setInterval(()=>{},1000)'], { detached: true, stdio: 'ignore' });
+  const exited = new Promise<void>(resolve => c.once('exit', () => resolve()));
+  lease.trackChild(c.pid!); t.after(() => { try { process.kill(-c.pid!, 'SIGKILL'); } catch {} });
+  let admitted = false; const next = store.acquire(request('release'), options()).then(value => { admitted = true; return value; });
+  assert.equal(admitted, false); await lease.release(); await exited; await lease.release();
+  const held = await next; assert.equal(admitted, true); await held.release();
+});

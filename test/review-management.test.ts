@@ -140,3 +140,68 @@ test('offline load-check performs real guarded tool calls and cannot supply prod
   assert.throws(() => projectHistory(report.stateDir), /diagnostic state/);
   assert.throws(() => createBroker({ repoPath: join(report.stateDir, '..', 'fixture'), stateDir: report.stateDir }), /diagnostic state/);
 });
+
+test('multi-root union deduplicates selected Critics under one budget while retaining dependency gates', async t => {
+  const data = await fixture(t); await data.write('a', { name: 'a', critics: [runtimeCritic()] }); await data.write('b', { name: 'b', critics: [runtimeCritic()] });
+  const broker = createBroker({ detail: 'full', ...data, executors: simple }); data.cleanup(() => broker.close());
+  const selection = { kind: 'critics' as const, criticIds: ['a/check', 'b/check', 'a/check'] };
+  const plan = await inspectProject({ detail: 'full', ...data, selection }); assert.deepEqual(plan.plan.selectedCriticIds, ['a/check', 'b/check']);
+  await assert.rejects(broker.submitProject({ selection, maxExecutions: 1 }), /requires 2 new executions/);
+  const run = await broker.submitProject({ selection, maxExecutions: 2 }); await broker.run(run.id); assert.equal(broker.executionBudget(run.id)!.attempts.length, 2);
+  const reuse = await broker.submitProject({ selection, maxExecutions: 0 }); assert.equal(reuse.requests.length, 0);
+  await data.write('a/child', { name: 'child', critics: [runtimeCritic()] });
+  const gated = await inspectProject({ detail: 'full', ...data, selection: { kind: 'artifacts', artifactIds: ['a', 'b', 'a'] } });
+  assert.equal(gated.plan.items.find(item => item.id === 'a/check')!.action, 'WAIT_DEPENDENCY'); assert.equal(gated.plan.items.some(item => item.id === 'child/check'), false);
+});
+
+test('CLI forwards zero and finite max-executions before any detached executor start', async t => {
+  const data = await fixture(t), marker = join(data.root, 'started');
+  await data.write('a', { name: 'a', critics: [runtimeCritic('one'), runtimeCritic('two')] }, { 'check.test.mjs': `require('node:fs').writeFileSync(${JSON.stringify(marker)},'started')` });
+  for (const cap of ['0', '1']) {
+    let output = ''; const code = await main(['verify', '--all', '--max-executions', cap, '--repo', data.repoPath, '--state-dir', data.stateDir, '--json'], { stdout: { write(value) { output += value; } }, stderr: { write(value) { output += value; } } });
+    assert.equal(code, 2, output); assert.match(output, /maxExecutions/); await assert.rejects(readFile(marker), { code: 'ENOENT' });
+  }
+});
+
+for (const mode of ['failure', 'cancel']) test(`started ${mode} retains original attempt provenance while retry and prestart remain distinct`, async t => {
+  const data = await provenanceFixture(t); let release!: () => void, entered!: () => void;
+  const gate = new Promise<void>(resolve => release = resolve), ready = new Promise<void>(resolve => entered = resolve);
+  const broker = createBroker({ ...data, executors: { ...simple, async execute() { entered(); if (mode === 'cancel') await gate; throw new Error('original execution failure'); } } }); data.cleanup(async () => { release(); await broker.close(); });
+  const run = await broker.submitProject({ selection: { kind: 'all' }, maxExecutions: 2 }); const running = broker.run(run.id); await ready;
+  if (mode === 'cancel') { broker.cancel(run.id); release(); } await running;
+  const request = broker.getRun(run.id)!.requests[0]; assert.ok(request.attemptId); assert.ok(request.executionProvenance);
+  const changes = broker.changes(run.id)!.changes; const error = changes.find(change => change.status === 'ERROR')!; assert.deepEqual(error.executionProvenance, request.executionProvenance);
+  broker.retryRequest(request.id); assert.equal(broker.getRequest(request.id)!.executionProvenance, null);
+  await broker.run(run.id); const attempts = broker.executionBudget(run.id)!.attempts; assert.equal(attempts.length, 2); assert.notEqual(attempts[0].token, attempts[1].token); assert.deepEqual(attempts[0].executionProvenance, request.executionProvenance);
+  assert.deepEqual(broker.changes(run.id)!.changes.find(change => change.cursor === error.cursor)!.executionProvenance, request.executionProvenance);
+});
+
+test('real-project diagnostic preserves graph, runs identities and selected tools with previous-result arguments', async t => {
+  const data = await fixture(t), views = fixtureViews();
+  views.agentTools!.read.metadata.inputSchema = { type: 'object', properties: {}, additionalProperties: false };
+  views.agentTools!.next = { metadata: { description: 'Next controlled diagnostic call.', inputSchema: { type: 'object', properties: { value: { type: 'integer' } }, required: ['value'], additionalProperties: false }, resultKinds: ['json'], observation: 'content' }, script: { command: 'node', args: ['view.mjs'] } };
+  const manifest = { name: 'root', views, stale: { kind: 'identity' as const, script: { command: 'node', args: ['identity.mjs'] } }, critics: [{ id: 'review', title: 'Review', profile: agentProfile, payload: { instruction: 'Read tools.' } }] };
+  const scripts = { 'identity.mjs': "if(Reflect.get(globalThis,Symbol.for('ccdd.offline-guard'))!==true)throw Error('unguarded identity');console.log('stable')", 'view.mjs': "let s='';for await(const c of process.stdin)s+=c;console.log(JSON.stringify({content:[{type:'json',data:{value:2}}],observation:{kind:'content'}}))" };
+  await data.write('', manifest, scripts); await data.write('child', { ...manifest, name: 'child' }, scripts);
+  const before = await readFile(join(data.repoPath, 'ccdd.json'));
+  const project = { repoPath: data.repoPath, selection: { kind: 'all' as const }, scenario: { steps: [{ operation: 'read', args: {} }, { operation: 'next', argsFrom: { step: 0, pointer: '/content/0/data' } }] } };
+  const report = await loadCheck({ project, outputDir: data.root, concurrency: 60 }); assert.equal(report.completed, 2); assert.equal(report.maxActive, 1); assert.equal(report.toolLatencyMs.count, 4); assert.ok(report.changeCount >= 6); assert.ok(report.providerGuard.guardedNodeProcesses >= 7);
+  assert.deepEqual(await readFile(join(data.repoPath, 'ccdd.json')), before); await assert.rejects(readFile(join(data.stateDir, 'broker.sqlite')), { code: 'ENOENT' });
+  await assert.rejects(loadCheck({ ...{ project: { ...project, scenario: { steps: [{ operation: 'next', argsFrom: { step: 0, pointer: '/content' } }] } } }, outputDir: data.root }), /earlier step/);
+  await assert.rejects(loadCheck({ project: { ...project, scenario: { steps: [{ operation: 'missing' }] } }, outputDir: data.root }), /Unknown registered scenario tool/);
+});
+
+test('required diagnostic pass payload is explicit and validated before identity or tool work', async t => {
+  const data = await fixture(t), marker = join(data.root, 'user-work');
+  const views = fixtureViews();
+  const definition = { name: 'root', views, stale: { kind: 'identity' as const, script: { command: 'node', args: ['identity.mjs'] } }, critics: [{ id: 'review', title: 'Review', profile: agentProfile, payload: { instruction: 'Read.' }, passSchema: { type: 'object', properties: { reason: { type: 'string' } }, required: ['reason'], additionalProperties: false } }] };
+  const scripts = { 'identity.mjs': `import {writeFileSync} from 'node:fs';writeFileSync(${JSON.stringify(marker)},'identity');console.log('same')` };
+  await data.write('', definition, scripts); await data.write('child', { ...definition, name: 'child' }, scripts);
+  const project = { repoPath: data.repoPath, selection: { kind: 'all' as const }, scenario: { steps: [{ operation: 'read', args: {} }] } };
+  for (const syntheticResult of [undefined, { verdict: 'GREEN', reason: 3 }]) {
+    await assert.rejects(loadCheck({ project: { ...project, scenario: { ...project.scenario, syntheticResult } }, outputDir: data.root }), /response schema/);
+    await assert.rejects(readFile(marker), { code: 'ENOENT' });
+  }
+  const report = await loadCheck({ project: { ...project, scenario: { ...project.scenario, syntheticResult: { verdict: 'GREEN', reason: 'Explicit synthetic diagnostic payload, not a review.' } } }, outputDir: data.root });
+  assert.equal(report.completed, 2); assert.equal(report.status, 'GREEN'); assert.equal(report.diagnosticOnly, true); assert.equal(report.maxActive, 1);
+});

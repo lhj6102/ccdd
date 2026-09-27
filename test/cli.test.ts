@@ -106,7 +106,7 @@ test('verify concurrency reaches the actual detached worker and saved configurat
     appendFileSync(${JSON.stringify(log)}, 'start\\n');
     await new Promise(r=>setTimeout(r,200));
     appendFileSync(${JSON.stringify(log)}, 'end\\n');`);
-  const result = await separate(['verify', '--all', '--wait', '--concurrency', '2', '--identity-concurrency', '1', ...data.args]);
+  const result = await separate(['verify', '--all', '--wait', '--concurrency', '2', ...data.args]);
   assert.equal(result.code, 0); assert.equal(result.data.status, 'GREEN');
   let active = 0, peak = 0;
   const lines = (await readFile(log, 'utf8')).trim().split('\n');

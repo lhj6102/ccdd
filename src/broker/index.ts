@@ -14,7 +14,7 @@ import { setTimeout as delay, setImmediate as yieldTurn } from 'node:timers/prom
 import { prepareReviewRequests } from '../requester/index.js';
 import { readWorkspaceConfig } from './config.js';
 import { createGraphDefinition, type GraphDefinition } from './graph.js';
-import { localAdmission, type Admission, type AdmissionLease } from './admission.js';
+import { type Admission, type AdmissionLease } from './admission.js';
 export type { Admission, AdmissionLease, AdmissionRequest } from './admission.js';
 import { readChanges, type ChangeOptions } from './changes.js';
 import { initializeRecords, records } from './storage.js';
@@ -29,7 +29,7 @@ import { createReviewTools, type ToolExecutionDiagnostic } from '../tools/runner
 import { createHumanClaims, HUMAN_PREPARATION_LEASE_MS } from './human-claims.js';
 import { prepareHumanReview } from '../executors/human-preparation.js';
 import { prepareWorkspace, reopenWorkspace, type WorkspaceDescriptor, type WorkspaceHandle, type WorkspaceIntegrity } from '../workspaces/index.js';
-import { createProjectSnapshot, DEFAULT_IDENTITY_CONCURRENCY, positiveConcurrency } from '../project/identity.js';
+import { createProjectSnapshot, positiveConcurrency } from '../project/identity.js';
 import { includedCritics, planProject } from '../project/query.js';
 import { readEvidence, storedRequesterRun } from '../project/store.js';
 import type { ProjectRunDefinition, ProjectSelection } from '../project/types.js';
@@ -145,6 +145,9 @@ export function createBroker<D extends ResultDetail = 'compact'>({ detail, repoP
       CREATE TABLE IF NOT EXISTS metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS run_owners (run_id TEXT PRIMARY KEY REFERENCES runs(id), pid INTEGER NOT NULL, process_identity TEXT, token TEXT NOT NULL, claimed_at TEXT NOT NULL);`);
     initializeRecords(db);
+    for (const row of db.prepare("SELECT o.*,r.data FROM run_owners o JOIN runs r ON r.id=o.run_id WHERE json_extract(r.data,'$.workerProtocol') IS NOT 'resources-1'").all()) {
+      if (ownerAlive(row as unknown as OwnerRecord)) throw new Error('An old worker is still active in this state. Stop all 6.0 workers before using machine resource admission.');
+    }
     const diagnostic = db.prepare("SELECT value FROM metadata WHERE key='diagnostic-only'").get();
     if (diagnostic && !diagnosticScope.getStore()) throw new Error('Offline diagnostic state cannot be opened as review evidence.');
     if (diagnosticScope.getStore()) db.prepare("INSERT OR IGNORE INTO metadata(key,value) VALUES('diagnostic-only','true')").run();
@@ -298,7 +301,7 @@ export function createBroker<D extends ResultDetail = 'compact'>({ detail, repoP
       if (initial.profile.kind !== 'human') {
         const admissionRequest = { requestId, runId, kind: initial.profile.kind, provider: initial.profile.provider, model: initial.profile.model };
         // Optional admission is a stricter precondition, never the machine authority.
-        customLease = await admission?.acquire(admissionRequest, { signal, waiting() {} });
+        customLease = await admission?.acquire(admissionRequest, { signal, waiting(reason) { transaction(() => { const current = required(requestHeader(requestId), 'Request'); if (current.status !== 'QUEUED') return; current.blockedReason = reason.slice(0, 2000); saveHeader(current); }); changed(); } });
         const caps = [maxConcurrentExecutors, readiness.header(runId)?.repoExecutorCap].filter((value): value is number => value !== undefined);
         lease = await resources.acquire({ ...admissionRequest, repo: repositoryKey, ...(caps.length ? { repoCap: Math.min(...caps) } : {}) }, { signal, waiting(reason) {
         transaction(() => { const current = required(requestHeader(requestId), 'Request'); if (current.status !== 'QUEUED') return; current.blockedReason = reason.slice(0, 2000); saveHeader(current); }); changed();
@@ -345,8 +348,8 @@ export function createBroker<D extends ResultDetail = 'compact'>({ detail, repoP
         return;
       }
       const capture = await captureExecution(request, lease!.token, signal);
-      lease!.started();
-      transaction(() => { const header = required(requestHeader(requestId), 'Request'); header.attemptId = lease!.token; saveHeader(header); });
+      lease!.started(capture?.provenance ?? null);
+      transaction(() => { const header = required(requestHeader(requestId), 'Request'); header.attemptId = lease!.token; header.executionProvenance = capture?.provenance ?? null; db.prepare('UPDATE requests SET data=? WHERE id=?').run(JSON.stringify(header), requestId); });
       const result = validateResult(await executionScope.run({ runtimeRoot: capture?.root ?? workspace.descriptor.path, declaredPaths: capture?.paths ?? [], trackChild: pid => lease!.trackChild(pid) }, () => requireExecutors().execute(copy(request), {
         worktreePath: workspace.descriptor.path, workspacePath: workspace.descriptor.path, runDir, signal,
         onEvent(event) {
@@ -394,7 +397,13 @@ export function createBroker<D extends ResultDetail = 'compact'>({ detail, repoP
       transaction(() => { if (ownerData(runId)?.token === token) finishWithin(requestId, { error: reason }); });
       changed();
     }
-    } catch (error) { if (signal.aborted || fatalExecutionError(error)) throw error; transaction(() => { if (ownerData(runId)?.token === token) finishWithin(requestId, { error }, ['QUEUED']); }); changed(); } finally { lease?.terminal(); await lease?.release(); await customLease?.release(); }
+    } catch (error) { if (signal.aborted || fatalExecutionError(error)) throw error; transaction(() => { if (ownerData(runId)?.token === token) finishWithin(requestId, { error }, ['QUEUED']); }); changed(); } finally {
+      const cleanupErrors: string[] = [];
+      try { lease?.terminal(); } catch (error) { cleanupErrors.push(errorText(error)); }
+      try { await lease?.release(); } catch (error) { cleanupErrors.push(errorText(error)); }
+      try { await customLease?.release(); } catch (error) { cleanupErrors.push(errorText(error)); }
+      if (cleanupErrors.length) { appendEvent(runId, requestId, 'resource.cleanup.error', 'Execution resource cleanup failed; retained leases stay authoritative.', { errors: cleanupErrors }); changed(); }
+    }
   }
 
   async function run(runId: string, { signal, onStarted }: { signal?: AbortSignal; onStarted?: (value: { runId: string; pid: number }) => void } = {}) {

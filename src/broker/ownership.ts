@@ -18,6 +18,7 @@ export function ownerAlive(owner: OwnerRecord | undefined) {
   if (!owner || !Number.isSafeInteger(owner.pid) || owner.pid <= 0) return false;
   try { process.kill(owner.pid, 0); }
   catch (error) { if ((error as NodeJS.ErrnoException).code === 'ESRCH') return false; }
+  if (process.platform === 'linux') { try { const stat = readFileSync(`/proc/${owner.pid}/stat`, 'utf8'); if (stat.slice(stat.lastIndexOf(')') + 2).startsWith('Z ')) return false; } catch { /* Absence is confirmed by the PID/start check. */ } }
   const identity = owner.pid === process.pid ? ownProcessIdentity : processIdentity(owner.pid);
   return !owner.process_identity || !identity || owner.process_identity === identity;
 }

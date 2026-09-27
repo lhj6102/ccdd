@@ -146,3 +146,10 @@ Human preparation checks admitted environment requirements and static tool defin
 ## Exit codes
 
 With `verify --wait` or `run show --wait`: 0 means the scope is fulfilled, 1 means RED, 2 means ERROR, 3 means wait timeout and 4 means INCOMPLETE. Without waiting, 0 means accepted or already fulfilled; inspect the reported status. Immediate incomplete/error results return 4/2. `status` returns 1 when not satisfied; `plan` reports a valid plan with 0 even when work remains. Use `--json` for structured results.
+
+## Machine scheduling and execution evidence
+
+See [review management](review-management.md) for local identity capacity and
+weights, provider pools, root gate policy, durable `maxExecutions`, original
+`executionProvenance`, and the isolated offline load check. Stop old workers
+before upgrading; removed identity concurrency options fail explicitly.

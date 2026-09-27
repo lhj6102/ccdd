@@ -103,3 +103,10 @@ See [Contributing](CONTRIBUTING.md), [the context map](CONTEXT-MAP.md), [detaile
 [MIT](LICENSE).
 
 **CCDD 6.0.2:** corrects installation guides and npm package READMEs to use matching current packages. Runtime behavior, identity rules and state format are unchanged. See the [release notes](docs/releases/v6.0.2.md); upgrades from before 6.0 still require the [6.0 migration guide](docs/migration-v6.md).
+
+## Review resources and budgets
+
+Machine-wide provider pools, weighted owner identities, submission execution
+budgets, original runtime provenance and guarded offline load checks share one
+review-management contract. See [the guide](docs/review-management.md), including
+the required old-worker shutdown and option migration.

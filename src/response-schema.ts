@@ -4,7 +4,7 @@ import { jsonCopy, object, validateSchema } from './tools/schema.js';
 
 export interface ResponseSchemas { passSchema?: JsonSchema; failSchema?: JsonSchema }
 export const auditFields = new Set(['provider', 'model', 'stdout', 'stderr', 'durationMs', 'exitCode', 'toolCalls']);
-const reserved = new Set(['verdict', 'reference', 'reusedFrom', ...auditFields]);
+const reserved = new Set(['verdict', 'reference', 'reusedFrom', 'executionProvenance', 'attemptId', ...auditFields]);
 
 /** Owner schemas describe extra top-level result fields, never transport or audit fields. */
 export function validateResponseSchema(schema: unknown): asserts schema is JsonSchema {
