@@ -18,10 +18,10 @@ export function coalescingEligibility(database: DatabaseSync, request: ReviewReq
   if (!['QUEUED', 'RUNNING', 'WAITING_HUMAN', 'WAIT_DEPENDENCY', 'BLOCKED'].includes(request.status)) return null;
   if (options.ignoreGates && ['WAIT_DEPENDENCY','BLOCKED'].includes(request.status)) return null;
   options.reconcile?.(request.runId);
-  const row = database.prepare("SELECT json_object('id',json_extract(data,'$.id'),'status',json_extract(data,'$.status'),'createdAt',json_extract(data,'$.createdAt'),'coalescingGraceMs',json_extract(data,'$.coalescingGraceMs')) AS data FROM runs WHERE id = ?").get(request.runId);
+  const row = database.prepare("SELECT json_object('workerProtocol',json_extract(data,'$.workerProtocol'),'id',json_extract(data,'$.id'),'status',json_extract(data,'$.status'),'createdAt',json_extract(data,'$.createdAt'),'coalescingGraceMs',json_extract(data,'$.coalescingGraceMs')) AS data FROM runs WHERE id = ?").get(request.runId);
   if (!row) return null;
   const source = JSON.parse(String(row.data)) as RunRecord;
-  if (terminal.has(source.status)) return null;
+  if (source.workerProtocol !== 'resources-1' || terminal.has(source.status)) return null;
   const owner = database.prepare('SELECT * FROM run_owners WHERE run_id = ?').get(source.id) as OwnerRecord | undefined;
   // Never fall back to the submission lease for a dead owner. The write path
   // reconciles it using the same PID/process identity check and owner token.

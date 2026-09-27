@@ -17,6 +17,7 @@ export interface ProjectSnapshot {
   workspaceIntegrity?: WorkspaceIntegrity;
 }
 export interface ValidationEvidence {
+  executionProvenance?: import('../provenance.js').ExecutionProvenance | null;
   requestId: string; runId: string; criticId: string; input: ValidationInput;
   completedAt: string; verdict: ReviewResult['verdict']; result: ReviewResult;
 }

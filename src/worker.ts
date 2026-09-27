@@ -1,12 +1,13 @@
 import {createBroker} from './broker/index.js';
 import {createExecutorRegistry} from './executors/index.js';
 import {createLocalAlarmMethods} from './local.js';
-import type { WorkerOptions } from './worker-client.js';
+import { WORKER_PROTOCOL, type WorkerOptions } from './worker-client.js';
 import { errorMessage, errorCode } from './executors/errors.js';
 
 // A single review owns this process; it never listens on a socket or accepts a queue.
-const options=JSON.parse(process.argv[2]) as WorkerOptions;
-const {runId,piOptions,humanInbox,...context}=options;
+const options=JSON.parse(process.argv[2]) as WorkerOptions & {workerProtocol?: string};
+if (options.workerProtocol !== WORKER_PROTOCOL) throw new Error('Worker protocol mismatch; stop old workers and submit using the current CLI.');
+const {runId,piOptions,humanInbox,workerProtocol,...context}=options;
 const executors=createExecutorRegistry({piOptions,alarmMethods:createLocalAlarmMethods({...context,humanInbox})});
 const controller=new AbortController();
 const stop=()=>controller.abort(new Error('Review worker was stopped.'));

@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 
 export interface OwnerRecord { run_id: string; pid: number; process_identity: string | null; token: string; claimed_at: string }
 
-function processIdentity(pid: number) {
+export function processIdentity(pid: number) {
   try {
     if (process.platform === 'linux') {
       const stat = readFileSync(`/proc/${pid}/stat`, 'utf8');

@@ -1,3 +1,4 @@
+import { executionScope } from '../execution-scope.js';
 import { spawn } from 'node:child_process';
 import type { ChildProcessWithoutNullStreams, SpawnOptionsWithoutStdio } from 'node:child_process';
 export type SpawnImplementation = (command: string, args: readonly string[], options: SpawnOptionsWithoutStdio) => ChildProcessWithoutNullStreams;
@@ -11,6 +12,8 @@ export function runProcess(command: string, args: string[], { cwd, env, input, s
     let child: ChildProcessWithoutNullStreams;
     try { child = spawnImpl(command, args, { cwd, env, stdio: ['pipe', 'pipe', 'pipe'], detached: process.platform !== 'win32', windowsHide: true }); }
     catch (error) { reject(error); return; }
+    let untrack: (() => void) | undefined;
+    try { if (child.pid) untrack = executionScope.getStore()?.trackChild(child.pid); } catch (error) { try { if (child.pid) process.kill(-child.pid, 'SIGKILL'); } catch {} reject(error); return; }
     const output = { stdout: { chunks: [] as Buffer[], size: 0 }, stderr: { chunks: [] as Buffer[], size: 0 } };
     let outputTruncated = false;
     let failure: Error | undefined, killTimer: NodeJS.Timeout | undefined;
@@ -39,7 +42,7 @@ export function runProcess(command: string, args: string[], { cwd, env, input, s
     child.stdout.on('data', collect('stdout'));
     child.stderr.on('data', collect('stderr'));
     child.stdin.on('error', () => {});
-    const cleanup = () => { clearTimeout(timer); clearTimeout(killTimer); signal?.removeEventListener('abort', abort); };
+    const cleanup = () => { untrack?.(); clearTimeout(timer); clearTimeout(killTimer); signal?.removeEventListener('abort', abort); };
     child.on('error', error => { cleanup(); reject(error); });
     // A review command may not leave descendants running after its main process exits.
     child.on('exit', () => {

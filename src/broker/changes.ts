@@ -15,7 +15,8 @@ export function readChanges(db: DatabaseSync, runId: string, stateDir: string, {
     if (!row.result_ref) return null;
     const result = store.get<Record<string, unknown>>(String(row.result_ref));
     if (!result || result.verdict !== row.status || !['GREEN','RED'].includes(String(row.status))) throw new Error('Stored result/status mismatch.');
-    return { ...semanticResult(result), verdict: String(row.status), reference: reviewReference(stateDir, String(db.prepare('SELECT run_id FROM requests WHERE id=?').get(row.request_id)!.run_id), String(row.request_id)) };
+    const header = JSON.parse(String(db.prepare('SELECT data FROM requests WHERE id=?').get(row.request_id)!.data));
+    return { ...semanticResult(result), executionProvenance: header.executionProvenance ?? null, verdict: String(row.status), reference: reviewReference(stateDir, String(db.prepare('SELECT run_id FROM requests WHERE id=?').get(row.request_id)!.run_id), String(row.request_id)) };
   };
   const changes = rows.slice(0, limit).map(row => ({ cursor: Number(row.cursor), requestId: String(row.request_id), criticId: String(row.critic_id), status: String(row.status),
     blockedReason: row.status === 'BLOCKED' || row.status === 'WAIT_DEPENDENCY' || row.status === 'QUEUED' ? (db.prepare("SELECT json_extract(data,'$.blockedReason') AS reason FROM requests WHERE id=?").get(row.request_id)?.reason ?? null) : null,

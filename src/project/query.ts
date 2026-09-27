@@ -59,7 +59,7 @@ export function queryProject(snapshot: ProjectSnapshot, history: readonly Valida
     return { id, title: definition.title, target: definition.target, deps: [...definition.deps], status, isStale: status !== 'PASS', needsReview: !evidence,
       canExecute: !evidence && !attempt, blockedBy: [], reason, input, result: evidence, requestId: attempt?.id ?? null };
   });
-  if (!options.ignoreGates) {
+  if (!(options.ignoreGates ?? snapshot.config.reviewPolicy?.dependencyGates === 'ignore')) {
     const gates = criticGates(snapshot);
     const original = new Map(critics.map(c => [c.id, c.status]));
     const byId = new Map(critics.map(c => [c.id, c]));

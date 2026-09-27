@@ -1,3 +1,5 @@
+import { executionScope } from '../execution-scope.js';
+import { openResources, rejectIdentityConcurrency, validateIdentityWeight, canonicalRepositoryId } from '../resources.js';
 import { createHash } from 'node:crypto';
 import { createReadStream } from 'node:fs';
 import { lstat, readdir, readlink } from 'node:fs/promises';
@@ -44,6 +46,12 @@ async function hashMaterial(root: string, relative: string, childPaths: Set<stri
   return inputHash(entries);
 }
 
+export function semanticDefinition<T extends { reviewPolicy?: unknown; stale?: { kind: string; weight?: number } }>(value: T): T {
+  const result = structuredClone(value); delete result.reviewPolicy;
+  if (result.stale?.kind === 'identity') delete result.stale.weight;
+  return result;
+}
+
 export interface SnapshotOptions { identityConcurrency?: number }
 export const DEFAULT_IDENTITY_CONCURRENCY = 4;
 export function positiveConcurrency(value: number, name: string): number {
@@ -51,8 +59,8 @@ export function positiveConcurrency(value: number, name: string): number {
   return value;
 }
 
-export async function createProjectSnapshot(config: RepoConfig, root: string, snapshotHash: string, signal?: AbortSignal, workspaceIntegrity: WorkspaceIntegrity = 'content', selection: ProjectSelection = { kind: 'all' }, { identityConcurrency = DEFAULT_IDENTITY_CONCURRENCY }: SnapshotOptions = {}): Promise<ProjectSnapshot> {
-  positiveConcurrency(identityConcurrency, 'identityConcurrency');
+export async function createProjectSnapshot(config: RepoConfig, root: string, snapshotHash: string, signal?: AbortSignal, workspaceIntegrity: WorkspaceIntegrity = 'content', selection: ProjectSelection = { kind: 'all' }, { identityConcurrency }: SnapshotOptions = {}): Promise<ProjectSnapshot> {
+  rejectIdentityConcurrency(identityConcurrency);
   signal?.throwIfAborted();
   if (!['content', 'metadata'].includes(workspaceIntegrity)) throw new Error('Workspace integrity must be content or metadata.');
   createGraphDefinition(config, false);
@@ -65,20 +73,21 @@ export async function createProjectSnapshot(config: RepoConfig, root: string, sn
   const values = new Map<string, string>();
   const controller = new AbortController();
   const identitySignal = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal;
-  let cursor = 0;
-  const workers = Array.from({ length: Math.min(identityConcurrency, owners.length) }, async () => {
+  // Validate the entire selected scope before executing any owner script.
+  for (const [, artifact] of owners) if (artifact.stale?.kind === 'identity') validateIdentityWeight(artifact.stale.weight);
+  const resources = owners.length ? openResources() : undefined;
+  const workers = owners.map(async ([id, artifact]) => {
     try {
-      while (cursor < owners.length) {
-        identitySignal.throwIfAborted();
-        const [id, artifact] = owners[cursor++];
-        if (artifact.stale?.kind !== 'identity') throw new Error('Invalid owner identity strategy.');
-        const { value } = await ownerIdentity(root, artifact.path, id, artifact.stale, identitySignal);
+      if (artifact.stale?.kind !== 'identity') throw new Error('Invalid owner identity strategy.');
+      const lease = await resources!.acquire({ requestId: id, runId: '', kind: 'identity', repo: canonicalRepositoryId(root), identityWeight: artifact.stale.weight ?? 25 }, { signal: identitySignal, waiting() {} });
+      try {
+        const { value } = await executionScope.run({ runtimeRoot: root, declaredPaths: [], trackChild: pid => lease.trackChild(pid) }, () => ownerIdentity(root, artifact.path, id, artifact.stale as Extract<NonNullable<typeof artifact.stale>, { kind: 'identity' }>, identitySignal));
         values.set(id, value);
-      }
+      } finally { await lease.release(); }
     } catch (error) { if (!controller.signal.aborted) controller.abort(error); throw error; }
   });
-  // Wait for every in-flight script's cancellation and temporary-output cleanup.
   await Promise.allSettled(workers);
+  resources?.close();
   identitySignal.throwIfAborted();
   for (const [id, artifact] of Object.entries(config.artifacts)) {
     signal?.throwIfAborted();
@@ -119,7 +128,7 @@ export async function createProjectSnapshot(config: RepoConfig, root: string, sn
     const requirements = Object.fromEntries(Object.entries(config.configManifest.envRequirements ?? {}).filter(([name]) => name.startsWith(`${id}/`)));
     const environmentPaths = new Set(Object.values(requirements).flatMap(requirement => [requirement.script, ...requirement.inputs ?? []]));
     const environmentInputs = config.configManifest.environmentInputs?.filter(input => environmentPaths.has(input.path));
-    ownHashes.set(id, inputHash({ version: 3, definition: artifact, fingerprints, executionInputs, requirements, environmentInputs, critics: config.critics.filter(critic => critic.target === id), workspaceIntegrity }));
+    ownHashes.set(id, inputHash({ version: 3, definition: semanticDefinition(artifact), fingerprints, executionInputs, requirements, environmentInputs, critics: config.critics.filter(critic => critic.target === id), workspaceIntegrity }));
   }
   const components = stronglyConnectedComponents(Object.keys(config.artifacts), config.relations), componentOf = new Map(components.flatMap((members, index) => members.map(id => [id, index] as const)));
   const hashes = new Map<number, string>(), reusableComponents = new Map<number, boolean>();

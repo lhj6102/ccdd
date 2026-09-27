@@ -23,6 +23,8 @@ export interface ScriptToolContext {
   artifactId: string; artifactPath: string; outputDir: string; tmpDir: string;
   /** Canonical paths and logical connections for this review's allowed scope. */
   scope: ArtifactScope;
+  /** Declared workspace-relative runtime paths mapped to pinned bytes for this attempt. */
+  executionPaths?: Record<string, string>;
 }
 export interface ScriptToolRequest { version: 1; context: ScriptToolContext; args: Record<string, unknown> }
 /** Convenience interface for script authors. Project never imports these functions. */

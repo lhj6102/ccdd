@@ -416,7 +416,7 @@ export function createMonitorStore(options: MonitorSources = {}) {
         const raw = snapshot.target;
         if (!object(raw.payload)) throw storageError();
         const outcome: MonitorDetail['result'] = object(raw.result) && (raw.result.verdict === 'GREEN' || raw.result.verdict === 'RED')
-          ? { ...semanticResult(raw.result), verdict: raw.result.verdict, reference: reviewReference(snapshot.source.stateDir, header.runId, header.id) } : null;
+          ? { ...semanticResult(raw.result), executionProvenance: (raw.executionProvenance ?? null) as import('../provenance.js').ExecutionProvenance | null, verdict: raw.result.verdict, reference: reviewReference(snapshot.source.stateDir, header.runId, header.id) } : null;
         const request = (await projectRequests(snapshot, new Map(), requestId))[0];
         const artifacts = artifactReferences(raw.artifacts);
         return {

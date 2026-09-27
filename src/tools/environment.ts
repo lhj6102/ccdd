@@ -1,3 +1,4 @@
+import { executionScope } from '../execution-scope.js';
 import { spawn } from 'node:child_process';
 import { mkdir, realpath } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
@@ -46,6 +47,7 @@ export function runEnvironmentScript({ command, args, cwd, outputDir, tmpDir, si
     const child = spawn(command, args, {
       cwd, env: checkEnvironment(outputDir, tmpDir), shell: false, detached: process.platform !== 'win32', stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true,
     });
+    const untrack = child.pid ? executionScope.getStore()?.trackChild(child.pid) : undefined;
     const chunks: Buffer[] = [], stdout: Buffer[] = [];
     let bytes = 0, retained = 0, settled = false, failure: string | undefined, killTimer: NodeJS.Timeout | undefined;
     const kill = (kind: NodeJS.Signals): void => { try { if (process.platform !== 'win32' && child.pid) process.kill(-child.pid, kind); else child.kill(kind); } catch { /* Already exited. */ } };
@@ -59,7 +61,7 @@ export function runEnvironmentScript({ command, args, cwd, outputDir, tmpDir, si
     const stop = (message: string): void => {
       if (settled || failure) return;
       failure = message; kill('SIGTERM');
-      killTimer = setTimeout(() => { kill('SIGKILL'); finish(false, message); }, 500);
+      killTimer = setTimeout(() => { kill('SIGKILL'); }, 500);
     };
     const abort = (): void => stop(`${label} was cancelled.`);
     const timer = setTimeout(() => stop(`${label} timed out after ${timeoutMs} ms.`), timeoutMs);
@@ -73,7 +75,7 @@ export function runEnvironmentScript({ command, args, cwd, outputDir, tmpDir, si
     child.on('error', () => { kill('SIGKILL'); finish(false, failure ?? `${label} could not be started.`); });
     // A readiness check may not leave a background process after its script exits.
     child.on('exit', () => kill('SIGKILL'));
-    child.on('close', code => finish(!failure && code === 0, failure ?? (code === 0 ? description : `${label} failed (exit ${code ?? 'signal'}): ${description}`)));
+    child.on('close', code => { untrack?.(); finish(!failure && code === 0, failure ?? (code === 0 ? description : `${label} failed (exit ${code ?? 'signal'}): ${description}`)); });
     if (signal?.aborted) abort();
   });
 }
