@@ -143,7 +143,7 @@ export function metadata(value: unknown): ToolMetadata {
   validateSchema(result.inputSchema);
   if (!Array.isArray(result.resultKinds) || !result.resultKinds.length || new Set(result.resultKinds).size!==result.resultKinds.length || result.resultKinds.some((v:unknown)=>!['text','json','image','launch'].includes(v as string))) throw new Error('Invalid tool resultKinds.');
   if (!['content','none'].includes(result.observation) || (result.artifactKind!==undefined && !['file','directory','any'].includes(result.artifactKind))) throw new Error('Invalid tool observation or artifact kind.');
-  if (result.timeoutMs!==undefined && (!Number.isSafeInteger(result.timeoutMs)||result.timeoutMs<1||result.timeoutMs>900000)) throw new Error('Tool timeoutMs must be 1–900000.');
+  if (result.timeoutMs!==undefined && (!Number.isSafeInteger(result.timeoutMs)||result.timeoutMs<1||result.timeoutMs>2_147_483_647)) throw new Error('Tool timeoutMs must be 1–2147483647.');
   if (result.executionPaths !== undefined) declaredPaths(result.executionPaths);
   return result as unknown as ToolMetadata;
 }
@@ -167,7 +167,7 @@ export function environmentRequirements(value: unknown): Record<string, Environm
     if (typeof requirement.description !== 'string' || !requirement.description.trim() || requirement.description.length > 2000) throw new Error(`Environment requirement ${id} needs a description.`);
     projectInputPath(requirement.script);
     if (!/\.(?:[cm]?js|[cm]?ts)$/.test(requirement.script)) throw new Error(`Environment requirement ${id} must use a Node JavaScript or TypeScript script.`);
-    if (requirement.timeoutMs !== undefined && (!Number.isSafeInteger(requirement.timeoutMs) || requirement.timeoutMs < 1 || requirement.timeoutMs > 900000)) throw new Error('Environment timeoutMs must be 1–900000.');
+    if (requirement.timeoutMs !== undefined && (!Number.isSafeInteger(requirement.timeoutMs) || requirement.timeoutMs < 1 || requirement.timeoutMs > 2_147_483_647)) throw new Error('Environment timeoutMs must be 1–2147483647.');
     if (requirement.inputs !== undefined) declaredPaths(requirement.inputs);
   }
   return result as Record<string, EnvironmentRequirement>;

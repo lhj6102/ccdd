@@ -142,3 +142,31 @@ test('CLI config and graph queries expose qualified owners and cyclic relation t
   const bytes = await readFile(join(data.stateDir, 'broker.sqlite'));
   await inspectProject({ ...data, detail: 'full' }); assert.deepEqual(await readFile(join(data.stateDir, 'broker.sqlite')), bytes);
 });
+
+test('declared timeouts accept twenty minutes consistently and reject Node timer overflow', async t => {
+  const { readWorkspaceConfig } = await import('../src/broker/config.js');
+  const { agentProfile } = await import('./helpers/artifacts.js');
+  const data = await artifactFixture(t);
+  for (const timeoutMs of [1, 1_200_000, 86_400_001, 2_147_483_647]) {
+    const views = fixtureViews(); views.agentTools!.read.metadata.timeoutMs = timeoutMs;
+    await data.write('a', { name: 'a', views, stale: { kind: 'identity', script: { command: 'node', args: ['identity.mjs'] }, timeoutMs },
+      envRequirements: { check: { description: 'Check readiness', script: 'check.mjs', timeoutMs } },
+      critics: [{ id: 'review', title: 'Review', profile: { ...agentProfile, timeoutMs }, payload: { instruction: 'Inspect.' } }] }, { 'identity.mjs': "console.log('stable');", 'check.mjs': "console.log('ready');" });
+    await readWorkspaceConfig(data.repoPath);
+    assert.equal((await createExecutorRegistry().canExecute({ profile: { ...agentProfile, timeoutMs } })).ok, true);
+    assert.equal((await createExecutorRegistry().canExecute({ profile: { kind: 'runtime', command: 'node', args: ['--test', 'check.test.mjs'], timeoutMs } })).ok, true);
+  }
+  for (const target of ['profile', 'tool', 'identity', 'environment']) {
+    await data.edit('a', manifest => {
+      manifest.critics![0].profile = { ...agentProfile, timeoutMs: 1_200_000 };
+      manifest.views!.agentTools!.read.metadata.timeoutMs = 1_200_000;
+      if (manifest.stale?.kind === 'identity') manifest.stale.timeoutMs = 1_200_000;
+      manifest.envRequirements!.check.timeoutMs = 1_200_000;
+      if (target === 'profile') manifest.critics![0].profile = { ...agentProfile, timeoutMs: 2_147_483_648 };
+      if (target === 'tool') manifest.views!.agentTools!.read.metadata.timeoutMs = 2_147_483_648;
+      if (target === 'identity' && manifest.stale?.kind === 'identity') manifest.stale.timeoutMs = 2_147_483_648;
+      if (target === 'environment') manifest.envRequirements!.check.timeoutMs = 2_147_483_648;
+    });
+    await assert.rejects(readWorkspaceConfig(data.repoPath), /timeout/i);
+  }
+});

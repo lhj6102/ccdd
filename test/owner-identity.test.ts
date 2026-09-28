@@ -243,7 +243,7 @@ test('identity schema rejects unknown fields, unsafe paths, inline commands and 
   const valid = { kind: 'identity', script: { command: 'node', args: ['identity.mjs'] } };
   for (const stale of [
     { ...valid, extra: true }, { ...valid, paths: [] }, { ...valid, script: { ...valid.script, timeoutMs: 1 } },
-    ...[0, 900001, 1.5, '100'].map(timeoutMs => ({ ...valid, timeoutMs })),
+    ...[0, 2_147_483_648, 1.5, '100'].map(timeoutMs => ({ ...valid, timeoutMs })),
     ...['../escape', '/absolute', 'a/../escape'].map(input => ({ ...valid, inputs: [input] })),
     { ...valid, inputs: ['rule.txt', 'rule.txt'] },
     ...[[], ['-e', 'console.log(1)'], ['../identity.mjs']].map(args => ({ ...valid, script: { command: 'node', args } })),

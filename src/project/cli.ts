@@ -132,7 +132,7 @@ export async function main(argv = process.argv.slice(2), { stdout = process.stdo
     const workspaceIntegrity = get('--integrity') ?? 'content';
     if (workspaceIntegrity !== 'content' && workspaceIntegrity !== 'metadata') throw new Error('--integrity must be content or metadata.');
     const timeoutMs = Number(get('--timeout-ms') ?? 600000);
-    if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 86400000) throw new Error('--timeout-ms must be between 1 and 86400000.');
+    if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 2_147_483_647) throw new Error('--timeout-ms must be between 1 and 2147483647.');
     let context;
     const requestedState = get('--state-dir');
     if (requestedState && existsSync(join(resolve(requestedState), 'broker.sqlite'))) {
