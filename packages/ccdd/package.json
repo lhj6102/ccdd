@@ -61,6 +61,6 @@
     "@ccdd/core": "6.2.1",
     "@ccdd/project": "6.2.1",
     "@ccdd/default-tools": "6.2.1",
-    "@earendil-works/pi-ai": "0.87.1"
+    "@earendil-works/pi-ai": "0.99.1"
   }
 }
