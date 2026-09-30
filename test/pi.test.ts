@@ -9,6 +9,7 @@ import { streamSimple as streamAnthropic } from '@earendil-works/pi-ai/api/anthr
 import { invokePi, validatePiProfile, type InvokePiOptions, type StreamFn } from '../src/executors/pi.js';
 import { assertPiAuthFilesOutsideWorkspace, createPiCredentialStore } from '../src/executors/auth.js';
 import type { AgentProfile, ExecutionEvent, ReviewEnvelope } from '../src/contracts.js';
+import { finalResultSchema, type ResponseSchemas } from '../src/response-schema.js';
 import { artifactFixture, fixtureViews } from './helpers/artifacts.js';
 import { artifactStream } from './pi-fixture.js';
 
@@ -635,7 +636,7 @@ test('Bedrock repair retains the wire tool configuration required by its history
   await payloadCheck; assert.equal(calls, 3); assert.equal(events.filter(event => event.type === 'artifact.tool.called').length, 1);
 });
 
-test('composed final schemas use category-only diagnostics rather than buffering nested errors', async t => {
+test('large values under composed final schemas use category-only diagnostics rather than buffering nested errors', async t => {
   const data = await fixture(t), prompts: string[] = [];
   const text = JSON.stringify(Array(400_000).fill(0));
   let calls = 0;
@@ -646,6 +647,59 @@ test('composed final schemas use category-only diagnostics rather than buffering
   } });
   assert.equal(result.final, true); assert.equal(calls, 2);
   assert.match(prompts[0], /schema_mismatch/); assert.doesNotMatch(prompts[0], /schemaPath|instancePath/);
+});
+
+async function repairPrompt(t: TestContext, schemas: ResponseSchemas, invalid: unknown, valid: unknown): Promise<string> {
+  const data = await fixture(t);
+  let calls = 0, prompt = '';
+  const result = await invokePi({ ...data, schema: finalResultSchema(schemas), streamFn: (model, context) => {
+    calls++; if (calls === 2) prompt = JSON.stringify(context.messages.at(-1));
+    const message = { ...fauxAssistantMessage(JSON.stringify(calls === 1 ? invalid : valid)), provider: model.provider, model: model.id, api: model.api };
+    const stream = createAssistantMessageEventStream(); stream.push({ type: 'done', reason: 'stop', message }); stream.end(message); return stream;
+  } });
+  assert.deepEqual(result.final, valid); assert.equal(calls, 2);
+  return prompt;
+}
+function repairIssues(prompt: string): unknown[] {
+  const { content } = JSON.parse(prompt) as { content: string | { text?: string }[] };
+  const text = typeof content === 'string' ? content : content.map(block => block.text ?? '').join('');
+  return JSON.parse(text.match(/schema_mismatch (\[.*\])\. Return/)![1]) as unknown[];
+}
+
+test('repair diagnostics name owner fields inside the branch of the returned verdict', async t => {
+  const reasons = { type: 'array', items: { type: 'string' }, minItems: 1 };
+  const schemas = { passSchema: { type: 'object', properties: { reasons: { ...reasons, maxItems: 1 } }, additionalProperties: false },
+    failSchema: { type: 'object', properties: { reasons, blocking: { type: 'boolean' } }, required: ['reasons', 'blocking'], additionalProperties: false } };
+  const red = await repairPrompt(t, schemas, { verdict: 'RED', reasons: [], PRIVATE_KEY: 'PRIVATE_VALUE' }, { verdict: 'RED', reasons: ['Missing total'], blocking: true });
+  assert.deepEqual(repairIssues(red), [{ schemaPath: '#/oneOf/1', keyword: 'required' }, { schemaPath: '#/oneOf/1', keyword: 'additionalProperties' },
+    { schemaPath: '#/oneOf/1/properties/reasons', keyword: 'minItems' }]);
+  assert.doesNotMatch(red, /PRIVATE_/);
+  const green = await repairPrompt(t, schemas, { verdict: 'GREEN', reasons: ['a', 'b'] }, { verdict: 'GREEN' });
+  assert.deepEqual(repairIssues(green), [{ schemaPath: '#/oneOf/0/properties/reasons', keyword: 'maxItems' }]);
+  const unknown = await repairPrompt(t, schemas, { verdict: 'PRIVATE_VERDICT' }, { verdict: 'GREEN' });
+  assert.deepEqual(repairIssues(unknown), [{ schemaPath: '#', keyword: 'oneOf' }]); assert.doesNotMatch(unknown, /PRIVATE_/);
+});
+
+test('repair diagnostics follow const-discriminated owner branches and report failing allOf entries once', async t => {
+  const claims = { type: 'array', minItems: 3, maxItems: 3,
+    items: { type: 'object', properties: { option: { type: 'integer', enum: [0, 1, 4] }, selection: { type: 'array', items: { type: 'integer' } } },
+      required: ['option', 'selection'], additionalProperties: false,
+      anyOf: [{ properties: { option: { const: 0 }, selection: { enum: [[]] } } }, { properties: { option: { const: 1 }, selection: { enum: [[1]] } } },
+        { properties: { option: { const: 4 }, selection: { enum: [[1, 4], [2, 4]] } } }] },
+    allOf: [0, 1, 4].map(option => ({ not: { type: 'array', items: { properties: { option: { not: { const: option } } } } } })) };
+  const failSchema = { type: 'object', properties: { claims }, required: ['claims'], additionalProperties: false };
+  const valid = { verdict: 'RED', claims: [{ option: 0, selection: [] }, { option: 1, selection: [1] }, { option: 4, selection: [2, 4] }] };
+  const prompt = await repairPrompt(t, { failSchema }, { verdict: 'RED', claims: [{ option: 0, selection: [] }, { option: 4, selection: [4] }, { option: 4, selection: [2, 4] }] }, valid);
+  assert.deepEqual(repairIssues(prompt), [{ schemaPath: '#/oneOf/1/properties/claims/allOf/1', keyword: 'not' },
+    { schemaPath: '#/oneOf/1/properties/claims/items/anyOf/2/properties/selection', keyword: 'enum' }]);
+  const repeated = await repairPrompt(t, { failSchema: { type: 'object', properties: { values: { type: 'array', items: { type: 'integer' } } }, additionalProperties: false } },
+    { verdict: 'RED', values: Array(200).fill('PRIVATE_VALUE') }, { verdict: 'RED' });
+  assert.deepEqual(repairIssues(repeated), [{ schemaPath: '#/oneOf/1/properties/values/items', keyword: 'type' }]); assert.doesNotMatch(repeated, /PRIVATE_/);
+  const tags = { type: 'object', properties: { tags: { type: 'array', contains: { const: 'checked' }, maxContains: 1 }, notes: { type: 'array', contains: { const: 'x' }, minContains: 0, maxItems: 1 } } };
+  const contained = await repairPrompt(t, { failSchema: tags }, { verdict: 'RED', tags: ['checked', 'checked'], notes: ['a', 'b'] }, { verdict: 'RED', tags: ['checked'] });
+  assert.deepEqual(repairIssues(contained), [{ schemaPath: '#/oneOf/1/properties/tags', keyword: 'maxContains' }, { schemaPath: '#/oneOf/1/properties/notes', keyword: 'maxItems' }]);
+  const missing = await repairPrompt(t, { failSchema: tags }, { verdict: 'RED', tags: [] }, { verdict: 'RED', tags: ['checked'] });
+  assert.deepEqual(repairIssues(missing), [{ schemaPath: '#/oneOf/1/properties/tags', keyword: 'contains' }]);
 });
 
 test('many unexpected object keys receive category-only diagnostics without property-name buffers', async t => {
