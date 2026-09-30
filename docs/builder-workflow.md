@@ -13,4 +13,6 @@ A useful builder instruction is:
 
 > Implement the feature and satisfy `service/tests`. Check readiness, then run `ccdd-project verify --critic service/tests --recursive --wait --json`. Address concrete RED evidence; investigate ERROR separately. Report the qualified Critic ID, input identity, Run ID and final required-scope status. Do not invent a Provider or Human verdict.
 
+To build or audit the tools a reviewer calls, follow [reviewer tool design](reviewer-tools.md); it ends with a brief for your agent.
+
 See [reviewers](reviewers.md) and [Project Validation](project-validation.md).

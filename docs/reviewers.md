@@ -22,6 +22,8 @@ Use `--pi-auth-file`/`CCDD_PI_AUTH_FILE` for a Pi auth store, or `--codex-auth-f
 
 Agents receive only scoped tools and return structured GREEN/RED plus fields required by the Critic's optional passSchema/failSchema (verdict-only when no schema applies). Each target and explicit instruction reference must have a successful content or empty observation. Listing files, mentioning a reference or launching an app does not count. An admitted child or mount is not automatically a mandatory observation. Image views require a model supporting image input.
 
+To keep those tools small and their results focused, see [designing reviewer tools](reviewer-tools.md).
+
 ### Native Pi model profiles and transport
 
 The installed Pi catalog provides these exact profiles, without local model aliases:
