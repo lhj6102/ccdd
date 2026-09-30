@@ -105,7 +105,7 @@ See [Contributing](CONTRIBUTING.md), [the context map](CONTEXT-MAP.md), [detaile
 
 [MIT](LICENSE).
 
-**CCDD 6.5.0:** opt-in review budgets (`maxToolCalls`, `maxTokens`) and a bounded tool-call record for reviews that end in ERROR; existing review identities are unchanged unless a profile sets a budget. See the [release notes](docs/releases/v6.5.0.md).
+**CCDD 6.5.1:** tool-call budgets count calls in issue order, independent of Provider ids, and full request views retain per-attempt usage totals outside the Run's event window; existing review identities are unchanged. See the [release notes](docs/releases/v6.5.1.md).
 
 
 ### Existing Pi AI API
