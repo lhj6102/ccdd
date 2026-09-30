@@ -461,13 +461,18 @@ Agent execution uses Pi with the exact requested Provider, model and reasoning s
 ### Review budget
 
 An Agent profile may declare `maxToolCalls` and `maxTokens`, positive integers, both unset
-by default. `maxToolCalls` counts every tool call the model makes, including calls with
-invalid arguments; the first call over the limit is refused and no further tool runs.
+by default. `maxToolCalls` numbers every tool-call block the model issues, in source
+order, when its message ends and before names are resolved or arguments prepared, so
+unknown tools and invalid arguments count too. Calls within the limit run; the first
+call over it and every later call do not, and the review ends after that turn.
 `maxTokens` sums Pi's reported `totalTokens` after each model turn, including the repair
-turn; the turn that crosses the limit ends the review before its tool calls run. A
-Provider that reports no usage counts as zero, so `maxToolCalls` is the deterministic
-limit. Either way the review ends with `PROVIDER_BUDGET_EXCEEDED`, an operational ERROR,
-never a verdict; calls made before the limit stay in the request's tool-call record. Like
+turn; the turn that crosses the limit ends the review before its tool calls run. Pi's
+`totalTokens` includes cached reads and writes, so `maxTokens` limits processed tokens
+and is not a cost budget. A Provider that reports no usage counts as zero, so
+`maxToolCalls` is the deterministic limit. Either way the review ends with
+`PROVIDER_BUDGET_EXCEEDED`, an operational ERROR, never a verdict; calls made before the
+limit stay in the request's tool-call record. A review already cancelled or past its
+deadline keeps that error rather than a budget error. Like
 `timeoutMs`, the budget is part of the Critic declaration: default identity hashes
 `ccdd.json`, so editing a budget reviews again, and owner identity ignores it unless the
 returned value encodes it.

@@ -12,7 +12,7 @@ Agent profiles specify `kind`, `provider`, `model`, `reasoning` and optional `ti
 {"kind":"agent","provider":"openai-codex","model":"gpt-6-astra","reasoning":"medium"}
 ```
 
-An optional budget stops a runaway review before the wall-clock timeout: `maxToolCalls` counts every tool call the model makes, and `maxTokens` counts Pi's reported `totalTokens` per model turn. The call or turn that exceeds either limit ends the review with `PROVIDER_BUDGET_EXCEEDED`, never a verdict, and its [tool-call record](contracts.md#requester-results-and-audit-lookup) is kept. Both are unset by default.
+An optional budget stops a runaway review before the wall-clock timeout: `maxToolCalls` counts every tool call the model issues, unknown tools included, and `maxTokens` counts Pi's reported `totalTokens` per model turn, which includes cached tokens, so it is not a cost budget. The call or turn that exceeds either limit ends the review with `PROVIDER_BUDGET_EXCEEDED`, never a verdict, and its [tool-call record](contracts.md#requester-results-and-audit-lookup) is kept. Both are unset by default.
 
 ```json
 {"kind":"agent","provider":"anthropic","model":"claude-sonnet-5-5","reasoning":"low","maxToolCalls":40,"maxTokens":400000}

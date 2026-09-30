@@ -103,12 +103,16 @@ export async function invokePi({ request, worktreePath, runDir, schema, inspectR
     if (timedOut) throw diagnosticError('PROVIDER_TIMEOUT', 'Pi Agent execution timed out.', 'Check the Provider connection or adjust the Critic timeoutMs setting.');
     throw diagnosticError('ABORTED', 'Pi Agent execution aborted.', 'The review or diagnostic was cancelled. Run it again if needed.');
   };
-  // Opt-in review budget. The tool call or model turn that exceeds it ends the review without a verdict.
-  let toolCallsUsed = 0, tokensUsed = 0;
-  const exceedBudget = (limit: 'maxToolCalls' | 'maxTokens'): Error => {
+  // Opt-in review budget; exceeding it ends the review without a verdict. Tool-call blocks are
+  // numbered in source order when their message ends, before Pi resolves names or prepares
+  // arguments, so unknown tools and invalid arguments count too.
+  let toolCallsIssued = 0, tokensUsed = 0;
+  const overBudgetCalls = new Set<string>();
+  const exceedBudget = (limit: 'maxToolCalls' | 'maxTokens'): void => {
+    // A cancelled or expired attempt keeps its own error; the budget never replaces it.
+    if (controller.signal.aborted || performance.now() >= deadline) return;
     toolFailure ??= diagnosticError('PROVIDER_BUDGET_EXCEEDED', `The review exceeded its ${limit} budget.`, `Raise ${limit} on the Agent profile or narrow what the review must do.`);
     agent?.abort();
-    return toolFailure;
   };
   const emitTelemetry = (event: ExecutionEvent): void => {
     const write = bestEffortDiagnostic(() => onEvent(event)).then(async saved => {
@@ -126,12 +130,9 @@ export async function invokePi({ request, worktreePath, runDir, schema, inspectR
     const tools: AgentTool[] = activeRegistry.tools.map(tool => ({
       name: tool.name, label: tool.name, description: tool.description,
       parameters: Type.Unsafe<Record<string, unknown>>(tool.inputSchema as TSchema),
-      // Every call the model makes counts, including ones with invalid arguments.
-      prepareArguments: args => {
-        if (profile.maxToolCalls !== undefined && ++toolCallsUsed > profile.maxToolCalls) throw exceedBudget('maxToolCalls');
-        return activeRegistry.validateArguments(tool.name, args);
-      },
-      async execute(_id, args, toolSignal) {
+      prepareArguments: args => activeRegistry.validateArguments(tool.name, args),
+      async execute(id, args, toolSignal) {
+        if (overBudgetCalls.has(id)) exceedBudget('maxToolCalls');
         checkAbort(); toolSignal?.throwIfAborted();
         const result = await activeRegistry.call(tool.name, args).catch(error => { throw new Error(safeToolFailure(error).message); });
         checkAbort(); toolSignal?.throwIfAborted();
@@ -173,7 +174,11 @@ export async function invokePi({ request, worktreePath, runDir, schema, inspectR
       toolExecution: 'sequential',
       transport: 'sse',
       maxRetryDelayMs: 10_000,
-      finishTurn: () => repairing || identityMismatch || controller.signal.aborted ? { action: 'end' } : undefined,
+      finishTurn: () => {
+        // Over-budget calls that never reached a registered tool (unknown names, invalid arguments) end the review here.
+        if (overBudgetCalls.size) exceedBudget('maxToolCalls');
+        return repairing || identityMismatch || toolFailure || controller.signal.aborted ? { action: 'end' } : undefined;
+      },
     });
     agent.subscribe(event => {
       // message_end settles before Pi executes that assistant's tool batch.
@@ -191,6 +196,8 @@ export async function invokePi({ request, worktreePath, runDir, schema, inspectR
         // Writes are independent and retain only bounded telemetry, never the message.
         emitTelemetry(event);
       }
+      // Number this turn's tool-call blocks before Pi runs the batch; the repair turn has no tools.
+      if (profile.maxToolCalls !== undefined && !repairing) for (const block of message.content) if (block.type === 'toolCall' && ++toolCallsIssued > profile.maxToolCalls) overBudgetCalls.add(block.id);
       // Pi's reported total for this turn; aborting here also stops the turn's tool batch.
       if (profile.maxTokens !== undefined && (tokensUsed += message.usage?.totalTokens ?? 0) > profile.maxTokens) exceedBudget('maxTokens');
     });
