@@ -105,6 +105,29 @@ test('identity discovery is inert, while invalid output and exits fail queries w
   assert.equal(broker.listRuns().length, 0);
 });
 
+test('identity output cleanup failures report the fixed identity error, never fs text or local paths', { skip: process.platform === 'win32' }, async t => {
+  // Identity output lives under the system temp directory; point it at a fixture-owned one first.
+  const previous = process.env.TMPDIR;
+  t.after(() => { if (previous === undefined) delete process.env.TMPDIR; else process.env.TMPDIR = previous; });
+  const value = 'process.stdout.write("equivalent-value");';
+  const scripts = {
+    unreadable: `import {chmodSync,mkdirSync,writeFileSync} from 'node:fs';import {join,resolve} from 'node:path';const dir=join(process.env.CCDD_OUTPUT_DIR,'PRIVATE_OWNER_OUTPUT');mkdirSync(dir);writeFileSync(join(dir,'file'),'x');writeFileSync(resolve(process.cwd(),'../../locked'),dir);chmodSync(dir,0);${value}`,
+    replaced: `import {rmSync,writeFileSync} from 'node:fs';import {dirname} from 'node:path';const parent=dirname(process.env.CCDD_OUTPUT_DIR);rmSync(parent,{recursive:true,force:true});writeFileSync(parent,'PRIVATE_OWNER_OUTPUT');${value}`,
+  };
+  for (const script of Object.values(scripts)) {
+    const data = await fixture(t, script);
+    process.env.TMPDIR = join(data.root, 'tmp'); await mkdir(process.env.TMPDIR);
+    data.cleanup(async () => { const locked = await readFile(join(data.root, 'locked'), 'utf8').catch(() => undefined); if (locked) await chmod(locked, 0o700); });
+    await assert.rejects(inspectProject({ ...data, detail: 'full' }), error => {
+      assert.equal((error as Error).message, 'Identity script for Artifact a failed: Identity validation failed.');
+      const text = String(error) + JSON.stringify(error);
+      assert.doesNotMatch(text, /PRIVATE_OWNER_OUTPUT|ccdd-identity-|EACCES|ENOTDIR|permission denied|not a directory/i);
+      assert.ok(!text.includes(data.root));
+      return true;
+    });
+  }
+});
+
 test('identity scripts honor timeout, cancellation, bounded output and unchanged workspace integrity', async t => {
   const data = await fixture(t, 'await new Promise(()=>setInterval(()=>{},1000));');
   await data.edit('a', manifest => { if (manifest.stale?.kind === 'identity') manifest.stale.timeoutMs = 120; });
