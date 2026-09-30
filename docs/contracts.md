@@ -477,9 +477,11 @@ Agent execution uses Pi with the exact requested Provider, model and reasoning s
 
 An Agent profile may declare `maxToolCalls` and `maxTokens`, positive integers, both unset
 by default. `maxToolCalls` numbers every tool-call block the model issues, in source
-order, when its message ends and before names are resolved or arguments prepared, so
-unknown tools and invalid arguments count too. Calls within the limit run; the first
-call over it and every later call do not, and the review ends after that turn.
+order, as tools run one at a time and before names are resolved or arguments prepared,
+so unknown tools and invalid arguments count too. Calls are linked by that order, not by
+Provider tool-call ids, so a malformed batch that repeats an id cannot misattribute a
+call. Calls within the limit run; the first call over it and every later call do not,
+and the review ends after that turn.
 `maxTokens` sums Pi's reported `totalTokens` after each model turn, including the repair
 turn; the turn that crosses the limit ends the review before its tool calls run. Pi's
 `totalTokens` includes cached reads and writes, so `maxTokens` limits processed tokens

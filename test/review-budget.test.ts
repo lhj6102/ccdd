@@ -108,3 +108,10 @@ test('cancellation that races an over-budget turn stays a cancellation, directly
     assert.equal(broker.getRun(runId)!.requests[0].errorCode, 'REVIEW_CANCELED', JSON.stringify(budget));
   }
 });
+
+test('maxToolCalls links calls by the order the model issued them, not by provider ids a malformed batch may reuse (#84)', async t => {
+  const sameId = (startLine: number) => fauxToolCall('read_a', { startLine, lineCount: 1 }, { id: 'same-id' });
+  const reused = await budgeted(t, { maxToolCalls: 1 }, [toolTurn(sameId(1), sameId(2)), fauxAssistantMessage('{"verdict":"GREEN"}')]);
+  await assert.rejects(reused.review, { code: 'PROVIDER_BUDGET_EXCEEDED' });
+  assert.deepEqual(reused.events.filter(event => event.type === 'artifact.tool.called').map(event => (event.arguments as { startLine: number }).startLine), [1]);
+});
