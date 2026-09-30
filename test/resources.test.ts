@@ -112,7 +112,7 @@ for (const started of [false, true]) test(`dead process ${started ? 'consumes an
 test('dead owner cleanup retains the slot until its tracked child group is no longer running', async t => {
   if (process.platform !== 'linux') return t.skip('Linux process group identity proof');
   const data = await fixture(t, { defaultProviderCapacity: 1 }), store = data.store(); store.registerSubmission('orphan');
-  const c = child(`import {spawn} from 'node:child_process';import {openResources} from ${JSON.stringify(moduleUrl)};const s=openResources();const l=await s.acquire(${JSON.stringify(request('orphan'))},{signal:new AbortController().signal,waiting(){}});l.started();const c=spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{detached:true,stdio:'ignore'});l.trackChild(c.pid);console.log(c.pid);setInterval(()=>{},1000);`);
+  const c = child(`import {spawn} from 'node:child_process';import {openResources} from ${JSON.stringify(moduleUrl)};const s=openResources();const l=await s.acquire(${JSON.stringify(request('orphan'))},{signal:new AbortController().signal,waiting(){}});l.started();const c=spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{detached:true,stdio:'ignore'});l.trackChild(c.pid);process.stdout.write(c.pid+'\\n');setInterval(()=>{},1000);`);
   t.after(() => c.process.kill('SIGKILL')); await until(() => /^\d+/.test(c.output())); const pid = Number(c.output().trim());
   c.process.kill('SIGKILL'); await c.exited;
   const next = await store.acquire(request('orphan'), options());
