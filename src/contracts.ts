@@ -41,6 +41,8 @@ export interface ReviewRequest extends ReviewEnvelope {
   claimAttemptId?: string;
   notifiedAt?: string | null; errorCode?: string | null; blockedReason?: string | null;
   result?: ReviewResult | null; error?: string | null;
+  /** Full detail of an ERROR request: its last attempt's recorded calls, bounded; later calls are counted in toolCallsOmitted. */
+  toolCalls?: ReviewToolCall[]; toolCallsOmitted?: number;
 }
 export interface RepoConfig {
   artifacts: Record<string, ArtifactDefinition>; critics: ResolvedCriticDefinition[];

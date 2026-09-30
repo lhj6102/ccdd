@@ -145,6 +145,18 @@ checks run before projection; missing observations fail with ERROR. The explicit
 overall result-size limit still fails oversized results rather than silently
 dropping calls. There is no tool-call count truncation.
 
+A review that ends in ERROR (cancellation, timeout, Provider or result-check failure)
+has no result, so its calls are recorded as they happen instead. Each
+`artifact.tool.called` event, written only while the request is RUNNING, carries the
+call's schema-validated `arguments` and `at` for the first 200 calls of an attempt
+whose arguments fit 256 KiB in total. Once either bound is reached, every later call
+keeps only its name, observation and `isError`, marked `"argumentsOmitted": true`.
+Full-detail reads of an ERROR request (`run show`, `projectRun`, full Broker views)
+project its last attempt's record as `toolCalls`, in call order and with the same
+entry shape as a result's `toolCalls`, plus `toolCallsOmitted` when later calls were
+not recorded. A request that returns a result has no second record. Critic messages,
+reasoning and tool output are never recorded.
+
 ### Owner response schemas
 
 A Critic may declare `passSchema` for GREEN and `failSchema` for RED. Both are

@@ -3,7 +3,7 @@ import { canonical } from '../project/identity.js';
 import { setImmediate as yieldTurn } from 'node:timers/promises';
 import { createHash } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
-import type { ReviewEnvelope, ReviewRequest } from '../contracts.js';
+import type { ReviewEnvelope, ReviewRequest, ReviewToolCall } from '../contracts.js';
 import type { RunRecord } from './index.js';
 
 /** Immutable Merkle records. A reference is an internal tagged value, not user JSON. */
@@ -183,10 +183,20 @@ export function records(db: DatabaseSync) {
     const header = { ...request } as Record<string, unknown>, envelope: Record<string, unknown> = {};
     for (const key of envelopeKeys) { if (header[key] !== undefined) envelope[key] = header[key]; delete header[key]; }
     const envelopeRef = put(envelope);
-    delete header.workspace; delete header.validationInput; delete header.result;
+    delete header.workspace; delete header.validationInput; delete header.result; delete header.toolCalls; delete header.toolCallsOmitted;
     return { ...header, criticId: request.criticId, target: request.target, profile: { kind: request.profile.kind, ...(request.profile.kind === 'agent' ? { provider: request.profile.provider, model: request.profile.model } : {}) }, envelopeRef,
       workspaceRef: put(request.workspace), inputRef: request.validationInput ? put(request.validationInput) : null,
       inputKey: request.validationInput?.key ?? null, inputVersion: request.validationInput?.version ?? null, title: request.title, snapshotHash: request.snapshotHash, deps: request.deps, resultRef: request.result ? put(request.result) : null, semanticRef: request.result ? put(semanticResult(request.result)) : null };
+  };
+  /** An ERROR request has no result; its last attempt's recorded calls stay auditable in result order and shape. */
+  const toolCallRecord = (runId: string, id: string): Pick<ReviewRequest, 'toolCalls' | 'toolCallsOmitted'> => {
+    const attempt = Number(db.prepare("SELECT COALESCE(MAX(id),0) AS id FROM events WHERE run_id=? AND request_id=? AND type='executor.started'").get(runId, id)?.id ?? 0);
+    const calls = db.prepare("SELECT created_at,data FROM events WHERE run_id=? AND request_id=? AND type='artifact.tool.called' AND id>? ORDER BY id").all(runId, id, attempt)
+      .map(row => ({ createdAt: String(row.created_at), data: JSON.parse(String(row.data ?? '{}')) as Record<string, unknown> }));
+    const recorded = calls.filter(call => Object.hasOwn(call.data, 'arguments')).map(({ createdAt, data }) => ({ name: String(data.name), arguments: data.arguments,
+      at: typeof data.at === 'string' ? data.at : createdAt, ...(data.isError === true ? { isError: true as const } : {}), ...(data.observation ? { observation: data.observation as ReviewToolCall['observation'] } : {}) }));
+    const omitted = calls.filter(call => call.data.argumentsOmitted === true).length;
+    return recorded.length || omitted ? { toolCalls: recorded, ...(omitted ? { toolCallsOmitted: omitted } : {}) } : {};
   };
   const request = (id: string, full = true): ReviewRequest | null => {
     const row = db.prepare('SELECT data FROM requests WHERE id=?').get(id); if (!row) return null;
@@ -194,7 +204,8 @@ export function records(db: DatabaseSync) {
     const { envelopeRef, workspaceRef, inputRef, resultRef, inputKey: _, inputVersion: __, semanticRef, ...rest } = header;
     const result = resultRef ? get<ReviewRequest['result']>(full ? resultRef : semanticRef) : null;
     if (result && (result.verdict !== header.status || !['GREEN','RED'].includes(header.status))) throw new Error('Stored result/status mismatch.');
-    return { ...rest, ...(full ? get<ReviewEnvelope>(envelopeRef) : {}), workspace: get(workspaceRef), ...(inputRef ? { validationInput: get(inputRef) } : {}), result } as ReviewRequest;
+    return { ...rest, ...(full ? get<ReviewEnvelope>(envelopeRef) : {}), workspace: get(workspaceRef), ...(inputRef ? { validationInput: get(inputRef) } : {}), result,
+      ...(full && header.status === 'ERROR' ? toolCallRecord(header.runId, id) : {}) } as ReviewRequest;
   };
   return { put, get, packRun, prepareRun, packRequest, run, request, clear: () => { nodes.clear(); bytes = 0; } };
 }

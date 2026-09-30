@@ -62,6 +62,8 @@ const required = <T>(value: T | null | undefined, label: string): T => { if (val
 
 
 const terminal = new Set(['GREEN', 'RED', 'ERROR', 'INCOMPLETE']);
+/** Bounds of one attempt's tool-call record: argument-carrying calls and their serialized bytes. */
+const RECORDED_TOOL_CALLS = 200, RECORDED_ARGUMENT_BYTES = 256 * 1024;
 const now = () => new Date().toISOString();
 const errorText = (error: unknown) => String(object(error) && typeof error.message === 'string' ? error.message : error).slice(0, 2000);
 const copy = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
@@ -360,6 +362,8 @@ export function createBroker<D extends ResultDetail = 'compact'>({ detail, repoP
         header.attemptId = lease!.token; header.executionProvenance = capture?.provenance ?? null;
         db.prepare('UPDATE requests SET data=? WHERE id=?').run(JSON.stringify(header), requestId);
       });
+      // This attempt's tool-call record: arguments of the first calls within both bounds.
+      let recordedCalls = 0, recordedBytes = 0, recording = true;
       const result = validateResult(await executionScope.run({ runtimeRoot: capture?.root ?? workspace.descriptor.path, declaredPaths: capture?.paths ?? [], trackChild: pid => lease!.trackChild(pid) }, () => requireExecutors().execute(copy(request), {
         worktreePath: workspace.descriptor.path, workspacePath: workspace.descriptor.path, runDir, signal,
         onEvent(event) {
@@ -382,6 +386,14 @@ export function createBroker<D extends ResultDetail = 'compact'>({ detail, repoP
             const usage = tokenUsage(event.usage);
             if (!usage) return;
             safe.usage = usage;
+          }
+          if (event.type === 'artifact.tool.called') {
+            // Schema-validated arguments stay auditable even if the review never returns a result.
+            // Once either bound is reached, later calls keep only their metadata and a marker.
+            const text = object(event.arguments) ? JSON.stringify(event.arguments) : '{}', bytes = Buffer.byteLength(text);
+            recording &&= recordedCalls < RECORDED_TOOL_CALLS && recordedBytes + bytes <= RECORDED_ARGUMENT_BYTES;
+            if (recording) { safe.arguments = JSON.parse(text); recordedCalls++; recordedBytes += bytes; } else safe.argumentsOmitted = true;
+            if (typeof event.at === 'string' && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(event.at) && Number.isFinite(Date.parse(event.at))) safe.at = event.at;
           }
 
           if (event.isError === true) safe.isError = true;
