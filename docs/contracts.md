@@ -145,17 +145,20 @@ checks run before projection; missing observations fail with ERROR. The explicit
 overall result-size limit still fails oversized results rather than silently
 dropping calls. There is no tool-call count truncation.
 
-A review that ends in ERROR (cancellation, timeout, Provider or result-check failure)
-has no result, so its calls are recorded as they happen instead. Each
-`artifact.tool.called` event, written only while the request is RUNNING, carries the
-call's schema-validated `arguments` and `at` for the first 200 calls of an attempt
-whose arguments fit 256 KiB in total. Once either bound is reached, every later call
-keeps only its name, observation and `isError`, marked `"argumentsOmitted": true`.
-Full-detail reads of an ERROR request (`run show`, `projectRun`, full Broker views)
-project its last attempt's record as `toolCalls`, in call order and with the same
-entry shape as a result's `toolCalls`, plus `toolCallsOmitted` when later calls were
-not recorded. A request that returns a result has no second record. Critic messages,
-reasoning and tool output are never recorded.
+A review that ends in ERROR (cancellation, timeout, worker death, Provider or
+result-check failure) has no result, so its calls are recorded as they happen instead,
+in a Broker table separate from events; `artifact.tool.called` events stay
+metadata-only. Each recorded call is written while the request is RUNNING, keyed by
+the attempt that started the executor (`attemptId`). It keeps the result entry shape
+(`name`, schema-validated `arguments`, `at`, `isError`, `observation`) for the first
+200 calls of the attempt whose arguments fit 256 KiB in total; once either bound is
+reached, every later call is only counted. Full-detail reads of an ERROR request
+(`run show`, `projectRun`, full Broker views) show that attempt's record as
+`toolCalls`, in call order, plus `toolCallsOmitted` when later calls were only counted.
+The read is bounded the same way. A retry clears `attemptId` and the earlier record, so
+an attempt that fails before its executor starts shows no calls. When a request returns
+a result, its record is deleted: `result.toolCalls` is the complete record. Critic
+messages, reasoning and tool output are never recorded.
 
 ### Owner response schemas
 
