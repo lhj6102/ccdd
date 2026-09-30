@@ -213,6 +213,16 @@ export function createBroker<D extends ResultDetail = 'compact'>({ detail, repoP
     db.prepare('INSERT INTO events(run_id,request_id,created_at,type,message,data) VALUES (?,?,?,?,?,?)').run(runId, requestId, now(), type, message.slice(0, 4000), data === null ? null : JSON.stringify(data));
   };
   const changed = () => { for (const callback of listeners) { try { callback(); } catch {} } };
+  /**
+   * Per-request usage of the current attempt, independent of the latest-500 event window. Only the
+   * owning worker writes it, from synchronous event delivery, so the read and write cannot interleave.
+   */
+  const addUsage = (requestId: string, usage: Record<string, number>) => {
+    const row = db.prepare('SELECT data FROM request_usage WHERE request_id=?').get(requestId);
+    const total = row ? JSON.parse(String(row.data)) as Record<string, number> : {};
+    for (const [key, count] of Object.entries(usage)) total[key] = (total[key] ?? 0) + count;
+    db.prepare('INSERT INTO request_usage(request_id,data) VALUES (?,?) ON CONFLICT(request_id) DO UPDATE SET data=excluded.data').run(requestId, JSON.stringify(total));
+  };
   const humanClaims = createHumanClaims({ transaction, read: requestData, save: saveRequest, changed,
     event: (request, type, message) => appendEvent(request.runId, request.id, type, message),
     assertWaiting: request => {
@@ -395,6 +405,7 @@ export function createBroker<D extends ResultDetail = 'compact'>({ detail, repoP
             const usage = tokenUsage(event.usage);
             if (!usage) return;
             safe.usage = usage;
+            addUsage(requestId, usage);
           }
 
           if (event.isError === true) safe.isError = true;
@@ -775,6 +786,7 @@ export function createBroker<D extends ResultDetail = 'compact'>({ detail, repoP
         saveHeader(request);
         // The new attempt starts without a record; the failed one is no longer shown.
         db.prepare('DELETE FROM tool_call_records WHERE request_id=?').run(request.id);
+        db.prepare('DELETE FROM request_usage WHERE request_id=?').run(request.id);
         appendEvent(run.id, request.id, 'request.retried', 'Retry requested against the same immutable input.');
       });
       changed(); return viewRequest(requestData(requestId));

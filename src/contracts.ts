@@ -43,6 +43,8 @@ export interface ReviewRequest extends ReviewEnvelope {
   result?: ReviewResult | null; error?: string | null;
   /** Full detail of an ERROR request: its last attempt's recorded calls, bounded; later calls are counted in toolCallsOmitted. */
   toolCalls?: ReviewToolCall[]; toolCallsOmitted?: number;
+  /** Full detail: summed usage counters Pi reported for this request's current attempt, for every status. */
+  usage?: Partial<Record<'input' | 'output' | 'cacheRead' | 'cacheWrite' | 'cacheWrite1h' | 'reasoning' | 'totalTokens', number>>;
 }
 export interface RepoConfig {
   artifacts: Record<string, ArtifactDefinition>; critics: ResolvedCriticDefinition[];
