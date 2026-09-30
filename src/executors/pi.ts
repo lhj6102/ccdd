@@ -41,6 +41,7 @@ export function validatePiProfile(profile: CriticProfile, options: PiOptions = {
   const adaptiveMinimalAlias = hasApi(model, 'anthropic-messages') && model.compat?.forceAdaptiveThinking === true && requested === 'minimal' && mapped === undefined;
   if (!noReasoning && (!supported || adaptiveMinimalAlias || (typeof mapped === 'string' && levels.includes(mapped as ReasoningLevel) && mapped !== requested))) throw diagnosticError('REASONING_NOT_SUPPORTED', 'The requested reasoning level cannot be applied to this model exactly.', 'Specify a reasoning level supported by the model. CCDD does not substitute unsupported levels.');
   if (profile.timeoutMs !== undefined && (!Number.isSafeInteger(profile.timeoutMs) || profile.timeoutMs < 1 || profile.timeoutMs > 2_147_483_647)) throw diagnosticError('EXECUTOR_PROFILE_INVALID', 'timeoutMs must be an integer between 1 and 2147483647.', 'Check the Critic timeoutMs setting.');
+  for (const key of ['maxToolCalls', 'maxTokens'] as const) if (profile[key] !== undefined && (!Number.isSafeInteger(profile[key]) || profile[key]! < 1)) throw diagnosticError('EXECUTOR_PROFILE_INVALID', `${key} must be a positive integer.`, `Check the Critic ${key} setting.`);
   const exact = structuredClone(model);
   // Catalog fallback permission is optional in Pi; CCDD requests one exact model.
   if (hasApi(exact, 'anthropic-messages') && exact.compat?.allowedFallbackModels) exact.compat.allowedFallbackModels = [];
@@ -102,6 +103,13 @@ export async function invokePi({ request, worktreePath, runDir, schema, inspectR
     if (timedOut) throw diagnosticError('PROVIDER_TIMEOUT', 'Pi Agent execution timed out.', 'Check the Provider connection or adjust the Critic timeoutMs setting.');
     throw diagnosticError('ABORTED', 'Pi Agent execution aborted.', 'The review or diagnostic was cancelled. Run it again if needed.');
   };
+  // Opt-in review budget. The tool call or model turn that exceeds it ends the review without a verdict.
+  let toolCallsUsed = 0, tokensUsed = 0;
+  const exceedBudget = (limit: 'maxToolCalls' | 'maxTokens'): Error => {
+    toolFailure ??= diagnosticError('PROVIDER_BUDGET_EXCEEDED', `The review exceeded its ${limit} budget.`, `Raise ${limit} on the Agent profile or narrow what the review must do.`);
+    agent?.abort();
+    return toolFailure;
+  };
   const emitTelemetry = (event: ExecutionEvent): void => {
     const write = bestEffortDiagnostic(() => onEvent(event)).then(async saved => {
       if (saved || telemetryWarning) return;
@@ -118,7 +126,11 @@ export async function invokePi({ request, worktreePath, runDir, schema, inspectR
     const tools: AgentTool[] = activeRegistry.tools.map(tool => ({
       name: tool.name, label: tool.name, description: tool.description,
       parameters: Type.Unsafe<Record<string, unknown>>(tool.inputSchema as TSchema),
-      prepareArguments: args => activeRegistry.validateArguments(tool.name, args),
+      // Every call the model makes counts, including ones with invalid arguments.
+      prepareArguments: args => {
+        if (profile.maxToolCalls !== undefined && ++toolCallsUsed > profile.maxToolCalls) throw exceedBudget('maxToolCalls');
+        return activeRegistry.validateArguments(tool.name, args);
+      },
       async execute(_id, args, toolSignal) {
         checkAbort(); toolSignal?.throwIfAborted();
         const result = await activeRegistry.call(tool.name, args).catch(error => { throw new Error(safeToolFailure(error).message); });
@@ -179,6 +191,8 @@ export async function invokePi({ request, worktreePath, runDir, schema, inspectR
         // Writes are independent and retain only bounded telemetry, never the message.
         emitTelemetry(event);
       }
+      // Pi's reported total for this turn; aborting here also stops the turn's tool batch.
+      if (profile.maxTokens !== undefined && (tokensUsed += message.usage?.totalTokens ?? 0) > profile.maxTokens) exceedBudget('maxTokens');
     });
     const prompt = makePrompt({ viewer: { listArtifacts: () => structuredClone(request.artifacts) }, tools: activeRegistry.tools });
     checkAbort();

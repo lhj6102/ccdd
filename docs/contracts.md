@@ -458,6 +458,20 @@ Runtime currently supports fixed `node --test` entry paths. Paths are owner-rela
 
 Agent execution uses Pi with the exact requested Provider, model and reasoning settings. The only admitted observation operations are scoped view tools. The original payload remains immutable; a digested instruction adds reviewer-specific tool references. The Agent must return the structured verdict and any owner-schema response fields and satisfy required observations. No shell, arbitrary file access or hidden reasoning is persisted as review evidence. Authentication files remain outside the workspace.
 
+### Review budget
+
+An Agent profile may declare `maxToolCalls` and `maxTokens`, positive integers, both unset
+by default. `maxToolCalls` counts every tool call the model makes, including calls with
+invalid arguments; the first call over the limit is refused and no further tool runs.
+`maxTokens` sums Pi's reported `totalTokens` after each model turn, including the repair
+turn; the turn that crosses the limit ends the review before its tool calls run. A
+Provider that reports no usage counts as zero, so `maxToolCalls` is the deterministic
+limit. Either way the review ends with `PROVIDER_BUDGET_EXCEEDED`, an operational ERROR,
+never a verdict; calls made before the limit stay in the request's tool-call record. Like
+`timeoutMs`, the budget is part of the Critic declaration: default identity hashes
+`ccdd.json`, so editing a budget reviews again, and owner identity ignores it unless the
+returned value encodes it.
+
 ### Final Agent response recovery
 
 Pi validates the final assistant text as exactly one JSON value, at most 1 MiB in

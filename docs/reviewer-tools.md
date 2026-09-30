@@ -140,6 +140,8 @@ Compare before and after on the same targets, profiles and criteria.
 
 A Run view keeps only its latest 500 events, so measure one Critic per Run. One review per profile is an indication, not a ranking; cache state varies between runs.
 
+Protect large runs with a budget on the Agent profile, for example `"maxToolCalls": 40, "maxTokens": 400000` for tools that normally need 3–6 calls. A reviewer that loops then ends with `PROVIDER_BUDGET_EXCEEDED` instead of spending millions of tokens before its timeout, and `run show` still lists the calls it made as `requests[].toolCalls`. See [review budget](contracts.md#review-budget).
+
 ## Case study
 
 A game damage simulator is reviewed skill by skill against each skill's tooltip text. A skill has up to eight options in three groups. The reviewer judges each option by comparing a selection with its parent, the same selection without that option. The first tool set had grown one tool per projection of the simulator's data.
