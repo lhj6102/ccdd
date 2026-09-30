@@ -67,7 +67,13 @@ export function runEnvironmentScript({ command, args, cwd, outputDir, tmpDir, si
     const stop = (message: string): void => {
       if (settled || failure) return;
       failure = message; kill('SIGTERM');
-      killTimer = setTimeout(() => { kill('SIGKILL'); }, 500);
+      killTimer = setTimeout(() => {
+        kill('SIGKILL');
+        // A descendant that detached into its own group can hold the inherited pipes open,
+        // so 'close' may never come. Stop reading them and settle with the fixed failure.
+        child.stdout?.destroy(); child.stderr?.destroy();
+        finish(false, failure!);
+      }, 500);
     };
     const abort = (): void => stop(`${label} was cancelled.`);
     const timer = setTimeout(() => stop(`${label} timed out after ${timeoutMs} ms.`), timeoutMs);
