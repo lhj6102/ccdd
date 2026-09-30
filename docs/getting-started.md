@@ -38,7 +38,7 @@ does not install default-tools. Keep each directly imported module declared.
 
 ## Resource settings and upgrades
 
-Use matching package versions (6.5.0 for this release). Core adds owner identity weights, root review
+Use matching package versions (6.5.1 for this release). Core adds owner identity weights, root review
 policy and pinned script execution-path declarations; mixed 6.0 core with 6.1
 Project/default-tools is not a supported installation. For upgrades, stop all
 old workers first and follow [the upgrade steps](releases.md#upgrading-to-61).
