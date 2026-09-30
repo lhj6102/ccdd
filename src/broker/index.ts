@@ -17,7 +17,7 @@ import { createGraphDefinition, type GraphDefinition } from './graph.js';
 import { type Admission, type AdmissionLease } from './admission.js';
 export type { Admission, AdmissionLease, AdmissionRequest } from './admission.js';
 import { readChanges, type ChangeOptions } from './changes.js';
-import { initializeRecords, records } from './storage.js';
+import { initializeRecords, records, RECORDED_ARGUMENT_BYTES, RECORDED_TOOL_CALLS } from './storage.js';
 import { createReadiness } from './readiness.js';
 import { createStatusPolling } from './polling.js';
 import { ownerAlive, ownProcessIdentity, type OwnerRecord } from './ownership.js';
@@ -34,7 +34,7 @@ import { includedCritics, planProject } from '../project/query.js';
 import { readEvidence, storedRequesterRun } from '../project/store.js';
 import type { ProjectRunDefinition, ProjectSelection } from '../project/types.js';
 import type { RunStatus } from '../contracts.js';
-import type { ReviewEnvelope, ReviewRequest, ReviewResult, ReviewStatus, ReviewToolCall, ExecutionContext, ExecutorReadiness } from '../contracts.js';
+import type { ReviewEnvelope, ReviewRequest, ReviewResult, ReviewStatus, ReviewToolCall, ExecutionContext, ExecutorReadiness, ExecutionEvent } from '../contracts.js';
 
 /** Internal instrumentation for deterministic scheduler regression tests. */
 export const brokerTestHooks: { onHydrate?: (bytes: number) => void; onPlan?: () => void; onIdleTick?: () => void; onSubmissionCommit?: (durationMs: number) => void } = {};
@@ -238,6 +238,8 @@ export function createBroker<D extends ResultDetail = 'compact'>({ detail, repoP
     request.errorCode = errorCode(error) ?? null;
     request.completedAt = now();
     saveHeader(request);
+    // A result carries its own toolCalls; the attempt record would only duplicate them unseen.
+    if (!hasError) db.prepare('DELETE FROM tool_call_records WHERE request_id=?').run(request.id);
     appendEvent(request.runId, request.id, hasError ? 'request.error' : 'request.completed', hasError ? required(request.error, 'error message') : `Review ${required(result, 'review result').verdict}.`, { status: request.status, ...(request.errorCode ? { code: request.errorCode } : {}) });
 
     return true;
@@ -360,6 +362,17 @@ export function createBroker<D extends ResultDetail = 'compact'>({ detail, repoP
         header.attemptId = lease!.token; header.executionProvenance = capture?.provenance ?? null;
         db.prepare('UPDATE requests SET data=? WHERE id=?').run(JSON.stringify(header), requestId);
       });
+      // This attempt's argument record, kept apart from metadata-only events and written while
+      // RUNNING, so cancellation and worker death keep it. Past either bound, later calls are only counted.
+      let recordedOrdinal = 0, recordedBytes = 0, recording = true;
+      const recordToolCall = (metadata: Record<string, unknown>, event: ExecutionEvent) => {
+        const args = object(event.arguments) ? event.arguments : {}, bytes = Buffer.byteLength(JSON.stringify(args));
+        recording &&= recordedOrdinal < RECORDED_TOOL_CALLS && recordedBytes + bytes <= RECORDED_ARGUMENT_BYTES;
+        if (recording) recordedBytes += bytes;
+        const at = typeof event.at === 'string' && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(event.at) ? event.at : now();
+        const entry = { name: metadata.name, arguments: args, at, ...(metadata.isError ? { isError: true } : {}), ...(metadata.observation ? { observation: metadata.observation } : {}) };
+        db.prepare('INSERT INTO tool_call_records(request_id,attempt_id,ordinal,data) VALUES (?,?,?,?)').run(requestId, lease!.token, recordedOrdinal++, recording ? JSON.stringify(entry) : null);
+      };
       const result = validateResult(await executionScope.run({ runtimeRoot: capture?.root ?? workspace.descriptor.path, declaredPaths: capture?.paths ?? [], trackChild: pid => lease!.trackChild(pid) }, () => requireExecutors().execute(copy(request), {
         worktreePath: workspace.descriptor.path, workspacePath: workspace.descriptor.path, runDir, signal,
         onEvent(event) {
@@ -392,6 +405,7 @@ export function createBroker<D extends ResultDetail = 'compact'>({ detail, repoP
           }
           if (Array.isArray(event.tools)) safe.tools = event.tools.slice(0, 32).map(tool => typeof tool === 'string' ? tool : tool?.name).filter(value => typeof value === 'string');
           appendEvent(runId, requestId, event.type, event.type === 'executor.telemetry.failed' ? 'Some optional execution diagnostics could not be recorded.' : String(event.message ?? event.type).slice(0, 2000), safe);
+          if (event.type === 'artifact.tool.called') recordToolCall(safe, event);
           changed();
         },
       })));
@@ -759,6 +773,8 @@ export function createBroker<D extends ResultDetail = 'compact'>({ detail, repoP
         const gate = db.prepare('SELECT unmet,red FROM gate_counts WHERE run_id=? AND critic_id=?').get(request.runId,request.criticId);
         request.status = Number(gate?.unmet ?? 0) ? Number(gate?.red ?? 0) ? 'BLOCKED' : 'WAIT_DEPENDENCY' : 'QUEUED'; request.error = null; request.errorCode = null; request.resultRef = null; request.semanticRef = null; request.startedAt = null; request.completedAt = null; delete request.executionProvenance; delete request.attemptId;
         saveHeader(request);
+        // The new attempt starts without a record; the failed one is no longer shown.
+        db.prepare('DELETE FROM tool_call_records WHERE request_id=?').run(request.id);
         appendEvent(run.id, request.id, 'request.retried', 'Retry requested against the same immutable input.');
       });
       changed(); return viewRequest(requestData(requestId));

@@ -3,14 +3,18 @@ import { canonical } from '../project/identity.js';
 import { setImmediate as yieldTurn } from 'node:timers/promises';
 import { createHash } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
-import type { ReviewEnvelope, ReviewRequest } from '../contracts.js';
+import type { ReviewEnvelope, ReviewRequest, ReviewToolCall } from '../contracts.js';
 import type { RunRecord } from './index.js';
 
 /** Immutable Merkle records. A reference is an internal tagged value, not user JSON. */
 type Node = { json: unknown } | { array: string[] } | { object: [string, string][] };
 export const storageTestHooks: { read?: (bytes: number) => void; write?: (bytes: number) => void } = {};
+/** Bounds of one attempt's tool-call record: calls kept with arguments, and those arguments' serialized bytes. */
+export const RECORDED_TOOL_CALLS = 200, RECORDED_ARGUMENT_BYTES = 256 * 1024;
 export function initializeRecords(db: DatabaseSync) {
   db.exec(`CREATE TABLE IF NOT EXISTS definitions(hash TEXT PRIMARY KEY, data TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS tool_call_records(request_id TEXT NOT NULL, attempt_id TEXT NOT NULL, ordinal INTEGER NOT NULL, data TEXT,
+      PRIMARY KEY(request_id,attempt_id,ordinal));
     CREATE TABLE IF NOT EXISTS run_members(run_id TEXT NOT NULL REFERENCES runs(id), critic_id TEXT NOT NULL, ordinal INTEGER NOT NULL,
       target TEXT NOT NULL, input_key TEXT NOT NULL, input_ref TEXT NOT NULL, envelope_ref TEXT,
       request_id TEXT, evidence_id TEXT, state TEXT NOT NULL, included INTEGER NOT NULL,
@@ -183,10 +187,22 @@ export function records(db: DatabaseSync) {
     const header = { ...request } as Record<string, unknown>, envelope: Record<string, unknown> = {};
     for (const key of envelopeKeys) { if (header[key] !== undefined) envelope[key] = header[key]; delete header[key]; }
     const envelopeRef = put(envelope);
-    delete header.workspace; delete header.validationInput; delete header.result;
+    delete header.workspace; delete header.validationInput; delete header.result; delete header.toolCalls; delete header.toolCallsOmitted;
     return { ...header, criticId: request.criticId, target: request.target, profile: { kind: request.profile.kind, ...(request.profile.kind === 'agent' ? { provider: request.profile.provider, model: request.profile.model } : {}) }, envelopeRef,
       workspaceRef: put(request.workspace), inputRef: request.validationInput ? put(request.validationInput) : null,
       inputKey: request.validationInput?.key ?? null, inputVersion: request.validationInput?.version ?? null, title: request.title, snapshotHash: request.snapshotHash, deps: request.deps, resultRef: request.result ? put(request.result) : null, semanticRef: request.result ? put(semanticResult(request.result)) : null };
+  };
+  /**
+   * An ERROR request has no result; the calls of the attempt that set its attemptId stay auditable,
+   * in result order and shape. A later attempt that never started an executor has no attemptId and no record.
+   */
+  const toolCallRecord = (id: string, attemptId: unknown): Pick<ReviewRequest, 'toolCalls' | 'toolCallsOmitted'> => {
+    // State written before this table existed has no record; readers never create tables.
+    if (typeof attemptId !== 'string' || !db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='tool_call_records'").get()) return {};
+    const calls = db.prepare('SELECT data FROM tool_call_records WHERE request_id=? AND attempt_id=? AND data IS NOT NULL ORDER BY ordinal LIMIT ?').all(id, attemptId, RECORDED_TOOL_CALLS)
+      .map(row => JSON.parse(String(row.data)) as ReviewToolCall);
+    const omitted = Number(db.prepare('SELECT COUNT(*) AS n FROM tool_call_records WHERE request_id=? AND attempt_id=? AND data IS NULL').get(id, attemptId)?.n ?? 0);
+    return calls.length || omitted ? { toolCalls: calls, ...(omitted ? { toolCallsOmitted: omitted } : {}) } : {};
   };
   const request = (id: string, full = true): ReviewRequest | null => {
     const row = db.prepare('SELECT data FROM requests WHERE id=?').get(id); if (!row) return null;
@@ -194,7 +210,8 @@ export function records(db: DatabaseSync) {
     const { envelopeRef, workspaceRef, inputRef, resultRef, inputKey: _, inputVersion: __, semanticRef, ...rest } = header;
     const result = resultRef ? get<ReviewRequest['result']>(full ? resultRef : semanticRef) : null;
     if (result && (result.verdict !== header.status || !['GREEN','RED'].includes(header.status))) throw new Error('Stored result/status mismatch.');
-    return { ...rest, ...(full ? get<ReviewEnvelope>(envelopeRef) : {}), workspace: get(workspaceRef), ...(inputRef ? { validationInput: get(inputRef) } : {}), result } as ReviewRequest;
+    return { ...rest, ...(full ? get<ReviewEnvelope>(envelopeRef) : {}), workspace: get(workspaceRef), ...(inputRef ? { validationInput: get(inputRef) } : {}), result,
+      ...(full && header.status === 'ERROR' ? toolCallRecord(id, header.attemptId) : {}) } as ReviewRequest;
   };
   return { put, get, packRun, prepareRun, packRequest, run, request, clear: () => { nodes.clear(); bytes = 0; } };
 }
