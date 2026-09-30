@@ -40,6 +40,24 @@ test('readiness scripts honor timeout and cancellation', async t => {
   const controller = new AbortController(); const pending = data.check(controller.signal); setTimeout(() => controller.abort(), 30); await assert.rejects(pending);
 });
 
+test('a detached descendant holding inherited pipes cannot extend a timeout or cancellation', { skip: process.platform === 'win32' }, async t => {
+  // The descendant leaves the script's process group and keeps stdout/stderr open for 30 s.
+  const script = "import {spawn} from 'node:child_process';import {writeFileSync} from 'node:fs';const c=spawn(process.execPath,['-e','setTimeout(()=>{},30000)'],{detached:true,stdio:['ignore','inherit','inherit']});writeFileSync(process.env.CCDD_OUTPUT_DIR+'/descendant',String(c.pid));await new Promise(()=>setInterval(()=>{},1000));";
+  const descendants: string[] = [];
+  t.after(() => { for (const path of descendants) readFile(path, 'utf8').then(pid => { try { process.kill(Number(pid), 'SIGKILL'); } catch { /* Already exited. */ } }, () => {}); });
+  const timeout = await fixture(t, script, 300);
+  descendants.push(join(timeout.root, 'checks/a/runtime/descendant'));
+  let started = performance.now();
+  const timedOut = await timeout.check();
+  assert.ok(performance.now() - started < 3000, `settled after ${Math.round(performance.now() - started)} ms`);
+  assert.equal(timedOut.ok, false); assert.match(timedOut.checks[0].message, /timed out after 300 ms/);
+  const cancelled = await fixture(t, script, 30000), controller = new AbortController();
+  descendants.push(join(cancelled.root, 'checks/a/runtime/descendant'));
+  started = performance.now(); setTimeout(() => controller.abort(), 500);
+  await assert.rejects(cancelled.check(controller.signal));
+  assert.ok(performance.now() - started < 3000, `settled after ${Math.round(performance.now() - started)} ms`);
+});
+
 test('changed readiness scripts cannot reconnect to previously recorded inputs', async t => {
   const data = await fixture(t); await writeFile(join(data.repoPath, 'a/environment.mjs'), 'process.exit(0)');
   await assert.rejects(data.check(), { code: 'WORKSPACE_ARTIFACT_MISMATCH' });
