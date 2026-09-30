@@ -169,8 +169,9 @@ is accepted. CCDD adds the required verdict field to the selected schema.
 Schemas use the same supported object JSON Schema dialect as tool arguments.
 Top-level `additionalProperties` must be omitted or false. Top-level composition
 (`allOf`, `anyOf`, `oneOf`, `not`) is rejected at config load; composition inside
-owner-defined properties is allowed. `$ref` and conditional keywords are not
-part of the supported dialect. `verdict`, `reference`,
+owner-defined properties is allowed. Arrays support `contains` with optional
+`minContains`/`maxContains`, which require `contains`. `$ref` and conditional
+keywords are not part of the supported dialect. `verdict`, `reference`,
 `reusedFrom`, `provider`, `model`, `stdout`, `stderr`, `durationMs`, `exitCode` and
 `toolCalls` are reserved. Owner fields are preserved without semantic rewriting
 or string/count truncation. Overall transport limits remain explicit errors.

@@ -143,6 +143,24 @@ test('union and schema-valued additional-property failures retain actionable con
   });
 });
 
+test('contains constrains matching array items and rejects counts without a contains schema', async t => {
+  const inputSchema = { type: 'object', properties: { tags: { type: 'array', items: { type: 'string' }, contains: { const: 'base' }, maxContains: 1 } }, additionalProperties: false };
+  const data = await fixture(t, undefined, { ...metadata, inputSchema }), registry = await data.registry(); t.after(() => registry.close());
+  await registry.call('inspect_spec', { tags: ['base', 'PRIVATE_VALUE'] });
+  for (const tags of [['PRIVATE_VALUE'], ['base', 'base']]) {
+    await assert.rejects(registry.call('inspect_spec', { tags }), error => {
+      assert.ok(error instanceof Error);
+      assert.match(error.message, /instancePath "\/tags" \[contains\]: the number of items matching the registered contains schema is outside its limits/);
+      assert.doesNotMatch(error.message, /PRIVATE_VALUE/);
+      return true;
+    });
+  }
+  assert.equal(registry.toolCalls.length, 1);
+  for (const [tags, message] of [[{ contains: 'base' }, /Invalid or deeply nested/], [{ minContains: 1 }, /require contains/], [{ contains: {}, maxContains: -1 }, /Invalid schema maxContains/]] as const) {
+    await assert.rejects(fixture(t, undefined, { ...metadata, inputSchema: { type: 'object', properties: { tags: { type: 'array', ...tags } } } }), message);
+  }
+});
+
 test('argument paths escape property names and disclose ambiguous TypeBox paths instead of inventing a location', async t => {
   const inputSchema = { type: 'object', properties: { 'a~/b': { type: 'number' }, 'a/b': { type: 'number' }, a: { type: 'object', properties: { b: { type: 'number' } } } } };
   const data = await fixture(t, undefined, { ...metadata, inputSchema }), registry = await data.registry(); t.after(() => registry.close());
