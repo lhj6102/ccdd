@@ -40,11 +40,13 @@ for (const admitted of [false, true]) test(`managed launch host parent death ${a
   const { setTimeout: delay } = await import('node:timers/promises');
   const root = await mkdtemp(join(tmpdir(), 'ccdd-launch-death-')); t.after(() => rm(root, { recursive: true, force: true }));
   const marker = join(root, 'user-pid'), hostPath = fileURLToPath(new URL('../src/executors/launch-host.js', import.meta.url));
-  const parent = spawn(process.execPath, ['--input-type=module', '--eval', `import {spawn} from 'node:child_process';const c=spawn(process.execPath,[${JSON.stringify(hostPath)},process.execPath,'-e',${JSON.stringify(`require('node:fs').writeFileSync(${JSON.stringify(marker)},String(process.pid));setInterval(()=>{},1000)`) }],{detached:true,stdio:['ignore','ignore','ignore','ipc']});console.log(c.pid);${admitted ? "c.send('admitted');" : ''}setInterval(()=>{},1000);`], { stdio: ['ignore', 'pipe', 'pipe'] });
+  const parent = spawn(process.execPath, ['--input-type=module', '--eval', `import {spawn} from 'node:child_process';const c=spawn(process.execPath,[${JSON.stringify(hostPath)},process.execPath,'-e',${JSON.stringify(`require('node:fs').writeFileSync(${JSON.stringify(marker)},String(process.pid));setInterval(()=>{},1000)`) }],{detached:true,stdio:['ignore','ignore','ignore','ipc']});process.stdout.write(c.pid+'\\n');${admitted ? "c.send('admitted');" : ''}setInterval(()=>{},1000);`], { stdio: ['ignore', 'pipe', 'pipe'] });
   let output = ''; parent.stdout.on('data', bytes => output += bytes); const exited = new Promise<void>(resolve => parent.once('exit', () => resolve()));
   const deadline = Date.now() + 5000; while (!output.trim() || admitted && !(await readFile(marker).catch(() => null))) { if (Date.now() > deadline) throw new Error('Launch fixture did not become ready.'); await delay(10); }
   const hostPid = Number(output.trim()), userPid = admitted ? Number(await readFile(marker, 'utf8')) : null;
   t.after(() => { parent.kill('SIGKILL'); try { process.kill(-hostPid, 'SIGKILL'); } catch {} });
+  // A non-numeric pid would make the survival checks below pass without observing any process.
+  assert.ok(Number.isSafeInteger(hostPid) && (userPid === null || Number.isSafeInteger(userPid)), JSON.stringify(output));
   parent.kill('SIGKILL'); await exited;
   const running = async (pid: number) => { const stat = await readFile(`/proc/${pid}/stat`, 'utf8').catch(() => null); return stat !== null && !stat.slice(stat.lastIndexOf(')') + 2).startsWith('Z '); };
   while (await running(hostPid) || userPid && await running(userPid)) { if (Date.now() > deadline) throw new Error('Owned launch group survived parent death.'); await delay(10); }
