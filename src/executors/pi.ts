@@ -67,7 +67,8 @@ export interface InvokePiOptions {
   signal?: AbortSignal;
   onEvent?: (event: ExecutionEvent) => void | Promise<void>;
   schema: Record<string, unknown>;
-  inspectResult?: (final: unknown, toolCalls: ReviewToolCall[]) => FinalResultDiagnostic | undefined | Promise<FinalResultDiagnostic | undefined>;
+  /** `signal` aborts at this review's deadline or cancellation. */
+  inspectResult?: (final: unknown, toolCalls: ReviewToolCall[], signal: AbortSignal) => FinalResultDiagnostic | undefined | Promise<FinalResultDiagnostic | undefined>;
   makePrompt: (input: { viewer: { listArtifacts(): readonly ArtifactReference[] }; tools: ReviewToolDefinition[] }) => string;
   piOptions?: PiOptions;
   /** Test seam: replaces only transport; catalog validation, Agent loop and tools remain real. */
@@ -193,8 +194,9 @@ export async function invokePi({ request, worktreePath, runDir, schema, inspectR
         throw diagnosticError('PROVIDER_RESULT_INVALID', 'The Provider did not return a complete final JSON response.', 'Check the requested model support for tool calls and final responses.');
       }
       const inspected = inspectFinal(last.content.filter(block => block.type === 'text').map(block => block.text).join(''));
-      // An owner check that cannot run is an execution error, not a Provider failure.
-      const diagnostic = inspected.valid ? await Promise.resolve(inspectResult?.(inspected.final, observedCalls)).catch(error => { inspectionFailure = error; throw error; }) : undefined;
+      // An owner check that cannot run is an execution error, not a Provider failure. It runs
+      // under this review's deadline and cancellation, not only the caller's signal.
+      const diagnostic = inspected.valid ? await Promise.resolve(inspectResult?.(inspected.final, observedCalls, controller.signal)).catch(error => { inspectionFailure = error; throw error; }) : undefined;
       return diagnostic ? { valid: false as const, diagnostic } : inspected;
     };
     let inspected = await readFinal();

@@ -1,8 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { getCurrentTools } from '@earendil-works/pi-ai';
-import { writeFile, readFile } from 'node:fs/promises';
+import { writeFile, readFile, chmod } from 'node:fs/promises';
 import { join } from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
 import { createExecutorRegistry } from '../src/executors/index.js';
 import { artifactFixture, fixtureViews, agentProfile, runtimeCritic } from './helpers/artifacts.js';
 import { artifactStream } from './pi-fixture.js';
@@ -166,9 +167,9 @@ const lineCheck = `let text='';for await(const chunk of process.stdin)text+=chun
 const {version,result,toolCalls}=JSON.parse(text);
 const read=new Set(toolCalls.filter(call=>call.artifactId==='a'&&call.operation==='read'&&!call.isError).map(call=>call.arguments.startLine));
 process.stdout.write(JSON.stringify({errors:version===1?result.lines.filter(line=>!read.has(line)).map(line=>'Line '+line+' was claimed but never read.'):['Unexpected input version.']}));`;
-async function checkedReview(t: import('node:test').TestContext, finals: unknown[], check = lineCheck, script = 'checks/lines.mjs') {
+async function checkedReview(t: import('node:test').TestContext, finals: unknown[], check = lineCheck, script = 'checks/lines.mjs', timeoutMs: number = agentProfile.timeoutMs) {
   const data = await artifactFixture(t);
-  await data.write('a', { name: 'a', views: fixtureViews(), critics: [{ id: 'review', title: 'Review', profile: agentProfile, resultCheck: { script },
+  await data.write('a', { name: 'a', views: fixtureViews(), critics: [{ id: 'review', title: 'Review', profile: { ...agentProfile, timeoutMs }, resultCheck: { script },
     passSchema: { type: 'object', properties: { lines: { type: 'array', items: { type: 'integer' } } }, required: ['lines'] }, payload: { instruction: 'Read {a}.' } }] }, { 'checks/lines.mjs': check });
   const [request] = await data.requests(), events: ExecutionEvent[] = [], prompts: string[] = [];
   let faux: ReturnType<typeof fauxProvider> | undefined, turns = 0;
@@ -245,4 +246,82 @@ test('a submitted review keeps its result check through the stored request envel
   assert.deepEqual(completed.events.filter(event => event.type === 'executor.final.invalid').map(event => (event.data as { category: string }).category), ['result_check']);
   assert.deepEqual(completed.requests[0].result!.lines, [1]);
   assert.doesNotMatch(JSON.stringify(completed), /never read/);
+});
+
+// Check scripts run in the owner folder; two levels up is the fixture root, outside the reviewed workspace.
+const outsideWorkspace = (name: string) => `resolve(process.cwd(),'../../${name}')`;
+const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+
+test('the review deadline stops a running result check and its process, at the initial and the repair inspection', { skip: process.platform === 'win32' }, async t => {
+  const check = `import {writeFileSync} from 'node:fs';import {resolve} from 'node:path';let text='';for await(const chunk of process.stdin)text+=chunk;
+const {result}=JSON.parse(text);
+if(result.lines.includes(2))process.stdout.write(JSON.stringify({errors:['Line 2 was claimed but never read.']}));
+else{writeFileSync(${outsideWorkspace('check-pid')},String(process.pid));await new Promise(done=>setTimeout(done,10000));process.stdout.write(JSON.stringify({errors:[]}));}`;
+  for (const finals of [[{ verdict: 'GREEN', lines: [1] }], [{ verdict: 'GREEN', lines: [1, 2] }, { verdict: 'GREEN', lines: [1] }]]) {
+    const started = performance.now();
+    const { review, prompts, root } = await checkedReview(t, finals, check, 'checks/lines.mjs', 1500);
+    await assert.rejects(review, { code: 'PROVIDER_TIMEOUT' });
+    const elapsed = performance.now() - started, pid = Number(await readFile(join(root, 'check-pid'), 'utf8'));
+    t.after(() => { if (alive(pid)) process.kill(pid, 'SIGKILL'); });
+    assert.ok(elapsed < 4000, `review settled after ${Math.round(elapsed)} ms`);
+    assert.equal(prompts.length, finals.length - 1);
+    // The check's process group is signalled, not merely raced and left running.
+    for (let attempt = 0; alive(pid) && attempt < 100; attempt++) await delay(20);
+    assert.equal(alive(pid), false);
+  }
+});
+
+test('result check cleanup failures report only the fixed error, never local paths or owner output names', { skip: process.platform === 'win32' }, async t => {
+  const reported = `process.stdout.write(JSON.stringify({errors:[]}));`;
+  const scripts = {
+    unreadable: `import {chmodSync,mkdirSync,writeFileSync} from 'node:fs';import {join,resolve} from 'node:path';const dir=join(process.env.CCDD_OUTPUT_DIR,'PRIVATE_OWNER_OUTPUT');mkdirSync(dir);writeFileSync(join(dir,'file'),'x');writeFileSync(${outsideWorkspace('locked')},dir);chmodSync(dir,0);${reported}`,
+    replaced: `import {rmSync,writeFileSync} from 'node:fs';import {dirname} from 'node:path';const parent=dirname(process.env.CCDD_OUTPUT_DIR);rmSync(parent,{recursive:true,force:true});writeFileSync(parent,'PRIVATE_OWNER_OUTPUT');${reported}`,
+  };
+  for (const script of Object.values(scripts)) {
+    const data = await artifactFixture(t);
+    data.cleanup(async () => { const locked = await readFile(join(data.root, 'locked'), 'utf8').catch(() => undefined); if (locked) await chmod(locked, 0o700); });
+    await data.write('a', { name: 'a', views: fixtureViews(), critics: [{ id: 'review', title: 'Review', profile: agentProfile, resultCheck: { script: 'checks/output.mjs' },
+      passSchema: { type: 'object', properties: { lines: { type: 'array', items: { type: 'integer' } } }, required: ['lines'] }, payload: { instruction: 'Read {a}.' } }] }, { 'checks/output.mjs': script });
+    let faux: ReturnType<typeof fauxProvider> | undefined;
+    const broker = createBroker({ ...data, detail: 'full', executors: createExecutorRegistry({ streamFn: (model, context, options) => {
+      if (!faux) { faux = fauxProvider({ provider: model.provider, api: model.api }); faux.setResponses([
+        fauxAssistantMessage([fauxToolCall('read_a', { startLine: 1, lineCount: 1 })], { stopReason: 'toolUse' }), fauxAssistantMessage('{"verdict":"GREEN","lines":[1]}'),
+      ]); }
+      return faux.provider.streamSimple(model, context, options);
+    } }) }); data.cleanup(() => broker.close());
+    const run = await broker.submitProject({ selection: { kind: 'all' } }); await broker.run(run.id);
+    const completed = broker.getRun(run.id)!, request = completed.requests[0];
+    assert.equal(completed.status, 'ERROR'); assert.equal(request.errorCode, 'RESULT_CHECK_FAILED');
+    assert.equal(request.error, 'The Critic result check did not complete with a valid report.');
+    assert.ok(completed.events.some(event => event.type === 'request.error' && event.message === request.error));
+    assert.doesNotMatch(JSON.stringify(completed), /PRIVATE_OWNER_OUTPUT|result-check|EACCES|ENOTDIR|permission denied|not a directory/i);
+  }
+});
+
+test('a result check receives successful and authored-error calls, but not calls that failed to run or had invalid arguments', async t => {
+  const data = await artifactFixture(t), views = fixtureViews();
+  views.agentTools!.calc = { metadata: { description: 'Calculate {artifactName}.', inputSchema: { type: 'object', properties: { mode: { type: 'string', enum: ['ok', 'error', 'crash'] } }, required: ['mode'], additionalProperties: false },
+    resultKinds: ['json'], observation: 'content' }, script: { command: 'node', args: ['calc.mjs'] } };
+  const calc = `let text='';for await(const chunk of process.stdin)text+=chunk;const {args}=JSON.parse(text);
+if(args.mode==='crash')process.exit(2);
+process.stdout.write(JSON.stringify(args.mode==='error'?{isError:true,content:[{type:'text',text:'No such case.'}]}:{content:[{type:'json',data:{total:1}}],observation:{kind:'content'}}));`;
+  const echo = `let text='';for await(const chunk of process.stdin)text+=chunk;const {result,toolCalls}=JSON.parse(text);
+process.stdout.write(JSON.stringify({errors:result.round===1?[JSON.stringify(toolCalls)]:[]}));`;
+  await data.write('a', { name: 'a', views, critics: [{ id: 'review', title: 'Review', profile: agentProfile, resultCheck: { script: 'checks/echo.mjs' },
+    passSchema: { type: 'object', properties: { round: { type: 'integer' } }, required: ['round'] }, payload: { instruction: 'Read {a}.' } }] }, { 'calc.mjs': calc, 'checks/echo.mjs': echo });
+  const [request] = await data.requests();
+  let faux: ReturnType<typeof fauxProvider> | undefined, repair = '';
+  const result = await createExecutorRegistry({ streamFn: (model, context, options) => {
+    const last = context.messages.at(-1)!;
+    const text = last.role !== 'user' ? '' : typeof last.content === 'string' ? last.content : last.content.map(block => block.type === 'text' ? block.text : '').join('');
+    if (text.includes('result check')) repair = text;
+    if (!faux) { faux = fauxProvider({ provider: model.provider, api: model.api }); faux.setResponses([
+      fauxAssistantMessage(['ok', 'error', 'crash', 5].map(mode => fauxToolCall('calc_a', { mode } as never)), { stopReason: 'toolUse' }),
+      fauxAssistantMessage('{"verdict":"GREEN","round":1}'), fauxAssistantMessage('{"verdict":"GREEN","round":2}'),
+    ]); }
+    return faux.provider.streamSimple(model, context, options);
+  } }).execute(request, { worktreePath: data.repoPath, runDir: join(data.root, 'run') });
+  assert.equal(result.verdict, 'GREEN');
+  const seen = JSON.parse(repair.match(/result check: (\[.*\]) Return only/)![1]) as unknown[];
+  assert.deepEqual(seen, [{ artifactId: 'a', operation: 'calc', arguments: { mode: 'ok' } }, { artifactId: 'a', operation: 'calc', arguments: { mode: 'error' }, isError: true }]);
 });

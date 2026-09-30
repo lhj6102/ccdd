@@ -222,10 +222,21 @@ JavaScript or TypeScript file; `timeoutMs` is optional (default 30000). Human an
 Runtime Critics reject the field: their results carry no tool-call arguments.
 
 The script runs through the environment-requirement executor with the owner folder as
-cwd; it may import only snapshot files and Node builtins. Its stdin is
+cwd; its imports resolve only to snapshot files and Node builtins. It is trusted owner
+code, not an OS sandbox: like identity and readiness scripts it keeps `HOME` and can
+read files outside the snapshot through `node:fs`, and it must leave the workspace
+unchanged. Its stdin is
 `{"version":1,"result":{...},"toolCalls":[{"artifactId","operation","arguments","isError"?}]}`
-with every successful call in order. It must exit 0 and print `{"errors":[...]}`: at
-most eight nonblank strings, 4 KiB in total. An empty list accepts the result.
+with the review's recorded calls in order: successful calls, and calls whose tool
+returned an authored domain error, marked `"isError": true`. Calls that failed to run,
+returned malformed output or had invalid arguments are never recorded and are absent.
+Filter out `isError` calls before treating a call as evidence of a computed value. The
+script must exit 0 and print `{"errors":[...]}`: at most eight nonblank strings, 4 KiB in
+total. An empty list accepts the result.
+
+The check runs under the review's own deadline and cancellation: when either fires, the
+script's process group is signalled and the review ends with its usual timeout or
+cancellation error.
 
 Errors use the single format-repair turn below, with the fixed prompt
 `Your final response failed the Critic's result check: <errors> Return only one JSON value matching the schema.`
@@ -233,8 +244,9 @@ The repair has no tools, so the reviewer can correct a claim only from calls it 
 made. The repaired result is checked against the schema and the script again; a second
 failure is `PROVIDER_RESULT_INVALID`. The error text is author-controlled: it reaches only
 that prompt and is never stored in events, errors or results. A script that cannot run,
-exits nonzero, times out or prints anything else fails the review with
-`RESULT_CHECK_FAILED`, never a verdict.
+exits nonzero, times out or prints anything else, or whose output directory cannot be
+removed afterwards, fails the review with the fixed `RESULT_CHECK_FAILED` message, never a
+verdict, a local path or file system error text.
 
 ## Input identity and evidence
 
