@@ -105,7 +105,7 @@ See [Contributing](CONTRIBUTING.md), [the context map](CONTEXT-MAP.md), [detaile
 
 [MIT](LICENSE).
 
-**CCDD 6.3.0:** Pi AI and Agent Core 0.99.1 add the `gpt-6.1-sol` and `claude-sonnet-5-5` model profiles; review identities are unchanged. See the [release notes](docs/releases/v6.3.0.md).
+**CCDD 6.4.0:** reviewer tool design guide, field-level repair turns, `contains` in schemas, `tools check --critic` prompt sizes, and the Agent Critic `resultCheck`; review identities are unchanged unless a Critic declares `resultCheck`. See the [release notes](docs/releases/v6.4.0.md).
 
 
 ### Existing Pi AI API
