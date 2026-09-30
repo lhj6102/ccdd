@@ -80,6 +80,21 @@ test('Astra resolves exactly for both OpenAI providers and rejects unsupported e
   }
 });
 
+test('GPT-6.1 Sol and Claude Sonnet 5.5 resolve from the catalog with their exact supported levels', () => {
+  for (const [provider, model, levels] of [
+    ['openai-codex', 'gpt-6.1-sol', ['low', 'medium', 'high', 'xhigh', 'max']],
+    ['anthropic', 'claude-sonnet-5-5', ['low', 'medium', 'high', 'xhigh', 'max']],
+    ['openai-codex', 'gpt-6-luna', ['low', 'medium', 'high', 'xhigh', 'max']],
+  ] as const) {
+    for (const reasoning of levels) {
+      const resolved = validatePiProfile({ ...profile, provider, model, reasoning });
+      assert.equal(resolved.id, model);
+      assert.equal(resolved.provider, provider);
+    }
+    assert.throws(() => validatePiProfile({ ...profile, provider, model, reasoning: 'ultra' }), error => (error as { code: string }).code === 'REASONING_NOT_SUPPORTED');
+  }
+});
+
 test('Pi profile rejects unknown model/provider and reasoning substitutions before transport', () => {
   for (const settings of [
     { ...profile, provider: 'codex' }, { ...profile, model: 'ccdd-nonexistent-model' },

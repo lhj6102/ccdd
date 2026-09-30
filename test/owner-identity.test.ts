@@ -14,6 +14,11 @@ import { projectRun } from '../src/project/store.js';
 import { main } from '../src/project/cli.js';
 import { inputHash } from '../src/project/identity.js';
 
+const GOLDEN: Record<string, { criticHash: string; key: string }> = {
+  'a/agent0': { criticHash: 'eb268b1464deb370b99ca25cd32fde0818c210e6c2bdfad2853c2cd0f6803ef5', key: 'ad825f26caed7545e4c1c6f0274215fa866922ca10950d9bb960c244ddd4f142' },
+  'a/agent1': { criticHash: '2622454fdd3dbf4d70fe6649cf7bfc92a1940ed32af5cc660c64ce3fd8010751', key: '48bb859e6f4930b792cfed09a26e294d7191876e44e8d76830a0e0369ff421bd' },
+};
+
 async function fixture(t: Parameters<typeof artifactFixture>[0], script = 'import {readFileSync} from "node:fs";process.stdout.write(readFileSync("value.txt"));') {
   const data = await artifactFixture(t), views = fixtureViews();
   views.agentTools!.read.metadata.executionPaths = ['runtime.txt'];
@@ -271,6 +276,21 @@ test('default identities use the new format without package or runtime version s
   }
 });
 
+
+test('Critic identity is pinned for Pi models and ignores Pi dependency versions', async t => {
+  const data = await artifactFixture(t);
+  const profiles = [
+    { kind: 'agent', provider: 'openai-codex', model: 'gpt-6.1-sol', reasoning: 'xhigh', timeoutMs: 5000 },
+    { kind: 'agent', provider: 'anthropic', model: 'claude-sonnet-5-5', reasoning: 'high', timeoutMs: 5000 },
+  ] as const;
+  await data.write('a', { name: 'a', critics: profiles.map((profile, index) => ({ ...runtimeCritic(`agent${index}`), profile })) });
+  // The shared fixture embeds a working-directory-dependent reader path in view.mjs; pin it so the golden hashes are location-independent.
+  await writeFile(join(data.repoPath, 'a', 'view.mjs'), 'export {};\n');
+  const snapshot = await createProjectSnapshot(await data.config(), data.repoPath, 'a'.repeat(64));
+  // Golden values recorded with @earendil-works/pi-* 0.87.1, before the 0.99.1 bump, and unchanged after it.
+  assert.deepEqual(Object.fromEntries(Object.entries(snapshot.inputs).map(([id, input]) => [id, { criticHash: input.criticHash, key: input.key }])), GOLDEN);
+  assert.doesNotMatch(JSON.stringify(snapshot.inputs), /0\.87\.1|0\.99\.1/);
+});
 
 test('CCDD package version invariance uses fresh processes and isolated built packages', async t => {
   const data = await artifactFixture(t);
