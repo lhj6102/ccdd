@@ -105,7 +105,7 @@ See [Contributing](CONTRIBUTING.md), [the context map](CONTEXT-MAP.md), [detaile
 
 [MIT](LICENSE).
 
-**CCDD 6.4.0:** reviewer tool design guide, field-level repair turns, `contains` in schemas, `tools check --critic` prompt sizes, and the Agent Critic `resultCheck`; review identities are unchanged unless a Critic declares `resultCheck`. See the [release notes](docs/releases/v6.4.0.md).
+**CCDD 6.5.0:** opt-in review budgets (`maxToolCalls`, `maxTokens`) and a bounded tool-call record for reviews that end in ERROR; existing review identities are unchanged unless a profile sets a budget. See the [release notes](docs/releases/v6.5.0.md).
 
 
 ### Existing Pi AI API
