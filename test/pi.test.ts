@@ -700,6 +700,11 @@ test('repair diagnostics follow const-discriminated owner branches and report fa
   assert.deepEqual(repairIssues(contained), [{ schemaPath: '#/oneOf/1/properties/tags', keyword: 'maxContains' }, { schemaPath: '#/oneOf/1/properties/notes', keyword: 'maxItems' }]);
   const missing = await repairPrompt(t, { failSchema: tags }, { verdict: 'RED', tags: [] }, { verdict: 'RED', tags: ['checked'] });
   assert.deepEqual(repairIssues(missing), [{ schemaPath: '#/oneOf/1/properties/tags', keyword: 'contains' }]);
+  // A const every branch shares comes first; the discriminator is the later option const.
+  const shared = { type: 'object', properties: { claims: { type: 'array', items: { type: 'object',
+    anyOf: [0, 1].map(option => ({ properties: { kind: { const: 'claim' }, option: { const: option }, selection: { enum: [[option]] } } })) } } } };
+  const later = await repairPrompt(t, { failSchema: shared }, { verdict: 'RED', claims: [{ kind: 'claim', option: 1, selection: [99] }] }, { verdict: 'RED', claims: [] });
+  assert.deepEqual(repairIssues(later), [{ schemaPath: '#/oneOf/1/properties/claims/items/anyOf/1/properties/selection', keyword: 'enum' }]);
 });
 
 test('many unexpected object keys receive category-only diagnostics without property-name buffers', async t => {

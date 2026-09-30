@@ -118,7 +118,8 @@ function discriminatedBranch(branches: unknown, value: unknown): number | undefi
     const constants = branches.map(branch => constant(branch, key));
     if (constants.some(entry => entry === undefined)) continue;
     const matches = constants.flatMap((entry, index) => Object.hasOwn(value, key) && isDeepStrictEqual(entry![0], value[key]) ? [index] : []);
-    return matches.length === 1 ? matches[0] : undefined;
+    // A const shared by several branches, or matching none, does not discriminate; try the next property.
+    if (matches.length === 1) return matches[0];
   }
   return undefined;
 }
