@@ -141,7 +141,7 @@ Human preparation checks admitted environment requirements and static tool defin
 
 ## Diagnostics and monitor
 
-`doctor --critic ARTIFACT/CRITIC` diagnoses readiness. Agent diagnostics make a real Provider call using a private nonce, never a project verdict. `tools check --artifact ID --for agent|human` lists definitions; add `--tool NAME --execute --args JSON` for actual execution. `monitor` displays saved graphs and Human actions. GETs never execute scripts, reconcile owners or mutate state; explicit current-input inspection uses POST and returns a query-derived answer.
+`doctor --critic ARTIFACT/CRITIC` diagnoses readiness. Agent diagnostics make a real Provider call using a private nonce, never a project verdict. `tools check --artifact ID --for agent|human` lists definitions; add `--tool NAME --execute --args JSON` for actual execution. `tools check --critic ARTIFACT/CRITIC` lists the tools of that Critic's admitted Artifacts and, for an Agent Critic, the static `prompt` size in bytes. `monitor` displays saved graphs and Human actions. GETs never execute scripts, reconcile owners or mutate state; explicit current-input inspection uses POST and returns a query-derived answer.
 
 ## Exit codes
 
