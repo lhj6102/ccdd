@@ -14,7 +14,7 @@ export async function diagnosticsMain(argv: string[], { stdout, stderr }: { stdo
   const flags = new Set(['--json', '--execute', '--human-inbox']);
   const permitted: Record<string, string[]> = {
     doctor: ['--repo', '--state-dir', '--critic', '--pi-auth-file', '--codex-auth-file', '--human-inbox', '--timeout-ms', '--json'],
-    tools: ['--repo', '--state-dir', '--artifact', '--for', '--tool', '--execute', '--args', '--json'],
+    tools: ['--repo', '--state-dir', '--critic', '--artifact', '--for', '--tool', '--execute', '--args', '--json'],
     monitor: ['--repo', '--state-dir', '--port'], 'prepare-demo': ['--demo-dir'],
   };
   const print = (value: unknown) => stdout.write((typeof value === 'string' ? value : JSON.stringify(value, null, 2)) + '\n');
@@ -46,7 +46,7 @@ export async function diagnosticsMain(argv: string[], { stdout, stderr }: { stdo
       if (positional.length !== 1 || positional[0] !== 'check') throw new Error('Use tools check.');
       const audience = get('--for');
       if (audience !== undefined && audience !== 'agent' && audience !== 'human') throw new Error('--for must be agent or human.');
-      const report = await diagnoseArtifactTools({ ...context, artifactId: get('--artifact'), audience, toolName: get('--tool'), execute: Boolean(options['--execute']), ...(get('--args') === undefined ? {} : { arguments: JSON.parse(get('--args')!) }) });
+      const report = await diagnoseArtifactTools({ ...context, criticId: get('--critic'), artifactId: get('--artifact'), audience, toolName: get('--tool'), execute: Boolean(options['--execute']), ...(get('--args') === undefined ? {} : { arguments: JSON.parse(get('--args')!) }) });
       print(report); return report.ok ? 0 : 1;
     }
     if (positional.length) throw new Error('doctor accepts named options only.');

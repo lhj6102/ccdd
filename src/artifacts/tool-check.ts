@@ -6,6 +6,8 @@ import type { ToolResult } from '../tools/contracts.js';
 import { assertArtifactAudience, type ArtifactAudience } from './types.js';
 import { resolveArtifactScope } from './scope.js';
 import { safeToolFailure, toolFailureStage, type ArtifactToolCheckStage } from '../tools/diagnostics.js';
+import { prepareReviewRequests } from '../requester/index.js';
+import { reviewPromptSize, type ReviewPromptSize } from '../executors/prompt.js';
 
 export interface ArtifactToolCheck {
   artifactId?: string;
@@ -26,11 +28,15 @@ export interface ArtifactToolCheckReport {
   checks: ArtifactToolCheck[];
   tools: Array<ReviewToolDefinition & { audience: ArtifactAudience }>;
   result?: ToolResult;
+  /** A selected Agent Critic's static request size. */
+  prompt?: ReviewPromptSize;
 }
 export interface DiagnoseArtifactToolsOptions {
   repoPath: string;
   repoId?: string;
   stateDir?: string;
+  /** Selects that Critic's admitted Artifacts and reviewer kind instead of artifactId and audience. */
+  criticId?: string;
   artifactId?: string;
   audience?: ArtifactAudience;
   toolName?: string;
@@ -40,13 +46,14 @@ export interface DiagnoseArtifactToolsOptions {
 }
 
 /** Diagnose registered tools without creating a Broker, Run, request, alarm, Agent session or verdict. */
-export async function diagnoseArtifactTools({ repoPath, stateDir, artifactId, audience, toolName, arguments: args, execute = false, signal, ...removed }: DiagnoseArtifactToolsOptions): Promise<ArtifactToolCheckReport> {
+export async function diagnoseArtifactTools({ repoPath, stateDir, criticId, artifactId, audience, toolName, arguments: args, execute = false, signal, ...removed }: DiagnoseArtifactToolsOptions): Promise<ArtifactToolCheckReport> {
   if ('mode' in removed) throw new Error('Workspace modes are no longer supported; supply an unchanged workspace.');
   const report: ArtifactToolCheckReport = { ok: false, status: 'NOT_READY', checkedAt: new Date().toISOString(), checks: [], tools: [] };
   let workspace: WorkspaceHandle | undefined;
   let stage: ArtifactToolCheckStage = 'preflight';
   try {
     if ((audience !== undefined && audience !== 'agent' && audience !== 'human') || (execute && (!artifactId || !audience || !toolName)) || (!execute && args !== undefined)) throw new Error('Actual tool execution requires explicit Artifact, audience and tool selection.');
+    if (criticId !== undefined && (artifactId !== undefined || audience !== undefined || toolName !== undefined || execute)) throw new Error('A selected Critic determines its Artifacts and reviewer kind; do not combine it with other selections.');
     signal?.throwIfAborted();
     stage = 'snapshot';
     const context = await localContext({ repoPath, stateDir });
@@ -59,11 +66,15 @@ export async function diagnoseArtifactTools({ repoPath, stateDir, artifactId, au
     const { config } = await readWorkspaceConfig(worktreePath, workspace.signal);
     const { configManifest } = config;
     if (artifactId !== undefined && !Object.hasOwn(config.artifacts, artifactId)) throw new Error('Unknown selected Artifact.');
-    const selectedScope = resolveArtifactScope(config.artifacts, artifactId === undefined ? Object.keys(config.artifacts) : [artifactId]);
+    const selectedCritic = criticId === undefined ? undefined : config.critics.find(critic => critic.id === criticId);
+    if (criticId !== undefined && (!selectedCritic || selectedCritic.profile.kind === 'runtime')) throw new Error('Select an Agent or Human Critic.');
+    const reviewer = selectedCritic ? selectedCritic.profile.kind as ArtifactAudience : audience;
+    const critics = selectedCritic ? [selectedCritic] : config.critics;
+    const selectedScope = resolveArtifactScope(config.artifacts, selectedCritic ? [selectedCritic.target, ...selectedCritic.deps] : artifactId === undefined ? Object.keys(config.artifacts) : [artifactId]);
     const selected = selectedScope.artifacts;
     if (!selected.length) throw new Error('Unknown selected Artifact.');
-    if (!artifactId && !audience && !toolName) {
-      for (const critic of config.critics) {
+    if (selectedCritic || (!artifactId && !audience && !toolName)) {
+      for (const critic of critics) {
         try {
           assertArtifactAudience({ profile: critic.profile, ...resolveArtifactScope(config.artifacts, [critic.target, ...critic.deps]), requiredObservations: [critic.target, ...critic.deps] });
         } catch (error) {
@@ -71,7 +82,7 @@ export async function diagnoseArtifactTools({ repoPath, stateDir, artifactId, au
         }
       }
     }
-    for (const targetAudience of audience ? [audience] : ['agent', 'human'] as const) {
+    for (const targetAudience of reviewer ? [reviewer] : ['agent', 'human'] as const) {
       stage = 'preflight';
       const registry = await createReviewTools({ worktreePath, ...selectedScope, configManifest, audience: targetAudience, signal: workspace.signal });
       if (execute && targetAudience === audience && registry.outputDir) report.outputDir = registry.outputDir;
@@ -86,7 +97,7 @@ export async function diagnoseArtifactTools({ repoPath, stateDir, artifactId, au
         report.tools.push(...definitions.map(tool => ({ ...tool, audience: targetAudience })));
         for (const artifact of selected) {
           if (toolName !== undefined || registry.tools.some(tool => tool.artifactId === artifact.id)) continue;
-          const required = artifactId !== undefined ? audience !== undefined && artifact.id === artifactId : config.critics.some(critic => critic.profile.kind === targetAudience && [critic.target, ...critic.deps].includes(artifact.id));
+          const required = artifactId !== undefined ? audience !== undefined && artifact.id === artifactId : critics.some(critic => critic.profile.kind === targetAudience && [critic.target, ...critic.deps].includes(artifact.id));
           report.checks.push({ artifactId: artifact.id, audience: targetAudience, stage, ok: !required, ...(required ? { code: 'ARTIFACT_TOOLS_UNAVAILABLE' } : {}), message: `No ${targetAudience} views are declared for this Artifact.${required ? ' This reviewer requires a view.' : ''}` });
         }
         report.checks.push(...(await registry.preflight({ toolName: resolvedToolName })).map(check => ({ ...check, ...(!check.ok ? safeToolFailure({ code: check.code ?? 'ARTIFACT_TOOL_PREFLIGHT_FAILED' }) : {}), stage: 'preflight' as const, audience: targetAudience })));
@@ -105,6 +116,11 @@ export async function diagnoseArtifactTools({ repoPath, stateDir, artifactId, au
         try { await registry.close(); }
         catch (error) { report.checks.push({ artifactId, audience: targetAudience, toolName, stage, ok: false, ...safeToolFailure(error) }); }
       }
+    }
+    // The same envelope and prompt construction an actual Agent review would use.
+    if (selectedCritic?.profile.kind === 'agent' && report.checks.every(check => check.ok)) {
+      const [request] = await prepareReviewRequests({ repoPath: worktreePath, snapshotHash: report.snapshotHash, criticId, preparedConfig: config });
+      report.prompt = reviewPromptSize(request);
     }
     stage = 'input-integrity';
     await workspace.assertUnchanged();
