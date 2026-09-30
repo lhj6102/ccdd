@@ -104,7 +104,7 @@ See [Contributing](CONTRIBUTING.md), [the context map](CONTEXT-MAP.md), [detaile
 
 [MIT](LICENSE).
 
-**CCDD 6.2.1:** existing timeout declarations accept 20 minutes without arbitrary policy ceilings. Values remain bounded by Node timer representability; see the [release notes](docs/releases/v6.2.1.md).
+**CCDD 6.3.0:** Pi AI and Agent Core 0.99.1 add the `gpt-6.1-sol` and `claude-sonnet-5-5` model profiles; review identities are unchanged. See the [release notes](docs/releases/v6.3.0.md).
 
 
 ### Existing Pi AI API
