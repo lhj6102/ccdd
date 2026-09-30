@@ -214,14 +214,15 @@ export function createBroker<D extends ResultDetail = 'compact'>({ detail, repoP
   };
   const changed = () => { for (const callback of listeners) { try { callback(); } catch {} } };
   /**
-   * Per-request usage of the current attempt, independent of the latest-500 event window. Only the
-   * owning worker writes it, from synchronous event delivery, so the read and write cannot interleave.
+   * Usage of one attempt, keyed like its tool-call record by the lease token that becomes the request's
+   * attemptId, independent of the latest-500 event window. Callers write it in the same transaction as
+   * its executor.usage event, so the sum always equals the stored events.
    */
-  const addUsage = (requestId: string, usage: Record<string, number>) => {
-    const row = db.prepare('SELECT data FROM request_usage WHERE request_id=?').get(requestId);
+  const addUsage = (requestId: string, attemptId: string, usage: Record<string, number>) => {
+    const row = db.prepare('SELECT data FROM request_usage WHERE request_id=? AND attempt_id=?').get(requestId, attemptId);
     const total = row ? JSON.parse(String(row.data)) as Record<string, number> : {};
     for (const [key, count] of Object.entries(usage)) total[key] = (total[key] ?? 0) + count;
-    db.prepare('INSERT INTO request_usage(request_id,data) VALUES (?,?) ON CONFLICT(request_id) DO UPDATE SET data=excluded.data').run(requestId, JSON.stringify(total));
+    db.prepare('INSERT INTO request_usage(request_id,attempt_id,data) VALUES (?,?,?) ON CONFLICT(request_id,attempt_id) DO UPDATE SET data=excluded.data').run(requestId, attemptId, JSON.stringify(total));
   };
   const humanClaims = createHumanClaims({ transaction, read: requestData, save: saveRequest, changed,
     event: (request, type, message) => appendEvent(request.runId, request.id, type, message),
@@ -405,7 +406,6 @@ export function createBroker<D extends ResultDetail = 'compact'>({ detail, repoP
             const usage = tokenUsage(event.usage);
             if (!usage) return;
             safe.usage = usage;
-            addUsage(requestId, usage);
           }
 
           if (event.isError === true) safe.isError = true;
@@ -415,7 +415,10 @@ export function createBroker<D extends ResultDetail = 'compact'>({ detail, repoP
             if (observed) safe.observation = observed;
           }
           if (Array.isArray(event.tools)) safe.tools = event.tools.slice(0, 32).map(tool => typeof tool === 'string' ? tool : tool?.name).filter(value => typeof value === 'string');
-          appendEvent(runId, requestId, event.type, event.type === 'executor.telemetry.failed' ? 'Some optional execution diagnostics could not be recorded.' : String(event.message ?? event.type).slice(0, 2000), safe);
+          const message = event.type === 'executor.telemetry.failed' ? 'Some optional execution diagnostics could not be recorded.' : String(event.message ?? event.type).slice(0, 2000);
+          // A usage event and its attempt sum commit together or not at all.
+          if (event.type === 'executor.usage') transaction(() => { appendEvent(runId, requestId, event.type, message, safe); addUsage(requestId, lease!.token, safe.usage as Record<string, number>); });
+          else appendEvent(runId, requestId, event.type, message, safe);
           if (event.type === 'artifact.tool.called') recordToolCall(safe, event);
           changed();
         },

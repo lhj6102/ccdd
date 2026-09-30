@@ -1,5 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { createAssistantMessageEventStream, fauxAssistantMessage, fauxToolCall, type TranscriptContext } from '@earendil-works/pi-ai';
 import { createBroker } from '../src/broker/index.js';
 import { createExecutorRegistry } from '../src/executors/index.js';
@@ -65,4 +67,38 @@ test('usage covers a cancelled attempt up to cancellation and starts again with 
   broker.retryRequest(request.id); broker.cancel(runId);
   request = broker.getRun(runId)!.requests[0] as ReviewRequest;
   assert.equal(request.status, 'ERROR'); assert.equal(request.usage, undefined);
+});
+
+const single = (usage: number) => perCritic({ 'a/review': turn => turn === 1 ? { message: toolTurn(fauxToolCall('read_a', { startLine: 1, lineCount: 1 })), usage } : { message: green, usage: 0 } });
+async function oneReview(t: Parameters<typeof artifactFixture>[0], usage: number, prepare?: (db: DatabaseSync) => void) {
+  const data = await artifactFixture(t);
+  await data.write('a', { name: 'a', views: fixtureViews(), critics: [{ id: 'review', title: 'Review A', profile: agentProfile, payload: { instruction: 'Read {a}.' } }] });
+  const broker = createBroker({ ...data, detail: 'full', executors: createExecutorRegistry({ streamFn: single(usage) }) }); data.cleanup(() => broker.close());
+  if (prepare) { const db = new DatabaseSync(join(data.stateDir, 'broker.sqlite')); try { prepare(db); } finally { db.close(); } }
+  const runId = (await broker.submitProject({ selection: { kind: 'all' } })).id; await broker.run(runId);
+  return { data, broker, runId, request: () => broker.getRun(runId)!.requests[0] as ReviewRequest };
+}
+
+test('usage shows only the sum of the attempt that set attemptId, never one left by another attempt', async t => {
+  const { data, request } = await oneReview(t, 7);
+  const current = request();
+  assert.equal(current.status, 'GREEN'); assert.equal(current.usage!.totalTokens, 7);
+  const db = new DatabaseSync(join(data.stateDir, 'broker.sqlite'));
+  try {
+    // An earlier attempt's sum stays hidden; so does it after a retry under a build that kept no sum for the new attempt.
+    db.prepare('INSERT INTO request_usage(request_id,attempt_id,data) VALUES (?,?,?)').run(current.id, 'previous-attempt', JSON.stringify({ input: 100, totalTokens: 100 }));
+    assert.equal(request().usage!.totalTokens, 7);
+    db.prepare('DELETE FROM request_usage WHERE request_id=? AND attempt_id=?').run(current.id, current.attemptId!);
+  } finally { db.close(); }
+  assert.equal(request().usage, undefined);
+});
+
+test('a usage event that cannot be stored leaves the attempt sum unchanged', async t => {
+  const { data, broker, runId, request } = await oneReview(t, 9, db =>
+    db.exec("CREATE TRIGGER reject_usage BEFORE INSERT ON events WHEN NEW.type='executor.usage' BEGIN SELECT RAISE(ABORT,'rejected'); END;"));
+  assert.equal(request().status, 'GREEN');
+  assert.equal(broker.getRun(runId)!.events.filter(event => event.type === 'executor.usage').length, 0);
+  assert.equal(request().usage, undefined);
+  const db = new DatabaseSync(join(data.stateDir, 'broker.sqlite'), { readOnly: true });
+  try { assert.equal(Number(db.prepare('SELECT COUNT(*) AS n FROM request_usage').get()!.n), 0); } finally { db.close(); }
 });
