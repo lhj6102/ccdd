@@ -2,7 +2,7 @@ import type { ArtifactReference, ArtifactToolCall } from './artifacts/index.js';
 import type { WorkspaceDescriptor } from './workspaces/index.js';
 import type { ResponseSchemas } from './response-schema.js';
 import type { ConfigManifest } from './tools/contracts.js';
-import type { CriticProfile, ReviewPayload, ResolvedCriticDefinition, ArtifactDefinition, ArtifactRelation } from './definitions.js';
+import type { CriticProfile, ReviewPayload, ResolvedCriticDefinition, ArtifactDefinition, ArtifactRelation, ResultCheck } from './definitions.js';
 import type { ValidationInput } from './project/types.js';
 import type { HumanTryClaim, HumanPreparationAttempt } from './broker/human-claims.js';
 export type * from './definitions.js';
@@ -15,6 +15,7 @@ export interface ReviewEnvelope extends ResponseSchemas {
   artifacts: ArtifactReference[]; references: Record<string, string>; requiredObservations: string[];
   configManifest: ConfigManifest;
   payload: ReviewPayload; profile: CriticProfile; target: string; deps: string[];
+  resultCheck?: ResultCheck;
 }
 export type ReviewStatus = 'WAIT_DEPENDENCY' | 'BLOCKED' | 'QUEUED' | 'RUNNING' | 'WAITING_HUMAN' | 'GREEN' | 'RED' | 'ERROR';
 export type RunStatus = ReviewStatus | 'INCOMPLETE';

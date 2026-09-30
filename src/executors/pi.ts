@@ -67,7 +67,7 @@ export interface InvokePiOptions {
   signal?: AbortSignal;
   onEvent?: (event: ExecutionEvent) => void | Promise<void>;
   schema: Record<string, unknown>;
-  inspectResult?: (final: unknown, toolCalls: ReviewToolCall[]) => FinalResultDiagnostic | undefined;
+  inspectResult?: (final: unknown, toolCalls: ReviewToolCall[]) => FinalResultDiagnostic | undefined | Promise<FinalResultDiagnostic | undefined>;
   makePrompt: (input: { viewer: { listArtifacts(): readonly ArtifactReference[] }; tools: ReviewToolDefinition[] }) => string;
   piOptions?: PiOptions;
   /** Test seam: replaces only transport; catalog validation, Agent loop and tools remain real. */
@@ -85,6 +85,7 @@ export async function invokePi({ request, worktreePath, runDir, schema, inspectR
   let repairing = false;
   let registry: ReviewToolRegistry | undefined;
   let toolFailure: Error | undefined;
+  let inspectionFailure: unknown;
   const telemetryWrites = new Set<Promise<void>>();
   let telemetryWarning = false;
   const abort = () => { controller.abort(); agent?.abort(); };
@@ -182,7 +183,7 @@ export async function invokePi({ request, worktreePath, runDir, schema, inspectR
     checkAbort();
     await agent.prompt(prompt);
     const observedCalls = activeRegistry.toolCalls;
-    const readFinal = () => {
+    const readFinal = async () => {
       checkAbort();
       if (identityMismatch) throw diagnosticError('PROVIDER_IDENTITY_MISMATCH', 'The Provider returned a response from a different Provider or model than requested.', 'Specify a model that returns the exact requested model ID. CCDD does not accept model fallbacks or verdicts from another model.');
       if (agent!.state.errorMessage) throw providerFailure(agent!.state.errorMessage);
@@ -192,10 +193,11 @@ export async function invokePi({ request, worktreePath, runDir, schema, inspectR
         throw diagnosticError('PROVIDER_RESULT_INVALID', 'The Provider did not return a complete final JSON response.', 'Check the requested model support for tool calls and final responses.');
       }
       const inspected = inspectFinal(last.content.filter(block => block.type === 'text').map(block => block.text).join(''));
-      const diagnostic = inspected.valid ? inspectResult?.(inspected.final, observedCalls) : undefined;
+      // An owner check that cannot run is an execution error, not a Provider failure.
+      const diagnostic = inspected.valid ? await Promise.resolve(inspectResult?.(inspected.final, observedCalls)).catch(error => { inspectionFailure = error; throw error; }) : undefined;
       return diagnostic ? { valid: false as const, diagnostic } : inspected;
     };
-    let inspected = readFinal();
+    let inspected = await readFinal();
     if (!inspected.valid) {
       emitTelemetry({ type: 'executor.final.invalid', attempt: 'initial', category: inspected.diagnostic.category });
       checkAbort();
@@ -204,8 +206,10 @@ export async function invokePi({ request, worktreePath, runDir, schema, inspectR
       agent.state.tools = [];
       emitTelemetry({ type: 'executor.final.repair', outcome: 'started' });
       try {
-        await agent.prompt(`Your final response did not match the required schema: ${finalResultDescription(inspected.diagnostic)}. Return only one JSON value matching the schema.`);
-        inspected = readFinal();
+        await agent.prompt(inspected.diagnostic.category === 'result_check'
+          ? `Your final response failed the Critic's result check: ${inspected.diagnostic.messages!.join(' ')} Return only one JSON value matching the schema.`
+          : `Your final response did not match the required schema: ${finalResultDescription(inspected.diagnostic)}. Return only one JSON value matching the schema.`);
+        inspected = await readFinal();
         if (!inspected.valid) {
           emitTelemetry({ type: 'executor.final.invalid', attempt: 'repair', category: inspected.diagnostic.category });
           throw diagnosticError('PROVIDER_RESULT_INVALID', `The Provider did not return a valid final JSON schema result after one format repair: ${finalResultDescription(inspected.diagnostic)}.`, 'Check the requested model support for structured responses and the Critic instruction.');
@@ -229,6 +233,7 @@ export async function invokePi({ request, worktreePath, runDir, schema, inspectR
     checkAbort();
     if (toolFailure) throw toolFailure;
     if (error instanceof Error && trustedErrors.has(error)) throw error;
+    if (inspectionFailure !== undefined && error === inspectionFailure) throw error;
     throw providerFailure(error);
   } finally {
     clearTimeout(timer);

@@ -2,8 +2,9 @@ import { Compile } from 'typebox/compile';
 import { ErrorContext, ErrorSchema, Stack } from 'typebox/schema';
 import type { TSchema } from '@earendil-works/pi-ai';
 
-export type FinalResultCategory = 'empty' | 'not_json' | 'wrapped_json' | 'schema_mismatch' | 'over_size';
-export interface FinalResultDiagnostic { category: FinalResultCategory; issues?: { schemaPath: string; keyword: string }[] }
+export type FinalResultCategory = 'empty' | 'not_json' | 'wrapped_json' | 'schema_mismatch' | 'over_size' | 'result_check';
+/** `messages` carries a Critic result check's own errors into the repair prompt only. */
+export interface FinalResultDiagnostic { category: FinalResultCategory; issues?: { schemaPath: string; keyword: string }[]; messages?: string[] }
 type Inspection = { valid: true; final: unknown } | { valid: false; diagnostic: FinalResultDiagnostic };
 const MAX_BYTES = 1_048_576;
 
@@ -160,7 +161,7 @@ export function finalResultDescription({ category, issues }: FinalResultDiagnost
 export function finalResultEventData(event: Record<string, unknown>): Record<string, string> | undefined {
   const { attempt, category, outcome } = event;
   if (event.type === 'executor.final.invalid' && typeof attempt === 'string' && ['initial', 'repair'].includes(attempt) &&
-    typeof category === 'string' && ['empty', 'not_json', 'wrapped_json', 'schema_mismatch', 'over_size'].includes(category)) {
+    typeof category === 'string' && ['empty', 'not_json', 'wrapped_json', 'schema_mismatch', 'over_size', 'result_check'].includes(category)) {
     return { attempt, category };
   }
   if (event.type === 'executor.final.repair' && typeof outcome === 'string' && ['started', 'succeeded', 'failed'].includes(outcome)) return { outcome };

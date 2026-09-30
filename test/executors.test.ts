@@ -10,6 +10,8 @@ import { normalizeReviewResult, createReviewResultSizeCheck } from '../src/revie
 import { fauxProvider, fauxAssistantMessage, fauxToolCall } from '@earendil-works/pi-ai';
 import type { ReviewToolCall } from '../src/contracts.js';
 import type { ExecutionEvent } from '../src/contracts.js';
+import { inspectProject } from '../src/project/index.js';
+import { createBroker } from '../src/broker/index.js';
 
 test('Agent evaluates only required target and explicit references and keeps its payload unchanged', async t => {
   const data = await artifactFixture(t);
@@ -158,4 +160,89 @@ test('scope-only prompts preserve tool-less Artifacts', async t => {
     observed = true;
   } }) }).execute(request, { worktreePath: data.repoPath, runDir: join(data.root, 'run') });
   assert.ok(observed);
+});
+
+const lineCheck = `let text='';for await(const chunk of process.stdin)text+=chunk;
+const {version,result,toolCalls}=JSON.parse(text);
+const read=new Set(toolCalls.filter(call=>call.artifactId==='a'&&call.operation==='read'&&!call.isError).map(call=>call.arguments.startLine));
+process.stdout.write(JSON.stringify({errors:version===1?result.lines.filter(line=>!read.has(line)).map(line=>'Line '+line+' was claimed but never read.'):['Unexpected input version.']}));`;
+async function checkedReview(t: import('node:test').TestContext, finals: unknown[], check = lineCheck, script = 'checks/lines.mjs') {
+  const data = await artifactFixture(t);
+  await data.write('a', { name: 'a', views: fixtureViews(), critics: [{ id: 'review', title: 'Review', profile: agentProfile, resultCheck: { script },
+    passSchema: { type: 'object', properties: { lines: { type: 'array', items: { type: 'integer' } } }, required: ['lines'] }, payload: { instruction: 'Read {a}.' } }] }, { 'checks/lines.mjs': check });
+  const [request] = await data.requests(), events: ExecutionEvent[] = [], prompts: string[] = [];
+  let faux: ReturnType<typeof fauxProvider> | undefined, turns = 0;
+  const review = createExecutorRegistry({ streamFn: (model, context, options) => {
+    faux ??= fauxProvider({ provider: model.provider, api: model.api });
+    const last = context.messages.at(-1)!;
+    if (++turns > 1 && last.role === 'user') prompts.push(typeof last.content === 'string' ? last.content : last.content.map(block => block.type === 'text' ? block.text : '').join(''));
+    faux.appendResponses([turns === 1 ? fauxAssistantMessage([fauxToolCall('read_a', { startLine: 1, lineCount: 1 })], { stopReason: 'toolUse' }) : fauxAssistantMessage(JSON.stringify(finals[turns - 2]))]);
+    return faux.provider.streamSimple(model, context, options);
+  } }).execute(request, { worktreePath: data.repoPath, runDir: join(data.root, 'run'), onEvent: event => { events.push(event); } });
+  return { review, events, prompts, root: data.root };
+}
+
+test('a result check sends its own errors through the single repair turn and never stores them', async t => {
+  const repaired = await checkedReview(t, [{ verdict: 'GREEN', lines: [1, 2] }, { verdict: 'GREEN', lines: [1] }]);
+  const result = await repaired.review;
+  assert.equal(result.verdict, 'GREEN'); assert.deepEqual(result.lines, [1]);
+  assert.equal(repaired.prompts.length, 1);
+  assert.match(repaired.prompts[0], /failed the Critic's result check: Line 2 was claimed but never read\. Return only one JSON value/);
+  assert.deepEqual(repaired.events.filter(event => event.type === 'executor.final.invalid').map(event => event.category), ['result_check']);
+  assert.equal(repaired.events.filter(event => event.type === 'executor.final.repair').at(-1)?.outcome, 'succeeded');
+  assert.doesNotMatch(JSON.stringify([result, repaired.events]), /never read/);
+  const refused = await checkedReview(t, [{ verdict: 'GREEN', lines: [2] }, { verdict: 'GREEN', lines: [2] }]);
+  await assert.rejects(refused.review, error => {
+    assert.equal((error as { code?: string }).code, 'PROVIDER_RESULT_INVALID'); assert.match(String(error), /result_check/); assert.doesNotMatch(String(error), /never read/);
+    return true;
+  });
+});
+
+test('a result check that fails, crashes or reports malformed output is an execution error, not a verdict', async t => {
+  for (const check of ["process.exit(3);", "process.stdout.write('accepted');", "process.stdout.write(JSON.stringify({errors:[''],extra:true}));", "process.stdout.write(JSON.stringify({errors:Array(9).fill('x')}));"]) {
+    const { review, prompts } = await checkedReview(t, [{ verdict: 'GREEN', lines: [1] }], check);
+    await assert.rejects(review, { code: 'RESULT_CHECK_FAILED' }); assert.equal(prompts.length, 0);
+  }
+  const missing = await checkedReview(t, [{ verdict: 'GREEN', lines: [1] }], lineCheck, 'checks/missing.mjs');
+  await assert.rejects(missing.review, error => {
+    assert.equal((error as { code?: string }).code, 'RESULT_CHECK_FAILED'); assert.ok(!String(error).includes(missing.root));
+    return true;
+  });
+});
+
+test('result checks are Agent-only owner scripts and part of default identity', async t => {
+  const data = await artifactFixture(t);
+  const critic = { id: 'review', title: 'Review', profile: agentProfile, payload: { instruction: 'Read {a}.' } };
+  for (const [resultCheck, profile, message] of [[{ script: 'check.mjs' }, { kind: 'human' }, /Agent Critic/], [{ script: '../check.mjs' }, agentProfile, /safe project-relative/],
+    [{ script: 'check.txt' }, agentProfile, /Node JavaScript/], [{ script: 'check.mjs', extra: true }, agentProfile, /resultCheck/]] as const) {
+    await data.write('a', { name: 'a', views: fixtureViews(), critics: [{ ...critic, profile, resultCheck } as never] });
+    await assert.rejects(data.config(), message);
+  }
+  await data.write('a', { name: 'a', stale: { kind: 'file-hash', paths: ['content.txt'] }, views: fixtureViews(), critics: [{ ...critic, resultCheck: { script: 'check.mjs', timeoutMs: 1000 } }] }, { 'check.mjs': '// first' });
+  const before = (await inspectProject({ ...data, detail: 'full' })).snapshot.inputs['a/review'].key;
+  await writeFile(join(data.repoPath, 'a/check.mjs'), '// changed check');
+  assert.notEqual((await inspectProject({ ...data, detail: 'full' })).snapshot.inputs['a/review'].key, before);
+  const [request] = await data.requests();
+  assert.deepEqual(request.resultCheck, { script: 'check.mjs', timeoutMs: 1000 });
+});
+
+test('a submitted review keeps its result check through the stored request envelope', async t => {
+  const data = await artifactFixture(t);
+  await data.write('a', { name: 'a', views: fixtureViews(), critics: [{ id: 'review', title: 'Review', profile: agentProfile, resultCheck: { script: 'checks/lines.mjs' },
+    passSchema: { type: 'object', properties: { lines: { type: 'array', items: { type: 'integer' } } }, required: ['lines'] }, payload: { instruction: 'Read {a}.' } }] }, { 'checks/lines.mjs': lineCheck });
+  let faux: ReturnType<typeof fauxProvider> | undefined, calls = 0;
+  const broker = createBroker({ ...data, detail: 'full', executors: createExecutorRegistry({ streamFn: (model, context, options) => {
+    calls++;
+    if (!faux) { faux = fauxProvider({ provider: model.provider, api: model.api }); faux.setResponses([
+      fauxAssistantMessage([fauxToolCall('read_a', { startLine: 1, lineCount: 1 })], { stopReason: 'toolUse' }),
+      fauxAssistantMessage('{"verdict":"GREEN","lines":[1,2]}'), fauxAssistantMessage('{"verdict":"GREEN","lines":[1]}'),
+    ]); }
+    return faux.provider.streamSimple(model, context, options);
+  } }) }); data.cleanup(() => broker.close());
+  const run = await broker.submitProject({ selection: { kind: 'all' } }); await broker.run(run.id);
+  const completed = broker.getRun(run.id)!;
+  assert.equal(completed.status, 'GREEN'); assert.equal(calls, 3);
+  assert.deepEqual(completed.events.filter(event => event.type === 'executor.final.invalid').map(event => (event.data as { category: string }).category), ['result_check']);
+  assert.deepEqual(completed.requests[0].result!.lines, [1]);
+  assert.doesNotMatch(JSON.stringify(completed), /never read/);
 });

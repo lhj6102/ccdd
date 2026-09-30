@@ -213,11 +213,34 @@ previous-major/unmarked state without reading or migrating its records. Validati
 version 3 is a one-time key transition; package/runtime version changes alone do
 not invalidate identity thereafter. See [migration](migration-v5.md).
 
+### Result checks
+
+An Agent Critic may declare `resultCheck: {"script": "checks/result.mjs", "timeoutMs": 30000}`
+to check a schema-valid final result against the review's own tool calls, for example
+that each claimed selection was actually computed. `script` is an owner-relative Node
+JavaScript or TypeScript file; `timeoutMs` is optional (default 30000). Human and
+Runtime Critics reject the field: their results carry no tool-call arguments.
+
+The script runs through the environment-requirement executor with the owner folder as
+cwd; it may import only snapshot files and Node builtins. Its stdin is
+`{"version":1,"result":{...},"toolCalls":[{"artifactId","operation","arguments","isError"?}]}`
+with every successful call in order. It must exit 0 and print `{"errors":[...]}`: at
+most eight nonblank strings, 4 KiB in total. An empty list accepts the result.
+
+Errors use the single format-repair turn below, with the fixed prompt
+`Your final response failed the Critic's result check: <errors> Return only one JSON value matching the schema.`
+The repair has no tools, so the reviewer can correct a claim only from calls it already
+made. The repaired result is checked against the schema and the script again; a second
+failure is `PROVIDER_RESULT_INVALID`. The error text is author-controlled: it reaches only
+that prompt and is never stored in events, errors or results. A script that cannot run,
+exits nonzero, times out or prints anything else fails the review with
+`RESULT_CHECK_FAILED`, never a verdict.
+
 ## Input identity and evidence
 
 Local material identity hashes content, names, entry types, executable bits and empty directories. Separate child Artifacts are hashed through their relations rather than twice as parent material. `.git` and installed `node_modules` are excluded from default Artifact material; the complete workspace still has its independent integrity proof. Declare used installed runtimes in `executionPaths`.
 
-`stale: {"kind":"file-hash","paths":[...]}` narrows material to literal owner-relative files/directories, without globs. Missing selected paths have a distinct identity. Config, local view entry files and Runtime test entry files remain mandatory inputs. Environment scripts and their declared `inputs`, view execution inputs, and typed child/mount/instruction relations also participate. Dynamic imports or other files beyond these boundaries must be declared; mutable external services need an appropriate conservative strategy.
+`stale: {"kind":"file-hash","paths":[...]}` narrows material to literal owner-relative files/directories, without globs. Missing selected paths have a distinct identity. Config, local view entry files, Runtime test entry files and result check scripts remain mandatory inputs. Environment scripts and their declared `inputs`, view execution inputs, and typed child/mount/instruction relations also participate. Dynamic imports or other files beyond these boundaries must be declared; mutable external services need an appropriate conservative strategy.
 
 ### Owner-defined identity
 
@@ -428,8 +451,9 @@ Agent execution uses Pi with the exact requested Provider, model and reasoning s
 Pi validates the final assistant text as exactly one JSON value, at most 1 MiB in
 UTF-8, against the supplied final schema. Invalid text receives a bounded category:
 `empty` (including whitespace), `not_json`, `wrapped_json` (a JSON value inside a
-single code fence or surrounding text), `schema_mismatch`, or `over_size` (also used for the existing normalized
-256,000-character persisted review-result envelope limit).
+single code fence or surrounding text), `schema_mismatch`, `over_size` (also used for the existing normalized
+256,000-character persisted review-result envelope limit), or `result_check` (a
+[result check](#result-checks) reported errors).
 Size is checked before parsing or wrapper detection. Wrapper detection only
 classifies syntax; it never extracts or accepts a verdict. Even exactly one
 surrounding `json` fence requires repair, preserving the strict final-result
@@ -444,7 +468,7 @@ historical tool configuration and does not offer a compatible `none` choice, so
 it retains wire definitions with `auto` while local execution remains disabled.
 Even an unsolicited tool call
 cannot invoke an observation or start another turn. No new evidence, semantic guidance or
-preferred verdict is supplied. The fixed prompt is:
+preferred verdict is supplied. The fixed prompt is (a result check uses its own, above):
 
 `Your final response did not match the required schema: <safe category and paths>. Return only one JSON value matching the schema.`
 

@@ -178,7 +178,7 @@ export function records(db: DatabaseSync) {
     const evidence = db.prepare('SELECT DISTINCT evidence_id FROM run_members WHERE run_id=? AND evidence_id IS NOT NULL').all(id).map(row => String(row.evidence_id));
     return { ...rest, workspace: get(workspaceRef), ...definition, ...(definition.project ? { project: { ...definition.project, coalescedRequestIds: shared, ...(header.completedAt ? { evidenceRequestIds: evidence } : {}) } } : {}) };
   };
-  const envelopeKeys = ['repoId','snapshotHash','criticId','title','artifacts','references','requiredObservations','configManifest','payload','profile','target','deps','passSchema','failSchema'] as const;
+  const envelopeKeys = ['repoId','snapshotHash','criticId','title','artifacts','references','requiredObservations','configManifest','payload','profile','target','deps','passSchema','failSchema','resultCheck'] as const;
   const packRequest = (request: ReviewRequest) => {
     const header = { ...request } as Record<string, unknown>, envelope: Record<string, unknown> = {};
     for (const key of envelopeKeys) { if (header[key] !== undefined) envelope[key] = header[key]; delete header[key]; }

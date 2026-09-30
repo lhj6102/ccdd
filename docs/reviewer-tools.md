@@ -84,7 +84,7 @@ An instruction alone does not make a reviewer follow a checking order. Make an i
 
 1. **Constrain claims in the result schema.** Each claim names what it was judged on, and only valid values are allowed: an `anyOf` inside `items`, one branch per claim, with `const` and an `enum` (enum values may be arrays).
 2. **Make the valid method one call.** A batched `calculate` computes a claim and its reference together.
-3. **Check after the review that each claim was computed.** The full Run (`ccdd-project run show RUN_ID --json`) records the arguments of every successful call in `requests[].result.toolCalls`. Compare each claimed selection with the requested ones. CCDD has no hook for this check: run it in your own pipeline, then flag the result or submit a new review with `--force`.
+3. **Check that each claim was computed.** Declare `"resultCheck": {"script": "checks/result.mjs"}` on the Agent Critic. The script reads the schema-valid result and every successful call's `artifactId`, `operation` and `arguments` on stdin and prints `{"errors": [...]}`, for example `Option 4 was judged in [2, 4], which was never calculated.` Errors go to the reviewer through the one repair turn, which has no tools, so it can only correct a claim to a selection it did calculate. A second failure makes the review an error. See [result checks](contracts.md#result-checks).
 
 ```json
 "claims": {
