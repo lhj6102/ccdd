@@ -159,9 +159,9 @@ One review per profile on the same skill:
 | Profile | Tokens before → after | Wall time before → after |
 | --- | ---: | ---: |
 | Claude Sonnet 5.5, low | 234k → 43k | 49 → 17 s |
-| Claude Sonnet 5.5, medium | 287k → 57k | |
+| Claude Sonnet 5.5, medium | 287k → 57k | 52 → 20 s |
 | GPT-6.1 Sol, low | 155k → 20k | 201 → 52 s |
-| GPT-6.1 Sol, medium | 101k → 27k | |
+| GPT-6.1 Sol, medium | 101k → 27k | 200 → 64 s |
 
 All verdicts agreed. The project uses owner identity and the redesign left its identity values unchanged, so existing verdicts stayed reusable.
 
