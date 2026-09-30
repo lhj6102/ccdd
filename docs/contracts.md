@@ -689,6 +689,18 @@ Their existing latest-500-event window remains unchanged: this is diagnostic
 history, not an exhaustive billing ledger. No aggregates are fabricated for reused
 evidence, Runtime execution or older runs that lack telemetry.
 
+Per-review totals do not depend on that window. Full request views (`run show`,
+`projectRun`, full Broker views) add `usage` for every status: the sum of each
+`executor.usage` counter stored for the request's current attempt. It is written while
+the request is RUNNING, in a Broker table separate from events and keyed by the attempt
+(`attemptId`), in the same transaction as its event, so it always equals that attempt's
+stored usage events. A retry starts a new sum, and a sum left by any other attempt is
+never shown.
+Wall time is the request's `startedAt`/`completedAt`, and its calls are `result.toolCalls`
+or, for ERROR, `toolCalls` plus `toolCallsOmitted`. The field rules above apply:
+`reasoning` is part of `output`, `cacheWrite1h` of `cacheWrite`, and counters Pi did not
+report are absent. Compact views omit `usage`.
+
 Telemetry is never added to Artifact/SCC hashes, ValidationInput, reuse keys,
 `ReviewResult.toolCalls` or the Project's semantic `ValidationEvidence` projection.
 It adds only event types and JSON payload fields in existing SQLite storage;

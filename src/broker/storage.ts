@@ -13,6 +13,7 @@ export const storageTestHooks: { read?: (bytes: number) => void; write?: (bytes:
 export const RECORDED_TOOL_CALLS = 200, RECORDED_ARGUMENT_BYTES = 256 * 1024;
 export function initializeRecords(db: DatabaseSync) {
   db.exec(`CREATE TABLE IF NOT EXISTS definitions(hash TEXT PRIMARY KEY, data TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS request_usage(request_id TEXT NOT NULL, attempt_id TEXT NOT NULL, data TEXT NOT NULL, PRIMARY KEY(request_id,attempt_id));
     CREATE TABLE IF NOT EXISTS tool_call_records(request_id TEXT NOT NULL, attempt_id TEXT NOT NULL, ordinal INTEGER NOT NULL, data TEXT,
       PRIMARY KEY(request_id,attempt_id,ordinal));
     CREATE TABLE IF NOT EXISTS run_members(run_id TEXT NOT NULL REFERENCES runs(id), critic_id TEXT NOT NULL, ordinal INTEGER NOT NULL,
@@ -187,10 +188,20 @@ export function records(db: DatabaseSync) {
     const header = { ...request } as Record<string, unknown>, envelope: Record<string, unknown> = {};
     for (const key of envelopeKeys) { if (header[key] !== undefined) envelope[key] = header[key]; delete header[key]; }
     const envelopeRef = put(envelope);
-    delete header.workspace; delete header.validationInput; delete header.result; delete header.toolCalls; delete header.toolCallsOmitted;
+    delete header.workspace; delete header.validationInput; delete header.result; delete header.toolCalls; delete header.toolCallsOmitted; delete header.usage;
     return { ...header, criticId: request.criticId, target: request.target, profile: { kind: request.profile.kind, ...(request.profile.kind === 'agent' ? { provider: request.profile.provider, model: request.profile.model } : {}) }, envelopeRef,
       workspaceRef: put(request.workspace), inputRef: request.validationInput ? put(request.validationInput) : null,
       inputKey: request.validationInput?.key ?? null, inputVersion: request.validationInput?.version ?? null, title: request.title, snapshotHash: request.snapshotHash, deps: request.deps, resultRef: request.result ? put(request.result) : null, semanticRef: request.result ? put(semanticResult(request.result)) : null };
+  };
+  /**
+   * Summed usage of the attempt that set the request's attemptId. A sum left by any other attempt,
+   * such as one before a retry under a build that kept no sum, is never shown; state written before
+   * this table existed has none.
+   */
+  const requestUsage = (id: string, attemptId: unknown): Pick<ReviewRequest, 'usage'> => {
+    if (typeof attemptId !== 'string' || !db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='request_usage'").get()) return {};
+    const row = db.prepare('SELECT data FROM request_usage WHERE request_id=? AND attempt_id=?').get(id, attemptId);
+    return row ? { usage: JSON.parse(String(row.data)) as ReviewRequest['usage'] } : {};
   };
   /**
    * An ERROR request has no result; the calls of the attempt that set its attemptId stay auditable,
@@ -211,7 +222,7 @@ export function records(db: DatabaseSync) {
     const result = resultRef ? get<ReviewRequest['result']>(full ? resultRef : semanticRef) : null;
     if (result && (result.verdict !== header.status || !['GREEN','RED'].includes(header.status))) throw new Error('Stored result/status mismatch.');
     return { ...rest, ...(full ? get<ReviewEnvelope>(envelopeRef) : {}), workspace: get(workspaceRef), ...(inputRef ? { validationInput: get(inputRef) } : {}), result,
-      ...(full && header.status === 'ERROR' ? toolCallRecord(id, header.attemptId) : {}) } as ReviewRequest;
+      ...(full && header.status === 'ERROR' ? toolCallRecord(id, header.attemptId) : {}), ...(full ? requestUsage(id, header.attemptId) : {}) } as ReviewRequest;
   };
   return { put, get, packRun, prepareRun, packRequest, run, request, clear: () => { nodes.clear(); bytes = 0; } };
 }

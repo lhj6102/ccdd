@@ -134,11 +134,11 @@ Compare before and after on the same targets, profiles and criteria.
 1. **Static prompt per review.** `ccdd-project tools check --critic ARTIFACT/ID --json` lists the tools of every Artifact the review admits and reports `prompt`: `totalBytes` (system prompt, first prompt and tool definitions), `toolBytes` per Artifact, `payloadBytes` and `responseSchemaBytes`. These are the bytes CCDD passes to Pi before the first turn; each Provider adds its own framing.
 2. **Output per call.** Take the recorded arguments of an earlier review from `run show RUN_ID --json` (`requests[].result.toolCalls[].arguments`, or `requests[].toolCalls[].arguments` for a review that ended in ERROR, such as a cancelled runaway). Replay each through `ccdd-project tools check --artifact ID --for agent --tool NAME --execute --args JSON` on both versions, and compare the bytes of `result.content`, counting `json` blocks as compact JSON. Same requests, different surface.
 3. **Tokens and time per review.** Run one Critic fresh with `ccdd-project verify --critic ARTIFACT/ID --force --wait --json`, then read `run show RUN_ID --json`:
-   - `executor.usage` events, one per model turn: sum `data.usage.totalTokens`, and keep `input`, `cacheRead` and `output` beside it, because Providers account for caching differently. `reasoning` is part of `output`.
-   - `artifact.tool.completed` events, one per call, with `data.durationMs` and `data.contentBytes`.
+   - Each request's `usage`: summed counters for the review. Keep `input`, `cacheRead` and `output` beside `totalTokens`, because Providers account for caching differently. `reasoning` is part of `output`.
    - The request's `startedAt` and `completedAt` for wall time.
+   - `executor.usage` events (one per model turn) and `artifact.tool.completed` events (one per call, with `data.durationMs` and `data.contentBytes`) for per-turn and per-call detail.
 
-A Run view keeps only its latest 500 events, so measure one Critic per Run. One review per profile is an indication, not a ranking; cache state varies between runs.
+`usage`, times and calls are on every request, so one Run of many reviews measures them all. Events are a window of the latest 500, so per-turn and per-call detail needs one Critic per Run. One review per profile is an indication, not a ranking; cache state varies between runs.
 
 Protect large runs with a budget on the Agent profile, for example `"maxToolCalls": 40, "maxTokens": 400000` for tools that normally need 3–6 calls. A reviewer that loops then ends with `PROVIDER_BUDGET_EXCEEDED` instead of spending millions of tokens before its timeout, and `run show` still lists the calls it made as `requests[].toolCalls`. See [review budget](contracts.md#review-budget).
 
