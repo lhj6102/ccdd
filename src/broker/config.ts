@@ -54,8 +54,9 @@ function critic(value: unknown): CriticDefinition {
   const profile = value.profile;
   if (!object(profile) || !['agent', 'human', 'runtime'].includes(profile.kind)) throw new Error('Invalid Critic profile.');
   if (profile.kind === 'agent') {
-    fields(profile, ['kind', 'provider', 'model', 'reasoning', 'timeoutMs'], 'Agent profile');
+    fields(profile, ['kind', 'provider', 'model', 'reasoning', 'timeoutMs', 'maxToolCalls', 'maxTokens'], 'Agent profile');
     if (['provider', 'model', 'reasoning'].some(key => typeof profile[key] !== 'string' || !profile[key].trim())) throw new Error('Agent profiles require provider, model and reasoning.');
+    for (const key of ['maxToolCalls', 'maxTokens']) if (profile[key] !== undefined && (!Number.isSafeInteger(profile[key]) || profile[key] < 1)) throw new Error(`Agent profile ${key} must be a positive integer.`);
   } else if (profile.kind === 'human') fields(profile, ['kind'], 'Human profile');
   else {
     fields(profile, ['kind', 'command', 'args', 'timeoutMs'], 'Runtime profile');

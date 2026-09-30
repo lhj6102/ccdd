@@ -1,7 +1,8 @@
 import type { ArtifactViews, EnvironmentRequirement, ScriptDefinition, JsonSchema } from './tools/contracts.js';
 
 /** Public declarations contain data only; discovery never executes code. */
-export interface AgentProfile { kind: 'agent'; provider: string; model: string; reasoning: string; timeoutMs?: number }
+/** `maxToolCalls` and `maxTokens` are an optional review budget; like timeoutMs they are declared in ccdd.json. */
+export interface AgentProfile { kind: 'agent'; provider: string; model: string; reasoning: string; timeoutMs?: number; maxToolCalls?: number; maxTokens?: number }
 export interface HumanProfile { kind: 'human' }
 export interface RuntimeProfile { kind: 'runtime'; command: string; args: string[]; timeoutMs?: number }
 export type CriticProfile = AgentProfile | HumanProfile | RuntimeProfile;
