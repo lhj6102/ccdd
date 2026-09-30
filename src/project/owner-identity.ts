@@ -17,19 +17,27 @@ export async function ownerIdentity(root: string, owner: string, id: string, str
   // Temporary output is never state and is removed even on invalid output, timeout or cancellation.
   const base = await environmentOutputDirectory(root, tmpdir());
   const outputDir = await mkdtemp(join(base, 'ccdd-identity-'));
+  const description = 'Identity validation failed.';
+  let value = '', primary: { error: unknown } | undefined;
   try {
     const temporary = await environmentOutputDirectory(root, join(outputDir, '.tmp'));
     const node = strategy.script.command === 'node';
     const result = await runEnvironmentScript({
       command: node ? process.execPath : script,
       args: node ? [fileURLToPath(new URL('../tools/environment-host.js', import.meta.url)), root, script, ...strategy.script.args.slice(1)] : strategy.script.args,
-      cwd, outputDir, tmpDir: temporary, signal, timeoutMs: strategy.timeoutMs, label, description: 'Identity validation failed.',
+      cwd, outputDir, tmpDir: temporary, signal, timeoutMs: strategy.timeoutMs, label, description,
     });
     signal?.throwIfAborted();
     if (!result.ok) throw new Error(result.message);
     // Do not trim: whitespace, extra lines, carriage returns and invalid bytes are authoring errors.
-    const value = result.stdout.endsWith('\n') ? result.stdout.slice(0, -1) : result.stdout;
+    value = result.stdout.endsWith('\n') ? result.stdout.slice(0, -1) : result.stdout;
     if (value.length < 1 || value.length > 128 || /[^A-Za-z0-9._:-]/.test(value)) throw new Error(`${label} stdout must be one line of 1–128 characters from [A-Za-z0-9._:-], with only one optional trailing newline.`);
-    return { value };
-  } finally { await rm(outputDir, { recursive: true, force: true }); }
+  } catch (error) { primary = { error }; }
+  // A script can leave output that cannot be removed; fs error text would name local paths.
+  const cleaned = await rm(outputDir, { recursive: true, force: true }).then(() => true, () => false);
+  // Precedence: cancellation, then the script's own failure, then cleanup.
+  signal?.throwIfAborted();
+  if (primary) throw primary.error;
+  if (!cleaned) throw new Error(`${label} failed: ${description}`);
+  return { value };
 }
