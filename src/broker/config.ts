@@ -47,7 +47,7 @@ function views(value: unknown): ArtifactViews {
 }
 function critic(value: unknown): CriticDefinition {
   if (!object(value)) throw new Error('Invalid Critic declaration.');
-  fields(value, ['id', 'title', 'profile', 'payload', 'passSchema', 'failSchema'], 'Critic');
+  fields(value, ['id', 'title', 'profile', 'payload', 'passSchema', 'failSchema', 'resultCheck'], 'Critic');
   if (typeof value.id !== 'string' || !identifier.test(value.id) || typeof value.title !== 'string' || !value.title.trim()) throw new Error('A Critic needs a local id and title.');
   if (!object(value.payload) || typeof value.payload.instruction !== 'string' || !value.payload.instruction.trim()) throw new Error('A Critic needs payload.instruction.');
   for (const key of ['passSchema', 'failSchema']) if (value[key] !== undefined) validateResponseSchema(value[key]);
@@ -62,6 +62,15 @@ function critic(value: unknown): CriticDefinition {
     validateScript({ command: profile.command, args: profile.args });
   }
   if (profile.timeoutMs !== undefined && (!Number.isSafeInteger(profile.timeoutMs) || profile.timeoutMs < 1 || profile.timeoutMs > 2_147_483_647)) throw new Error('Invalid Critic timeoutMs.');
+  if (value.resultCheck !== undefined) {
+    // Only Agent reviews record tool-call arguments for a check to compare against.
+    if (profile.kind !== 'agent') throw new Error('resultCheck requires an Agent Critic.');
+    if (!object(value.resultCheck)) throw new Error('resultCheck must be an object.');
+    fields(value.resultCheck, ['script', 'timeoutMs'], 'resultCheck');
+    projectInputPath(value.resultCheck.script);
+    if (!/\.(?:[cm]?js|[cm]?ts)$/.test(value.resultCheck.script)) throw new Error('resultCheck script must be a Node JavaScript or TypeScript file.');
+    if (value.resultCheck.timeoutMs !== undefined && (!Number.isSafeInteger(value.resultCheck.timeoutMs) || value.resultCheck.timeoutMs < 1 || value.resultCheck.timeoutMs > 2_147_483_647)) throw new Error('resultCheck timeoutMs must be 1–2147483647.');
+  }
   return structuredClone(value) as CriticDefinition;
 }
 function manifest(value: unknown): ArtifactManifest {

@@ -109,6 +109,8 @@ export async function createProjectSnapshot(config: RepoConfig, root: string, sn
       const info = await lstat(candidate).catch(() => null);
       if (info?.isFile()) mandatoryPaths.add(relative.split(path.sep).join('/'));
     }
+    // A result check decides whether a review is accepted, so its script is an input too.
+    for (const critic of config.critics) if (critic.target === id && critic.resultCheck) mandatoryPaths.add(path.posix.join(artifact.path, critic.resultCheck.script));
     // Runtime test entry points also remain inputs when material selection is narrowed.
     // Resolve logical mount paths exactly as the Runtime executor does.
     for (const critic of config.critics.filter(critic => critic.target === id && critic.profile.kind === 'runtime')) {

@@ -17,7 +17,7 @@ export async function prepareReviewRequests({ repoPath, repoId = 'local', snapsh
     const source: ReviewEnvelope = { repoId, snapshotHash, criticId: critic.id, title: critic.title,
       ...scope, configManifest: scopeToolManifest(config.configManifest, scope.artifacts.map(artifact => artifact.id)),
       references: critic.references, requiredObservations: [critic.target, ...critic.deps],
-      payload: critic.payload, ...(critic.passSchema ? { passSchema: critic.passSchema } : {}), ...(critic.failSchema ? { failSchema: critic.failSchema } : {}), profile: critic.profile, target: critic.target, deps: critic.deps };
+      payload: critic.payload, ...(critic.passSchema ? { passSchema: critic.passSchema } : {}), ...(critic.failSchema ? { failSchema: critic.failSchema } : {}), ...(critic.resultCheck ? { resultCheck: critic.resultCheck } : {}), profile: critic.profile, target: critic.target, deps: critic.deps };
     const request = copy ? structuredClone(source) : source;
     assertArtifactAudience(request);
     return request;

@@ -39,18 +39,20 @@ function checkEnvironment(outputDir: string, tmpDir: string): NodeJS.ProcessEnv 
   };
 }
 
-/** Shared bounded executor for readiness and owner identity scripts. Callers enforce workspace integrity. */
-export function runEnvironmentScript({ command, args, cwd, outputDir, tmpDir, signal, timeoutMs = 30000, label = 'Environment check', description = 'Environment check passed.' }: {
+/** Shared bounded executor for readiness, owner identity and result check scripts. Callers enforce workspace integrity. */
+export function runEnvironmentScript({ command, args, cwd, outputDir, tmpDir, signal, timeoutMs = 30000, label = 'Environment check', description = 'Environment check passed.', input }: {
   command: string; args: string[]; cwd: string; outputDir: string; tmpDir: string; signal?: AbortSignal;
-  timeoutMs?: number; label?: string; description?: string;
+  timeoutMs?: number; label?: string; description?: string; input?: string;
 }): Promise<{ ok: boolean; message: string; stdout: string }> {
   signal?.throwIfAborted();
   return new Promise(resolveCheck => {
-    const guarded = !!executionScope.getStore();
+    const guarded = !!executionScope.getStore(), stdin = input === undefined ? 'ignore' : 'pipe';
     let child: ReturnType<typeof spawn>;
     try { child = spawn(guarded ? process.execPath : command, guarded ? [fileURLToPath(new URL('../executors/launch-host.js', import.meta.url)), command, ...args] : args, {
-      cwd, env: checkEnvironment(outputDir, tmpDir), shell: false, detached: process.platform !== 'win32', stdio: guarded ? ['ignore', 'pipe', 'pipe', 'ipc'] : ['ignore', 'pipe', 'pipe'], windowsHide: true,
+      cwd, env: checkEnvironment(outputDir, tmpDir), shell: false, detached: process.platform !== 'win32', stdio: guarded ? [stdin, 'pipe', 'pipe', 'ipc'] : [stdin, 'pipe', 'pipe'], windowsHide: true,
     }); } catch (error) { resolveCheck({ ok: false, stdout: '', message: `${label} could not be started: ${error instanceof Error ? error.message : String(error)}` }); return; }
+    // A script may exit before reading its input; the exit status still decides the result.
+    if (input !== undefined) { child.stdin!.on('error', () => {}); child.stdin!.end(input); }
     let untrack: (() => void) | undefined;
     const chunks: Buffer[] = [], stdout: Buffer[] = [];
     let bytes = 0, retained = 0, settled = false, failure: string | undefined, killTimer: NodeJS.Timeout | undefined;

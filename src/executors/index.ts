@@ -1,4 +1,5 @@
 import { finalResultSchema } from '../response-schema.js';
+import { runResultCheck } from './result-check.js';
 import { assertPiAuthFilesOutsideWorkspace } from './auth.js';
 import { reviewPrompt } from './prompt.js';
 import { constants } from 'node:fs';
@@ -204,8 +205,13 @@ export function createExecutorRegistry({ piOptions, streamFn, alarmMethods = [],
         const { invokePi } = await import('./pi.js');
         let checkSize: ReturnType<typeof createReviewResultSizeCheck> | undefined;
         let acceptedDuration = 0;
-        const { final, toolCalls } = await invokePi({ piOptions, streamFn, request, worktreePath, runDir, signal, onEvent, schema: finalResultSchema(request), inspectResult(final, toolCalls): FinalResultDiagnostic | undefined {
+        const { final, toolCalls } = await invokePi({ piOptions, streamFn, request, worktreePath, runDir, signal, onEvent, schema: finalResultSchema(request), async inspectResult(final, toolCalls, reviewSignal): Promise<FinalResultDiagnostic | undefined> {
           const result = final as ReviewResult;
+          if (request.resultCheck) {
+            const ownerPath = request.artifacts.find(artifact => artifact.id === request.target)!.path;
+            const messages = await runResultCheck({ worktreePath, ownerPath, check: request.resultCheck, result, toolCalls, runDir, signal: reviewSignal });
+            if (messages.length) return { category: 'result_check', messages };
+          }
           try {
             checkSize ??= createReviewResultSizeCheck({ provider: request.profile.kind === 'agent' ? request.profile.provider : undefined, model: request.profile.kind === 'agent' ? request.profile.model : undefined, toolCalls });
             // Persist this exact duration; later telemetry/cleanup must not change the checked envelope.
