@@ -88,7 +88,7 @@ An instruction alone does not make a reviewer follow a checking order. Make an i
 
 ```json
 "claims": {
-  "type": "array", "minItems": 3, "maxItems": 3,
+  "type": "array",
   "items": {
     "type": "object",
     "properties": {
@@ -105,18 +105,18 @@ An instruction alone does not make a reviewer follow a checking order. Make an i
     ]
   },
   "allOf": [
-    { "not": { "type": "array", "items": { "properties": { "option": { "not": { "const": 0 } } } } } },
-    { "not": { "type": "array", "items": { "properties": { "option": { "not": { "const": 1 } } } } } },
-    { "not": { "type": "array", "items": { "properties": { "option": { "not": { "const": 4 } } } } } }
+    { "contains": { "properties": { "option": { "const": 0 } } }, "maxContains": 1 },
+    { "contains": { "properties": { "option": { "const": 1 } } }, "maxContains": 1 },
+    { "contains": { "properties": { "option": { "const": 4 } } }, "maxContains": 1 }
   ]
 }
 ```
 
 Tool inputs and `passSchema`/`failSchema` share one schema dialect:
 
-- Supported keywords: `type` (a single name), `properties`, `required`, `additionalProperties`, `items`, `enum`, `const`, `anyOf`, `oneOf`, `allOf`, `not`, `minItems`, `maxItems`, `uniqueItems`, `minLength`, `maxLength`, `pattern`, `minimum`, `maximum`, `exclusiveMinimum`, `exclusiveMaximum`, `multipleOf`, `title`, `description`, `default` and `examples`. Nesting depth is at most 20.
-- Any other keyword fails config validation, including `contains`, `$ref`, `$defs`, `if`/`then`/`else`, `prefixItems`, `patternProperties` and `format`. Use `anyOf` instead of a type array.
-- For "the array contains an item matching S", write `{"not": {"type": "array", "items": {"not": S}}}`. Each `allOf` entry above requires one option to appear; with `minItems` and `maxItems` equal to the option count, each appears exactly once.
+- Supported keywords: `type` (a single name), `properties`, `required`, `additionalProperties`, `items`, `contains`, `minContains`, `maxContains`, `enum`, `const`, `anyOf`, `oneOf`, `allOf`, `not`, `minItems`, `maxItems`, `uniqueItems`, `minLength`, `maxLength`, `pattern`, `minimum`, `maximum`, `exclusiveMinimum`, `exclusiveMaximum`, `multipleOf`, `title`, `description`, `default` and `examples`. Nesting depth is at most 20.
+- Any other keyword fails config validation, including `$ref`, `$defs`, `if`/`then`/`else`, `prefixItems`, `patternProperties` and `format`. Use `anyOf` instead of a type array. `minContains` and `maxContains` require `contains`.
+- Each `allOf` entry above requires its option exactly once: `contains` demands at least one match, `maxContains` at most one.
 - Without `$ref`, repeated subschemas are written out in full. A per-claim `enum` declared in both `passSchema` and `failSchema` is sent twice on every turn.
 - A response schema cannot use composition at its top level, must omit `additionalProperties` or set it to false, and cannot declare reserved fields such as `verdict` or `toolCalls`.
 - An invalid final result gets one repair turn. The final schema is a GREEN/RED `oneOf`, so the repair prompt names only the category `schema_mismatch`, not the failing path. State each constraint in the field description so the reviewer can find its mistake.

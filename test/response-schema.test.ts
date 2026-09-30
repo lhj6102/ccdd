@@ -69,6 +69,17 @@ test('stored audit retains every tool call beyond the former one hundred call ca
   assert.deepEqual(projectRun(data.stateDir, submitted.id)!.requests[0].result!.toolCalls, toolCalls);
 });
 
+test('response schemas use contains to require each claim exactly once', () => {
+  const claims = { type: 'array', items: { type: 'object', properties: { option: { type: 'integer', enum: [0, 1] } }, required: ['option'], additionalProperties: false },
+    allOf: [0, 1].map(option => ({ contains: { properties: { option: { const: option } } }, maxContains: 1 })) };
+  const schema = { type: 'object', properties: { claims }, required: ['claims'], additionalProperties: false };
+  validateResponseSchema(schema);
+  const result = { verdict: 'RED', claims: [{ option: 1 }, { option: 0 }] };
+  assert.deepEqual(validateFinalResult(result, { failSchema: schema }), result);
+  for (const invalid of [[{ option: 0 }], [{ option: 0 }, { option: 1 }, { option: 1 }]]) {
+    assert.throws(() => validateFinalResult({ verdict: 'RED', claims: invalid }, { failSchema: schema }), /owner response schema/);
+  }
+});
 
 test('response schemas reject same-instance composition but permit nested owner verdict fields', async t => {
   const data = await artifactFixture(t);
