@@ -1,5 +1,5 @@
+import { isDeepStrictEqual } from 'node:util';
 import { Compile } from 'typebox/compile';
-import { ErrorContext, ErrorSchema, Stack } from 'typebox/schema';
 import type { TSchema } from '@earendil-works/pi-ai';
 
 export type FinalResultCategory = 'empty' | 'not_json' | 'wrapped_json' | 'schema_mismatch' | 'over_size';
@@ -96,19 +96,89 @@ function containsJson(text: string): boolean {
   return false;
 }
 
-/** Composed schemas can buffer errors outside our callback; use category-only diagnostics there. */
-function supportsBoundedErrors(schema: unknown): boolean {
-  if (typeof schema === 'boolean') return true;
-  if (!schema || typeof schema !== 'object' || Array.isArray(schema)) return false;
-  const value = schema as Record<string, unknown>;
-  const simple = ['type', 'enum', 'const', 'required', 'additionalProperties', 'properties', 'items', 'minLength', 'maxLength', 'minItems', 'maxItems', 'pattern', 'description', 'title'];
-  if (Object.keys(value).some(key => !simple.includes(key))) return false;
-  if (value.additionalProperties !== undefined && typeof value.additionalProperties !== 'boolean') return false;
-  if (value.properties && Object.values(value.properties).some(child => !supportsBoundedErrors(child))) return false;
-  return value.items === undefined || supportsBoundedErrors(value.items);
+type Schema = Record<string, unknown>;
+type Issue = { schemaPath: string; keyword: string };
+const isSchema = (value: unknown): value is Schema => !!value && typeof value === 'object' && !Array.isArray(value);
+const annotations = new Set(['description', 'title', 'default', 'examples']);
+const MAX_ISSUES = 8, MAX_CHECKS = 1024;
+
+/** A keyword checked on its own, with the siblings its meaning depends on; undefined when it constrains nothing. */
+function isolatedKeyword(node: Schema, keyword: string): Schema | undefined {
+  if (keyword === 'additionalProperties') return { properties: Object.fromEntries(Object.keys(isSchema(node.properties) ? node.properties : {}).map(name => [name, {}])), additionalProperties: node.additionalProperties };
+  if (keyword === 'minContains' || keyword === 'maxContains') return node.contains === undefined ? undefined : { contains: node.contains, minContains: keyword === 'minContains' ? node.minContains : 0, ...(keyword === 'maxContains' ? { maxContains: node.maxContains } : {}) };
+  if (keyword === 'contains' && node.minContains === 0) return undefined;
+  return { [keyword]: node[keyword] };
 }
 
-/** Avoid TypeBox's keyword-local buffers even for flat objects with many extra keys. */
+/** The one branch of an anyOf/oneOf whose property const equals the value's, such as a verdict. */
+function discriminatedBranch(branches: unknown, value: unknown): number | undefined {
+  if (!Array.isArray(branches) || !branches.every(isSchema) || !isSchema(value)) return undefined;
+  const constant = (branch: Schema, key: string) => isSchema(branch.properties) && isSchema(branch.properties[key]) && Object.hasOwn(branch.properties[key], 'const') ? [branch.properties[key].const] : undefined;
+  for (const key of Object.keys(isSchema(branches[0].properties) ? branches[0].properties : {})) {
+    const constants = branches.map(branch => constant(branch, key));
+    if (constants.some(entry => entry === undefined)) continue;
+    const matches = constants.flatMap((entry, index) => Object.hasOwn(value, key) && isDeepStrictEqual(entry![0], value[key]) ? [index] : []);
+    // A const shared by several branches, or matching none, does not discriminate; try the next property.
+    if (matches.length === 1) return matches[0];
+  }
+  return undefined;
+}
+
+/**
+ * Locate failed keywords with boolean checks only, so no validator error list is buffered.
+ * GREEN/RED and other const-discriminated branches are followed into the branch the value
+ * names. Only schema locations and keywords are reported, never instance paths or values.
+ */
+function locateFailures(root: Schema, value: unknown): Issue[] {
+  const issues: Issue[] = [], validators = new WeakMap<Schema, Map<string, ReturnType<typeof Compile>>>();
+  const exhausted = Symbol('diagnostic budget');
+  let checks = 0;
+  const valid = (node: Schema, instance: unknown, keyword = ''): boolean => {
+    if (++checks > MAX_CHECKS) throw exhausted;
+    let byKeyword = validators.get(node);
+    if (!byKeyword) validators.set(node, byKeyword = new Map());
+    let validator = byKeyword.get(keyword);
+    if (!validator) {
+      const schema = keyword ? isolatedKeyword(node, keyword) : node;
+      if (!schema) return true;
+      byKeyword.set(keyword, validator = Compile(schema as TSchema));
+    }
+    return validator.Check(instance);
+  };
+  const report = (schemaPath: string, keyword: string) => {
+    if (schemaPath.length <= 160 && keyword.length <= 40 && !/[\x00-\x1f\x7f]/.test(schemaPath) && /^[A-Za-z]+$/.test(keyword) &&
+      !issues.some(issue => issue.schemaPath === schemaPath && issue.keyword === keyword)) issues.push({ schemaPath, keyword });
+    if (issues.length >= MAX_ISSUES) throw exhausted;
+  };
+  const visit = (node: Schema, instance: unknown, path: string): void => {
+    let located = false;
+    const descend = (child: unknown, childInstance: unknown, childPath: string) => {
+      if (isSchema(child) && !valid(child, childInstance)) { located = true; visit(child, childInstance, childPath); }
+    };
+    for (const keyword of Object.keys(node)) {
+      if (annotations.has(keyword) || keyword === 'properties' || keyword === 'items' || (keyword === 'additionalProperties' && isSchema(node[keyword]))) continue;
+      if (valid(node, instance, keyword)) continue;
+      const branch = keyword === 'anyOf' || keyword === 'oneOf' ? discriminatedBranch(node[keyword], instance) : undefined;
+      if (keyword === 'allOf') (node.allOf as unknown[]).forEach((entry, index) => descend(entry, instance, `${path}/allOf/${index}`));
+      else if (branch !== undefined && !valid((node[keyword] as Schema[])[branch], instance)) descend((node[keyword] as Schema[])[branch], instance, `${path}/${keyword}/${branch}`);
+      else { located = true; report(path, keyword); }
+    }
+    if (isSchema(instance) && isSchema(node.properties)) {
+      for (const [key, child] of Object.entries(node.properties)) if (Object.hasOwn(instance, key)) descend(child, instance[key], `${path}/properties/${key.replaceAll('~', '~0').replaceAll('/', '~1')}`);
+    }
+    if (isSchema(instance) && isSchema(node.additionalProperties)) {
+      for (const key of Object.keys(instance)) if (!isSchema(node.properties) || !Object.hasOwn(node.properties, key)) descend(node.additionalProperties, instance[key], `${path}/additionalProperties`);
+    }
+    if (Array.isArray(instance) && isSchema(node.items)) for (const item of instance) descend(node.items, item, `${path}/items`);
+    // A failure only visible through sibling keywords together is reported at its subschema.
+    if (!located) report(path, 'schema');
+  };
+  try { visit(root, value, '#'); }
+  catch (error) { if (error !== exhausted) throw error; }
+  return issues;
+}
+
+/** Bound diagnostic work even for flat objects with many extra keys. */
 function smallDiagnosticValue(value: unknown): boolean {
   const pending = [value];
   let entries = 0;
@@ -126,7 +196,6 @@ function smallDiagnosticValue(value: unknown): boolean {
 /** Only schema locations/keywords leave the validator; instance paths, params and messages never do. */
 export function createFinalResultInspector(schema: Record<string, unknown>): (content: string) => Inspection {
   const validator = Compile(schema as TSchema);
-  const boundedErrors = supportsBoundedErrors(schema);
   return content => {
     if (Buffer.byteLength(content) > MAX_BYTES) return { valid: false, diagnostic: { category: 'over_size' } };
     if (!content.trim()) return { valid: false, diagnostic: { category: 'empty' } };
@@ -136,19 +205,9 @@ export function createFinalResultInspector(schema: Record<string, unknown>): (co
       return { valid: false, diagnostic: { category: containsJson(content) ? 'wrapped_json' : 'not_json' } };
     }
     if (validator.Check(final)) return { valid: true, final };
-    if (!boundedErrors || !smallDiagnosticValue(final)) return { valid: false, diagnostic: { category: 'schema_mismatch' } };
-    const issues: NonNullable<FinalResultDiagnostic['issues']> = [];
-    const exhausted = Symbol('diagnostic budget');
-    let errors = 0;
-    const context = new ErrorContext(({ schemaPath, keyword }) => {
-      if (schemaPath.length <= 160 && keyword.length <= 40 && !/[\x00-\x1f\x7f]/.test(schemaPath) && /^[A-Za-z]+$/.test(keyword) &&
-        !issues.some(issue => issue.schemaPath === schemaPath && issue.keyword === keyword)) issues.push({ schemaPath, keyword });
-      // Stop actual traversal, not just storage; repeated invalid array items also consume the budget.
-      if (++errors === 8) throw exhausted;
-    });
-    try { ErrorSchema(new Stack({}, schema), context, '#', '', schema, final); }
-    catch (error) { if (error !== exhausted) throw error; }
-    return { valid: false, diagnostic: { category: 'schema_mismatch', issues } };
+    if (!smallDiagnosticValue(final)) return { valid: false, diagnostic: { category: 'schema_mismatch' } };
+    const issues = locateFailures(schema, final);
+    return { valid: false, diagnostic: { category: 'schema_mismatch', ...(issues.length ? { issues } : {}) } };
   };
 }
 

@@ -119,7 +119,7 @@ Tool inputs and `passSchema`/`failSchema` share one schema dialect:
 - Each `allOf` entry above requires its option exactly once: `contains` demands at least one match, `maxContains` at most one.
 - Without `$ref`, repeated subschemas are written out in full. A per-claim `enum` declared in both `passSchema` and `failSchema` is sent twice on every turn.
 - A response schema cannot use composition at its top level, must omit `additionalProperties` or set it to false, and cannot declare reserved fields such as `verdict` or `toolCalls`.
-- An invalid final result gets one repair turn. The final schema is a GREEN/RED `oneOf`, so the repair prompt names only the category `schema_mismatch`, not the failing path. State each constraint in the field description so the reviewer can find its mistake.
+- An invalid final result gets one repair turn without tools. The repair prompt names up to eight schema paths and keywords inside the branch of the returned verdict, such as `#/oneOf/1/properties/claims/items/anyOf/2/properties/selection` and `enum`, never the returned values. It follows an `anyOf` branch only when each branch fixes one property with `const`, as `option` does above; otherwise it names the `anyOf` itself.
 
 ## Tool changes and review identity
 

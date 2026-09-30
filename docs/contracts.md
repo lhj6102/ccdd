@@ -448,13 +448,17 @@ preferred verdict is supplied. The fixed prompt is:
 
 `Your final response did not match the required schema: <safe category and paths>. Return only one JSON value matching the schema.`
 
-Schema details contain only up to eight distinct validator `schemaPath`/`keyword`
-pairs (at most 160/40 characters each), stopping diagnostic traversal at eight
-reported errors, including repeated array errors. This detailed traversal is
-limited to simple object/array final schemas; composed or referenced schemas
-receive category-only diagnostics to avoid TypeBox buffering nested errors.
-Values with more than 256 object/array entries also use category-only diagnostics
-to avoid keyword-local buffers such as unexpected-property lists. No instance paths, property names from the
+Schema details contain only up to eight distinct `schemaPath`/`keyword` pairs (at
+most 160/40 characters each). They are located with boolean schema checks only,
+never buffered validator errors, within a budget of 1,024 checks. The final schema's
+GREEN/RED `oneOf` is followed into the branch the returned verdict names, so an
+owner field reports its own path, such as `#/oneOf/1/properties/reasons` and
+`minItems`. Any other `anyOf`/`oneOf` whose branches each fix a property with
+`const` is followed the same way; without such a discriminator, or when that
+branch passes, the composition keyword itself is reported. Failing `allOf` entries
+are reported by index. A failure visible only through sibling keywords together is
+reported at its subschema with the keyword `schema`. Values with more than 256
+object/array entries use category-only diagnostics. No instance paths, property names from the
 response, parameter values, validation messages, parse errors or raw response
 text are logged. The same bounded description appears in
 `PROVIDER_RESULT_INVALID` if the repaired result is still invalid. Incomplete or
