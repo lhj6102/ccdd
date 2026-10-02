@@ -33,8 +33,11 @@ const artifacts = computed(() => new Map(grouped.value?.artifacts.map(artifact =
 const requests = computed(() => new Map(data.value?.requests.map(request => [request.id, request]) ?? []));
 const selectedArtifact = computed(() => artifacts.value.get(selectedArtifactId.value));
 const selectedFamily = computed(() => grouped.value?.groups.get(selectedArtifactId.value));
-const familyMembers = computed(() => [...selectedFamily.value?.members ?? []].sort((a, b) => Number(b.included > 0) - Number(a.included > 0) || a.id.localeCompare(b.id)));
-const criticTarget = computed(() => selectedFamily.value ? focusedMemberId.value : selectedArtifactId.value);
+const membersInOrder = (members: readonly Artifact[]): Artifact[] => [...members].sort((a, b) => Number(b.included > 0) - Number(a.included > 0) || a.id.localeCompare(b.id));
+const familyMembers = computed(() => membersInOrder(selectedFamily.value?.members ?? []));
+// Focus is meaningful only for a member of the selected family.
+const focusedMember = computed(() => familyMembers.value.some(member => member.id === focusedMemberId.value) ? focusedMemberId.value : '');
+const criticTarget = computed(() => selectedFamily.value ? focusedMember.value : selectedArtifactId.value);
 const selectedCritics = computed(() => graph.value?.critics.filter(critic => critic.target === criticTarget.value) ?? []);
 const selectedRelations = computed(() => grouped.value?.edges.filter(edge => edge.source === selectedArtifactId.value || edge.target === selectedArtifactId.value) ?? []);
 const cycleCount = computed(() => graph.value?.edges.filter(edge => edge.cyclic).length ?? 0);
@@ -93,12 +96,16 @@ function selectArtifact(id: string): void {
   selectedArtifactId.value = node;
   if (node !== id) focusedMemberId.value = id;
 }
+/** Expanding selects the focused member, or the first member; collapsing selects the family and keeps the member focused. */
 function toggleFamily(name: string, expand: boolean): void {
+  const members = membersInOrder(graph.value?.artifacts.filter(artifact => artifact.family === name) ?? []);
+  if (!members.length) return;
+  const selected = members.find(member => member.id === (expand ? focusedMemberId.value : selectedArtifactId.value)) ?? members[0];
   const next = new Set(expandedFamilies.value);
   if (expand) next.add(name); else next.delete(name);
   expandedFamilies.value = next;
-  if (expand) selectedArtifactId.value = focusedMemberId.value || selectedArtifactId.value;
-  else if (artifacts.value.get(selectedArtifactId.value)?.family === name || !artifacts.value.has(selectedArtifactId.value)) selectArtifact(selectedArtifactId.value);
+  selectedArtifactId.value = expand ? selected.id : name;
+  focusedMemberId.value = selected.id;
 }
 function chooseInitialArtifact(): void {
   if (!graph.value || !grouped.value) return;
@@ -234,9 +241,9 @@ defineExpose({ refresh });
         <p v-else-if="selectedArtifact.family" class="graph-family-actions"><button type="button" class="text-button" @click="toggleFamily(selectedArtifact.family, false)">Collapse family {{ selectedArtifact.family }}</button></p>
         <ul v-if="selectedRelations.length" class="artifact-references" aria-label="Artifact relations"><li v-for="edge in selectedRelations" :key="`${edge.source}/${edge.target}`"><strong>{{ edge.source }} → {{ edge.target }}</strong><span>{{ edge.relations.map(relation => relation.kind + (relation.name ? `: ${relation.name}` : '')).join(', ') }}{{ edge.cyclic ? ' · Cycle' : '' }}</span></li></ul>
         <ul v-if="selectedFamily" class="graph-family-members" :aria-label="`${selectedFamily.name} instances`">
-          <li v-for="member in familyMembers" :key="member.id"><button type="button" :aria-pressed="focusedMemberId === member.id" :class="{ selected: focusedMemberId === member.id, 'not-included': !member.included }" @click="focusedMemberId = member.id"><strong>{{ member.id }}</strong><span class="card-status" :class="member.status.toLowerCase()">{{ artifactLabel(member) }}</span><span class="graph-detail-count">{{ member.passed }} / {{ member.total }}</span></button></li>
+          <li v-for="member in familyMembers" :key="member.id"><button type="button" :aria-pressed="focusedMember === member.id" :class="{ selected: focusedMember === member.id, 'not-included': !member.included }" @click="focusedMemberId = member.id"><strong>{{ member.id }}</strong><span class="card-status" :class="member.status.toLowerCase()">{{ artifactLabel(member) }}</span><span class="graph-detail-count">{{ member.passed }} / {{ member.total }}</span></button></li>
         </ul>
-        <p v-if="selectedFamily && !focusedMemberId" class="graph-basis-note">Select an instance to see its Critics.</p>
+        <p v-if="selectedFamily && !focusedMember" class="graph-basis-note">Select an instance to see its Critics.</p>
         <p v-else-if="!selectedCritics.length" class="graph-basis-note">No Critics are registered to review this Artifact.</p>
         <ul v-else class="graph-critic-list">
           <li v-for="critic in selectedCritics" :key="critic.id">

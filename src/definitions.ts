@@ -35,7 +35,7 @@ export interface ArtifactFamilyMembership {
 }
 export interface ArtifactDefinition {
   name: string; path: string; views: ArtifactViews; mounts: Record<string, string>;
-  /** Nearest marked descendants, indexed by their physical relative paths. */
+  /** Nearest marked descendants, indexed by their physical relative paths; a family instance is keyed `<family folder>/<instance>`. */
   children: Record<string, string>;
   reviewPolicy?: ReviewPolicy; basis?: boolean; stale?: StaleStrategy; envRequirements?: Record<string, EnvironmentRequirement>;
   family?: ArtifactFamilyMembership;

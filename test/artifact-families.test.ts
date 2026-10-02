@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { artifactFixture, runtimeCritic } from './helpers/artifacts.js';
-import { readWorkspaceConfig } from '../src/broker/config.js';
+import { readArtifactConfig, readWorkspaceConfig } from '../src/broker/config.js';
 import { createProjectSnapshot } from '../src/project/index.js';
 import { createBroker } from '../src/broker/index.js';
 import { createExecutorRegistry } from '../src/executors/index.js';
@@ -67,6 +67,8 @@ test('family declarations reject ambiguous names, nesting and unresolved paramet
     ['a nested marker', data => data.write('scenarios/inner', { name: 'inner', basis: true }), /Artifact family scenarios cannot contain nested ccdd\.json markers/],
     ['a parameter outside a family', data => data.write('user', { name: 'user', critics: [{ ...runtimeCritic(), payload: { instruction: { $param: '/x' } } } as any] }), /\$param references are allowed only in an Artifact family declaration/],
     ['a missing parameter', data => writeFile(join(data.repoPath, 'scenarios/instances.json'), JSON.stringify({ ...instances, c: { params: { ids: ['w'] } } })), /instance c: Instance c has no parameter at \/instruction/],
+    ['an invalid pointer escape', data => writeFile(join(data.repoPath, 'scenarios/instances.json'), JSON.stringify({ ...instances, a: { ...instances.a, params: { ...instances.a.params, 'bad~2': 1 } } })).then(() => data.edit('scenarios', manifest => { (manifest.critics![0].payload as any).weight = { $param: '/bad~2' }; })), /\$param must be a JSON Pointer/],
+    ['an instance shadowing a physical entry', data => mkdir(join(data.repoPath, 'scenarios/a')), /Instance a conflicts with a physical entry in its family folder/],
   ];
   for (const [label, change, expected] of cases) await t.test(label, async t => {
     const data = await familyFixture(t);
@@ -87,6 +89,9 @@ test('a parent depends on each instance as a logical child below the family fold
   assert.deepEqual(config.artifacts.docs.children, { 'scenarios/a': 'a', 'scenarios/b': 'b' });
   const scope = Object.fromEntries(Object.entries(config.artifacts).map(([id, artifact]) => [id, artifact]));
   assert.deepEqual(resolveScopePath(scope, 'docs', 'scenarios/b/b.txt'), { artifactId: 'b', path: 'b.txt' });
+  // The family folder belongs to its instances; the parent cannot read it under its own identity.
+  for (const path of ['scenarios', 'scenarios/a.txt']) assert.throws(() => resolveScopePath(scope, 'docs', path), /inside the folder of Artifact family scenarios/);
+  assert.deepEqual(resolveScopePath(scope, 'docs', 'content.txt'), { artifactId: 'docs', path: 'content.txt' });
   const before = await hashes(data);
   await writeFile(join(data.repoPath, 'docs/content.txt'), 'changed parent');
   const parent = await hashes(data);
@@ -122,6 +127,40 @@ test('each instance identity covers shared material, its entry and its own mater
   await data.edit('scenarios', manifest => { manifest.critics![0].title = 'Revised title'; });
   const declaration = await hashes(data);
   assert.notEqual(declaration.a, shared.a); assert.notEqual(declaration.b, shared.b);
+});
+
+test('nested instance material and narrowed shared paths never reach sibling identities', async t => {
+  const data = await familyFixture(t);
+  const initial = await hashes(data);
+  // A new instance stores its material in a new directory.
+  await mkdir(join(data.repoPath, 'scenarios/states/c'), { recursive: true });
+  await writeFile(join(data.repoPath, 'scenarios/states/c/state.txt'), 'three');
+  await writeFile(join(data.repoPath, 'scenarios/instances.json'), JSON.stringify({ ...instances, c: { params: { ids: ['w'], instruction: 'Inspect {c}.' }, material: ['states/c/state.txt'] } }));
+  const added = await hashes(data);
+  assert.equal(added.a, initial.a); assert.equal(added.b, initial.b);
+  // Unlisted content in that directory is shared material again.
+  await writeFile(join(data.repoPath, 'scenarios/states/shared.txt'), 'shared');
+  const shared = await hashes(data);
+  assert.notEqual(shared.a, added.a); assert.notEqual(shared.c, added.c);
+
+  const narrowed = await familyFixture(t, 'scenarios', { stale: { kind: 'file-hash', paths: ['family-view.mjs', 'a.txt', 'b.txt'] } });
+  const before = await hashes(narrowed);
+  await writeFile(join(narrowed.repoPath, 'scenarios/b.txt'), 'two, revised');
+  const edited = await hashes(narrowed);
+  assert.equal(edited.a, before.a); assert.notEqual(edited.b, before.b);
+  await rm(join(narrowed.repoPath, 'scenarios/b.txt'));
+  const missing = await hashes(narrowed);
+  assert.equal(missing.a, before.a); assert.notEqual(missing.b, edited.b);
+});
+
+test('reconnecting a recorded instance expands only that instance', async t => {
+  const data = await familyFixture(t), config = await data.config();
+  // An invalid sibling entry is not expanded while reconnecting a recorded scope.
+  await writeFile(join(data.repoPath, 'scenarios/instances.json'), JSON.stringify({ ...instances, c: { params: { ids: ['w'] } } }));
+  const { config: scoped } = await readArtifactConfig(data.repoPath, { a: config.artifacts.a });
+  assert.deepEqual(Object.keys(scoped.artifacts), ['a']);
+  assert.deepEqual(scoped.artifacts.a, config.artifacts.a);
+  await assert.rejects(data.config(), /instance c/);
 });
 
 test('inline instances keep other instances valid when the list grows', async t => {

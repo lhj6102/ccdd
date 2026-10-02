@@ -127,7 +127,7 @@ function manifest(value: unknown): Omit<ArtifactManifest, 'family'> {
 /** Resolve an RFC 6901 pointer inside one instance's params. */
 function parameter(params: Record<string, unknown>, pointer: string, instance: string): unknown {
   if (pointer === '') return params;
-  if (!pointer.startsWith('/')) throw new Error(`$param must be a JSON Pointer such as "/schema", not ${JSON.stringify(pointer)}.`);
+  if (!pointer.startsWith('/') || /~(?![01])/.test(pointer)) throw new Error(`$param must be a JSON Pointer such as "/schema", not ${JSON.stringify(pointer)}.`);
   let current: unknown = params;
   for (const token of pointer.slice(1).split('/').map(part => part.replace(/~1/g, '/').replace(/~0/g, '~'))) {
     if (Array.isArray(current) && /^(?:0|[1-9][0-9]*)$/.test(token) && Number(token) < current.length) current = current[Number(token)];
@@ -149,9 +149,13 @@ function substitute(value: unknown, params: Record<string, unknown>, instance: s
 const parameterized = (value: unknown): boolean => Array.isArray(value) ? value.some(parameterized)
   : object(value) && (Object.hasOwn(value, '$param') || Object.values(value).some(parameterized));
 
-interface FamilyMember { manifest: Omit<ArtifactManifest, 'family'>; family?: ArtifactFamilyMembership }
-/** Expand a family declaration into its statically listed instance Artifacts. */
-async function familyInstances(root: string, relative: string, value: Record<string, any>): Promise<{ members: FamilyMember[]; list?: { path: string; hash: string } }> {
+/** A declared Artifact. A family instance outside a reconnected scope keeps only its name. */
+interface FamilyMember { name: string; manifest?: Omit<ArtifactManifest, 'family'>; family?: ArtifactFamilyMembership }
+/**
+ * Expand a family declaration into its statically listed instance Artifacts. `expand` limits
+ * substitution and validation to recorded instances when a scope is reconnected.
+ */
+async function familyInstances(root: string, relative: string, value: Record<string, any>, expand: (name: string) => boolean = () => true): Promise<{ members: FamilyMember[]; list?: { path: string; hash: string } }> {
   const { family, ...template } = value;
   if (!relative) throw new Error('An Artifact family cannot be the workspace root; place it in a subfolder.');
   if (typeof template.name !== 'string' || !identifier.test(template.name)) throw new Error('Artifact family name must be a safe identifier.');
@@ -170,11 +174,15 @@ async function familyInstances(root: string, relative: string, value: Record<str
     list = { path: path.posix.join(relative, file), hash: hash(text) };
   }
   if (!object(instances) || !Object.keys(instances).length || Object.keys(instances).length > MAX_FAMILY_INSTANCES) throw new Error(`family.instances must list 1–${MAX_FAMILY_INSTANCES} instances by Artifact name.`);
-  const entries = instances;
-  const members = Object.keys(entries).sort().map((name): FamilyMember => {
+  const entries = instances, names = Object.keys(entries).sort();
+  // A parent addresses instances as <family folder>/<name>; a physical entry there would be shadowed.
+  const physical = new Set(await readdir(path.join(root, relative)));
+  const members = names.map((name): FamilyMember => {
     const entry: unknown = entries[name];
     if (!identifier.test(name)) throw new Error(`Instance name ${JSON.stringify(name)} must be a safe Artifact identifier.`);
     if (name === template.name) throw new Error(`Instance ${name} cannot reuse its family name.`);
+    if (physical.has(name)) throw new Error(`Instance ${name} conflicts with a physical entry in its family folder.`);
+    if (!expand(name)) return { name };
     if (!object(entry)) throw new Error(`Instance ${name} must be an object with optional params and material.`);
     fields(entry, ['params', 'material'], 'instance');
     if (entry.params !== undefined && !object(entry.params)) throw new Error(`Instance ${name} params must be an object.`);
@@ -190,7 +198,7 @@ async function familyInstances(root: string, relative: string, value: Record<str
       declared = manifest({ ...template, name, ...(template.views === undefined ? {} : { views: substitute(template.views, params, name) }),
         ...(template.critics === undefined ? {} : { critics: substitute(template.critics, params, name) }) });
     } catch (error) { throw new Error(`instance ${name}: ${error instanceof Error ? error.message : String(error)}`); }
-    return { manifest: declared, family: { name: template.name, ...(file === undefined ? {} : { instances: file }), material: own, entry: hash(JSON.stringify(sorted({ params, material: own }))) } };
+    return { name, manifest: declared, family: { name: template.name, ...(file === undefined ? {} : { instances: file }), material: own, entry: hash(JSON.stringify(sorted({ params, material: own }))) } };
   });
   return { members, ...(list ? { list } : {}) };
 }
@@ -222,34 +230,36 @@ async function readConfig(repoPath: string, signal?: AbortSignal, scope?: { path
       let members: FamilyMember[], list: { path: string; hash: string } | undefined;
       try {
         const value: unknown = JSON.parse(text);
-        if (object(value) && value.family !== undefined) ({ members, list } = await familyInstances(root, relative, value));
-        else {
+        // Reconnecting a recorded scope expands only its recorded instances; a new instance still changes its parent.
+        if (object(value) && value.family !== undefined) {
+          ({ members, list } = await familyInstances(root, relative, value, scope ? name => scope.names.has(name) : undefined));
+          family = value.name as string;
+        } else {
           if (object(value) && (parameterized(value.views) || parameterized(value.critics))) throw new Error('$param references are allowed only in an Artifact family declaration.');
-          members = [{ manifest: manifest(value) }];
+          const declared = manifest(value);
+          members = [{ name: declared.name, manifest: declared }];
         }
       } catch (error) { throw new Error(`${file}: ${error instanceof Error ? error.message : String(error)}`); }
-      family = members[0].family?.name;
       if (family !== undefined) {
         if (Object.hasOwn(artifacts, family) || Object.hasOwn(families, family)) throw new Error(`Duplicate Artifact name: ${family}`);
         families[family] = relative;
       }
       declarations.push({ path: file, hash: hash(text) });
       if (list) declarations.push(list);
-      for (const { manifest: declared, family: membership } of members) {
-        if (Object.hasOwn(artifacts, declared.name) || Object.hasOwn(families, declared.name)) throw new Error(`Duplicate Artifact name: ${declared.name}`);
-        if (relative && declared.reviewPolicy !== undefined) throw new Error('reviewPolicy belongs only to the repository root ccdd.json.');
+      for (const { name, manifest: declared, family: membership } of members) {
+        if (Object.hasOwn(artifacts, name) || Object.hasOwn(families, name)) throw new Error(`Duplicate Artifact name: ${name}`);
+        if (relative && declared?.reviewPolicy !== undefined) throw new Error('reviewPolicy belongs only to the repository root ccdd.json.');
         // One family folder holds every instance; a parent sees each instance as a logical child below that folder.
         if (parent !== undefined) {
           const childPath = path.posix.relative(artifacts[parent].path || '.', relative);
-          artifacts[parent].children[membership ? path.posix.join(childPath, declared.name) : childPath] = declared.name;
+          artifacts[parent].children[family === undefined ? childPath : path.posix.join(childPath, name)] = name;
         }
-        // Reconnecting a recorded scope keeps only its recorded instances; a new instance still changes its parent.
-        if (scope && membership && !scope.names.has(declared.name)) continue;
+        if (!declared) continue;
         const { critics = [], ...definition } = declared;
         artifacts[declared.name] = { ...definition, path: relative, views: definition.views ?? {}, mounts: definition.mounts ?? {}, children: ownMap<string>(), ...(membership ? { family: membership } : {}) };
         localCritics[declared.name] = critics;
       }
-      owner = family === undefined ? members[0].manifest.name : parent;
+      owner = family === undefined ? members[0].name : parent;
     }
     for (const entry of entries) if (entry.isDirectory() && !['.git', 'node_modules'].includes(entry.name)) await walk(path.posix.join(relative, entry.name), owner, family);
   };

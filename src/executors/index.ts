@@ -77,7 +77,7 @@ async function runtimeEnvironment(workspacePath: string, runDir: string) {
 }
 
 async function runtimeArguments(request: ReviewEnvelope & { profile: RuntimeProfile }, root: string): Promise<string[]> {
-  const scope = Object.fromEntries(request.artifacts.map(artifact => [artifact.id, { path: resolve(root, artifact.path), children: artifact.children, mounts: artifact.mounts }]));
+  const scope = Object.fromEntries(request.artifacts.map(artifact => [artifact.id, { path: resolve(root, artifact.path), children: artifact.children, mounts: artifact.mounts, ...(artifact.family ? { family: artifact.family } : {}) }]));
   return ['--test', ...await Promise.all(request.profile.args.slice(1).map(async name => {
     const location = resolveScopePath(scope, request.target, name);
     return scopedPath(scope[location.artifactId].path, location.path);

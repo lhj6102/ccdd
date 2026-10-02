@@ -18,8 +18,12 @@ export function canonical(value: unknown): string {
 }
 export const inputHash = (value: unknown): string => createHash('sha256').update(canonical(value)).digest('hex');
 
-/** Own material excludes separately identified child Artifacts and installed runtime directories. */
-async function hashMaterial(root: string, relative: string, childPaths: Set<string>, signal?: AbortSignal): Promise<string> {
+/**
+ * Own material excludes separately identified child Artifacts and installed runtime directories.
+ * Family shared material records only empty directories: file names already imply their ancestors,
+ * so a directory holding only one instance's material does not change its siblings.
+ */
+async function hashMaterial(root: string, relative: string, childPaths: Set<string>, signal?: AbortSignal, family = false): Promise<string> {
   let current = root;
   for (const component of relative.split('/').filter(Boolean)) {
     current = path.join(current, component);
@@ -34,8 +38,9 @@ async function hashMaterial(root: string, relative: string, childPaths: Set<stri
     const absolute = path.join(root, name), info = await lstat(absolute);
     if (info.isSymbolicLink()) entries.push({ name, type: 'symlink', target: await readlink(absolute) });
     else if (info.isDirectory()) {
-      entries.push({ name, type: 'directory' });
-      for (const child of (await readdir(absolute)).sort()) if (!['.git', 'node_modules'].includes(child)) await walk(path.posix.join(name, child));
+      const children = (await readdir(absolute)).sort();
+      if (!family || !children.length) entries.push({ name, type: 'directory' });
+      for (const child of children) if (!['.git', 'node_modules'].includes(child)) await walk(path.posix.join(name, child));
     } else if (info.isFile()) {
       const hash = createHash('sha256');
       for await (const bytes of createReadStream(absolute, { signal })) hash.update(bytes);
@@ -147,10 +152,11 @@ export async function createProjectSnapshot(config: RepoConfig, root: string, sn
     for (const name of mandatoryPaths) paths.add(name);
     // Instances of one family exclude the same paths, so their shared material is hashed once per snapshot.
     const material = (name: string): Promise<string> => {
-      if (mandatoryPaths.has(name)) return hashMaterial(root, name, new Set(), signal);
-      if (!family) return hashMaterial(root, name, childPaths, signal);
-      const key = `${family.name}\0${name}`;
-      if (!sharedMaterial.has(key)) sharedMaterial.set(key, hashMaterial(root, name, childPaths, signal));
+      if (!family) return hashMaterial(root, name, mandatoryPaths.has(name) ? new Set() : childPaths, signal);
+      const mandatory = mandatoryPaths.has(name), key = `${family.name}\0${mandatory}\0${name}`;
+      // A narrowed stale path inside another instance's material never becomes shared material.
+      const excluded = !mandatory && name.split('/').some((_, index, parts) => childPaths.has(parts.slice(0, index + 1).join('/')));
+      if (!sharedMaterial.has(key)) sharedMaterial.set(key, excluded ? Promise.resolve(inputHash({ path: name, type: 'excluded' })) : hashMaterial(root, name, mandatory ? new Set() : childPaths, signal, !mandatory));
       return sharedMaterial.get(key)!;
     };
     const fingerprints = await Promise.all([...paths].sort().map(async name => ({ path: name, hash: await material(name) })));
