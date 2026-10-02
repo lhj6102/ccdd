@@ -45,7 +45,7 @@ DeepSeek V4.1 Flash supports `low`, `high` and `max`; `xhigh` is rejected before
 transport rather than clamped. Luna keeps the requested `xhigh`. These effort
 names do not establish equal reasoning budgets or quality across models.
 
-With Pi 0.99.1 the catalog also provides these exact profiles:
+With Pi 1.0.0 the catalog also provides these exact profiles:
 
 ```json
 {"kind":"agent","provider":"openai-codex","model":"gpt-6.1-sol","reasoning":"xhigh"}
@@ -57,7 +57,7 @@ through `max` and rejects `off` and `minimal`. The Anthropic Provider reads a
 stored `anthropic` entry (`api_key` or `oauth`) from an external Pi auth file passed
 through `--pi-auth-file`, or `ANTHROPIC_API_KEY` / `ANTHROPIC_OAUTH_TOKEN` /
 `ANTHROPIC_AUTH_TOKEN` from the environment. Create an OAuth entry yourself with
-`npx @earendil-works/pi-ai@0.99.1 login anthropic`, which writes `auth.json` in the
+`npx @earendil-works/pi-ai@1.0.0 login anthropic`, which writes `auth.json` in the
 current directory; move it outside the workspace. Expired OAuth entries are rejected
 rather than refreshed.
 

@@ -1,61 +1,53 @@
 import { constants } from 'node:fs';
 import { open } from 'node:fs/promises';
-import {
-  BACKGROUND_CONTEXT, createReadTool, err, ExecutionError, FileError, ok,
-  type AgentHarnessToolInvocation, type Context, type ExecutionEnv, type Result,
-} from '@earendil-works/pi-agent-core';
 import { imageContent, MAX_IMAGE_BYTES } from './image-result.js';
 import { internalPath, objectArguments, scopedTarget } from './reader.js';
 
-/** Pi receives one virtual file, never a workspace path or an unrestricted Node execution environment. */
-export function imageEnvironment(root: string, directory: boolean, path: string): ExecutionEnv {
-  const virtualPath = '/ccdd-image';
-  const checkPath = (candidate: string): void => {
-    if (candidate !== virtualPath) throw new Error('Pi image read is outside the bound Artifact');
-  };
-  const attempt = async <T>(context: Context, operation: () => Promise<T>): Promise<Result<T, FileError>> => {
-    try {
-      context.abortSignal?.throwIfAborted();
-      const result = await operation();
-      context.abortSignal?.throwIfAborted();
-      return ok(result);
-    } catch (error) {
-      return err(new FileError(context.abortSignal?.aborted ? 'aborted' : 'invalid', error instanceof Error ? error.message : 'Image read failed'));
+const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+
+/** An animation control chunk before the first image data marks an animated PNG. */
+function animatedPng(bytes: Buffer): boolean {
+  for (let offset = PNG_SIGNATURE.length; offset + 8 <= bytes.length;) {
+    const type = bytes.toString('ascii', offset + 4, offset + 8);
+    if (type === 'acTL') return true;
+    if (type === 'IDAT') return false;
+    const next = offset + 12 + bytes.readUInt32BE(offset);
+    if (next <= offset || next > bytes.length) return false;
+    offset = next;
+  }
+  return false;
+}
+
+/** The format is detected from the file content, never from its name: PNG (not animated), JPEG or WebP. */
+export function imageMimeType(bytes: Buffer): 'image/png' | 'image/jpeg' | 'image/webp' | undefined {
+  if (bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff && bytes[3] !== 0xf7) return 'image/jpeg';
+  if (bytes.subarray(0, 8).equals(PNG_SIGNATURE)) {
+    const header = bytes.length >= 16 && bytes.readUInt32BE(8) === 13 && bytes.toString('ascii', 12, 16) === 'IHDR';
+    return header && !animatedPng(bytes) ? 'image/png' : undefined;
+  }
+  if (bytes.toString('ascii', 0, 4) === 'RIFF' && bytes.toString('ascii', 8, 12) === 'WEBP') return 'image/webp';
+  return undefined;
+}
+
+/** Read one bound regular file without following a final symlink, with a fixed upper bound. */
+async function readImage(root: string, directory: boolean, path: string): Promise<Buffer> {
+  const target = await scopedTarget(root, directory, path);
+  const file = await open(target, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  try {
+    const info = await file.stat();
+    if (!info.isFile()) throw new Error('Viewing an image requires a regular file');
+    if (!info.size || info.size > MAX_IMAGE_BYTES) throw new Error('Image exceeds the 4 MiB limit or contains no data');
+    // A fixed upper bound also catches a file growing after stat without an unbounded readFile allocation.
+    const bytes = Buffer.alloc(MAX_IMAGE_BYTES + 1);
+    let length = 0;
+    while (length < bytes.length) {
+      const { bytesRead } = await file.read(bytes, length, bytes.length - length, length);
+      if (!bytesRead) break;
+      length += bytesRead;
     }
-  };
-  const disabled = async (): Promise<Result<never, FileError>> => err(new FileError('not_supported', 'Only the bound image read is available'));
-  return {
-    cwd: '/',
-    absolutePath: (candidate, context) => attempt(context, async () => { checkPath(candidate); return virtualPath; }),
-    exists: (candidate, context) => attempt(context, async () => { checkPath(candidate); await scopedTarget(root, directory, path); return true; }),
-    readBinaryFile: (candidate, context) => attempt(context, async () => {
-      checkPath(candidate);
-      const target = await scopedTarget(root, directory, path);
-      const file = await open(target, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
-      try {
-        const info = await file.stat();
-        if (!info.isFile()) throw new Error('Viewing an image requires a regular file');
-        if (!info.size || info.size > MAX_IMAGE_BYTES) throw new Error('Image exceeds the 4 MiB limit or contains no data');
-        // A fixed upper bound also catches a file growing after stat without an unbounded readFile allocation.
-        const bytes = Buffer.alloc(MAX_IMAGE_BYTES + 1);
-        let length = 0;
-        while (length < bytes.length) {
-          context.abortSignal?.throwIfAborted();
-          const { bytesRead } = await file.read(bytes, length, bytes.length - length, length);
-          if (!bytesRead) break;
-          length += bytesRead;
-        }
-        if (!length || length > MAX_IMAGE_BYTES) throw new Error('Image exceeds the 4 MiB limit or contains no data');
-        return bytes.subarray(0, length);
-      } finally { await file.close(); }
-    }),
-    joinPath: disabled, readTextFile: disabled, readTextLines: disabled, openTextLineReader: disabled,
-    writeFile: disabled, appendFile: disabled, renameFile: disabled, fileInfo: disabled,
-    listDir: disabled, canonicalPath: disabled, createDir: disabled, remove: disabled,
-    createTempDir: disabled, createTempFile: disabled,
-    exec: async () => err(new ExecutionError('shell_unavailable', 'Image reads cannot execute shell commands')),
-    cleanup: async () => {},
-  };
+    if (!length || length > MAX_IMAGE_BYTES) throw new Error('Image exceeds the 4 MiB limit or contains no data');
+    return bytes.subarray(0, length);
+  } finally { await file.close(); }
 }
 
 /** Internal CLI adapter. The public tool remains a CCDD definition and creates no Agent or Provider session. */
@@ -66,14 +58,7 @@ export async function imageRequest(input: unknown): Promise<ReturnType<typeof im
   const path = internalPath(args.path);
   if (request.directory && !path) throw new Error('Viewing an image in a directory Artifact requires an internal file path');
   if (!request.directory && Object.hasOwn(args, 'path')) throw new Error('A file Artifact image view does not accept path');
-  const env = imageEnvironment(request.root, request.directory, path);
-  const invocation: AgentHarnessToolInvocation = {
-    invocationId: 'ccdd-image', operationId: 'view_image', turnId: 'ccdd-image',
-    async getMemo() { return undefined; },
-    async setMemo() { throw new Error('Image reads do not use session state'); },
-  };
-  const result = await createReadTool({ autoResizeImages: false }).execute('ccdd-image', { path: '/ccdd-image' }, () => {}, { env }, invocation, BACKGROUND_CONTEXT);
-  const images = result.content.filter(block => block.type === 'image');
-  if (images.length !== 1) throw new Error('Pi read did not return a supported image. view_image requires PNG, JPEG or WebP; text, GIF, BMP and animated PNG are not supported');
-  return imageContent(images[0]);
+  const bytes = await readImage(request.root, request.directory, path), mimeType = imageMimeType(bytes);
+  if (!mimeType) throw new Error('The file is not a supported image. view_image requires PNG, JPEG or WebP; text, GIF, BMP and animated PNG are not supported');
+  return imageContent({ type: 'image', data: bytes.toString('base64'), mimeType });
 }

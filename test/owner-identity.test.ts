@@ -310,7 +310,7 @@ test('Critic identity is pinned for Pi models and ignores Pi dependency versions
   // The shared fixture embeds a working-directory-dependent reader path in view.mjs; pin it so the golden hashes are location-independent.
   await writeFile(join(data.repoPath, 'a', 'view.mjs'), 'export {};\n');
   const snapshot = await createProjectSnapshot(await data.config(), data.repoPath, 'a'.repeat(64));
-  // Golden values recorded with @earendil-works/pi-* 0.87.1, before the 0.99.1 bump, and unchanged after it.
+  // Golden values recorded with @earendil-works/pi-* 0.87.1, before the 0.99.1 and 1.0.0 bumps, and unchanged after them.
   assert.deepEqual(Object.fromEntries(Object.entries(snapshot.inputs).map(([id, input]) => [id, { criticHash: input.criticHash, key: input.key }])), GOLDEN);
   assert.doesNotMatch(JSON.stringify(snapshot.inputs), /0\.87\.1|0\.99\.1/);
 });

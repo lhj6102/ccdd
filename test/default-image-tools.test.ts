@@ -5,7 +5,6 @@ import { tmpdir } from 'node:os';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { agent } from '@ccdd/default-tools';
-import { BACKGROUND_CONTEXT, type ExecutionEnv } from '@earendil-works/pi-agent-core';
 import { getCurrentTools, fauxAssistantMessage, fauxProvider, fauxToolCall } from '@earendil-works/pi-ai';
 import type { ToolContext } from '../src/sdk.js';
 import { createExecutorRegistry } from '../src/executors/index.js';
@@ -40,7 +39,7 @@ async function fixture(t: TestContext, directory = false) {
   return { root, artifactPath, context, abort };
 }
 
-test('default image factory explicitly declares image capability and Pi read returns actual image content independent of extension', async t => {
+test('default image factory explicitly declares image capability and returns actual image content independent of extension', async t => {
   const data = await fixture(t);
   const tool = agent.image.view();
   assert.deepEqual(tool.metadata.resultKinds, ['image']);
@@ -59,11 +58,11 @@ test('default image factory explicitly declares image capability and Pi read ret
   assert.notEqual(agent.image.view().metadata, tool.metadata);
 });
 
-test('view_image rejects Pi text fallback and unsupported image formats without an observation result', async t => {
+test('view_image rejects text and unsupported image formats without an observation result', async t => {
   const data = await fixture(t);
   const tool = agent.image.view();
   const animatedPng = Buffer.concat([png.subarray(0, 33), Buffer.from([0, 0, 0, 8]), Buffer.from('acTL'), Buffer.alloc(12), png.subarray(33)]);
-  for (const contents of [Buffer.from('not an image, even with a .png extension'), Buffer.from('GIF89a'), animatedPng, png.subarray(0, 8)]) {
+  for (const contents of [Buffer.from('not an image, even with a .png extension'), Buffer.from('GIF89a'), Buffer.from('BM\0\0\0\0'), Buffer.from([0xff, 0xd8, 0xff, 0xf7, 0, 0]), animatedPng, png.subarray(0, 8)]) {
     await writeFile(data.artifactPath, contents);
     assert.equal((await tool.preflight(data.context)).ok, true, 'Preparation checks readiness without reading or decoding content.');
     await assert.rejects(tool.execute(data.context, {}), /requires.*PNG.*JPEG.*WebP/);
@@ -91,7 +90,7 @@ test('directory image paths stay within their Artifact and the CLI rejects symli
   assert.deepEqual(await readFile(join(data.root, 'outside.png')), png);
 });
 
-test('image CLI accepts the bounded 4 MiB image response and rejects oversized input before Pi reads it', async t => {
+test('image CLI accepts the bounded 4 MiB image response and rejects oversized input before reading it', async t => {
   const data = await fixture(t);
   const tool = agent.image.view();
   const padded = Buffer.alloc(4 * 1024 * 1024);
@@ -155,16 +154,13 @@ test('explicit default view_image registration reaches the scoped Runner and Pi 
   assert.doesNotMatch(JSON.stringify(result), /iVBOR|preview\.png/);
 });
 
-test('image-only Pi environment rejects streaming text reads without consulting the file path', async t => {
+test('image format detection reads content, never the file name', async t => {
   const data = await fixture(t);
-  const { imageEnvironment } = await import(new URL('./image.js', import.meta.resolve('@ccdd/default-tools')).href);
-  const env: ExecutionEnv = imageEnvironment(data.artifactPath, false, '');
-  for (const path of ['/ccdd-image', join(data.root, 'outside-text.txt'), '/missing/arbitrary/text']) {
-    const result = await env.openTextLineReader(path, BACKGROUND_CONTEXT);
-    assert.equal(result.ok, false);
-    if (!result.ok) { assert.equal(result.error.code, 'not_supported'); assert.equal(result.error.message, 'Only the bound image read is available'); }
-  }
-  const image = await env.readBinaryFile('/ccdd-image', BACKGROUND_CONTEXT);
-  assert.equal(image.ok, true);
-  if (image.ok) assert.deepEqual(Buffer.from(image.value), png);
+  const tool = agent.image.view();
+  // A minimal baseline JPEG header is enough for detection; the Runner and reviewers decode later.
+  const jpeg = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0, 16, 0x4a, 0x46, 0x49, 0x46, 0, 1]);
+  await writeFile(data.artifactPath, jpeg);
+  assert.deepEqual((await tool.execute(data.context, {})).content, [{ type: 'image', data: jpeg.toString('base64'), mimeType: 'image/jpeg' }]);
+  const { imageMimeType } = await import(new URL('./image.js', import.meta.resolve('@ccdd/default-tools')).href);
+  assert.deepEqual([png, webp, jpeg, Buffer.from('GIF89a')].map(bytes => imageMimeType(bytes)), ['image/png', 'image/webp', 'image/jpeg', undefined]);
 });
