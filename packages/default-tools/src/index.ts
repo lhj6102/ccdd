@@ -205,7 +205,6 @@ function imageView(options: ReaderOptions = {}): DefaultToolDefinition<ImageView
     async preflight(context) {
       try {
         await prepareReader(context, context.artifactDirectory);
-        await access(fileURLToPath(import.meta.resolve('@earendil-works/pi-agent-core')), constants.R_OK);
         context.signal.throwIfAborted();
         return { ok: true, message: 'Artifact and package-local image CLI are available. No image was read.' };
       } catch (error) {

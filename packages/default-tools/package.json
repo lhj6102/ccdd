@@ -40,9 +40,6 @@
   "peerDependencies": {
     "@ccdd/core": ">=6.1.0 <7"
   },
-  "dependencies": {
-    "@earendil-works/pi-agent-core": "0.99.1"
-  },
   "devDependencies": {
     "@ccdd/core": "file:../.."
   },

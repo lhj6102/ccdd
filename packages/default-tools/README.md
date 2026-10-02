@@ -45,7 +45,7 @@ The shared execution paths are relative to the workspace root. Install dependenc
 
 Paths are logical paths inside the bound Artifact and may pass through children or mounts. They resolve to existing canonical paths before reading or launching. No mount folder, symlink or workspace copy is created. Invalid paths, symlink file traversal and unsupported files fail explicitly.
 
-Reads preserve UTF-8 and LF/CRLF, return complete lines and cap text at 64 KiB. Invalid UTF-8, binary content and oversized individual lines fail. Content reads and truly empty files count as observations; listings and reads beyond EOF do not. Images use the existing packaged Pi read adapter without a Provider call, and validate actual bytes, format and the 4 MiB limit. GIF/BMP/animated PNG are rejected, with no automatic conversion.
+Reads preserve UTF-8 and LF/CRLF, return complete lines and cap text at 64 KiB. Invalid UTF-8, binary content and oversized individual lines fail. Content reads and truly empty files count as observations; listings and reads beyond EOF do not. Images are read without a Provider call; the format is detected from actual bytes, and the 4 MiB limit is enforced. GIF/BMP/animated PNG are rejected, with no automatic conversion.
 
 Register a Human tool with `"script":{"command":"ccdd-view","args":["open"]}` and `resultKinds:["launch"]`, `observation:"none"`. The default desktop opener uses macOS. Other platforms can provide fixed launcher options as a JSON argv value:
 

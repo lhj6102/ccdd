@@ -4,9 +4,9 @@ export const MAX_IMAGE_BYTES = 4 * 1024 * 1024;
 export const MAX_IMAGE_OUTPUT_BYTES = Math.ceil(MAX_IMAGE_BYTES / 3) * 4 + 4096;
 type ImageContent = Extract<ToolContent, { type: 'image'; data: string }>;
 
-/** Check the CLI/Pi boundary before assigning a content observation. The Runner checks again. */
+/** Check the image CLI boundary before assigning a content observation. The Runner checks again. */
 export function imageContent(value: unknown): ImageContent {
-  if (!value || typeof value !== 'object') throw new Error('Pi read did not return a supported image');
+  if (!value || typeof value !== 'object') throw new Error('The image CLI did not return a supported image');
   const image = value as Record<string, unknown>;
   if (image.type !== 'image' || !['image/png', 'image/jpeg', 'image/webp'].includes(image.mimeType as string)) {
     throw new Error('view_image requires a PNG, JPEG or WebP image; text, GIF, BMP and animated PNG are not supported');
