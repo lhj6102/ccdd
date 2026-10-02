@@ -37,6 +37,17 @@ export function withProjectStore<T>(stateDir: string, read: (database: DatabaseS
   finally { database.close(); }
 }
 
+/** The family recorded in each reviewed target's own stored definition, so history needs no current workspace. */
+export function evidenceFamilies(stateDir: string, evidence: readonly Pick<ValidationEvidence, 'requestId' | 'input'>[]): Map<string, string> {
+  return withProjectStore(stateDir, db => {
+    const store = records(db), families = new Map<string, string>();
+    for (const { requestId, input } of evidence) {
+      const family = store.request(requestId, true)?.artifacts.find(artifact => artifact.id === input.target.id)?.family?.name;
+      if (family !== undefined) families.set(requestId, family);
+    }
+    return families;
+  }, new Map<string, string>());
+}
 export function projectHistory<D extends ResultDetail = 'compact'>(stateDir: string, options: ResultOptions<D> = {}) { return withProjectStore(stateDir, db => readEvidence(db).map(evidence => resultView(options, evidence, () => requesterEvidence(evidence, stateDir))), []); }
 
 export type ProjectRunView = RunView & { validation?: ProjectPlan };

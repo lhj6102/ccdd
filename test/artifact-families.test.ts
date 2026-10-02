@@ -6,6 +6,7 @@ import { artifactFixture, runtimeCritic } from './helpers/artifacts.js';
 import { readArtifactConfig, readWorkspaceConfig } from '../src/broker/config.js';
 import { createProjectSnapshot } from '../src/project/index.js';
 import { selectedCritics } from '../src/project/query.js';
+import { main } from '../src/project/cli.js';
 import { createBroker } from '../src/broker/index.js';
 import { createExecutorRegistry } from '../src/executors/index.js';
 import { projectRun } from '../src/project/store.js';
@@ -227,6 +228,8 @@ test('a family name selects every instance', async t => {
   assert.deepEqual(Object.keys(snapshot.inputs).sort(), ['a/review', 'b/review']);
   assert.deepEqual(selectedCritics(snapshot, { kind: 'artifact', artifactId: 'scenarios' }).sort(), ['a/review', 'b/review']);
   assert.throws(() => selectedCritics(snapshot, { kind: 'artifact', artifactId: 'missing' }), /Unknown Artifact: missing/);
+  // A malformed selection never falls back to ordinary Artifacts, which belong to no family.
+  assert.throws(() => selectedCritics(snapshot, { kind: 'artifact' } as any), /Unknown Artifact/);
 });
 
 test('reconnecting a recorded instance expands only that instance', async t => {
@@ -265,6 +268,12 @@ test('actual reviews of unchanged instances are reused when a sibling changes', 
   assert.equal(second.status, 'GREEN'); assert.deepEqual(second.requests.map(request => request.criticId), ['b/review']);
   const reused = second.validation!.items.find(item => item.id === 'a/review')!;
   assert.equal(reused.action, 'REUSE'); assert.equal(reused.result!.requestId, first.requests.find(request => request.criticId === 'a/review')!.id);
+  // History resolves a family name from each stored request's own definitions.
+  for (const args of [['scenarios'], ['--artifacts', 'scenarios,rules'], ['a']]) {
+    let output = '';
+    assert.equal(await main(['history', ...args, '--json', '--full', '--repo', data.repoPath, '--state-dir', data.stateDir], { stdout: { write: text => { output += text; } }, stderr: { write: () => {} } }), 0);
+    assert.deepEqual([...new Set(JSON.parse(output).map((entry: { criticId: string }) => entry.criticId))].sort(), args[0] === 'a' ? ['a/review'] : ['a/review', 'b/review']);
+  }
 });
 
 test('shared view scripts receive the instance and its material, with instance-specific schemas', async t => {

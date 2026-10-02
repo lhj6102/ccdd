@@ -21,8 +21,9 @@ export function selectedCritics(snapshot: Pick<ProjectSnapshot, 'config'>, selec
 
 /** An Artifact name selects that Artifact; an Artifact family name selects every instance. */
 export function selectedArtifacts(snapshot: Pick<ProjectSnapshot, 'config'>, id: string): string[] {
+  if (typeof id !== 'string' || !id) throw new Error(`Unknown Artifact: ${String(id)}`);
   if (Object.hasOwn(snapshot.config.artifacts, id)) return [id];
-  const instances = Object.entries(snapshot.config.artifacts).filter(([, artifact]) => artifact.family?.name === id).map(([name]) => name);
+  const instances = Object.entries(snapshot.config.artifacts).filter(([, artifact]) => artifact.family !== undefined && artifact.family.name === id).map(([name]) => name);
   if (!instances.length) throw new Error(`Unknown Artifact: ${id}`);
   return instances;
 }
