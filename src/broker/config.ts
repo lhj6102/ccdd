@@ -17,6 +17,7 @@ const hash = (value: string) => createHash('sha256').update(value).digest('hex')
 const sorted = (value: unknown): unknown => Array.isArray(value) ? value.map(sorted)
   : object(value) ? Object.fromEntries(Object.keys(value).sort().map(key => [key, sorted(value[key])])) : value;
 export const MAX_FAMILY_INSTANCES = 10000;
+const parsedLists = new Map<string, unknown>();
 const ownMap = <T>(): Record<string, T> => Object.create(null) as Record<string, T>;
 export function validateRelativePath(value: unknown): string { projectInputPath(value); return value; }
 function fields(value: Record<string, unknown>, allowed: readonly string[], label: string): void {
@@ -136,13 +137,16 @@ function parameter(params: Record<string, unknown>, pointer: string, instance: s
   }
   return current;
 }
-/** Replace every {"$param": pointer} value with a copy of that parameter. Nothing is evaluated. */
+/**
+ * Replace every {"$param": pointer} value with that parameter. Nothing is evaluated. The result may
+ * share parameter values; manifest validation copies every declaration it keeps.
+ */
 function substitute(value: unknown, params: Record<string, unknown>, instance: string): unknown {
   if (Array.isArray(value)) return value.map(item => substitute(item, params, instance));
   if (!object(value)) return value;
   if (Object.hasOwn(value, '$param')) {
     if (Object.keys(value).length !== 1 || typeof value.$param !== 'string') throw new Error('A parameter reference must be exactly {"$param": "/json/pointer"}.');
-    return structuredClone(parameter(params, value.$param, instance));
+    return parameter(params, value.$param, instance);
   }
   return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, substitute(item, params, instance)]));
 }
@@ -161,7 +165,10 @@ async function familyInstances(root: string, relative: string, value: Record<str
   if (typeof template.name !== 'string' || !identifier.test(template.name)) throw new Error('Artifact family name must be a safe identifier.');
   if (template.reviewPolicy !== undefined) throw new Error('reviewPolicy belongs only to the repository root ccdd.json.');
   if (!object(family)) throw new Error('family must be an object.');
-  fields(family, ['instances'], 'family');
+  fields(family, ['instances', 'params', 'variants'], 'family');
+  if (family.params !== undefined && !object(family.params)) throw new Error('family.params must be an object of default parameters.');
+  if (family.variants !== undefined && (!object(family.variants) || Object.entries(family.variants).some(([name, params]) => !identifier.test(name) || !object(params)))) throw new Error('family.variants must map safe names to parameter objects.');
+  const defaults = (family.params ?? {}) as Record<string, unknown>, variants = (family.variants ?? {}) as Record<string, Record<string, unknown>>;
   let instances: unknown = family.instances, file: string | undefined, list: { path: string; hash: string } | undefined;
   if (typeof instances === 'string') {
     file = instances;
@@ -170,36 +177,46 @@ async function familyInstances(root: string, relative: string, value: Record<str
     const location = await scopedPath(root, path.posix.join(relative, file));
     if (!(await lstat(location).catch(() => null))?.isFile()) throw new Error(`Instance list ${file} must be a regular file.`);
     const text = await readFile(location, 'utf8');
-    try { instances = JSON.parse(text); } catch { throw new Error(`Instance list ${file} must contain JSON.`); }
     list = { path: path.posix.join(relative, file), hash: hash(text) };
+    instances = parsedLists.get(list.hash);
+    if (instances === undefined) {
+      try { instances = JSON.parse(text); } catch { throw new Error(`Instance list ${file} must contain JSON.`); }
+      // Repeated reconnections in one process reuse the parsed list; entries are never mutated.
+      parsedLists.set(list.hash, instances);
+      if (parsedLists.size > 8) parsedLists.delete(parsedLists.keys().next().value!);
+    }
   }
   if (!object(instances) || !Object.keys(instances).length || Object.keys(instances).length > MAX_FAMILY_INSTANCES) throw new Error(`family.instances must list 1–${MAX_FAMILY_INSTANCES} instances by Artifact name.`);
   const entries = instances, names = Object.keys(entries).sort();
   // A parent addresses instances as <family folder>/<name>; a physical entry there would be shadowed.
   const physical = new Set(await readdir(path.join(root, relative)));
-  const members = names.map((name): FamilyMember => {
+  const members = await Promise.all(names.map(async (name): Promise<FamilyMember> => {
     const entry: unknown = entries[name];
     if (!identifier.test(name)) throw new Error(`Instance name ${JSON.stringify(name)} must be a safe Artifact identifier.`);
     if (name === template.name) throw new Error(`Instance ${name} cannot reuse its family name.`);
     if (physical.has(name)) throw new Error(`Instance ${name} conflicts with a physical entry in its family folder.`);
     if (!expand(name)) return { name };
-    if (!object(entry)) throw new Error(`Instance ${name} must be an object with optional params and material.`);
-    fields(entry, ['params', 'material'], 'instance');
+    if (!object(entry)) throw new Error(`Instance ${name} must be an object with optional variant, params and material.`);
+    fields(entry, ['variant', 'params', 'material'], 'instance');
     if (entry.params !== undefined && !object(entry.params)) throw new Error(`Instance ${name} params must be an object.`);
+    if (entry.variant !== undefined && (typeof entry.variant !== 'string' || !Object.hasOwn(variants, entry.variant))) throw new Error(`Instance ${name} names an unknown variant.`);
     const material: unknown = entry.material ?? [];
     if (!Array.isArray(material) || material.length > 64 || new Set(material).size !== material.length) throw new Error(`Instance ${name} material must contain at most 64 unique owner-relative paths.`);
     for (const item of material) {
       try { projectInputPath(item); } catch { throw new Error(`Instance ${name} material must contain owner-relative paths.`); }
       if (item === 'ccdd.json' || item === file) throw new Error(`Instance ${name} material cannot claim the family declaration.`);
+      // Like identity inputs, listed material must exist inside the folder without symlinks.
+      await scopedPath(root, path.posix.join(relative, item)).catch(() => { throw new Error(`Instance ${name} material ${item} must exist inside its family folder without symlinks.`); });
     }
-    const params = (entry.params ?? {}) as Record<string, unknown>, own = [...material as string[]].sort();
+    // A shallow merge: an instance or variant replaces whole top-level parameters.
+    const params = { ...defaults, ...(entry.variant === undefined ? {} : variants[entry.variant]), ...(entry.params ?? {}) as Record<string, unknown> }, own = [...material as string[]].sort();
     let declared: Omit<ArtifactManifest, 'family'>;
     try {
       declared = manifest({ ...template, name, ...(template.views === undefined ? {} : { views: substitute(template.views, params, name) }),
         ...(template.critics === undefined ? {} : { critics: substitute(template.critics, params, name) }) });
     } catch (error) { throw new Error(`instance ${name}: ${error instanceof Error ? error.message : String(error)}`); }
     return { name, manifest: declared, family: { name: template.name, ...(file === undefined ? {} : { instances: file }), material: own, entry: hash(JSON.stringify(sorted({ params, material: own }))) } };
-  });
+  }));
   return { members, ...(list ? { list } : {}) };
 }
 

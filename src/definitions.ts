@@ -13,10 +13,16 @@ export interface CriticDefinition { id: string; title: string; profile: CriticPr
 export type StaleStrategy = { kind: 'file-hash'; paths?: string[] } | { kind: 'always' }
   | { kind: 'identity'; script: ScriptDefinition; inputs?: string[]; timeoutMs?: number; weight?: number };
 export interface ReviewPolicy { dependencyGates?: 'green' | 'ignore'; maxConcurrentExecutors?: number }
-/** One statically listed member of an Artifact family. `params` fill `{"$param": "/pointer"}` values in the shared views and Critics. */
-export interface ArtifactInstanceDeclaration { params?: Record<string, unknown>; material?: string[] }
+/**
+ * One statically listed member of an Artifact family. Its params, merged shallowly over the family
+ * defaults and its named variant, fill `{"$param": "/pointer"}` values in the shared views and Critics.
+ */
+export interface ArtifactInstanceDeclaration { variant?: string; params?: Record<string, unknown>; material?: string[] }
 /** Instances are listed inline or in an owner-relative JSON file; discovery reads them and executes nothing. */
-export interface ArtifactFamilyDeclaration { instances: string | Record<string, ArtifactInstanceDeclaration> }
+export interface ArtifactFamilyDeclaration {
+  instances: string | Record<string, ArtifactInstanceDeclaration>;
+  params?: Record<string, unknown>; variants?: Record<string, Record<string, unknown>>;
+}
 export interface ArtifactManifest {
   name: string; critics?: CriticDefinition[]; views?: ArtifactViews; mounts?: Record<string, string>;
   reviewPolicy?: ReviewPolicy; basis?: boolean; stale?: StaleStrategy; envRequirements?: Record<string, EnvironmentRequirement>;

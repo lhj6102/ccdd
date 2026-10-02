@@ -15,13 +15,21 @@ export function selectedCritics(snapshot: Pick<ProjectSnapshot, 'config'>, selec
     if (!config.critics.some(c => c.id === selection.criticId)) throw new Error(`Unknown Critic: ${selection.criticId}`);
     return [selection.criticId];
   }
-  if (!Object.hasOwn(config.artifacts, selection.artifactId)) throw new Error(`Unknown Artifact: ${selection.artifactId}`);
-  return config.critics.filter(c => c.target === selection.artifactId).map(c => c.id);
+  const targets = new Set(selectedArtifacts(snapshot, selection.artifactId));
+  return config.critics.filter(c => targets.has(c.target)).map(c => c.id);
+}
+
+/** An Artifact name selects that Artifact; an Artifact family name selects every instance. */
+export function selectedArtifacts(snapshot: Pick<ProjectSnapshot, 'config'>, id: string): string[] {
+  if (Object.hasOwn(snapshot.config.artifacts, id)) return [id];
+  const instances = Object.entries(snapshot.config.artifacts).filter(([, artifact]) => artifact.family?.name === id).map(([name]) => name);
+  if (!instances.length) throw new Error(`Unknown Artifact: ${id}`);
+  return instances;
 }
 
 export function requiredArtifacts(snapshot: Pick<ProjectSnapshot, 'config'>, selection: ProjectSelection): string[] {
   selectedCritics(snapshot, selection);
-  const roots = selection.kind === 'all' ? Object.keys(snapshot.config.artifacts) : selection.kind === 'artifact' ? [selection.artifactId] : selection.kind === 'artifacts' ? selection.artifactIds : selectedCritics(snapshot, selection).map(id => snapshot.config.critics.find(c => c.id === id)!.target);
+  const roots = selection.kind === 'all' ? Object.keys(snapshot.config.artifacts) : selection.kind === 'artifact' ? selectedArtifacts(snapshot, selection.artifactId) : selection.kind === 'artifacts' ? selection.artifactIds.flatMap(id => selectedArtifacts(snapshot, id)) : selectedCritics(snapshot, selection).map(id => snapshot.config.critics.find(c => c.id === id)!.target);
   return dependencyClosure(snapshot.config.relations, roots);
 }
 

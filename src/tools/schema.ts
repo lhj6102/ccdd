@@ -18,8 +18,14 @@ export function jsonCopy<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
 }
 const keywords = new Set(['type','description','title','default','examples','enum','const','properties','required','additionalProperties','items','contains','minContains','maxContains','minItems','maxItems','uniqueItems','minLength','maxLength','pattern','minimum','maximum','exclusiveMinimum','exclusiveMaximum','multipleOf','anyOf','oneOf','allOf','not']);
+// Family instances repeat identical schemas; compiling each distinct JSON text once is enough.
+const validSchemas = new Set<string>();
 export function validateSchema(schema: unknown): asserts schema is JsonSchema {
   if (!object(schema) || schema.type !== 'object') throw new Error('A tool input schema must declare an object.');
+  // jsonCopy rejects non-JSON values first, so equal JSON text means an equal schema.
+  jsonCopy(schema);
+  const key = JSON.stringify(schema);
+  if (validSchemas.has(key)) return;
   const walk = (node: unknown, depth: number): void => {
     if (depth > 20 || !object(node)) throw new Error('Invalid or deeply nested tool schema.');
     for (const key of Object.keys(node)) if (!keywords.has(key)) throw new Error(`Unsupported tool schema keyword: ${key}`);
@@ -43,7 +49,9 @@ export function validateSchema(schema: unknown): asserts schema is JsonSchema {
     if (node.pattern !== undefined && (typeof node.pattern !== 'string' || node.pattern.length > 1000)) throw new Error('Invalid schema pattern');
     if (node.required !== undefined && (!Array.isArray(node.required) || node.required.some((v:unknown)=>typeof v!=='string') || new Set(node.required).size!==node.required.length)) throw new Error('Invalid schema required');
   };
-  jsonCopy(schema); walk(schema,0); Compile(Type.Unsafe(schema));
+  walk(schema,0); Compile(Type.Unsafe(schema));
+  if (validSchemas.size >= 4096) validSchemas.clear();
+  validSchemas.add(key);
 }
 const argumentFailures = new WeakMap<Error, string>();
 /** Only errors created by argument validation may cross the diagnostic boundary. */

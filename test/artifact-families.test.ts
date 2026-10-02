@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { artifactFixture, runtimeCritic } from './helpers/artifacts.js';
 import { readArtifactConfig, readWorkspaceConfig } from '../src/broker/config.js';
 import { createProjectSnapshot } from '../src/project/index.js';
+import { selectedCritics } from '../src/project/query.js';
 import { createBroker } from '../src/broker/index.js';
 import { createExecutorRegistry } from '../src/executors/index.js';
 import { projectRun } from '../src/project/store.js';
@@ -12,7 +13,7 @@ import { diagnoseArtifactTools } from '../src/artifacts/tool-check.js';
 import { runResultCheck } from '../src/executors/result-check.js';
 import { resolveScopePath } from '../src/artifact-scope.js';
 import { groupFamilies } from '../src/monitor/ui/family-groups.js';
-import type { ArtifactManifest } from '../src/sdk.js';
+import type { ArtifactManifest, StaleStrategy } from '../src/sdk.js';
 import type { GraphProjection } from '../src/broker/graph.js';
 
 // Each instance reads its own material through the shared script.
@@ -152,15 +153,16 @@ test('nested instance material and narrowed shared paths never reach sibling ide
   const shared = await hashes(data);
   assert.notEqual(shared.a, added.a); assert.notEqual(shared.c, added.c);
 
-  // Declared folders above instance material are stable whether missing, empty or filled.
+  // Listed material must exist; a folder holding it is never a shared entry.
   const transitions = await familyFixture(t);
-  await writeFile(join(transitions.repoPath, 'scenarios/instances.json'), JSON.stringify({ ...instances, b: { ...instances.b, material: ['states/b.txt'] } }));
-  const absent = await hashes(transitions);
   await mkdir(join(transitions.repoPath, 'scenarios/states'));
-  const empty = await hashes(transitions);
+  await writeFile(join(transitions.repoPath, 'scenarios/instances.json'), JSON.stringify({ ...instances, b: { ...instances.b, material: ['states/b.txt'] } }));
+  await assert.rejects(transitions.config(), /Instance b material states\/b\.txt must exist inside its family folder/);
   await writeFile(join(transitions.repoPath, 'scenarios/states/b.txt'), 'two');
   const filled = await hashes(transitions);
-  assert.equal(empty.a, absent.a); assert.equal(filled.a, absent.a); assert.notEqual(filled.b, empty.b);
+  await writeFile(join(transitions.repoPath, 'scenarios/states/b.txt'), 'two, revised');
+  const revised = await hashes(transitions);
+  assert.equal(revised.a, filled.a); assert.notEqual(revised.b, filled.b);
   await mkdir(join(transitions.repoPath, 'scenarios/unrelated'));
   const unrelated = await hashes(transitions);
   assert.notEqual(unrelated.a, filled.a);
@@ -179,8 +181,52 @@ test('nested instance material and narrowed shared paths never reach sibling ide
   const edited = await hashes(narrowed);
   assert.equal(edited.a, before.a); assert.notEqual(edited.b, before.b);
   await rm(join(narrowed.repoPath, 'scenarios/b.txt'));
-  const missing = await hashes(narrowed);
-  assert.equal(missing.a, before.a); assert.notEqual(missing.b, edited.b);
+  await assert.rejects(narrowed.config(), /Instance b material b\.txt must exist/);
+});
+
+test('an ordinary owner-identity Artifact keeps its validation input when moved into a family', async t => {
+  // The owner value, Artifact name and Critic ID determine the key; the folder layout does not.
+  const identity = `import {readFileSync} from 'node:fs';
+let text=''; for await (const chunk of process.stdin) text+=chunk;
+const input=JSON.parse(text);
+process.stdout.write('v-'+readFileSync(input.family ? input.family.material[0] : 'state.txt','utf8')+'\\n');
+`;
+  const stale: StaleStrategy = { kind: 'identity', script: { command: 'node', args: ['identity.mjs'] } };
+  const data = await artifactFixture(t);
+  await data.write('SkillArtifact_1', { name: 'SkillArtifact_1', stale, critics: [runtimeCritic('evaluate')] }, { 'identity.mjs': identity, 'state.txt': 'one' });
+  const key = async () => (await createProjectSnapshot(await data.config(), data.repoPath, 'a'.repeat(64))).inputs['SkillArtifact_1/evaluate'].key;
+  const before = await key();
+  await rm(join(data.repoPath, 'SkillArtifact_1'), { recursive: true });
+  await data.write('skills', { name: 'skills', family: { instances: 'instances.json' }, stale, critics: [{ ...runtimeCritic('evaluate'), title: { $param: '/title' } } as any] }, {
+    'identity.mjs': identity, 'states/1.txt': 'one',
+    'instances.json': JSON.stringify({ SkillArtifact_1: { params: { title: 'Check evaluate' }, material: ['states/1.txt'] }, SkillArtifact_2: { params: { title: 'Other' }, material: ['states/1.txt'] } }),
+  });
+  assert.equal(await key(), before);
+});
+
+test('family defaults and variants are merged shallowly before instance params', async t => {
+  const data = await artifactFixture(t);
+  await data.write('rules', { name: 'rules', basis: true });
+  await data.write('scenarios', { ...template('instances.json'), family: { instances: 'instances.json', params: { ids: ['default'], instruction: 'Inspect the scenario.' }, variants: { pair: { ids: ['x', 'y'] } } } } as ArtifactManifest, {
+    'family-view.mjs': familyView, 'a.txt': 'one', 'b.txt': 'two', 'c.txt': 'three',
+    'instances.json': JSON.stringify({ a: { variant: 'pair', material: ['a.txt'] }, b: { variant: 'pair', params: { ids: ['z'] }, material: ['b.txt'] }, c: { material: ['c.txt'] } }),
+  });
+  const config = await data.config(), ids = (id: string) => (config.artifacts[id].views.agentTools!.read.metadata.inputSchema as any).properties.id.enum;
+  assert.deepEqual([ids('a'), ids('b'), ids('c')], [['x', 'y'], ['z'], ['default']]);
+  assert.deepEqual(config.critics.map(critic => critic.payload.instruction), ['Inspect the scenario.', 'Inspect the scenario.', 'Inspect the scenario.']);
+  const before = await hashes(data as any);
+  await data.edit('scenarios', manifest => { (manifest.family as any).variants.pair.ids = ['x']; });
+  const after = await hashes(data as any);
+  assert.notEqual(after.a, before.a); assert.equal(after.b, before.b); assert.equal(after.c, before.c);
+  await writeFile(join(data.repoPath, 'scenarios/instances.json'), JSON.stringify({ a: { variant: 'missing' } }));
+  await assert.rejects(data.config(), /Instance a names an unknown variant/);
+});
+
+test('a family name selects every instance', async t => {
+  const data = await familyFixture(t), snapshot = await createProjectSnapshot(await data.config(), data.repoPath, 'a'.repeat(64), undefined, 'content', { kind: 'artifact', artifactId: 'scenarios' });
+  assert.deepEqual(Object.keys(snapshot.inputs).sort(), ['a/review', 'b/review']);
+  assert.deepEqual(selectedCritics(snapshot, { kind: 'artifact', artifactId: 'scenarios' }).sort(), ['a/review', 'b/review']);
+  assert.throws(() => selectedCritics(snapshot, { kind: 'artifact', artifactId: 'missing' }), /Unknown Artifact: missing/);
 });
 
 test('reconnecting a recorded instance expands only that instance', async t => {
