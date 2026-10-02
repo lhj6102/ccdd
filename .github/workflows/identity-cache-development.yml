@@ -31,8 +31,8 @@ jobs:
           set -euo pipefail
           branch=feat/project-independent-identity-cache
           test "$(git ls-remote origin "refs/heads/$branch" | cut -f1)" = "$EXPECTED_HEAD"
-          git apply --check scripts/.identity-cache-progress.patch
-          git apply --index scripts/.identity-cache-progress.patch
+          git apply --unidiff-zero --check scripts/.identity-cache-progress.patch
+          git apply --unidiff-zero --index scripts/.identity-cache-progress.patch
           git rm scripts/.identity-cache-progress.patch
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
