@@ -1,0 +1,275 @@
+diff --git a/src/broker/readiness.ts b/src/broker/readiness.ts
+index 0aa2d92..ed27fc4 100644
+--- a/src/broker/readiness.ts
++++ b/src/broker/readiness.ts
+@@ -60 +60 @@
+-      profile: { kind: envelope.profile.kind, ...(envelope.profile.kind === 'agent' ? { provider: envelope.profile.provider, model: envelope.profile.model } : {}) },
++      profile: structuredClone(envelope.profile),
+diff --git a/src/broker/storage.ts b/src/broker/storage.ts
+index 9fed37a..75a6443 100644
+--- a/src/broker/storage.ts
++++ b/src/broker/storage.ts
+@@ -192 +192 @@
+-    return { ...header, criticId: request.criticId, target: request.target, profile: { kind: request.profile.kind, ...(request.profile.kind === 'agent' ? { provider: request.profile.provider, model: request.profile.model } : {}) }, envelopeRef,
++    return { ...header, criticId: request.criticId, target: request.target, profile: structuredClone(request.profile), envelopeRef,
+@@ -224 +224,4 @@
+-    return { ...rest, ...(full ? get<ReviewEnvelope>(envelopeRef) : {}), workspace: get(workspaceRef), ...(inputRef ? { validationInput: get(inputRef) } : {}), result,
++    // Older compact headers omitted execution settings; recover only from their original envelope.
++    const profile = header.profile?.kind === 'agent' && header.profile.reasoning === undefined || header.profile?.kind === 'runtime' && header.profile.command === undefined
++      ? get<ReviewEnvelope>(envelopeRef).profile : header.profile;
++    return { ...rest, profile, ...(full ? get<ReviewEnvelope>(envelopeRef) : {}), workspace: get(workspaceRef), ...(inputRef ? { validationInput: get(inputRef) } : {}), result,
+diff --git a/src/project/identity.ts b/src/project/identity.ts
+index 38fe16c..fba9175 100644
+--- a/src/project/identity.ts
++++ b/src/project/identity.ts
+@@ -2 +2 @@
+-import { openResources, rejectIdentityConcurrency, validateIdentityWeight, canonicalRepositoryId } from '../resources.js';
++import { readResourceConfiguration, openResources, rejectIdentityConcurrency, validateIdentityWeight, canonicalRepositoryId } from '../resources.js';
+@@ -109 +109,9 @@
+-  const workers = owners.map(async ([id, artifact]) => {
++  // Bounded local preparation: do not enqueue one polling lease per Artifact.
++  // The machine authority still decides every weighted admission.
++  const capacity = readResourceConfiguration().identityCapacity;
++  const smallestWeight = Math.min(...owners.map(([, artifact]) => artifact.stale?.kind === 'identity' ? artifact.stale.weight ?? 25 : 25), capacity);
++  const parallelism = Math.min(owners.length, 64, Math.max(1, Math.floor(capacity / smallestWeight)));
++  let nextOwner = 0;
++  const workers = Array.from({ length: parallelism }, async () => {
++    while (!identitySignal.aborted && nextOwner < owners.length) {
++    const [id, artifact] = owners[nextOwner++];
+@@ -117,0 +126 @@
++    }
+diff --git a/src/project/load-check-worker.ts b/src/project/load-check-worker.ts
+index ca5bd93..5b1f3a1 100644
+--- a/src/project/load-check-worker.ts
++++ b/src/project/load-check-worker.ts
+@@ -1,0 +2,13 @@
++
++/** Receive one bounded-lifetime initialization message, including large scenarios. */
++const options = new Promise<Parameters<typeof runDiagnostic>[0]>((resolve, reject) => {
++  const timer = setTimeout(() => { cleanup(); reject(new Error('Load-check initialization timed out.')); }, 30_000);
++  const disconnected = () => { cleanup(); reject(new Error('Load-check parent disconnected before initialization.')); };
++  const received = (value: unknown) => {
++    cleanup();
++    if (!value || typeof value !== 'object') reject(new Error('Invalid load-check initialization.'));
++    else resolve(value as Parameters<typeof runDiagnostic>[0]);
++  };
++  const cleanup = () => { clearTimeout(timer); process.off('disconnect', disconnected); process.off('message', received); };
++  process.once('message', received); process.once('disconnect', disconnected);
++});
+@@ -3,2 +16,5 @@
+-  const report = await runDiagnostic(JSON.parse(process.argv[2]));
+-  process.send?.(report);
++  const report = await runDiagnostic(await options);
++  await new Promise<void>((resolve, reject) => {
++    if (!process.send) { reject(new Error('Load-check requires IPC.')); return; }
++    process.send(report, error => error ? reject(error) : resolve());
++  });
+@@ -6,0 +23 @@
++finally { if (process.connected) process.disconnect(); }
+diff --git a/src/project/load-check.ts b/src/project/load-check.ts
+index 6e5bda1..843d58d 100644
+--- a/src/project/load-check.ts
++++ b/src/project/load-check.ts
+@@ -65 +65 @@
+-  for (const [name, value] of Object.entries({ concurrency, requests, processes })) if (!Number.isSafeInteger(value) || value < 1 || value > (name === 'processes' ? 16 : 1000)) throw new Error(`${name} is outside the supported positive integer range.`);
++  for (const [name, value] of Object.entries({ concurrency, requests, processes })) if (!Number.isSafeInteger(value) || value < 1 || value > (name === 'processes' ? 16 : name === 'requests' ? 10000 : 1000)) throw new Error(`${name} is outside the supported positive integer range.`);
+@@ -78 +78 @@
+-      const child = fork(fileURLToPath(new URL('./load-check-worker.js', import.meta.url)), [JSON.stringify({ root: workerRoot, concurrency, requests, project } satisfies WorkerOptions)], {
++      const child = fork(fileURLToPath(new URL('./load-check-worker.js', import.meta.url)), [], {
+@@ -82,0 +83,2 @@
++      // Large scenarios belong on IPC, never in OS-limited argv.
++      child.send({ root: workerRoot, concurrency, requests, project } satisfies WorkerOptions, error => { if (error) { child.kill('SIGTERM'); reject(error); } });
+diff --git a/src/resources.ts b/src/resources.ts
+index 567223f..9ca153c 100644
+--- a/src/resources.ts
++++ b/src/resources.ts
+@@ -6,0 +7 @@
++import { performance } from 'node:perf_hooks';
+@@ -52,0 +54,3 @@
++export const resourceTestHooks: { admissionWrite?: () => void; reclaim?: () => void } = {};
++const sqliteBusy = (error: unknown): boolean => !!error && typeof error === 'object' && ((Number((error as { errcode?: number }).errcode) & 255) === 5 || (error as { code?: string }).code === 'SQLITE_BUSY');
++const resourceBusy = (cause: unknown) => Object.assign(new Error('Machine resource storage is busy; retry the operation.', { cause }), { code: 'RESOURCE_BUSY', retryable: true });
+@@ -68 +72,21 @@
+-  const transaction = <T>(fn: () => T): T => { db.exec('BEGIN IMMEDIATE'); try { const result = fn(); db.exec('COMMIT'); return result; } catch (error) { db.exec('ROLLBACK'); throw error; } };
++  const transaction = <T>(fn: () => T): T => {
++    let began = false;
++    try { db.exec('BEGIN IMMEDIATE'); began = true; const result = fn(); db.exec('COMMIT'); return result; }
++    catch (error) { if (began) { try { db.exec('ROLLBACK'); } catch {} } throw error; }
++  };
++  // Short SQLite waits on async admission paths allow streams, cancellations and
++  // the process holding the lock to progress. LOCKED is not BUSY: an invalid
++  // connection/statement state must not be retried as cross-process contention.
++  const retryBusy = async <T>(fn: () => T, signal?: AbortSignal): Promise<T> => {
++    const deadline = performance.now() + 5000;
++    let backoff = 10;
++    for (;;) {
++      signal?.throwIfAborted();
++      try { db.exec('PRAGMA busy_timeout=25'); return fn(); }
++      catch (error) { if (!sqliteBusy(error)) throw error; if (performance.now() >= deadline) throw resourceBusy(error); }
++      finally { db.exec('PRAGMA busy_timeout=5000'); }
++      await delay(Math.min(backoff, Math.max(1, deadline - performance.now())) + Math.floor(Math.random() * 10), undefined, { signal });
++      backoff = Math.min(200, backoff * 2);
++    }
++  };
++  let nextReclaim = 0;
+@@ -94,0 +119,2 @@
++    if (performance.now() < nextReclaim) return;
++    nextReclaim = performance.now() + 250; resourceTestHooks.reclaim?.();
+@@ -129 +155 @@
+-    transaction(() => {
++    await retryBusy(() => transaction(() => {
+@@ -134 +160 @@
+-    });
++    }), signal);
+@@ -140,2 +166,21 @@
+-        const admitted = transaction(() => {
+-          reclaim();
++        const admitted = await retryBusy(() => {
++          // A blocked waiter normally performs reads only. Queue/capacity checks
++          // are repeated inside the write transaction; this precheck grants nothing.
++          if (performance.now() >= nextReclaim) transaction(reclaim);
++          const candidate = db.prepare('SELECT * FROM resource_leases WHERE token=?').get(token) as unknown as LeaseRow | undefined;
++          if (!candidate) throw new Error('Resource lease disappeared before admission.');
++          if (db.prepare("SELECT 1 FROM resource_leases WHERE lane=? AND state='waiting' AND seq<? LIMIT 1").get(lane, candidate.seq)) return false;
++          const limits = readResourceConfiguration();
++          const active = db.prepare("SELECT * FROM resource_leases WHERE state IN ('active','releasing')").all() as unknown as LeaseRow[];
++          if (identity && active.filter(row => row.lane === lane).reduce((sum, row) => sum + row.weight, 0) + weight > limits.identityCapacity) return false;
++          if (!identity) {
++            const pool = limits.providers[provider!];
++            if (active.filter(row => row.provider === provider).length >= (pool?.capacity ?? limits.defaultProviderCapacity)) return false;
++            const modelCap = model ? pool?.models?.[model] : undefined;
++            if (modelCap !== undefined && active.filter(row => row.provider === provider && row.model === model).length >= modelCap) return false;
++            const peers = active.filter(row => row.repo === request.repo && row.lane !== 'identity');
++            const caps = [...peers.flatMap(row => row.repo_cap === null ? [] : [row.repo_cap]), ...request.repoCap === undefined ? [] : [request.repoCap]];
++            if (caps.length && peers.length >= Math.min(...caps)) return false;
++          }
++          return transaction(() => {
++          resourceTestHooks.admissionWrite?.();
+@@ -166 +211,2 @@
+-        });
++          });
++        }, signal);
+@@ -169 +215 @@
+-        await delay(25, undefined, { signal });
++        await delay(40 + Math.floor(Math.random() * 20), undefined, { signal });
+@@ -188 +234 @@
+-          db.prepare("UPDATE resource_leases SET state='releasing' WHERE token=? AND pid=? AND process_identity IS ?").run(token, process.pid, ownProcessIdentity);
++          await retryBusy(() => db.prepare("UPDATE resource_leases SET state='releasing' WHERE token=? AND pid=? AND process_identity IS ?").run(token, process.pid, ownProcessIdentity));
+@@ -190,2 +236,2 @@
+-          while (!transaction(() => childrenGone(token))) { if (Date.now() >= deadline) throw new Error('Tracked child cleanup exceeded 5000 ms; resource lease remains held.'); await delay(10); }
+-          release(token); released = true; clearInterval(heartbeat);
++          while (!await retryBusy(() => transaction(() => childrenGone(token)))) { if (Date.now() >= deadline) throw new Error('Tracked child cleanup exceeded 5000 ms; resource lease remains held.'); await delay(10); }
++          await retryBusy(() => release(token)); released = true; clearInterval(heartbeat);
+@@ -194 +240,5 @@
+-    } catch (error) { clearInterval(heartbeat); release(token); throw error; }
++    } catch (error) {
++      clearInterval(heartbeat);
++      try { await retryBusy(() => release(token)); } catch { /* Preserve the original error; dead-owner cleanup retains authority. */ }
++      throw signal.aborted ? signal.reason : error;
++    }
+diff --git a/src/result-view.ts b/src/result-view.ts
+index a28f1a2..e28fc51 100644
+--- a/src/result-view.ts
++++ b/src/result-view.ts
+@@ -17,0 +18 @@
++  profile: ReviewRequest['profile'];
+@@ -41 +42 @@
+-  return { id: request.id, runId: request.runId, criticId: request.criticId, target: request.target, status: request.status,
++  return { id: request.id, runId: request.runId, criticId: request.criticId, target: request.target, status: request.status, profile: structuredClone(request.profile),
+diff --git a/test/broker.test.ts b/test/broker.test.ts
+index ae63721..2df4b13 100644
+--- a/test/broker.test.ts
++++ b/test/broker.test.ts
+@@ -49 +49,7 @@
+-  const data = await fixture(t, false, { canExecute: () => ({ ok: true }), async execute() { maximum = Math.max(maximum, ++active); await delay(40); active--; return controlledResult; } });
++  let release!: () => void;
++  const barrier = new Promise<void>(resolve => { release = resolve; });
++  t.after(() => release());
++  const data = await fixture(t, false, { canExecute: () => ({ ok: true }), async execute() {
++    maximum = Math.max(maximum, ++active);
++    try { await barrier; return controlledResult; } finally { active--; }
++  } });
+@@ -51 +57,4 @@
+-  const run = await data.submit(); assert.equal((await data.broker.run(run.id))!.status, 'GREEN'); assert.equal(maximum, 4);
++  const run = await data.submit(), running = data.broker.run(run.id);
++  try { await waitFor(() => active === 4); assert.equal(maximum, 4); }
++  finally { release(); }
++  assert.equal((await running)!.status, 'GREEN'); assert.equal(maximum, 4); assert.equal(active, 0);
+diff --git a/test/local-resource-regressions.test.ts b/test/local-resource-regressions.test.ts
+new file mode 100644
+index 0000000..b386439
+--- /dev/null
++++ b/test/local-resource-regressions.test.ts
+@@ -0,0 +1,72 @@
++import test from 'node:test';
++import assert from 'node:assert/strict';
++import { mkdir, writeFile } from 'node:fs/promises';
++import { join } from 'node:path';
++import { setTimeout as delay } from 'node:timers/promises';
++import { DatabaseSync } from 'node:sqlite';
++import { createBroker } from '../src/broker/index.js';
++import { projectRequests } from '../src/project/store.js';
++import { loadCheck } from '../src/project/load-check.js';
++import { openResources, resourcePaths, resourceTestHooks } from '../src/resources.js';
++import { artifactFixture, agentProfile, fixtureViews } from './helpers/artifacts.js';
++
++async function isolated(t: test.TestContext) {
++  const data = await artifactFixture(t);
++  const before = { CCDD_STATE_HOME: process.env.CCDD_STATE_HOME, CCDD_CONFIG_HOME: process.env.CCDD_CONFIG_HOME };
++  process.env.CCDD_STATE_HOME = join(data.root, 'machine');
++  process.env.CCDD_CONFIG_HOME = join(data.root, 'config');
++  await mkdir(process.env.CCDD_CONFIG_HOME);
++  await writeFile(resourcePaths().config, JSON.stringify({ identityCapacity: 100, defaultProviderCapacity: 4 }));
++  data.cleanup(() => { for (const [key, value] of Object.entries(before)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; } });
++  return data;
++}
++
++test('compact request profiles retain all execution settings and recover old headers from their own envelope', async t => {
++  const data = await isolated(t);
++  const profile = { ...agentProfile, reasoning: 'max', timeoutMs: 12345, maxToolCalls: 7, maxTokens: 54321 };
++  await data.write('a', { name: 'a', views: fixtureViews(), critics: [{ id: 'review', title: 'Original profile', profile, payload: { instruction: 'Controlled profile storage test.' } }] });
++  const broker = createBroker({ ...data, executors: { canExecute: () => ({ ok: true }), execute: async () => ({ verdict: 'GREEN' }) } });
++  data.cleanup(() => broker.close());
++  const run = await broker.submitProject({ selection: { kind: 'all' } });
++  const request = broker.getRun(run.id)!.requests[0];
++  assert.deepEqual(request.profile, profile);
++  assert.deepEqual(projectRequests(data.stateDir, run.id)[0].profile, profile);
++  const db = new DatabaseSync(join(data.stateDir, 'broker.sqlite'));
++  try {
++    const header = JSON.parse(String(db.prepare('SELECT data FROM requests WHERE id=?').get(request.id)!.data));
++    header.profile = { kind: 'agent', provider: profile.provider, model: profile.model };
++    db.prepare('UPDATE requests SET data=? WHERE id=?').run(JSON.stringify(header), request.id);
++  } finally { db.close(); }
++  await data.edit('a', manifest => { manifest.critics![0].profile = { ...profile, reasoning: 'low' }; });
++  assert.deepEqual(projectRequests(data.stateDir, run.id)[0].profile, profile);
++  assert.deepEqual(broker.getRequest(request.id)!.profile, profile);
++});
++
++test('blocked resource waiters do not repeatedly acquire write transactions', async t => {
++  const data = await isolated(t), store = openResources(); data.cleanup(() => store.close());
++  const request = { requestId: 'identity', runId: '', kind: 'identity', repo: 'fixture', identityWeight: 100 };
++  const blocker = await store.acquire(request, { signal: new AbortController().signal, waiting() {} });
++  const controller = new AbortController();
++  let writes = 0;
++  resourceTestHooks.admissionWrite = () => { writes++; };
++  data.cleanup(() => { delete resourceTestHooks.admissionWrite; });
++  const tasks = Array.from({ length: 80 }, () => store.acquire(request, { signal: controller.signal, waiting() {} }));
++  const rejected = tasks.map(task => assert.rejects(task, /controlled cancellation/));
++  await delay(150);
++  assert.equal(writes, 0);
++  controller.abort(new Error('controlled cancellation'));
++  await Promise.all(rejected); await blocker.release();
++});
++
++test('load-check receives a scenario larger than a single OS argument over IPC', async t => {
++  const data = await isolated(t);
++  const view = { metadata: { description: 'Observe offline data.', inputSchema: { type: 'object', properties: {}, additionalProperties: false }, resultKinds: ['text' as const], observation: 'content' as const }, script: { command: 'node', args: ['observe.mjs'] } };
++  await data.write('a', { name: 'a', views: { agentTools: { observe: view } }, critics: [{ id: 'review', title: 'Offline', profile: agentProfile, payload: { instruction: 'Controlled offline result.' } }] }, {
++    'observe.mjs': "for await(const c of process.stdin){};console.log(JSON.stringify({content:[{type:'text',text:'offline'}],observation:{kind:'content'}}));",
++  });
++  // Unselected result entries are still transported. This isolates the argv bug
++  // without forcing every routine test run to launch thousands of processes.
++  const criticResults = Object.fromEntries(Array.from({ length: 1100 }, (_, i) => [`unused-${i}`, { verdict: 'GREEN', detail: 'x'.repeat(256) }]));
++  const report = await loadCheck({ outputDir: data.root, project: { repoPath: data.repoPath, selection: { kind: 'all' }, scenario: { steps: [{ operation: 'observe' }], criticResults } } });
++  assert.equal(report.status, 'GREEN'); assert.equal(report.completed, 1); assert.equal(report.providerGuard.guardedToolCalls, 1);
++});
