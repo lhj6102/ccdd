@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { rejectIdentityConcurrency, validateMaxExecutions } from '../resources.js';
+import { readSelectionFile } from './selection-file.js';
 import { loadCheck } from './load-check.js';
 import { requiredArtifacts } from './query.js';
 import { positiveConcurrency } from './identity.js';
@@ -29,7 +30,7 @@ import { claimHumanFromCli } from '../review/local-claim.js';
 type Output = { write(value: string): unknown };
 const terminal = new Set(['GREEN', 'RED', 'ERROR', 'INCOMPLETE']);
 const flags = new Set(['--all', '--recursive', '--force', '--ignore-gates', '--wait', '--json', '--full', '--help', '--human-inbox']);
-const values = new Set(['--repo', '--state-dir', '--critic', '--timeout-ms', '--requester', '--reviewer', '--result-file', '--tool', '--args', '--run', '--pi-auth-file', '--codex-auth-file', '--integrity', '--concurrency', '--identity-concurrency', '--max-executions', '--requests', '--output-dir', '--critics', '--artifacts', '--scenario-file', '--processes', '--resource-mode']);
+const values = new Set(['--repo', '--state-dir', '--critic', '--timeout-ms', '--requester', '--reviewer', '--result-file', '--tool', '--args', '--run', '--pi-auth-file', '--codex-auth-file', '--integrity', '--concurrency', '--identity-concurrency', '--max-executions', '--requests', '--output-dir', '--critics', '--artifacts', '--critics-file', '--artifacts-file', '--scenario-file', '--processes', '--resource-mode']);
 const help = `CCDD Project — pull validation and explicit review execution
 
   ccdd-project load-check [--concurrency 60] [--requests 60] [--output-dir PATH] [--json]
@@ -64,6 +65,8 @@ Identity scheduling uses local resources.json identityCapacity and Artifact stal
 verify/status/plan accept --integrity content|metadata (default: content).
 metadata trusts unchanged filesystem metadata to reuse captured content identity;
 it is opt-in, weaker than full content checks, and its evidence cannot satisfy content verification.
+Selection: --critics-file PATH or --artifacts-file PATH (JSON array or one ID per line).
+File selections cannot be combined with other selectors. Families are Artifact selectors.
 Common options: --repo PATH, --state-dir PATH, --json.
 Results are compact by default; --full includes the audit payload. run show always includes full detail.
 Execution: --human-inbox, --pi-auth-file PATH, --codex-auth-file PATH.
@@ -118,7 +121,7 @@ export async function main(argv = process.argv.slice(2), { stdout = process.stdo
     if (!['status', 'plan', 'verify', 'history', 'graph', 'config', 'run', 'request', 'prune'].includes(command)) throw new Error(`Unknown command: ${command}`);
     const common = ['--repo', '--state-dir', '--json'];
     const full = Boolean(options['--full']) || command === 'run' && positional[0] === 'show';
-    const permitted = new Set([...common, ...(['status', 'plan', 'verify', 'history', 'run', 'request'].includes(command) ? ['--full'] : []), ...(['status', 'plan', 'verify', 'history'].includes(command) ? ['--critic', '--critics', '--artifacts', '--all'] : []),
+    const permitted = new Set([...common, ...(['status', 'plan', 'verify', 'history', 'run', 'request'].includes(command) ? ['--full'] : []), ...(['status', 'plan', 'verify', 'history'].includes(command) ? ['--critic', '--critics', '--artifacts', '--critics-file', '--artifacts-file', '--all'] : []),
       ...(['status', 'plan', 'verify'].includes(command) ? ['--integrity', '--identity-concurrency'] : []),
       ...(['plan', 'verify'].includes(command) ? ['--recursive', '--force', '--ignore-gates'] : []),
       ...(command === 'verify' ? ['--max-executions', '--concurrency', '--wait', '--timeout-ms', '--requester', '--human-inbox', '--pi-auth-file', '--codex-auth-file'] : []),
@@ -152,8 +155,12 @@ export async function main(argv = process.argv.slice(2), { stdout = process.stdo
       print(result, `Removed ${result.removed.length} transient paths; skipped ${result.skippedRequests.length} active or owned requests. Audit evidence is preserved.`);
       return 0;
     }
+    const fileCritics = get('--critics-file') ? await readSelectionFile(resolve(get('--critics-file')!)) : undefined;
+    const fileArtifacts = get('--artifacts-file') ? await readSelectionFile(resolve(get('--artifacts-file')!)) : undefined;
     const select = (required = false): ProjectSelection => {
-      if (positional.length > 1 || Number(Boolean(positional[0])) + Number(Boolean(get('--critic'))) + Number(Boolean(get('--critics'))) + Number(Boolean(get('--artifacts'))) + Number(Boolean(options['--all'])) > 1) throw new Error('Choose one Artifact, --critic ID, or --all.');
+      if (positional.length > 1 || Number(Boolean(positional[0])) + Number(Boolean(get('--critic'))) + Number(Boolean(get('--critics'))) + Number(Boolean(get('--artifacts'))) + Number(Boolean(options['--all'])) + Number(Boolean(fileCritics)) + Number(Boolean(fileArtifacts)) > 1) throw new Error('Choose one Artifact, --critic, --critics, --artifacts, --critics-file, --artifacts-file, or --all.');
+      if (fileCritics) return { kind: 'critics', criticIds: fileCritics };
+      if (fileArtifacts) return { kind: 'artifacts', artifactIds: fileArtifacts };
       if (positional[0]) return { kind: 'artifact', artifactId: positional[0] };
       if (get('--critics')) return { kind: 'critics', criticIds: get('--critics')!.split(',') };
       if (get('--artifacts')) return { kind: 'artifacts', artifactIds: get('--artifacts')!.split(',') };
