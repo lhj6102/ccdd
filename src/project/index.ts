@@ -43,3 +43,5 @@ export { readResourceConfiguration, resourcePaths } from '../resources.js';
 export type { ResourceConfiguration } from '../resources.js';
 export type { ExecutionProvenance } from '../provenance.js';
 export { loadCheck, type LoadCheckOptions, type LoadCheckProject, type LoadCheckStep } from './load-check.js';
+
+export { compactGraphDefinition, type CompactGraphDefinition } from '../broker/graph.js';

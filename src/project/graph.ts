@@ -6,8 +6,11 @@ const reviewStatus = (status: ValidationStatus): ReviewStatus | null => status =
 /** Explicit projections may refer to actual earlier evidence, never fabricated tickets. */
 export function projectValidationGraph(graph: GraphDefinition, plan: ProjectPlan, requests: GraphRequest[], runId: string): GraphProjection {
   const projection = projectGraph(graph, requests);
+  const critics = new Map(plan.critics.map(critic => [critic.id, critic]));
+  const artifacts = new Map(plan.artifacts.map(artifact => [artifact.id, artifact]));
+  const included = new Set(plan.includedCriticIds);
   for (const critic of projection.critics) {
-    const value = plan.critics.find(c => c.id === critic.id)!;
+    const value = critics.get(critic.id)!;
     const reused = value.status === 'PASS' && value.result && value.result.runId !== runId;
     critic.validationStatus = value.status; critic.validationReason = value.reason;
     critic.status = reviewStatus(value.status);
@@ -16,11 +19,11 @@ export function projectValidationGraph(graph: GraphDefinition, plan: ProjectPlan
     if (reused) critic.reusedFrom = { requestId: value.result!.requestId, runId: value.result!.runId, completedAt: value.result!.completedAt };
   }
   for (const artifact of projection.artifacts) {
-    const value = plan.artifacts.find(a => a.id === artifact.id)!;
+    const value = artifacts.get(artifact.id)!;
     artifact.validationStatus = value.status;
     artifact.status = (value.status === 'BASIS' ? 'BASIS' : reviewStatus(value.status) ?? 'UNREVIEWED') as ArtifactStatus;
     artifact.passed = value.passed;
-    artifact.included = value.criticIds.filter(id => plan.includedCriticIds.includes(id)).length;
+    artifact.included = value.criticIds.filter(id => included.has(id)).length;
   }
   return projection;
 }

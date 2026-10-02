@@ -12,7 +12,7 @@ import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 import { diagnosticsMain } from '../diagnostics-cli.js';
 import { createBroker, readStateContext } from '../broker/index.js';
-import { createGraphDefinition } from '../broker/graph.js';
+import { compactGraphDefinition, createGraphDefinition } from '../broker/graph.js';
 import { dependencyClosure } from '../artifacts/scope.js';
 import { readWorkspaceConfig } from '../broker/config.js';
 import { prepareWorkspace } from '../workspaces/index.js';
@@ -29,7 +29,7 @@ import { claimHumanFromCli } from '../review/local-claim.js';
 
 type Output = { write(value: string): unknown };
 const terminal = new Set(['GREEN', 'RED', 'ERROR', 'INCOMPLETE']);
-const flags = new Set(['--all', '--recursive', '--force', '--ignore-gates', '--wait', '--json', '--full', '--help', '--human-inbox']);
+const flags = new Set(['--compact', '--all', '--recursive', '--force', '--ignore-gates', '--wait', '--json', '--full', '--help', '--human-inbox']);
 const values = new Set(['--repo', '--state-dir', '--critic', '--timeout-ms', '--requester', '--reviewer', '--result-file', '--tool', '--args', '--run', '--pi-auth-file', '--codex-auth-file', '--integrity', '--concurrency', '--identity-concurrency', '--max-executions', '--requests', '--output-dir', '--critics', '--artifacts', '--critics-file', '--artifacts-file', '--scenario-file', '--processes', '--resource-mode']);
 const help = `CCDD Project — pull validation and explicit review execution
 
@@ -65,6 +65,7 @@ Identity scheduling uses local resources.json identityCapacity and Artifact stal
 verify/status/plan accept --integrity content|metadata (default: content).
 metadata trusts unchanged filesystem metadata to reuse captured content identity;
 it is opt-in, weaker than full content checks, and its evidence cannot satisfy content verification.
+Graph: graph --compact --json omits per-instance view definitions.
 Selection: --critics-file PATH or --artifacts-file PATH (JSON array or one ID per line).
 File selections cannot be combined with other selectors. Families are Artifact selectors.
 Common options: --repo PATH, --state-dir PATH, --json.
@@ -126,6 +127,7 @@ export async function main(argv = process.argv.slice(2), { stdout = process.stdo
       ...(['plan', 'verify'].includes(command) ? ['--recursive', '--force', '--ignore-gates'] : []),
       ...(command === 'verify' ? ['--max-executions', '--concurrency', '--wait', '--timeout-ms', '--requester', '--human-inbox', '--pi-auth-file', '--codex-auth-file'] : []),
       ...(command === 'run' ? ['--wait', '--timeout-ms'] : []),
+      ...(command === 'graph' ? ['--compact'] : []),
       ...(command === 'request' ? ['--run', '--reviewer', '--result-file', '--tool', '--args'] : [])]);
     for (const key of Object.keys(options)) if (!permitted.has(key)) throw new Error(`${key} is not supported by ${command}.`);
     const maxConcurrentExecutors = get('--concurrency') === undefined ? undefined : positiveConcurrency(Number(get('--concurrency')), '--concurrency');
@@ -189,14 +191,14 @@ export async function main(argv = process.argv.slice(2), { stdout = process.stdo
         const { config } = await readWorkspaceConfig(workspace.descriptor.path, workspace.signal);
         await workspace.assertUnchanged();
         if (command === 'config') { print({ ok: true, artifacts: Object.keys(config.artifacts).length, critics: config.critics.length, snapshotHash: workspace.descriptor.hash }, 'Folder configuration and Artifact references are valid.'); return 0; }
-        const graph = createGraphDefinition(config);
+        const graph = createGraphDefinition(config, false);
         if (selection.kind !== 'all') {
           const artifacts = new Set(requiredArtifacts({ config }, selection));
           graph.critics = graph.critics.filter(c => artifacts.has(c.target));
           graph.artifacts = Object.fromEntries(Object.entries(graph.artifacts).filter(([id]) => artifacts.has(id)));
           graph.relations = graph.relations.filter(edge => artifacts.has(edge.source) && artifacts.has(edge.target));
         }
-        print(graph, graph.critics.map(c => `${c.id}: ${c.deps.join(', ') || '(no deps)'} -> ${c.target}`).join('\n') || Object.keys(graph.artifacts).join('\n')); return 0;
+        print(options['--compact'] ? compactGraphDefinition(graph) : graph, graph.critics.map(c => `${c.id}: ${c.deps.join(', ') || '(no deps)'} -> ${c.target}`).join('\n') || Object.keys(graph.artifacts).join('\n')); return 0;
       } finally { await workspace.close(); }
     }
     if (command === 'status' || command === 'plan') {

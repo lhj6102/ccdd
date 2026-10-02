@@ -32,7 +32,7 @@ async function cli(stateDir: string, args: string[]) {
 }
 function compact(value: unknown) {
   const json = JSON.stringify(value);
-  for (const field of ['toolCalls', 'arguments', 'observation', 'payload', 'configManifest', 'validationInput', 'completedAt', 'durationMs', 'events', 'telemetry', 'stdout', 'snapshot', 'templates', 'profile']) {
+  for (const field of ['toolCalls', 'arguments', 'observation', 'payload', 'configManifest', 'validationInput', 'completedAt', 'durationMs', 'events', 'telemetry', 'stdout', 'snapshot', 'templates']) {
     assert.ok(!json.includes(`"${field}":`), `Unexpected audit field: ${field}`);
   }
 }
@@ -47,6 +47,7 @@ test('requester defaults reference unchanged stored audit evidence and full API 
   assert.equal(JSON.stringify(completed).split(audit.evidence[0]).length - 1, 1);
   const result = completed.results[0];
   assert.equal(result.summary, audit.summary); assert.deepEqual(result.evidence, audit.evidence);
+  assert.deepEqual(completed.requests[0].profile, runtimeCritic().profile);
   assert.equal(completed.requests[0].target, 'a'); assert.equal(completed.requests[0].criticId, 'a/check');
   const { reference } = result;
   const stored = projectRun(reference.stateDir, reference.runId)!;
