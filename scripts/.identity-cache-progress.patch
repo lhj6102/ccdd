@@ -1,0 +1,6 @@
+diff --git a/src/cache/query.ts b/src/cache/query.ts
+index 77fcadc..0671481 100644
+--- a/src/cache/query.ts
++++ b/src/cache/query.ts
+@@ -45,0 +46 @@
++}
