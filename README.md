@@ -106,7 +106,7 @@ See [Contributing](CONTRIBUTING.md), [the context map](CONTEXT-MAP.md), [detaile
 
 [MIT](LICENSE).
 
-**CCDD 6.5.1:** tool-call budgets count calls in issue order, independent of Provider ids, and full request views retain per-attempt usage totals outside the Run's event window; existing review identities are unchanged. See the [release notes](docs/releases/v6.5.1.md).
+**CCDD 6.6.0:** Artifact families declare many Artifacts that share one folder, view scripts and Critics through a static instance list, with per-instance identities so siblings never invalidate each other. Pi is updated to 1.0.0; existing review identities are unchanged. See the [release notes](docs/releases/v6.6.0.md).
 
 
 ### Existing Pi AI API
