@@ -276,6 +276,20 @@ test('actual reviews of unchanged instances are reused when a sibling changes', 
   }
 });
 
+test('history finds evidence recorded before its Artifacts moved into a family', async t => {
+  const data = await artifactFixture(t), broker = createBroker({ detail: 'full', ...data, executors: createExecutorRegistry() });
+  data.cleanup(() => broker.close());
+  for (const id of ['a', 'b']) await data.write(id, { name: id, critics: [runtimeCritic('review')] });
+  const run = await broker.submitProject({ selection: { kind: 'all' } });
+  if (run.status !== 'GREEN') await broker.run(run.id);
+  for (const id of ['a', 'b']) await rm(join(data.repoPath, id), { recursive: true });
+  await data.write('rules', { name: 'rules', basis: true });
+  await data.write('scenarios', template('instances.json'), { 'family-view.mjs': familyView, 'instances.json': JSON.stringify(instances), 'a.txt': 'one', 'b.txt': 'two' });
+  let output = '';
+  assert.equal(await main(['history', 'scenarios', '--json', '--full', '--repo', data.repoPath, '--state-dir', data.stateDir], { stdout: { write: text => { output += text; } }, stderr: { write: () => {} } }), 0);
+  assert.deepEqual(JSON.parse(output).map((entry: { criticId: string }) => entry.criticId).sort(), ['a/review', 'b/review']);
+});
+
 test('shared view scripts receive the instance and its material, with instance-specific schemas', async t => {
   const data = await familyFixture(t);
   const run = await diagnoseArtifactTools({ ...data, artifactId: 'b', audience: 'agent', toolName: 'read', execute: true, arguments: { id: 'z' } });

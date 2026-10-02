@@ -201,10 +201,13 @@ export async function main(argv = process.argv.slice(2), { stdout = process.stdo
     if (command === 'history') {
       const selection = select();
       const history = projectHistory(context.stateDir, { detail: 'full' }), names = selection.kind === 'artifact' ? [selection.artifactId] : selection.kind === 'artifacts' ? selection.artifactIds : [];
-      // A name that is no reviewed target may be an Artifact family; its members are recorded with each request.
-      const families = names.some(name => !history.some(e => e.input.target.id === name)) ? evidenceFamilies(context.stateDir, history) : new Map<string, string>();
+      // A name that is no reviewed target may be an Artifact family. Members come from each request's recorded
+      // definition and, for evidence recorded before a migration into the family, from the current static declarations.
+      const familyNames = names.some(name => !history.some(e => e.input.target.id === name));
+      const families = familyNames ? evidenceFamilies(context.stateDir, history) : new Map<string, string>();
+      const current = familyNames ? await readWorkspaceConfig(context.repoPath).then(({ config }) => new Map(Object.entries(config.artifacts).flatMap(([id, artifact]) => artifact.family ? [[id, artifact.family.name] as const] : [])), () => new Map<string, string>()) : new Map<string, string>();
       const entries = history.filter(e => selection.kind === 'all' || selection.kind === 'critic' && e.criticId === selection.criticId || selection.kind === 'critics' && selection.criticIds.includes(e.criticId)
-        || names.includes(e.input.target.id) || families.has(e.requestId) && names.includes(families.get(e.requestId)!));
+        || names.includes(e.input.target.id) || [families.get(e.requestId), current.get(e.input.target.id)].some(family => family !== undefined && names.includes(family)));
       print(full ? entries : entries.map(e => requesterEvidence(e, context.stateDir)), full ? undefined : entries.map(e => `${e.completedAt} ${e.criticId} ${e.verdict} · ${e.requestId}\n  ${JSON.stringify(e.result)}`).join('\n') || 'No recorded validation evidence.'); return 0;
     }
     if (command === 'run' || command === 'request') {
