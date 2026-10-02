@@ -163,4 +163,7 @@ test('image format detection reads content, never the file name', async t => {
   assert.deepEqual((await tool.execute(data.context, {})).content, [{ type: 'image', data: jpeg.toString('base64'), mimeType: 'image/jpeg' }]);
   const { imageMimeType } = await import(new URL('./image.js', import.meta.resolve('@ccdd/default-tools')).href);
   assert.deepEqual([png, webp, jpeg, Buffer.from('GIF89a')].map(bytes => imageMimeType(bytes)), ['image/png', 'image/webp', 'image/jpeg', undefined]);
+  // Markers compare exact bytes: a set high bit is a different byte, not the same letter.
+  const highBit = (bytes: Buffer, offset: number) => { const copy = Buffer.from(bytes); copy[offset] |= 0x80; return copy; };
+  assert.deepEqual([highBit(webp, 0), highBit(webp, 8), highBit(png, 12)].map(bytes => imageMimeType(bytes)), [undefined, undefined, undefined]);
 });

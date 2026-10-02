@@ -4,13 +4,14 @@ import { imageContent, MAX_IMAGE_BYTES } from './image-result.js';
 import { internalPath, objectArguments, scopedTarget } from './reader.js';
 
 const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+// Exact bytes: an 'ascii' decode would clear the high bit and accept corrupted markers.
+const marker = (bytes: Buffer, offset: number, text: string): boolean => bytes.subarray(offset, offset + text.length).equals(Buffer.from(text, 'latin1'));
 
 /** An animation control chunk before the first image data marks an animated PNG. */
 function animatedPng(bytes: Buffer): boolean {
   for (let offset = PNG_SIGNATURE.length; offset + 8 <= bytes.length;) {
-    const type = bytes.toString('ascii', offset + 4, offset + 8);
-    if (type === 'acTL') return true;
-    if (type === 'IDAT') return false;
+    if (marker(bytes, offset + 4, 'acTL')) return true;
+    if (marker(bytes, offset + 4, 'IDAT')) return false;
     const next = offset + 12 + bytes.readUInt32BE(offset);
     if (next <= offset || next > bytes.length) return false;
     offset = next;
@@ -22,10 +23,10 @@ function animatedPng(bytes: Buffer): boolean {
 export function imageMimeType(bytes: Buffer): 'image/png' | 'image/jpeg' | 'image/webp' | undefined {
   if (bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff && bytes[3] !== 0xf7) return 'image/jpeg';
   if (bytes.subarray(0, 8).equals(PNG_SIGNATURE)) {
-    const header = bytes.length >= 16 && bytes.readUInt32BE(8) === 13 && bytes.toString('ascii', 12, 16) === 'IHDR';
+    const header = bytes.length >= 16 && bytes.readUInt32BE(8) === 13 && marker(bytes, 12, 'IHDR');
     return header && !animatedPng(bytes) ? 'image/png' : undefined;
   }
-  if (bytes.toString('ascii', 0, 4) === 'RIFF' && bytes.toString('ascii', 8, 12) === 'WEBP') return 'image/webp';
+  if (marker(bytes, 0, 'RIFF') && marker(bytes, 8, 'WEBP')) return 'image/webp';
   return undefined;
 }
 
