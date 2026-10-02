@@ -20,8 +20,9 @@ export const inputHash = (value: unknown): string => createHash('sha256').update
 
 /**
  * Own material excludes separately identified child Artifacts and installed runtime directories.
- * Family shared material omits `ancestors`, the declared folders above instance material: whether they
- * are missing, empty or hold that material, they never change sibling instances.
+ * Family shared material records a directory only when it is empty and not one of `ancestors`, the
+ * declared folders above instance material: file names already imply nonempty directories, so adding,
+ * removing or emptying one instance's material folder never changes sibling instances.
  */
 async function hashMaterial(root: string, relative: string, childPaths: Set<string>, signal?: AbortSignal, ancestors?: Set<string>): Promise<string> {
   let current = root;
@@ -38,8 +39,9 @@ async function hashMaterial(root: string, relative: string, childPaths: Set<stri
     const absolute = path.join(root, name), info = await lstat(absolute);
     if (info.isSymbolicLink()) entries.push({ name, type: 'symlink', target: await readlink(absolute) });
     else if (info.isDirectory()) {
-      if (!ancestors?.has(name)) entries.push({ name, type: 'directory' });
-      for (const child of (await readdir(absolute)).sort()) if (!['.git', 'node_modules'].includes(child)) await walk(path.posix.join(name, child));
+      const children = (await readdir(absolute)).sort();
+      if (!ancestors || !children.length && !ancestors.has(name)) entries.push({ name, type: 'directory' });
+      for (const child of children) if (!['.git', 'node_modules'].includes(child)) await walk(path.posix.join(name, child));
     } else if (info.isFile()) {
       const hash = createHash('sha256');
       for await (const bytes of createReadStream(absolute, { signal })) hash.update(bytes);

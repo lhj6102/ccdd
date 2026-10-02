@@ -162,7 +162,16 @@ test('nested instance material and narrowed shared paths never reach sibling ide
   const filled = await hashes(transitions);
   assert.equal(empty.a, absent.a); assert.equal(filled.a, absent.a); assert.notEqual(filled.b, empty.b);
   await mkdir(join(transitions.repoPath, 'scenarios/unrelated'));
-  assert.notEqual((await hashes(transitions)).a, filled.a);
+  const unrelated = await hashes(transitions);
+  assert.notEqual(unrelated.a, filled.a);
+  // A new instance may store material in a folder that already holds shared files.
+  await writeFile(join(transitions.repoPath, 'scenarios/states/shared.txt'), 'shared');
+  const sharedFolder = await hashes(transitions);
+  assert.notEqual(sharedFolder.a, unrelated.a);
+  await writeFile(join(transitions.repoPath, 'scenarios/states/d.txt'), 'four');
+  await writeFile(join(transitions.repoPath, 'scenarios/instances.json'), JSON.stringify({ ...instances, b: { ...instances.b, material: ['states/b.txt'] }, d: { params: { ids: ['v'], instruction: 'Inspect {d}.' }, material: ['states/d.txt'] } }));
+  const joined = await hashes(transitions);
+  assert.equal(joined.a, sharedFolder.a); assert.equal(joined.b, sharedFolder.b);
 
   const narrowed = await familyFixture(t, 'scenarios', { stale: { kind: 'file-hash', paths: ['family-view.mjs', 'a.txt', 'b.txt'] } });
   const before = await hashes(narrowed);
