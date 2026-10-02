@@ -2,12 +2,15 @@ import { lstat, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import type { StaleStrategy } from '../definitions.js';
+import type { ArtifactFamilyMembership, StaleStrategy } from '../definitions.js';
 import { environmentOutputDirectory, runEnvironmentScript } from '../tools/environment.js';
 import { scopedPath } from '../tools/paths.js';
 
-/** Identity scripts use the readiness executor; the snapshot caller owns the read-only workspace lease. */
-export async function ownerIdentity(root: string, owner: string, id: string, strategy: Extract<StaleStrategy, { kind: 'identity' }>, signal?: AbortSignal) {
+/**
+ * Identity scripts use the readiness executor; the snapshot caller owns the read-only workspace lease.
+ * Stdin names the Artifact, so one shared family script can compute each instance's value.
+ */
+export async function ownerIdentity(root: string, owner: string, id: string, strategy: Extract<StaleStrategy, { kind: 'identity' }>, signal?: AbortSignal, family?: ArtifactFamilyMembership) {
   const label = `Identity script for Artifact ${id}`;
   const cwd = await scopedPath(root, owner);
   const entry = strategy.script.command === 'node' ? strategy.script.args[0] : strategy.script.command;
@@ -26,6 +29,7 @@ export async function ownerIdentity(root: string, owner: string, id: string, str
       command: node ? process.execPath : script,
       args: node ? [fileURLToPath(new URL('../tools/environment-host.js', import.meta.url)), root, script, ...strategy.script.args.slice(1)] : strategy.script.args,
       cwd, outputDir, tmpDir: temporary, signal, timeoutMs: strategy.timeoutMs, label, description,
+      input: JSON.stringify({ version: 1, artifactId: id, ...(family ? { family: { name: family.name, material: family.material } } : {}) }),
     });
     signal?.throwIfAborted();
     if (!result.ok) throw new Error(result.message);

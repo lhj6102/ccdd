@@ -16,7 +16,8 @@ const emit = defineEmits<{ select: [id: string]; 'open-critic': [critic: GraphCr
       <strong class="graph-artifact-name" :title="data.artifact.id">{{ data.artifact.id }}</strong>
       <span class="card-status" :class="data.artifact.status.toLowerCase()">{{ data.statusLabel }}</span>
     </button>
-    <div v-if="data.critics.length" class="graph-node-critics nodrag nopan" :aria-label="`${data.artifact.id} Critics`">
+    <span v-if="data.members !== undefined" class="graph-node-basis">Family · {{ data.members }} instances · {{ data.artifact.passed }}/{{ data.artifact.total }} passed</span>
+    <div v-else-if="data.critics.length" class="graph-node-critics nodrag nopan" :aria-label="`${data.artifact.id} Critics`">
       <CriticStatusIcon v-for="critic in data.critics" :key="critic.id" :critic="critic" :request="critic.requestId ? data.requests.get(critic.requestId) : undefined" :selected="Boolean(critic.requestId && critic.requestId === data.selectedRequestId)" @open="emit('open-critic', critic)" />
     </div>
     <span v-else class="graph-node-basis">{{ data.artifact.basis ? 'Validation basis' : 'No registered Critics' }}</span>

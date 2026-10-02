@@ -1,0 +1,12 @@
+{
+  "name": "Guest checkout",
+  "objective": "A guest can review the total before placing an order.",
+  "criteria": [
+    "The order summary shows both shipping and the final total.",
+    "The guest can return to the cart before placing the order."
+  ],
+  "details": [
+    { "id": "summary", "observation": "The summary shows items at $20, shipping at $5, and a final total of $25." },
+    { "id": "navigation", "observation": "A Back to cart link appears beside the Place order button." }
+  ]
+}

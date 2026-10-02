@@ -52,6 +52,23 @@ export function semanticDefinition<T extends { reviewPolicy?: unknown; stale?: {
   return result;
 }
 
+const familyPaths = new WeakMap<RepoConfig, Map<string, Set<string>>>();
+/** The shared declaration, instance list and every instance's own material, computed once per config. */
+function familyExclusions(config: RepoConfig, name: string, folder: string): Set<string> {
+  let byFamily = familyPaths.get(config);
+  if (!byFamily) familyPaths.set(config, byFamily = new Map());
+  let result = byFamily.get(name);
+  if (!result) {
+    result = new Set([path.posix.join(folder, 'ccdd.json')]);
+    for (const member of Object.values(config.artifacts)) if (member.family?.name === name) {
+      if (member.family.instances) result.add(path.posix.join(folder, member.family.instances));
+      for (const material of member.family.material) result.add(path.posix.join(folder, material));
+    }
+    byFamily.set(name, result);
+  }
+  return result;
+}
+
 export interface SnapshotOptions { identityConcurrency?: number }
 export function positiveConcurrency(value: number, name: string): number {
   if (!Number.isSafeInteger(value) || value < 1) throw new Error(`${name} must be a positive integer.`);
@@ -69,7 +86,7 @@ export async function createProjectSnapshot(config: RepoConfig, root: string, sn
   const artifactIdentities: NonNullable<ProjectSnapshot['artifactIdentities']> = {};
   const scope = Object.fromEntries(Object.entries(config.artifacts).map(([id, artifact]) => [id, { ...artifact, path: path.join(root, artifact.path) }]));
   const owners = Object.entries(config.artifacts).filter(([id, artifact]) => required.has(id) && artifact.stale?.kind === 'identity');
-  const values = new Map<string, string>();
+  const values = new Map<string, string>(), sharedMaterial = new Map<string, Promise<string>>();
   const controller = new AbortController();
   const identitySignal = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal;
   // Validate the entire selected scope before executing any owner script.
@@ -80,7 +97,7 @@ export async function createProjectSnapshot(config: RepoConfig, root: string, sn
       if (artifact.stale?.kind !== 'identity') throw new Error('Invalid owner identity strategy.');
       const lease = await resources!.acquire({ requestId: id, runId: '', kind: 'identity', repo: canonicalRepositoryId(root), identityWeight: artifact.stale.weight ?? 25 }, { signal: identitySignal, waiting() {} });
       try {
-        const { value } = await executionScope.run({ runtimeRoot: root, declaredPaths: [], trackChild: pid => lease.trackChild(pid) }, () => ownerIdentity(root, artifact.path, id, artifact.stale as Extract<NonNullable<typeof artifact.stale>, { kind: 'identity' }>, identitySignal));
+        const { value } = await executionScope.run({ runtimeRoot: root, declaredPaths: [], trackChild: pid => lease.trackChild(pid) }, () => ownerIdentity(root, artifact.path, id, artifact.stale as Extract<NonNullable<typeof artifact.stale>, { kind: 'identity' }>, identitySignal, artifact.family));
         values.set(id, value);
       } finally { await lease.release(); }
     } catch (error) { if (!controller.signal.aborted) controller.abort(error); throw error; }
@@ -97,9 +114,14 @@ export async function createProjectSnapshot(config: RepoConfig, root: string, sn
       artifactIdentities[id] = { identity: 'script', value };
       continue;
     }
-    const childPaths = new Set(Object.keys(artifact.children).map(child => path.posix.join(artifact.path, child)));
+    // Physical child locations: a family instance is a logical child whose material is its family folder.
+    const childPaths = new Set(Object.values(artifact.children).map(child => config.artifacts[child]?.path ?? path.posix.join(artifact.path, child)));
     const paths = new Set(artifact.stale?.kind === 'file-hash' && artifact.stale.paths ? artifact.stale.paths.map(name => path.posix.join(artifact.path, name)) : [artifact.path]);
-    const mandatoryPaths = new Set([path.posix.join(artifact.path, 'ccdd.json')]);
+    // A family instance is covered by its resolved definition and entry, not by the shared declaration bytes,
+    // so adding or editing another instance never invalidates it. Other instances' material is excluded.
+    const family = artifact.family;
+    if (family) for (const name of familyExclusions(config, family.name, artifact.path)) childPaths.add(name);
+    const mandatoryPaths = new Set(family ? family.material.map(name => path.posix.join(artifact.path, name)) : [path.posix.join(artifact.path, 'ccdd.json')]);
     const tools = [...Object.values(artifact.views.agentTools ?? {}), ...Object.values(artifact.views.humanTools ?? {})];
     // Local script entry files are mandatory inputs even with a narrower stale.paths declaration.
     for (const tool of tools) for (const argument of [tool.script.command, ...tool.script.args]) {
@@ -123,7 +145,15 @@ export async function createProjectSnapshot(config: RepoConfig, root: string, sn
       }
     }
     for (const name of mandatoryPaths) paths.add(name);
-    const fingerprints = await Promise.all([...paths].sort().map(async name => ({ path: name, hash: await hashMaterial(root, name, mandatoryPaths.has(name) ? new Set() : childPaths, signal) })));
+    // Instances of one family exclude the same paths, so their shared material is hashed once per snapshot.
+    const material = (name: string): Promise<string> => {
+      if (mandatoryPaths.has(name)) return hashMaterial(root, name, new Set(), signal);
+      if (!family) return hashMaterial(root, name, childPaths, signal);
+      const key = `${family.name}\0${name}`;
+      if (!sharedMaterial.has(key)) sharedMaterial.set(key, hashMaterial(root, name, childPaths, signal));
+      return sharedMaterial.get(key)!;
+    };
+    const fingerprints = await Promise.all([...paths].sort().map(async name => ({ path: name, hash: await material(name) })));
     const executionPaths = new Set(tools.flatMap(tool => tool.metadata.executionPaths ?? []));
     const executionInputs = config.configManifest.executionInputs?.filter(input => executionPaths.has(input.path));
     const requirements = Object.fromEntries(Object.entries(config.configManifest.envRequirements ?? {}).filter(([name]) => name.startsWith(`${id}/`)));

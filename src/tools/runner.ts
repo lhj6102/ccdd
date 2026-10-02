@@ -188,6 +188,7 @@ export async function createReviewTools(options: ReviewToolsOptions): Promise<Re
     outputDir = await mkdtemp(join(base, 'tool-output-'));
     scope = Object.fromEntries(await Promise.all(artifacts.map(async artifact => [artifact.id, {
       path: await scopedPath(root, artifact.path), children: structuredClone(artifact.children), mounts: structuredClone(artifact.mounts),
+      ...(artifact.family ? { family: { name: artifact.family.name, material: [...artifact.family.material] } } : {}),
     }])));
     signal?.throwIfAborted();
   } catch (error) {

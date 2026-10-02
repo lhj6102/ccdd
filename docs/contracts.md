@@ -6,11 +6,40 @@ Version 4 replaces global configuration with folder-owned Artifacts. `@ccdd/core
 
 A regular `ccdd.json` marks its containing folder as an Artifact. A root marker follows the same rule; it is never a workspace-wide configuration object. Discovery recursively searches `--repo`, excluding `.git`, `node_modules` and symlink directories. These discovery exclusions do not change whole-workspace integrity monitoring.
 
-Allowed fields are `name`, `critics`, `views`, `mounts`, `basis`, `stale`, `envRequirements`, and root-only `reviewPolicy`. Unknown fields fail validation. Omitted Critics, views and mounts are empty. Names are unique across the workspace and match `[A-Za-z0-9][A-Za-z0-9_-]{0,63}`. Critic IDs use that grammar locally and are unique within their owner. Public CLI, history and graph IDs are `artifact/local-critic`.
+Allowed fields are `name`, `critics`, `views`, `mounts`, `basis`, `stale`, `envRequirements`, `family` and root-only `reviewPolicy`. Unknown fields fail validation. Omitted Critics, views and mounts are empty. Names are unique across the workspace and match `[A-Za-z0-9][A-Za-z0-9_-]{0,63}`. Critic IDs use that grammar locally and are unique within their owner. Public CLI, history and graph IDs are `artifact/local-critic`.
 
 Critics declare `id`, `title`, `profile` and `payload.instruction`. Their target is the owner. Users do not declare `target` or `deps`. Agent, Human and Runtime profiles retain their existing evaluation contracts. A basis is an explicit accepted input with no Critics. An ordinary Artifact without Critics is UNREVIEWED, including an empty folder.
 
 Discovery parses JSON and fingerprints declared files. It never imports JS/TS configuration, runs factories, executes a view or performs source preparation. Old global config files are not loaded. Config factories, `artifactTypes`, groups, generated Artifacts, sources and frozen JSON preparation are removed. There is no compatibility loader. See [the migration guide](migration-v4.md).
+
+### Artifact families
+
+A `ccdd.json` with `family` declares several Artifacts that share one folder, its views and its Critics. `name` then names the family. The instances are listed statically, either inline or in one owner-relative JSON file. Abbreviated from the [family example](../examples/artifact-families/README.md):
+
+```json
+{
+  "name": "scenarios",
+  "family": { "instances": "instances.json" },
+  "views": { "agentTools": { "detail": { "metadata": { "inputSchema": { "type": "object", "properties": { "id": { "enum": { "$param": "/detailIds" } } } } }, "script": { "command": "node", "args": ["view.mjs", "detail"] } } } },
+  "critics": [{ "id": "review", "title": "Review the scenario", "profile": { "kind": "human" }, "payload": { "instruction": { "$param": "/instruction" } } }]
+}
+```
+
+```json
+{
+  "checkout": { "params": { "detailIds": ["summary", "navigation"], "instruction": "Inspect {checkout}." }, "material": ["checkout.json"] },
+  "search": { "params": { "detailIds": ["message", "query"], "instruction": "Inspect {search}." }, "material": ["search.json"] }
+}
+```
+
+Each key is an instance Artifact name, unique across the workspace like any other name; the family name is reserved too. An entry accepts only optional `params` (an object) and `material` (at most 64 unique owner-relative literal paths). A family lists 1–10000 instances. Within `views` and `critics`, every `{"$param": "/json/pointer"}` value is replaced by a copy of the instance parameter at that RFC 6901 pointer, and the result is validated as an ordinary declaration. The object must contain only `$param`; a missing parameter is an error. Parameters are copied, never evaluated, interpolated into strings or applied elsewhere: names, mounts, `stale`, `basis` and `envRequirements` are shared by every instance. `$param` outside a family declaration is rejected.
+
+Each instance is an ordinary Artifact with its own Critics, evidence and relations. Its path is the family folder, which is the cwd of its scripts. Instruction references, including substituted ones, add dependencies as usual. A family is not itself an Artifact: mounting or referencing its name is an error that asks for an instance. `basis` applies to every instance.
+
+A family folder cannot be the workspace root, cannot declare `reviewPolicy` and cannot contain nested `ccdd.json` markers; its unmarked subfolders are material. A family nested inside another Artifact folder gives that parent one logical child per instance, keyed `<family folder>/<instance name>`. `resolveScopePath` resolves `scenarios/checkout/checkout.json` from such a parent to instance `checkout` and path `checkout.json`; no directory is created.
+
+Discovery reads the instance list and executes nothing; `config check`, `graph` and monitor GETs see every instance without running scripts. Families are not generated Artifacts: an author or an authoring tool writes the list, and CCDD reads it like any other declared file.
+
 
 ## Relationships and observation scope
 
@@ -50,6 +79,8 @@ A script declares a fixed `command` and string `args`. There is no shell interpo
   "args": { "path": "style/rules.md" }
 }
 ```
+
+A family instance's scope entry adds `"family": {"name": "scenarios", "material": ["checkout.json"]}`. `artifactId` names the instance and `artifactPath` is the shared family folder, so one script serves every instance by reading `context.scope[context.artifactId].family.material`. The request version stays 1; scripts that ignore the field are unaffected.
 
 Arguments must remain an object of at most 64 KiB. Schema mismatches normally return
 the first five TypeBox validation errors, bounded to 4 KiB of UTF-8 text, with instance
@@ -241,7 +272,8 @@ cwd; its imports resolve only to snapshot files and Node builtins. It is trusted
 code, not an OS sandbox: like identity and readiness scripts it keeps `HOME` and can
 read files outside the snapshot through `node:fs`, and it must leave the workspace
 unchanged. Its stdin is
-`{"version":1,"result":{...},"toolCalls":[{"artifactId","operation","arguments","isError"?}]}`
+`{"version":1,"artifactId":"...","family"?:{"name","material"},"result":{...},"toolCalls":[{"artifactId","operation","arguments","isError"?}]}`,
+where the top-level `artifactId` is the reviewed Artifact and `family` is present for a family instance,
 with the review's recorded calls in order: successful calls, and calls whose tool
 returned an authored domain error, marked `"isError": true`. Calls that failed to run,
 returned malformed output or had invalid arguments are never recorded and are absent.
@@ -267,7 +299,9 @@ verdict, a local path or file system error text.
 
 Local material identity hashes content, names, entry types, executable bits and empty directories. Separate child Artifacts are hashed through their relations rather than twice as parent material. `.git` and installed `node_modules` are excluded from default Artifact material; the complete workspace still has its independent integrity proof. Declare used installed runtimes in `executionPaths`.
 
-`stale: {"kind":"file-hash","paths":[...]}` narrows material to literal owner-relative files/directories, without globs. Missing selected paths have a distinct identity. Config, local view entry files, Runtime test entry files and result check scripts remain mandatory inputs. Environment scripts and their declared `inputs`, view execution inputs, and typed child/mount/instruction relations also participate. Dynamic imports or other files beyond these boundaries must be declared; mutable external services need an appropriate conservative strategy.
+A family instance's own material is its shared folder, without the declaration, the instance list or any instance's listed material, plus its own listed material. Its resolved definition, Critics and a hash of its entry (`params` and `material`) replace the raw declaration bytes. So editing one instance's material or entry, or adding another instance with new material, leaves the other instances' evidence current, while changing the shared declaration, scripts or unlisted files invalidates every instance. Material that no instance lists any longer becomes shared again.
+
+`stale: {"kind":"file-hash","paths":[...]}` narrows material to literal owner-relative files/directories, without globs. In a family it narrows the shared material; each instance's listed material remains an input. Missing selected paths have a distinct identity. Config, local view entry files, Runtime test entry files and result check scripts remain mandatory inputs. Environment scripts and their declared `inputs`, view execution inputs, and typed child/mount/instruction relations also participate. Dynamic imports or other files beyond these boundaries must be declared; mutable external services need an appropriate conservative strategy.
 
 ### Owner-defined identity
 
@@ -285,6 +319,8 @@ An owner can replace all automatic local identity inputs with an opaque equivale
 Only `kind`, `script`, optional `inputs` and optional `timeoutMs` are accepted; a script accepts only `command` and `args`. Unknown fields fail configuration validation. `inputs` is a list of at most 64 unique owner-relative literal paths (files or directories, no globs); omission and an empty list are allowed. Entry files and inputs cannot escape the owner or traverse symlinks. Internal relative symlinks within a declared input directory follow the same rules as execution inputs. Inputs must exist.
 
 Supported commands are `node` with an owner-relative entry file as the first argument (additional arguments are passed to that script), or an owner-relative executable whose command path is itself the entry file. `node` uses the current Node executable and the environment-script import host. Inline `-e`/`-p`, flags before the Node entry, absolute executable paths and PATH interpreter lookup are not supported: every identity must have a scoped entry file. Other interpreters may be invoked through an owner-provided executable entry. Declared `inputs` are scoped and checked for existence, but neither their contents nor the entry file are automatically hashed. Include their relevant semantics in the returned identity value.
+
+Stdin is `{"version":1,"artifactId":"..."}`, adding `"family":{"name","material"}` for a family instance. A family's identity strategy runs once per selected instance, so one shared script computes each instance's value from its own material. Scripts that ignore stdin are unaffected.
 
 Scripts use the environment-requirement executor: owner cwd, a credential-filtered environment, external temporary/output directories, bounded output, process-group cleanup, cancellation and a timeout. On timeout or cancellation the executor signals the script's process group, waits a 500 ms grace, then stops reading its output and fails; it never waits on pipes a descendant keeps open. A descendant that detaches into its own process group can outlive the script: full descendant cleanup would need OS-level isolation, which this executor does not provide. `timeoutMs` is an integer from 1 to 900000, default 30000. Temporary output is removed after each invocation. The workspace must remain unchanged; the normal workspace integrity checks still apply. These are trusted owner scripts, not an OS sandbox, and must treat the workspace as read-only.
 
@@ -640,7 +676,7 @@ unchanged. Closing, cancellation, or invalidation stops fallback scheduling.
 
 `doctor` diagnoses readiness, not project quality. Runtime startup checks do not run project tests. Agent readiness performs a real Provider roundtrip and reads a private nonce through a private script Artifact outside the workspace. It never substitutes that result for project evaluation. Human readiness checks alarm registration without notifying a reviewer. `tools check` lists static tools; only `--execute` calls the selected script against monitored input. `tools check --critic ARTIFACT/CRITIC` selects that Critic's admitted Artifacts and reviewer kind and cannot be combined with `--artifact`, `--for`, `--tool` or `--execute`. For an Agent Critic whose checks pass, its `prompt` field reports UTF-8 bytes of the request CCDD passes to Pi before the first turn, built by the same code as an actual review: `totalBytes` (system prompt with the final result schema, first prompt and tool definitions), `toolBytes` per admitted Artifact (name, description and input schema), `payloadBytes` (the payload as the prompt shows it) and `responseSchemaBytes`. Provider wire framing is not included. No Provider is called.
 
-The optional loopback monitor displays saved review state, owner overlays and folder locations. Graphs show owned Critics, containment, mounts, instruction edges and cycles. Waiting for execution is separate from missing final validation evidence. Explicit current-input inspection is a POST delegated to Project Validation; its answer is not stored as stale state. GET never evaluates config, executes scripts, reconciles workers or mutates stored review state.
+The optional loopback monitor displays saved review state, owner overlays and folder locations. Graphs show owned Critics, containment, mounts, instruction edges and cycles. Each Artifact family is shown as one node that summarizes its instances and their relations; its detail lists every instance and its Critics, and it can be expanded into instance nodes. Waiting for execution is separate from missing final validation evidence. Explicit current-input inspection is a POST delegated to Project Validation; its answer is not stored as stale state. GET never evaluates config, executes scripts, reconciles workers or mutates stored review state.
 
 Human claim, tool and result POSTs delegate to the Broker with origin/CSRF and browser-reviewer checks. Historical reviews are result-only: no live tool, claim, workspace preview or resume route. The monitor owns no execution scheduler. User-managed worktrees are accepted as supplied input; no transfer, copy or virtual filesystem materialization occurs.
 

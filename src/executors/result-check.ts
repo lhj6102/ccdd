@@ -1,7 +1,7 @@
 import { mkdtemp, realpath, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import type { ResultCheck, ReviewToolCall } from '../contracts.js';
+import type { ArtifactFamilyMembership, ResultCheck, ReviewToolCall } from '../contracts.js';
 import { environmentOutputDirectory, runEnvironmentScript } from '../tools/environment.js';
 import { scopedPath } from '../tools/paths.js';
 import { object } from '../tools/schema.js';
@@ -17,8 +17,8 @@ const failed = () => diagnosticError('RESULT_CHECK_FAILED', 'The Critic result c
  * Error text is author-controlled and only reaches the repair prompt, never stored state.
  * `signal` is the review's own deadline and cancellation: it stops the script's process group.
  */
-export async function runResultCheck({ worktreePath, ownerPath, check, result, toolCalls, runDir, signal }: {
-  worktreePath: string; ownerPath: string; check: ResultCheck; result: unknown; toolCalls: readonly ReviewToolCall[]; runDir: string; signal?: AbortSignal;
+export async function runResultCheck({ worktreePath, ownerPath, artifactId, family, check, result, toolCalls, runDir, signal }: {
+  worktreePath: string; ownerPath: string; artifactId?: string; family?: ArtifactFamilyMembership; check: ResultCheck; result: unknown; toolCalls: readonly ReviewToolCall[]; runDir: string; signal?: AbortSignal;
 }): Promise<string[]> {
   // Missing scripts and output setup failures report the same fixed error, never a local path.
   const prepared = await (async () => {
@@ -30,7 +30,8 @@ export async function runResultCheck({ worktreePath, ownerPath, check, result, t
   try {
     // Recorded calls: successful ones and authored domain errors (isError). Calls that failed
     // to run, returned malformed output or had invalid arguments were never recorded.
-    const input = JSON.stringify({ version: 1, result, toolCalls: toolCalls.map(call => ({
+    // The reviewed Artifact lets one shared family check script select its instance's material.
+    const input = JSON.stringify({ version: 1, ...(artifactId ? { artifactId } : {}), ...(family ? { family: { name: family.name, material: family.material } } : {}), result, toolCalls: toolCalls.map(call => ({
       artifactId: call.observation?.artifactId, operation: call.observation?.operation, arguments: call.arguments ?? {}, ...(call.isError ? { isError: true } : {}),
     })) });
     const run = await runEnvironmentScript({ command: process.execPath, args: [fileURLToPath(new URL('../tools/environment-host.js', import.meta.url)), root, script],

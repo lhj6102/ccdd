@@ -1,0 +1,66 @@
+{
+  "name": "scenarios",
+  "family": {
+    "instances": "instances.json"
+  },
+  "views": {
+    "agentTools": {
+      "overview": {
+        "metadata": {
+          "description": "Read the objective, criteria and detail IDs of {artifactName}.",
+          "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false },
+          "resultKinds": ["json"],
+          "observation": "content"
+        },
+        "script": { "command": "node", "args": ["view.mjs", "overview"] }
+      },
+      "detail": {
+        "metadata": {
+          "description": "Read one observed detail of {artifactName}.",
+          "inputSchema": {
+            "type": "object",
+            "properties": { "id": { "type": "string", "enum": { "$param": "/detailIds" } } },
+            "required": ["id"],
+            "additionalProperties": false
+          },
+          "resultKinds": ["json"],
+          "observation": "content"
+        },
+        "script": { "command": "node", "args": ["view.mjs", "detail"] }
+      }
+    },
+    "humanTools": {
+      "overview": {
+        "metadata": {
+          "description": "Read the objective, criteria and detail IDs of {artifactName}.",
+          "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false },
+          "resultKinds": ["json"],
+          "observation": "content"
+        },
+        "script": { "command": "node", "args": ["view.mjs", "overview"] }
+      },
+      "detail": {
+        "metadata": {
+          "description": "Read one observed detail of {artifactName}.",
+          "inputSchema": {
+            "type": "object",
+            "properties": { "id": { "type": "string", "enum": { "$param": "/detailIds" } } },
+            "required": ["id"],
+            "additionalProperties": false
+          },
+          "resultKinds": ["json"],
+          "observation": "content"
+        },
+        "script": { "command": "node", "args": ["view.mjs", "detail"] }
+      }
+    }
+  },
+  "critics": [
+    {
+      "id": "review",
+      "title": "Review the scenario",
+      "profile": { "kind": "human" },
+      "payload": { "instruction": { "$param": "/instruction" } }
+    }
+  ]
+}

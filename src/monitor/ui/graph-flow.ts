@@ -7,6 +7,8 @@ export interface ArtifactNodeData {
   critics: GraphCriticState[];
   requests: Map<string, MonitorRequest>;
   statusLabel: string;
+  /** Instance count when this node is a collapsed Artifact family. */
+  members?: number;
   accessibleLabel: string;
   selected: boolean;
   selectedRequestId?: string;

@@ -3,7 +3,7 @@ import { validateResponseSchema } from '../response-schema.js';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { lstat, readFile, readdir, realpath } from 'node:fs/promises';
-import type { ArtifactManifest, ArtifactDefinition, CriticDefinition, ResolvedCriticDefinition, ArtifactRelation } from '../definitions.js';
+import type { ArtifactManifest, ArtifactDefinition, ArtifactFamilyMembership, CriticDefinition, ResolvedCriticDefinition, ArtifactRelation } from '../definitions.js';
 import type { ArtifactViews, ConfigManifest, ScriptDefinition } from '../tools/contracts.js';
 import type { RepoConfig } from '../contracts.js';
 import { metadata, environmentRequirements, object, projectInputPath } from '../tools/schema.js';
@@ -14,6 +14,9 @@ import { instructionReferences } from '../artifacts/instruction.js';
 export const identifier = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
 export const criticIdentifier = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}\/[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
 const hash = (value: string) => createHash('sha256').update(value).digest('hex');
+const sorted = (value: unknown): unknown => Array.isArray(value) ? value.map(sorted)
+  : object(value) ? Object.fromEntries(Object.keys(value).sort().map(key => [key, sorted(value[key])])) : value;
+export const MAX_FAMILY_INSTANCES = 10000;
 const ownMap = <T>(): Record<string, T> => Object.create(null) as Record<string, T>;
 export function validateRelativePath(value: unknown): string { projectInputPath(value); return value; }
 function fields(value: Record<string, unknown>, allowed: readonly string[], label: string): void {
@@ -74,7 +77,7 @@ function critic(value: unknown): CriticDefinition {
   }
   return structuredClone(value) as CriticDefinition;
 }
-function manifest(value: unknown): ArtifactManifest {
+function manifest(value: unknown): Omit<ArtifactManifest, 'family'> {
   if (!object(value)) throw new Error('ccdd.json must contain an Artifact object.');
   fields(value, ['name', 'critics', 'views', 'mounts', 'basis', 'stale', 'envRequirements', 'reviewPolicy'], 'Artifact');
   if (typeof value.name !== 'string' || !identifier.test(value.name)) throw new Error('Artifact name must be a safe identifier.');
@@ -121,6 +124,77 @@ function manifest(value: unknown): ArtifactManifest {
     ...(value.envRequirements === undefined ? {} : { envRequirements: environmentRequirements(value.envRequirements) }) };
 }
 
+/** Resolve an RFC 6901 pointer inside one instance's params. */
+function parameter(params: Record<string, unknown>, pointer: string, instance: string): unknown {
+  if (pointer === '') return params;
+  if (!pointer.startsWith('/')) throw new Error(`$param must be a JSON Pointer such as "/schema", not ${JSON.stringify(pointer)}.`);
+  let current: unknown = params;
+  for (const token of pointer.slice(1).split('/').map(part => part.replace(/~1/g, '/').replace(/~0/g, '~'))) {
+    if (Array.isArray(current) && /^(?:0|[1-9][0-9]*)$/.test(token) && Number(token) < current.length) current = current[Number(token)];
+    else if (object(current) && Object.hasOwn(current, token)) current = current[token];
+    else throw new Error(`Instance ${instance} has no parameter at ${pointer}.`);
+  }
+  return current;
+}
+/** Replace every {"$param": pointer} value with a copy of that parameter. Nothing is evaluated. */
+function substitute(value: unknown, params: Record<string, unknown>, instance: string): unknown {
+  if (Array.isArray(value)) return value.map(item => substitute(item, params, instance));
+  if (!object(value)) return value;
+  if (Object.hasOwn(value, '$param')) {
+    if (Object.keys(value).length !== 1 || typeof value.$param !== 'string') throw new Error('A parameter reference must be exactly {"$param": "/json/pointer"}.');
+    return structuredClone(parameter(params, value.$param, instance));
+  }
+  return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, substitute(item, params, instance)]));
+}
+const parameterized = (value: unknown): boolean => Array.isArray(value) ? value.some(parameterized)
+  : object(value) && (Object.hasOwn(value, '$param') || Object.values(value).some(parameterized));
+
+interface FamilyMember { manifest: Omit<ArtifactManifest, 'family'>; family?: ArtifactFamilyMembership }
+/** Expand a family declaration into its statically listed instance Artifacts. */
+async function familyInstances(root: string, relative: string, value: Record<string, any>): Promise<{ members: FamilyMember[]; list?: { path: string; hash: string } }> {
+  const { family, ...template } = value;
+  if (!relative) throw new Error('An Artifact family cannot be the workspace root; place it in a subfolder.');
+  if (typeof template.name !== 'string' || !identifier.test(template.name)) throw new Error('Artifact family name must be a safe identifier.');
+  if (template.reviewPolicy !== undefined) throw new Error('reviewPolicy belongs only to the repository root ccdd.json.');
+  if (!object(family)) throw new Error('family must be an object.');
+  fields(family, ['instances'], 'family');
+  let instances: unknown = family.instances, file: string | undefined, list: { path: string; hash: string } | undefined;
+  if (typeof instances === 'string') {
+    file = instances;
+    try { projectInputPath(file); } catch { throw new Error('family.instances must be an owner-relative JSON file or an inline object.'); }
+    if (file === 'ccdd.json') throw new Error('family.instances must name a file other than ccdd.json.');
+    const location = await scopedPath(root, path.posix.join(relative, file));
+    if (!(await lstat(location).catch(() => null))?.isFile()) throw new Error(`Instance list ${file} must be a regular file.`);
+    const text = await readFile(location, 'utf8');
+    try { instances = JSON.parse(text); } catch { throw new Error(`Instance list ${file} must contain JSON.`); }
+    list = { path: path.posix.join(relative, file), hash: hash(text) };
+  }
+  if (!object(instances) || !Object.keys(instances).length || Object.keys(instances).length > MAX_FAMILY_INSTANCES) throw new Error(`family.instances must list 1–${MAX_FAMILY_INSTANCES} instances by Artifact name.`);
+  const entries = instances;
+  const members = Object.keys(entries).sort().map((name): FamilyMember => {
+    const entry: unknown = entries[name];
+    if (!identifier.test(name)) throw new Error(`Instance name ${JSON.stringify(name)} must be a safe Artifact identifier.`);
+    if (name === template.name) throw new Error(`Instance ${name} cannot reuse its family name.`);
+    if (!object(entry)) throw new Error(`Instance ${name} must be an object with optional params and material.`);
+    fields(entry, ['params', 'material'], 'instance');
+    if (entry.params !== undefined && !object(entry.params)) throw new Error(`Instance ${name} params must be an object.`);
+    const material: unknown = entry.material ?? [];
+    if (!Array.isArray(material) || material.length > 64 || new Set(material).size !== material.length) throw new Error(`Instance ${name} material must contain at most 64 unique owner-relative paths.`);
+    for (const item of material) {
+      try { projectInputPath(item); } catch { throw new Error(`Instance ${name} material must contain owner-relative paths.`); }
+      if (item === 'ccdd.json' || item === file) throw new Error(`Instance ${name} material cannot claim the family declaration.`);
+    }
+    const params = (entry.params ?? {}) as Record<string, unknown>, own = [...material as string[]].sort();
+    let declared: Omit<ArtifactManifest, 'family'>;
+    try {
+      declared = manifest({ ...template, name, ...(template.views === undefined ? {} : { views: substitute(template.views, params, name) }),
+        ...(template.critics === undefined ? {} : { critics: substitute(template.critics, params, name) }) });
+    } catch (error) { throw new Error(`instance ${name}: ${error instanceof Error ? error.message : String(error)}`); }
+    return { manifest: declared, family: { name: template.name, ...(file === undefined ? {} : { instances: file }), material: own, entry: hash(JSON.stringify(sorted({ params, material: own }))) } };
+  });
+  return { members, ...(list ? { list } : {}) };
+}
+
 /** Discover static per-folder declarations. No imports, generators, tools, or Providers run here. */
 export async function readWorkspaceConfig(repoPath: string, signal?: AbortSignal): Promise<{ config: RepoConfig }> {
   return readConfig(repoPath, signal);
@@ -128,13 +202,13 @@ export async function readWorkspaceConfig(repoPath: string, signal?: AbortSignal
 
 /** Reconnect only recorded scope folders; discovery still detects new nearest children. */
 export async function readArtifactConfig(repoPath: string, artifacts: ConfigManifest['artifacts'], criticId?: string, signal?: AbortSignal): Promise<{ config: RepoConfig }> {
-  return readConfig(repoPath, signal, { paths: Object.values(artifacts).map(artifact => artifact.path), criticId });
+  return readConfig(repoPath, signal, { paths: Object.values(artifacts).map(artifact => artifact.path), names: new Set(Object.keys(artifacts)), criticId });
 }
 
-async function readConfig(repoPath: string, signal?: AbortSignal, scope?: { paths: string[]; criticId?: string }): Promise<{ config: RepoConfig }> {
+async function readConfig(repoPath: string, signal?: AbortSignal, scope?: { paths: string[]; names: Set<string>; criticId?: string }): Promise<{ config: RepoConfig }> {
   const root = await realpath(repoPath), artifacts = ownMap<ArtifactDefinition>(), declarations: ConfigManifest['declarations'] = [];
-  const localCritics = ownMap<CriticDefinition[]>();
-  const walk = async (relative: string, parent?: string): Promise<void> => {
+  const localCritics = ownMap<CriticDefinition[]>(), families = ownMap<string>();
+  const walk = async (relative: string, parent?: string, family?: string): Promise<void> => {
     signal?.throwIfAborted();
     const absolute = path.join(root, relative), entries = await readdir(absolute, { withFileTypes: true });
     entries.sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
@@ -142,22 +216,42 @@ async function readConfig(repoPath: string, signal?: AbortSignal, scope?: { path
     let owner = parent;
     if (marker) {
       if (!marker.isFile()) throw new Error(`ccdd.json must be a regular file: ${relative || '.'}`);
-      const file = path.posix.join(relative, 'ccdd.json'), text = await readFile(path.join(root, file), 'utf8');
-      let declared: ArtifactManifest;
-      try { declared = manifest(JSON.parse(text)); } catch (error) { throw new Error(`${file}: ${error instanceof Error ? error.message : String(error)}`); }
-      if (Object.hasOwn(artifacts, declared.name)) throw new Error(`Duplicate Artifact name: ${declared.name}`);
-      if (relative && declared.reviewPolicy !== undefined) throw new Error('reviewPolicy belongs only to the repository root ccdd.json.');
-      const { critics = [], ...definition } = declared;
-      artifacts[declared.name] = { ...definition, path: relative, views: definition.views ?? {}, mounts: definition.mounts ?? {}, children: ownMap<string>() };
-      localCritics[declared.name] = critics;
-      declarations.push({ path: file, hash: hash(text) });
-      if (parent !== undefined) {
-        const childPath = path.posix.relative(artifacts[parent].path || '.', relative);
-        artifacts[parent].children[childPath] = declared.name;
+      const file = path.posix.join(relative, 'ccdd.json');
+      if (family !== undefined) throw new Error(`${file}: Artifact family ${family} cannot contain nested ccdd.json markers.`);
+      const text = await readFile(path.join(root, file), 'utf8');
+      let members: FamilyMember[], list: { path: string; hash: string } | undefined;
+      try {
+        const value: unknown = JSON.parse(text);
+        if (object(value) && value.family !== undefined) ({ members, list } = await familyInstances(root, relative, value));
+        else {
+          if (object(value) && (parameterized(value.views) || parameterized(value.critics))) throw new Error('$param references are allowed only in an Artifact family declaration.');
+          members = [{ manifest: manifest(value) }];
+        }
+      } catch (error) { throw new Error(`${file}: ${error instanceof Error ? error.message : String(error)}`); }
+      family = members[0].family?.name;
+      if (family !== undefined) {
+        if (Object.hasOwn(artifacts, family) || Object.hasOwn(families, family)) throw new Error(`Duplicate Artifact name: ${family}`);
+        families[family] = relative;
       }
-      owner = declared.name;
+      declarations.push({ path: file, hash: hash(text) });
+      if (list) declarations.push(list);
+      for (const { manifest: declared, family: membership } of members) {
+        if (Object.hasOwn(artifacts, declared.name) || Object.hasOwn(families, declared.name)) throw new Error(`Duplicate Artifact name: ${declared.name}`);
+        if (relative && declared.reviewPolicy !== undefined) throw new Error('reviewPolicy belongs only to the repository root ccdd.json.');
+        // One family folder holds every instance; a parent sees each instance as a logical child below that folder.
+        if (parent !== undefined) {
+          const childPath = path.posix.relative(artifacts[parent].path || '.', relative);
+          artifacts[parent].children[membership ? path.posix.join(childPath, declared.name) : childPath] = declared.name;
+        }
+        // Reconnecting a recorded scope keeps only its recorded instances; a new instance still changes its parent.
+        if (scope && membership && !scope.names.has(declared.name)) continue;
+        const { critics = [], ...definition } = declared;
+        artifacts[declared.name] = { ...definition, path: relative, views: definition.views ?? {}, mounts: definition.mounts ?? {}, children: ownMap<string>(), ...(membership ? { family: membership } : {}) };
+        localCritics[declared.name] = critics;
+      }
+      owner = family === undefined ? members[0].manifest.name : parent;
     }
-    for (const entry of entries) if (entry.isDirectory() && !['.git', 'node_modules'].includes(entry.name)) await walk(path.posix.join(relative, entry.name), owner);
+    for (const entry of entries) if (entry.isDirectory() && !['.git', 'node_modules'].includes(entry.name)) await walk(path.posix.join(relative, entry.name), owner, family);
   };
   if (scope) {
     const roots = [...new Set(scope.paths)].sort();
@@ -174,8 +268,9 @@ async function readConfig(repoPath: string, signal?: AbortSignal, scope?: { path
   for (const [id, artifact] of Object.entries(artifacts)) {
     for (const [name, source] of Object.entries(artifact.children)) relations.push({ source, target: id, kind: 'child', name });
     for (const [alias, source] of Object.entries(artifact.mounts)) {
+      if (Object.hasOwn(families, source)) throw new Error(`Mount target ${source} in ${id} is an Artifact family; mount one of its instances.`);
       if (!Object.hasOwn(artifacts, source)) throw new Error(`Unknown mount target ${source} in ${id}.`);
-      if (alias === id && source !== id || Object.hasOwn(artifacts, alias) && alias !== source) throw new Error(`Ambiguous mount alias ${alias} in ${id}.`);
+      if (alias === id && source !== id || (Object.hasOwn(artifacts, alias) || Object.hasOwn(families, alias)) && alias !== source) throw new Error(`Ambiguous mount alias ${alias} in ${id}.`);
       if (await lstat(path.join(root, artifact.path, alias)).catch(error => { if (error.code === 'ENOENT') return null; throw error; })) throw new Error(`Mount ${id}/${alias} conflicts with a physical entry.`);
       relations.push({ source, target: id, kind: 'mount', name: alias });
     }
@@ -184,6 +279,7 @@ async function readConfig(repoPath: string, signal?: AbortSignal, scope?: { path
       const qualifiedId = `${id}/${declared.id}`, references = ownMap<string>();
       for (const name of instructionReferences(declared.payload.instruction)) {
         const resolved = Object.hasOwn(artifact.mounts, name) ? artifact.mounts[name] : name;
+        if (Object.hasOwn(families, resolved)) throw new Error(`Reference {${name}} in ${qualifiedId} names an Artifact family; reference one of its instances.`);
         if (!Object.hasOwn(artifacts, resolved)) throw new Error(`Unknown Artifact reference {${name}} in ${qualifiedId}. Escape literal braces with a backslash.`);
         references[name] = resolved;
       }

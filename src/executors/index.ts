@@ -208,8 +208,8 @@ export function createExecutorRegistry({ piOptions, streamFn, alarmMethods = [],
         const { final, toolCalls } = await invokePi({ piOptions, streamFn, request, worktreePath, runDir, signal, onEvent, schema: finalResultSchema(request), async inspectResult(final, toolCalls, reviewSignal): Promise<FinalResultDiagnostic | undefined> {
           const result = final as ReviewResult;
           if (request.resultCheck) {
-            const ownerPath = request.artifacts.find(artifact => artifact.id === request.target)!.path;
-            const messages = await runResultCheck({ worktreePath, ownerPath, check: request.resultCheck, result, toolCalls, runDir, signal: reviewSignal });
+            const owner = request.artifacts.find(artifact => artifact.id === request.target)!;
+            const messages = await runResultCheck({ worktreePath, ownerPath: owner.path, artifactId: owner.id, family: owner.family, check: request.resultCheck, result, toolCalls, runDir, signal: reviewSignal });
             if (messages.length) return { category: 'result_check', messages };
           }
           try {
