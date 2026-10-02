@@ -1,0 +1,37 @@
+name: Identity cache workbench
+
+on:
+  push:
+    branches: [feat/project-independent-identity-cache]
+    paths: [.github/workflows/identity-cache-workbench.yml]
+
+permissions:
+  contents: read
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Package public source and locked test dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/workbench"
+          git archive HEAD | gzip > "$RUNNER_TEMP/workbench/source.tar.gz"
+          tar -czf "$RUNNER_TEMP/workbench/dependencies.tar.gz" node_modules
+          cp "$(command -v node)" "$RUNNER_TEMP/workbench/node"
+          git rev-parse HEAD > "$RUNNER_TEMP/workbench/commit.txt"
+          node --version > "$RUNNER_TEMP/workbench/node-version.txt"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: identity-cache-workbench
+          path: ${{ runner.temp }}/workbench
+          if-no-files-found: error
+          retention-days: 1
