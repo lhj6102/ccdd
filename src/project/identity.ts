@@ -20,15 +20,15 @@ export const inputHash = (value: unknown): string => createHash('sha256').update
 
 /**
  * Own material excludes separately identified child Artifacts and installed runtime directories.
- * Family shared material records only empty directories: file names already imply their ancestors,
- * so a directory holding only one instance's material does not change its siblings.
+ * Family shared material omits `ancestors`, the declared folders above instance material: whether they
+ * are missing, empty or hold that material, they never change sibling instances.
  */
-async function hashMaterial(root: string, relative: string, childPaths: Set<string>, signal?: AbortSignal, family = false): Promise<string> {
+async function hashMaterial(root: string, relative: string, childPaths: Set<string>, signal?: AbortSignal, ancestors?: Set<string>): Promise<string> {
   let current = root;
   for (const component of relative.split('/').filter(Boolean)) {
     current = path.join(current, component);
     const info = await lstat(current).catch(error => { if (error.code === 'ENOENT') return null; throw error; });
-    if (!info) return inputHash({ path: relative, type: 'missing' });
+    if (!info) return ancestors?.has(relative) ? inputHash([]) : inputHash({ path: relative, type: 'missing' });
     if (info.isSymbolicLink()) return inputHash({ path: relative, type: 'symlink', target: await readlink(current) });
   }
   const entries: unknown[] = [];
@@ -38,9 +38,8 @@ async function hashMaterial(root: string, relative: string, childPaths: Set<stri
     const absolute = path.join(root, name), info = await lstat(absolute);
     if (info.isSymbolicLink()) entries.push({ name, type: 'symlink', target: await readlink(absolute) });
     else if (info.isDirectory()) {
-      const children = (await readdir(absolute)).sort();
-      if (!family || !children.length) entries.push({ name, type: 'directory' });
-      for (const child of children) if (!['.git', 'node_modules'].includes(child)) await walk(path.posix.join(name, child));
+      if (!ancestors?.has(name)) entries.push({ name, type: 'directory' });
+      for (const child of (await readdir(absolute)).sort()) if (!['.git', 'node_modules'].includes(child)) await walk(path.posix.join(name, child));
     } else if (info.isFile()) {
       const hash = createHash('sha256');
       for await (const bytes of createReadStream(absolute, { signal })) hash.update(bytes);
@@ -57,17 +56,25 @@ export function semanticDefinition<T extends { reviewPolicy?: unknown; stale?: {
   return result;
 }
 
-const familyPaths = new WeakMap<RepoConfig, Map<string, Set<string>>>();
-/** The shared declaration, instance list and every instance's own material, computed once per config. */
-function familyExclusions(config: RepoConfig, name: string, folder: string): Set<string> {
+interface FamilyPaths { excluded: Set<string>; ancestors: Set<string> }
+const familyPaths = new WeakMap<RepoConfig, Map<string, FamilyPaths>>();
+/**
+ * The shared declaration, instance list and every instance's own material, plus the folders that
+ * contain that material (the family folder included), computed once per config.
+ */
+function familyExclusions(config: RepoConfig, name: string, folder: string): FamilyPaths {
   let byFamily = familyPaths.get(config);
   if (!byFamily) familyPaths.set(config, byFamily = new Map());
   let result = byFamily.get(name);
   if (!result) {
-    result = new Set([path.posix.join(folder, 'ccdd.json')]);
+    result = { excluded: new Set([path.posix.join(folder, 'ccdd.json')]), ancestors: new Set([folder]) };
     for (const member of Object.values(config.artifacts)) if (member.family?.name === name) {
-      if (member.family.instances) result.add(path.posix.join(folder, member.family.instances));
-      for (const material of member.family.material) result.add(path.posix.join(folder, material));
+      if (member.family.instances) result.excluded.add(path.posix.join(folder, member.family.instances));
+      for (const material of member.family.material) {
+        result.excluded.add(path.posix.join(folder, material));
+        const parts = material.split('/');
+        for (let index = 1; index < parts.length; index++) result.ancestors.add(path.posix.join(folder, ...parts.slice(0, index)));
+      }
     }
     byFamily.set(name, result);
   }
@@ -125,7 +132,8 @@ export async function createProjectSnapshot(config: RepoConfig, root: string, sn
     // A family instance is covered by its resolved definition and entry, not by the shared declaration bytes,
     // so adding or editing another instance never invalidates it. Other instances' material is excluded.
     const family = artifact.family;
-    if (family) for (const name of familyExclusions(config, family.name, artifact.path)) childPaths.add(name);
+    const shared = family ? familyExclusions(config, family.name, artifact.path) : undefined;
+    for (const name of shared?.excluded ?? []) childPaths.add(name);
     const mandatoryPaths = new Set(family ? family.material.map(name => path.posix.join(artifact.path, name)) : [path.posix.join(artifact.path, 'ccdd.json')]);
     const tools = [...Object.values(artifact.views.agentTools ?? {}), ...Object.values(artifact.views.humanTools ?? {})];
     // Local script entry files are mandatory inputs even with a narrower stale.paths declaration.
@@ -156,7 +164,7 @@ export async function createProjectSnapshot(config: RepoConfig, root: string, sn
       const mandatory = mandatoryPaths.has(name), key = `${family.name}\0${mandatory}\0${name}`;
       // A narrowed stale path inside another instance's material never becomes shared material.
       const excluded = !mandatory && name.split('/').some((_, index, parts) => childPaths.has(parts.slice(0, index + 1).join('/')));
-      if (!sharedMaterial.has(key)) sharedMaterial.set(key, excluded ? Promise.resolve(inputHash({ path: name, type: 'excluded' })) : hashMaterial(root, name, mandatory ? new Set() : childPaths, signal, !mandatory));
+      if (!sharedMaterial.has(key)) sharedMaterial.set(key, excluded ? Promise.resolve(inputHash({ path: name, type: 'excluded' })) : hashMaterial(root, name, mandatory ? new Set() : childPaths, signal, mandatory ? undefined : shared!.ancestors));
       return sharedMaterial.get(key)!;
     };
     const fingerprints = await Promise.all([...paths].sort().map(async name => ({ path: name, hash: await material(name) })));

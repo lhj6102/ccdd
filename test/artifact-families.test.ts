@@ -92,6 +92,15 @@ test('a parent depends on each instance as a logical child below the family fold
   // The family folder belongs to its instances; the parent cannot read it under its own identity.
   for (const path of ['scenarios', 'scenarios/a.txt']) assert.throws(() => resolveScopePath(scope, 'docs', path), /inside the folder of Artifact family scenarios/);
   assert.deepEqual(resolveScopePath(scope, 'docs', 'content.txt'), { artifactId: 'docs', path: 'content.txt' });
+  // The default listing names the instances, and each listed path is navigable.
+  const { scriptRequest } = await import('@ccdd/default-tools/cli');
+  const request = (args: Record<string, unknown>) => ({ version: 1 as const, context: { artifactId: 'docs', artifactPath: config.artifacts.docs.path, outputDir: data.root, tmpDir: data.root,
+    scope: Object.fromEntries(Object.entries(config.artifacts).map(([id, artifact]) => [id, { path: join(data.repoPath, artifact.path), children: artifact.children, mounts: artifact.mounts, ...(artifact.family ? { family: artifact.family } : {}) }])) }, args });
+  const listing = await scriptRequest('list', { ...request({}), context: { ...request({}).context, artifactPath: join(data.repoPath, 'docs') } });
+  const entries = (listing.content[0] as unknown as { data: { entries: { name: string; kind: string; instances?: string[] }[] } }).data.entries;
+  assert.deepEqual(entries.find(entry => entry.name === 'scenarios'), { name: 'scenarios', kind: 'family', instances: ['a', 'b'], path: 'scenarios' });
+  const read = await scriptRequest('read', { ...request({ path: 'scenarios/a/a.txt' }), context: { ...request({}).context, artifactPath: join(data.repoPath, 'docs') } });
+  assert.equal((read.content[0] as unknown as { data: { resolvedArtifactId: string } }).data.resolvedArtifactId, 'a');
   const before = await hashes(data);
   await writeFile(join(data.repoPath, 'docs/content.txt'), 'changed parent');
   const parent = await hashes(data);
@@ -142,6 +151,18 @@ test('nested instance material and narrowed shared paths never reach sibling ide
   await writeFile(join(data.repoPath, 'scenarios/states/shared.txt'), 'shared');
   const shared = await hashes(data);
   assert.notEqual(shared.a, added.a); assert.notEqual(shared.c, added.c);
+
+  // Declared folders above instance material are stable whether missing, empty or filled.
+  const transitions = await familyFixture(t);
+  await writeFile(join(transitions.repoPath, 'scenarios/instances.json'), JSON.stringify({ ...instances, b: { ...instances.b, material: ['states/b.txt'] } }));
+  const absent = await hashes(transitions);
+  await mkdir(join(transitions.repoPath, 'scenarios/states'));
+  const empty = await hashes(transitions);
+  await writeFile(join(transitions.repoPath, 'scenarios/states/b.txt'), 'two');
+  const filled = await hashes(transitions);
+  assert.equal(empty.a, absent.a); assert.equal(filled.a, absent.a); assert.notEqual(filled.b, empty.b);
+  await mkdir(join(transitions.repoPath, 'scenarios/unrelated'));
+  assert.notEqual((await hashes(transitions)).a, filled.a);
 
   const narrowed = await familyFixture(t, 'scenarios', { stale: { kind: 'file-hash', paths: ['family-view.mjs', 'a.txt', 'b.txt'] } });
   const before = await hashes(narrowed);
