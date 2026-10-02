@@ -43,3 +43,4 @@ export function compareIdentityCache(left: string, right: string, directory = id
       provenance: !isDeepStrictEqual(a.value.executionProvenance, b.value.executionProvenance),
     } : null,
   };
+}
