@@ -52,6 +52,13 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version: '22'
+      - name: Identify the exact source and language-check inputs
+        shell: bash
+        run: |
+          git rev-parse HEAD
+          git hash-object scripts/check-language.mjs README.md docs/plans/project-independent-cache.md
+          cat scripts/check-language.mjs
+          git status --short
       - run: npm ci --ignore-scripts --no-audit --no-fund
       - name: Build and test the exact applied source commit
         run: npm test | tee "$RUNNER_TEMP/tests.tap"
