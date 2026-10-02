@@ -22,7 +22,7 @@ jobs:
       commit: ${{ steps.apply.outputs.commit }}
     steps:
       - uses: actions/checkout@v6
-      - name: Apply the reviewed incremental source patch without force pushing
+      - name: Apply the incremental source patch without force pushing
         id: apply
         shell: bash
         env:
@@ -52,17 +52,31 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version: '22'
-      - name: Identify the exact source and language-check inputs
+      - name: Check exact source and install locked dependencies
+        shell: bash
+        env:
+          EXPECTED_COMMIT: ${{ needs.apply.outputs.commit }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_COMMIT"
+          git status --short
+          npm ci --ignore-scripts --no-audit --no-fund
+      - name: Enforce the tracked language check and build
         shell: bash
         run: |
-          git rev-parse HEAD
-          git hash-object scripts/check-language.mjs README.md docs/plans/project-independent-cache.md
-          cat scripts/check-language.mjs
-          git status --short
-      - run: npm ci --ignore-scripts --no-audit --no-fund
-      - name: Build and test the exact applied source commit
-        run: npm test | tee "$RUNNER_TEMP/tests.tap"
+          set -euo pipefail
+          node scripts/check-language.mjs
+          npm run build
+      - name: Run tests and preserve both process status and TAP failures
         shell: bash
+        run: |
+          set -uo pipefail
+          node --test --test-reporter=tap --test-concurrency=4 dist/test/*.test.js > "$RUNNER_TEMP/tests.tap" 2>&1
+          status=$?
+          cat "$RUNNER_TEMP/tests.tap"
+          if [ "$status" -ne 0 ]; then exit "$status"; fi
+          grep -Eq '^# fail 0$' "$RUNNER_TEMP/tests.tap" || exit 1
+          git diff --exit-code
       - uses: actions/upload-artifact@v4
         if: always()
         with:
