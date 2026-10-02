@@ -1,0 +1,67 @@
+name: Identity cache development
+
+on:
+  push:
+    branches: [feat/project-independent-identity-cache]
+    paths: [scripts/.identity-cache-progress.patch]
+
+concurrency:
+  group: identity-cache-development
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  apply:
+    if: github.repository == 'lhj6102/ccdd' && github.ref == 'refs/heads/feat/project-independent-identity-cache'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      commit: ${{ steps.apply.outputs.commit }}
+    steps:
+      - uses: actions/checkout@v6
+      - name: Apply the reviewed incremental source patch without force pushing
+        id: apply
+        shell: bash
+        env:
+          EXPECTED_HEAD: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          branch=feat/project-independent-identity-cache
+          test "$(git ls-remote origin "refs/heads/$branch" | cut -f1)" = "$EXPECTED_HEAD"
+          git apply --check scripts/.identity-cache-progress.patch
+          git apply --index scripts/.identity-cache-progress.patch
+          git rm scripts/.identity-cache-progress.patch
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'feat: apply incremental identity-cache implementation and regression tests'
+          git push origin "HEAD:refs/heads/$branch"
+          echo "commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+  test:
+    needs: apply
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.apply.outputs.commit }}
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Build and test the exact applied source commit
+        run: npm test | tee "$RUNNER_TEMP/tests.tap"
+        shell: bash
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: identity-cache-tests-${{ needs.apply.outputs.commit }}
+          path: ${{ runner.temp }}/tests.tap
+          retention-days: 7
+
+# Temporary branch-only patch transport for this development session. Remove
+# before merging; it never force pushes, merges, publishes or accesses secrets.
