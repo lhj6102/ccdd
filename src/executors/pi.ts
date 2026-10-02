@@ -1,3 +1,4 @@
+import { recoveringProviderStream, providerUsageUnreported } from './provider-recovery.js';
 import { randomUUID } from 'node:crypto';
 import { Agent, type AgentTool, type StreamFn } from '@earendil-works/pi-agent-core';
 import { Type, getSupportedThinkingLevels, hasApi, normalizeContext, toToolDeclaration, type Api, type Model, type TSchema } from '@earendil-works/pi-ai';
@@ -56,7 +57,8 @@ function providerFailure(value: unknown): Error {
   if (/\b401\b|unauthori[sz]ed|authentication|no (?:api key|auth)|oauth|credential|token.*(?:expired|invalid)/i.test(message)) return diagnosticError('AUTHENTICATION_FAILED', 'Cannot verify Pi Provider authentication.', 'Check the Provider API key environment variable or specified authentication file, then rerun doctor.');
   if (/model_not_found|model[^\n]{0,150}(?:not supported|not found|does not exist|access|not available)|reasoning[^\n]{0,80}(?:invalid|unsupported|not supported)/i.test(message)) return diagnosticError('MODEL_ACCESS_FAILED', 'The Provider rejected the requested model or reasoning level.', 'Check the model and reasoning settings and model access for the current account.');
   if (/\b403\b|forbidden|access denied/i.test(message)) return diagnosticError('ACCESS_DENIED', 'The Provider denied access.', 'Check Provider access for the current account.');
-  if (/\b429\b|rate.limit|quota|usage limit/i.test(message)) return diagnosticError('RATE_LIMITED', 'The Provider usage limit has been reached.', 'Check Provider usage and quota, then retry.');
+  if (/QUOTA_EXHAUSTED|insufficient_quota|quota|billing[_ ](?:limit|hard)|credits? (?:exhausted|depleted)|usage limit/i.test(message)) return diagnosticError('QUOTA_EXHAUSTED', 'The Provider account quota is exhausted.', 'Restore account quota before resuming execution.');
+  if (/\b429\b|rate.limit/i.test(message)) return diagnosticError('RATE_LIMITED', 'The Provider usage limit has been reached.', 'Check Provider usage and quota, then retry.');
   if (/network|fetch failed|connection|ENOTFOUND|ECONN|TLS|certificate|timed? ?out/i.test(message)) return diagnosticError('PROVIDER_CONNECTION_FAILED', 'Could not connect to the Pi Provider.', 'Check the network, proxy, and Provider status.');
   return diagnosticError('PROVIDER_EXECUTION_FAILED', 'Could not complete Pi Provider execution.', 'Use doctor to check authentication, model access, and the Provider connection.');
 }
@@ -162,6 +164,7 @@ export async function invokePi({ request, worktreePath, runDir, schema, inspectR
     await onEvent({ type: 'artifact.tools.ready', tools: registry.tools.map(({ name, description }) => ({ name, description })) });
     checkAbort();
     const inspectFinal = createFinalResultInspector(schema);
+    invoke = recoveringProviderStream(invoke!, { signal: controller.signal, deadline, onRetry: event => emitTelemetry({ type: 'executor.provider.retry', provider: model.provider, model: model.id, ...event }) });
     agent = new Agent({
       sessionId: request.id ?? randomUUID(),
       streamFn: (selectedModel, context, options) => invoke!(selectedModel,
@@ -196,7 +199,7 @@ export async function invokePi({ request, worktreePath, runDir, schema, inspectR
         return;
       }
       // Pi reports normalized counters. Keep only present numeric fields, never pricing or response content.
-      const usage = tokenUsage(message.usage);
+      const usage = providerUsageUnreported(message) ? undefined : tokenUsage(message.usage);
       if (usage) {
         const event = { type: 'executor.usage', provider: message.provider, model: message.model, usage };
         // Writes are independent and retain only bounded telemetry, never the message.

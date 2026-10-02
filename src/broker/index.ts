@@ -387,7 +387,7 @@ export function createBroker<D extends ResultDetail = 'compact'>({ detail, repoP
       const result = validateResult(await executionScope.run({ runtimeRoot: capture?.root ?? workspace.descriptor.path, declaredPaths: capture?.paths ?? [], trackChild: pid => lease!.trackChild(pid) }, () => requireExecutors().execute(copy(request), {
         worktreePath: workspace.descriptor.path, workspacePath: workspace.descriptor.path, runDir, signal,
         onEvent(event) {
-          if (closed || closing || signal.aborted || !event || polling.requestStatus(requestId) !== 'RUNNING' || !['executor.started', 'artifact.tools.ready', 'artifact.tool.called', 'artifact.tool.completed', 'executor.usage', 'executor.final.invalid', 'executor.final.repair', 'executor.telemetry.failed', 'executor.completed'].includes(event.type)) return;
+          if (closed || closing || signal.aborted || !event || polling.requestStatus(requestId) !== 'RUNNING' || !['executor.started', 'artifact.tools.ready', 'artifact.tool.called', 'artifact.tool.completed', 'executor.usage', 'executor.final.invalid', 'executor.final.repair', 'executor.telemetry.failed', 'executor.provider.retry', 'executor.completed'].includes(event.type)) return;
           if (event.type === 'executor.final.invalid' || event.type === 'executor.final.repair') {
             const safe = finalResultEventData(event);
             if (safe) { appendEvent(runId, requestId, event.type, event.type, safe); changed(); }
@@ -401,6 +401,12 @@ export function createBroker<D extends ResultDetail = 'compact'>({ detail, repoP
             if (typeof event.durationMs === 'number' && Number.isFinite(event.durationMs) && event.durationMs >= 0) safe.durationMs = event.durationMs;
             if (event.outcome === 'success' || event.outcome === 'error') safe.outcome = event.outcome;
             if (typeof event.operation === 'string') safe.operation = event.operation.slice(0, 1000);
+          }
+          if (event.type === 'executor.provider.retry') {
+            appendEvent(runId, requestId, event.type, 'Provider turn is retrying before content was delivered.', {
+              attempt: Number.isSafeInteger(event.attempt) ? event.attempt : undefined, delayMs: Number.isSafeInteger(event.delayMs) ? event.delayMs : undefined,
+              code: ['RATE_LIMITED', 'PROVIDER_TRANSIENT_FAILURE'].includes(String(event.code)) ? event.code : undefined, usageState: 'unreported',
+            }); changed(); return;
           }
           if (event.type === 'executor.usage') {
             const usage = tokenUsage(event.usage);
