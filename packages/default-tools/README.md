@@ -1,8 +1,8 @@
 # @ccdd/default-tools
 
-Optional common view scripts for CCDD. Use Node 22 LTS, at least 22.19.0. Install `@ccdd/core@6.5.1`, `@ccdd/project@6.5.1` and `@ccdd/default-tools@6.5.1`. Project does not install this optional package. Its regular dependencies install automatically; core is a non-optional peer. Declare all three packages explicitly for matching versions. Installation and imports register no tools.
+Optional common view scripts for CCDD. Use Node 22 LTS, at least 22.19.0. Install `@ccdd/core@6.6.0`, `@ccdd/project@6.6.0` and `@ccdd/default-tools@6.6.0`. Project does not install this optional package. Its regular dependencies install automatically; core is a non-optional peer. Declare all three packages explicitly for matching versions. Installation and imports register no tools.
 
-The supported package set requires core `>=6.1.0 <7`, including its pinned
+The supported package set requires core `>=6.6.0 <7`: its logical path resolver keeps Artifact family folders behind their instances. Core 6.1 added the pinned
 script execution-path context. This aligned support policy does not claim every
 older tool call necessarily fails; mixed 6.0/6.1 installations are not supported.
 
