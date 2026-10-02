@@ -45,3 +45,7 @@ export type { ExecutionProvenance } from '../provenance.js';
 export { loadCheck, type LoadCheckOptions, type LoadCheckProject, type LoadCheckStep } from './load-check.js';
 
 export { compactGraphDefinition, type CompactGraphDefinition } from '../broker/graph.js';
+
+// Local-compute cache API; the legacy project adapter migration is tracked in PR #100.
+export { openIdentityCache, readIdentityCache, identityCacheDirectory, type CacheOptions, type CacheEntry, type CacheComputation, type CachedReview } from '../cache/index.js';
+export { listIdentityCache, cachedResultView, compareIdentityCache, type CachePageOptions } from '../cache/query.js';

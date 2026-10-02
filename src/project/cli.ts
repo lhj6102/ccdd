@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { cacheCommand } from '../cache/cli.js';
 import { rejectIdentityConcurrency, validateMaxExecutions } from '../resources.js';
 import { readSelectionFile } from './selection-file.js';
 import { loadCheck } from './load-check.js';
@@ -33,6 +34,7 @@ const flags = new Set(['--compact', '--all', '--recursive', '--force', '--ignore
 const values = new Set(['--repo', '--state-dir', '--critic', '--timeout-ms', '--requester', '--reviewer', '--result-file', '--tool', '--args', '--run', '--pi-auth-file', '--codex-auth-file', '--integrity', '--concurrency', '--identity-concurrency', '--max-executions', '--requests', '--output-dir', '--critics', '--artifacts', '--critics-file', '--artifacts-file', '--scenario-file', '--processes', '--resource-mode']);
 const help = `CCDD Project — pull validation and explicit review execution
 
+  ccdd-project cache show ID | list | compare LEFT RIGHT | gc | delete ID [--cache-dir PATH] [--json]
   ccdd-project load-check [--concurrency 60] [--requests 60] [--output-dir PATH] [--json]
   ccdd-project status [ARTIFACT | --critic ID] [--json]
   ccdd-project plan (ARTIFACT | --critic ID | --all) [--recursive] [--force]
@@ -107,6 +109,7 @@ export async function main(argv = process.argv.slice(2), { stdout = process.stdo
   const print = (value: unknown, plain?: string) => stdout.write((!json && plain !== undefined ? plain : JSON.stringify(value, null, 2)) + '\n');
   try {
     const command = argv[0] ?? 'help';
+    if (command === 'cache') return await cacheCommand(argv.slice(1), stdout);
     if (['doctor', 'tools', 'monitor', 'prepare-demo'].includes(command)) return await diagnosticsMain(argv, { stdout, stderr });
     const { options, positional } = parse(argv.slice(1)); json = Boolean(options['--json']);
     const get = (key: string) => typeof options[key] === 'string' ? options[key] as string : undefined;
