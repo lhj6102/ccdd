@@ -189,7 +189,7 @@ export function records(db: DatabaseSync) {
     for (const key of envelopeKeys) { if (header[key] !== undefined) envelope[key] = header[key]; delete header[key]; }
     const envelopeRef = put(envelope);
     delete header.workspace; delete header.validationInput; delete header.result; delete header.toolCalls; delete header.toolCallsOmitted; delete header.usage;
-    return { ...header, criticId: request.criticId, target: request.target, profile: { kind: request.profile.kind, ...(request.profile.kind === 'agent' ? { provider: request.profile.provider, model: request.profile.model } : {}) }, envelopeRef,
+    return { ...header, criticId: request.criticId, target: request.target, profile: structuredClone(request.profile), envelopeRef,
       workspaceRef: put(request.workspace), inputRef: request.validationInput ? put(request.validationInput) : null,
       inputKey: request.validationInput?.key ?? null, inputVersion: request.validationInput?.version ?? null, title: request.title, snapshotHash: request.snapshotHash, deps: request.deps, resultRef: request.result ? put(request.result) : null, semanticRef: request.result ? put(semanticResult(request.result)) : null };
   };
@@ -221,7 +221,10 @@ export function records(db: DatabaseSync) {
     const { envelopeRef, workspaceRef, inputRef, resultRef, inputKey: _, inputVersion: __, semanticRef, ...rest } = header;
     const result = resultRef ? get<ReviewRequest['result']>(full ? resultRef : semanticRef) : null;
     if (result && (result.verdict !== header.status || !['GREEN','RED'].includes(header.status))) throw new Error('Stored result/status mismatch.');
-    return { ...rest, ...(full ? get<ReviewEnvelope>(envelopeRef) : {}), workspace: get(workspaceRef), ...(inputRef ? { validationInput: get(inputRef) } : {}), result,
+    // Older compact headers omitted execution settings; recover only from their original envelope.
+    const profile = header.profile?.kind === 'agent' && header.profile.reasoning === undefined || header.profile?.kind === 'runtime' && header.profile.command === undefined
+      ? get<ReviewEnvelope>(envelopeRef).profile : header.profile;
+    return { ...rest, profile, ...(full ? get<ReviewEnvelope>(envelopeRef) : {}), workspace: get(workspaceRef), ...(inputRef ? { validationInput: get(inputRef) } : {}), result,
       ...(full && header.status === 'ERROR' ? toolCallRecord(id, header.attemptId) : {}), ...(full ? requestUsage(id, header.attemptId) : {}) } as ReviewRequest;
   };
   return { put, get, packRun, prepareRun, packRequest, run, request, clear: () => { nodes.clear(); bytes = 0; } };

@@ -62,7 +62,7 @@ function priorArguments(step: LoadCheckStep, results: ToolResult[]): unknown {
 }
 /** Real projects remain unchanged; only diagnostic state/output and generated fixtures are isolated. */
 export async function loadCheck({ concurrency = 60, requests = concurrency, processes = 1, outputDir, signal, project, resourceMode = 'isolated' }: LoadCheckOptions = {}): Promise<Record<string, any>> {
-  for (const [name, value] of Object.entries({ concurrency, requests, processes })) if (!Number.isSafeInteger(value) || value < 1 || value > (name === 'processes' ? 16 : 1000)) throw new Error(`${name} is outside the supported positive integer range.`);
+  for (const [name, value] of Object.entries({ concurrency, requests, processes })) if (!Number.isSafeInteger(value) || value < 1 || value > (name === 'processes' ? 16 : name === 'requests' ? 10000 : 1000)) throw new Error(`${name} is outside the supported positive integer range.`);
   if (!['isolated', 'shared'].includes(resourceMode)) throw new Error('resourceMode must be isolated or shared.');
   if (project) { validateSteps(project.scenario?.steps); for (const steps of Object.values(project.scenario.critics ?? {})) validateSteps(steps); project = structuredClone({ ...project, repoPath: resolve(project.repoPath) }); }
   signal?.throwIfAborted();
@@ -75,11 +75,13 @@ export async function loadCheck({ concurrency = 60, requests = concurrency, proc
     const workerRoot = processes === 1 ? root : join(root, `process-${index}`); await mkdir(workerRoot, { recursive: true });
     const temporaryRoot = join(workerRoot, 'tmp'); await mkdir(temporaryRoot, { mode: 0o700 });
     return new Promise<Record<string, any>>((resolveResult, reject) => {
-      const child = fork(fileURLToPath(new URL('./load-check-worker.js', import.meta.url)), [JSON.stringify({ root: workerRoot, concurrency, requests, project } satisfies WorkerOptions)], {
+      const child = fork(fileURLToPath(new URL('./load-check-worker.js', import.meta.url)), [], {
         execArgv: ['--import', fileURLToPath(new URL('../offline-guard.js', import.meta.url))], stdio: ['ignore', 'ignore', 'pipe', 'ipc'],
         env: { PATH: process.env.PATH, HOME: process.env.HOME, NODE_NO_WARNINGS: '1', TMPDIR: temporaryRoot, TMP: temporaryRoot, TEMP: temporaryRoot, CCDD_OFFLINE_GUARD_LOG: join(workerRoot, 'guard.jsonl'),
           ...(resourceMode === 'isolated' ? { CCDD_STATE_HOME: join(root, 'machine'), CCDD_CONFIG_HOME: config } : Object.fromEntries(['CCDD_STATE_HOME', 'CCDD_CONFIG_HOME', 'XDG_CONFIG_HOME'].flatMap(key => process.env[key] ? [[key, process.env[key]]] : []))) },
       });
+      // Large scenarios belong on IPC, never in OS-limited argv.
+      child.send({ root: workerRoot, concurrency, requests, project } satisfies WorkerOptions, error => { if (error) { child.kill('SIGTERM'); reject(error); } });
       let result: Record<string, any> | undefined, stderr = '';
       child.stderr?.on('data', data => { stderr = (stderr + data).slice(-4000); });
       child.on('message', value => { result = value as Record<string, any>; });

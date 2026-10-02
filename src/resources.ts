@@ -4,6 +4,7 @@ import { randomUUID, createHash } from 'node:crypto';
 import { mkdirSync, readFileSync, realpathSync, readdirSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { performance } from 'node:perf_hooks';
 import { setTimeout as delay } from 'node:timers/promises';
 import { ownerAlive, ownProcessIdentity, processIdentity } from './broker/ownership.js';
 import type { Admission, AdmissionRequest, AdmissionLease } from './broker/admission.js';
@@ -50,6 +51,9 @@ export function validateMaxExecutions(value: number | undefined): void { if (val
 interface LeaseRow { token: string; pid: number; process_identity: string | null; lane: string; state: string; run_id: string | null; weight: number; provider: string | null; model: string | null; repo: string; repo_cap: number | null; seq: number }
 export interface ResourceLease extends AdmissionLease { token: string; started(provenance?: ExecutionProvenance | null): void; terminal(): void; trackChild(pid: number): () => void }
 /** One machine database is authoritative. No repository store transaction encloses a wait. */
+export const resourceTestHooks: { admissionWrite?: () => void; reclaim?: () => void } = {};
+const sqliteBusy = (error: unknown): boolean => !!error && typeof error === 'object' && ((Number((error as { errcode?: number }).errcode) & 255) === 5 || (error as { code?: string }).code === 'SQLITE_BUSY');
+const resourceBusy = (cause: unknown) => Object.assign(new Error('Machine resource storage is busy; retry the operation.', { cause }), { code: 'RESOURCE_BUSY', retryable: true });
 export function openResources() {
   const filename = resourcePaths().database;
   mkdirSync(join(filename, '..'), { recursive: true, mode: 0o700 });
@@ -65,7 +69,27 @@ export function openResources() {
   if (!db.prepare('PRAGMA table_info(execution_attempts)').all().some(row => row.name === 'provenance')) { transactionInit(); }
   function transactionInit() { db.exec('BEGIN IMMEDIATE'); try { if (!db.prepare('PRAGMA table_info(execution_attempts)').all().some(row => row.name === 'provenance')) db.exec('ALTER TABLE execution_attempts ADD COLUMN provenance TEXT'); db.exec('COMMIT'); } catch (error) { db.exec('ROLLBACK'); throw error; } }
   let closed = false;
-  const transaction = <T>(fn: () => T): T => { db.exec('BEGIN IMMEDIATE'); try { const result = fn(); db.exec('COMMIT'); return result; } catch (error) { db.exec('ROLLBACK'); throw error; } };
+  const transaction = <T>(fn: () => T): T => {
+    let began = false;
+    try { db.exec('BEGIN IMMEDIATE'); began = true; const result = fn(); db.exec('COMMIT'); return result; }
+    catch (error) { if (began) { try { db.exec('ROLLBACK'); } catch {} } throw error; }
+  };
+  // Short SQLite waits on async admission paths allow streams, cancellations and
+  // the process holding the lock to progress. LOCKED is not BUSY: an invalid
+  // connection/statement state must not be retried as cross-process contention.
+  const retryBusy = async <T>(fn: () => T, signal?: AbortSignal): Promise<T> => {
+    const deadline = performance.now() + 5000;
+    let backoff = 10;
+    for (;;) {
+      signal?.throwIfAborted();
+      try { db.exec('PRAGMA busy_timeout=25'); return fn(); }
+      catch (error) { if (!sqliteBusy(error)) throw error; if (performance.now() >= deadline) throw resourceBusy(error); }
+      finally { db.exec('PRAGMA busy_timeout=5000'); }
+      await delay(Math.min(backoff, Math.max(1, deadline - performance.now())) + Math.floor(Math.random() * 10), undefined, { signal });
+      backoff = Math.min(200, backoff * 2);
+    }
+  };
+  let nextReclaim = 0;
   function childrenGone(token: string): boolean {
     const children = db.prepare('SELECT * FROM resource_children WHERE token=?').all(token);
     let gone = true;
@@ -92,6 +116,8 @@ export function openResources() {
     return gone;
   }
   function reclaim() {
+    if (performance.now() < nextReclaim) return;
+    nextReclaim = performance.now() + 250; resourceTestHooks.reclaim?.();
     // A bounded release failure leaves an accountable cleanup row, not an eternal live-owner slot.
     for (const row of db.prepare("SELECT token FROM resource_leases WHERE state='releasing'").all()) {
       if (!childrenGone(String(row.token))) continue;
@@ -126,19 +152,38 @@ export function openResources() {
     if (request.repoCap !== undefined) integer(request.repoCap, 'Repository executor cap');
     const provider = identity ? null : request.provider ?? '$runtime', model = request.model ?? null;
     const lane = identity ? 'identity' : `provider:${provider}`, token = randomUUID();
-    transaction(() => {
+    await retryBusy(() => transaction(() => {
       reclaim();
       if (!identity && !db.prepare('SELECT id FROM submissions WHERE id=?').get(request.runId)) throw new Error('Submission has no durable execution budget. Stop old workers and resubmit with the current worker protocol.');
       db.prepare("INSERT INTO resource_leases(token,pid,process_identity,heartbeat,lane,state,run_id,request_id,provider,model,repo,repo_cap,weight) VALUES(?,?,?,?,?,'waiting',?,?,?,?,?,?,?)")
         .run(token, process.pid, ownProcessIdentity, Date.now(), lane, identity ? null : request.runId, request.requestId, provider, model, request.repo, request.repoCap ?? null, weight);
-    });
+    }), signal);
     let heartbeat: NodeJS.Timeout | undefined;
     try {
       let reported = false;
       while (true) {
         signal.throwIfAborted();
-        const admitted = transaction(() => {
-          reclaim();
+        const admitted = await retryBusy(() => {
+          // A blocked waiter normally performs reads only. Queue/capacity checks
+          // are repeated inside the write transaction; this precheck grants nothing.
+          if (performance.now() >= nextReclaim) transaction(reclaim);
+          const candidate = db.prepare('SELECT * FROM resource_leases WHERE token=?').get(token) as unknown as LeaseRow | undefined;
+          if (!candidate) throw new Error('Resource lease disappeared before admission.');
+          if (db.prepare("SELECT 1 FROM resource_leases WHERE lane=? AND state='waiting' AND seq<? LIMIT 1").get(lane, candidate.seq)) return false;
+          const limits = readResourceConfiguration();
+          const active = db.prepare("SELECT * FROM resource_leases WHERE state IN ('active','releasing')").all() as unknown as LeaseRow[];
+          if (identity && active.filter(row => row.lane === lane).reduce((sum, row) => sum + row.weight, 0) + weight > limits.identityCapacity) return false;
+          if (!identity) {
+            const pool = limits.providers[provider!];
+            if (active.filter(row => row.provider === provider).length >= (pool?.capacity ?? limits.defaultProviderCapacity)) return false;
+            const modelCap = model ? pool?.models?.[model] : undefined;
+            if (modelCap !== undefined && active.filter(row => row.provider === provider && row.model === model).length >= modelCap) return false;
+            const peers = active.filter(row => row.repo === request.repo && row.lane !== 'identity');
+            const caps = [...peers.flatMap(row => row.repo_cap === null ? [] : [row.repo_cap]), ...request.repoCap === undefined ? [] : [request.repoCap]];
+            if (caps.length && peers.length >= Math.min(...caps)) return false;
+          }
+          return transaction(() => {
+          resourceTestHooks.admissionWrite?.();
           const current = db.prepare('SELECT * FROM resource_leases WHERE token=?').get(token) as unknown as LeaseRow | undefined;
           if (!current) throw new Error('Resource lease disappeared before admission.');
           const limits = readResourceConfiguration();
@@ -163,10 +208,11 @@ export function openResources() {
           }
           db.prepare("UPDATE resource_leases SET state='active',heartbeat=? WHERE token=?").run(Date.now(), token);
           return true;
-        });
+          });
+        }, signal);
         if (admitted) break;
         if (!reported) { waiting(identity ? 'Waiting for machine identity capacity (FIFO).' : `Waiting for machine provider capacity: ${provider} (FIFO).`); reported = true; }
-        await delay(25, undefined, { signal });
+        await delay(40 + Math.floor(Math.random() * 20), undefined, { signal });
       }
       let released = false;
       heartbeat = setInterval(() => { if (!closed) { try { db.prepare('UPDATE resource_leases SET heartbeat=? WHERE token=? AND pid=? AND process_identity IS ?').run(Date.now(), token, process.pid, ownProcessIdentity); } catch { /* A bounded busy failure cannot invalidate a live holder. */ } } }, 2000);
@@ -185,13 +231,17 @@ export function openResources() {
         terminal() { transaction(() => { db.prepare("UPDATE execution_attempts SET state='terminal',terminal_at=? WHERE token=? AND state='started'").run(new Date().toISOString(), token); }); },
         async release() {
           if (released) return;
-          db.prepare("UPDATE resource_leases SET state='releasing' WHERE token=? AND pid=? AND process_identity IS ?").run(token, process.pid, ownProcessIdentity);
+          await retryBusy(() => db.prepare("UPDATE resource_leases SET state='releasing' WHERE token=? AND pid=? AND process_identity IS ?").run(token, process.pid, ownProcessIdentity));
           const deadline = Date.now() + 5000;
-          while (!transaction(() => childrenGone(token))) { if (Date.now() >= deadline) throw new Error('Tracked child cleanup exceeded 5000 ms; resource lease remains held.'); await delay(10); }
-          release(token); released = true; clearInterval(heartbeat);
+          while (!await retryBusy(() => transaction(() => childrenGone(token)))) { if (Date.now() >= deadline) throw new Error('Tracked child cleanup exceeded 5000 ms; resource lease remains held.'); await delay(10); }
+          await retryBusy(() => release(token)); released = true; clearInterval(heartbeat);
         },
       };
-    } catch (error) { clearInterval(heartbeat); release(token); throw error; }
+    } catch (error) {
+      clearInterval(heartbeat);
+      try { await retryBusy(() => release(token)); } catch { /* Preserve the original error; dead-owner cleanup retains authority. */ }
+      throw signal.aborted ? signal.reason : error;
+    }
   }
   return {
     registerSubmission(id: string, maxExecutions?: number) { validateMaxExecutions(maxExecutions); transaction(() => {

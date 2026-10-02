@@ -57,7 +57,7 @@ export function createReadiness(db: DatabaseSync, store: ReturnType<typeof recor
     const workspace = preparedWorkspace ?? store.get<ReviewRequest['workspace']>(run.workspaceRef);
     const packed = { id: randomUUID(), runId: member.run_id, worktreePath: workspace.path,
       criticId: member.critic_id, target: member.target, title: envelope.title, snapshotHash: envelope.snapshotHash, deps: envelope.deps,
-      profile: { kind: envelope.profile.kind, ...(envelope.profile.kind === 'agent' ? { provider: envelope.profile.provider, model: envelope.profile.model } : {}) },
+      profile: structuredClone(envelope.profile),
       envelopeRef: member.envelope_ref, workspaceRef: run.workspaceRef, inputRef: member.input_ref, inputKey: member.input_key, inputVersion: 3,
       status: gated ? Number(gate?.red) ? 'BLOCKED' : 'WAIT_DEPENDENCY' : 'QUEUED', createdAt: new Date().toISOString(), startedAt: null, completedAt: null, claimedBy: null, claimedAt: null, notifiedAt: null,
       resultRef: null, semanticRef: null, error: null, blockedReason: gated ? `${Number(gate?.red) ? 'BLOCKED' : 'WAIT_DEPENDENCY'}: ${db.prepare("SELECT e.dependency,m.state FROM gate_edges e JOIN run_members m ON m.run_id=e.run_id AND m.critic_id=e.dependency WHERE e.run_id=? AND e.dependent=? AND m.state!='GREEN' LIMIT 16").all(member.run_id,member.critic_id).map(row=>`${row.dependency} (${row.state})`).join(', ')}` : null };

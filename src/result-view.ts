@@ -15,6 +15,7 @@ export interface RequesterResult {
 export interface RequesterRequest {
   attemptId: string | null; executionProvenance: ExecutionProvenance | null;
   id: string; runId: string; criticId: string; target: string; status: ReviewRequest['status'];
+  profile: ReviewRequest['profile'];
   inputKey: string | null; reference: ReviewReference; result: RequesterResult | null;
   error?: string | null; errorCode?: string | null; blockedReason?: string | null;
 }
@@ -38,7 +39,7 @@ export function requesterEvidence(evidence: ValidationEvidence, stateDir: string
 }
 export function requesterRequest(request: ReviewRequest, stateDir: string): RequesterRequest {
   const reference = reviewReference(stateDir, request.runId, request.id), inputKey = request.validationInput?.key ?? null;
-  return { id: request.id, runId: request.runId, criticId: request.criticId, target: request.target, status: request.status,
+  return { id: request.id, runId: request.runId, criticId: request.criticId, target: request.target, status: request.status, profile: structuredClone(request.profile),
     attemptId: request.attemptId ?? null, executionProvenance: request.executionProvenance ?? null, inputKey, reference, error: request.error, errorCode: request.errorCode, blockedReason: request.blockedReason,
     result: request.result ? { ...semanticResult(request.result), executionProvenance: request.executionProvenance ?? null, verdict: request.result.verdict, reference } : null };
 }

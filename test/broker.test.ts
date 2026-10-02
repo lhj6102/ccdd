@@ -46,9 +46,18 @@ test('cyclic Critics start together without awaiting each other and completion s
 
 test('executor concurrency remains bounded while independent slots progress', async t => {
   let active = 0, maximum = 0;
-  const data = await fixture(t, false, { canExecute: () => ({ ok: true }), async execute() { maximum = Math.max(maximum, ++active); await delay(40); active--; return controlledResult; } });
+  let release!: () => void;
+  const barrier = new Promise<void>(resolve => { release = resolve; });
+  t.after(() => release());
+  const data = await fixture(t, false, { canExecute: () => ({ ok: true }), async execute() {
+    maximum = Math.max(maximum, ++active);
+    try { await barrier; return controlledResult; } finally { active--; }
+  } });
   for (let i = 0; i < 8; i++) await data.write(`extra-${i}`, { name: `extra-${i}`, critics: [runtimeCritic()] });
-  const run = await data.submit(); assert.equal((await data.broker.run(run.id))!.status, 'GREEN'); assert.equal(maximum, 4);
+  const run = await data.submit(), running = data.broker.run(run.id);
+  try { await waitFor(() => active === 4); assert.equal(maximum, 4); }
+  finally { release(); }
+  assert.equal((await running)!.status, 'GREEN'); assert.equal(maximum, 4); assert.equal(active, 0);
 });
 
 test('RED gates dependents while operational ERROR preserves independent results', async t => {
