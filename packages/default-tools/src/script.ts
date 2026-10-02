@@ -28,7 +28,13 @@ export async function scriptRequest(operation: string, input: ScriptToolRequest,
     objectArguments(args, ['path', 'offset', 'limit']);
     const offset = args.offset ?? 0, limit = args.limit ?? 200;
     if (!Number.isSafeInteger(offset) || Number(offset) < 0 || !Number.isSafeInteger(limit) || Number(limit) < 1 || Number(limit) > 200) throw new Error('Invalid listing pagination.');
-    const entries = (await readdir(target, { withFileTypes: true })).map(entry => ({ name: entry.name, kind: entry.isDirectory() ? 'directory' : entry.isFile() ? 'file' : entry.isSymbolicLink() ? 'symlink' : 'other' }));
+    // A family folder is reached through its instances, so list it with their names instead of as a directory.
+    const owner = context.scope[resolved.artifactId];
+    const instances = (name: string) => Object.entries(owner.children).filter(([key, id]) => context.scope[id]?.family && key === `${resolved.path ? `${resolved.path}/` : ''}${name}/${id}`).map(([, id]) => id).sort();
+    const entries: { name: string; kind: string; instances?: string[] }[] = (await readdir(target, { withFileTypes: true })).map(entry => {
+      const family = entry.isDirectory() ? instances(entry.name) : [];
+      return family.length ? { name: entry.name, kind: 'family', instances: family } : { name: entry.name, kind: entry.isDirectory() ? 'directory' : entry.isFile() ? 'file' : entry.isSymbolicLink() ? 'symlink' : 'other' };
+    });
     if (!resolved.path) for (const name of Object.keys(context.scope[resolved.artifactId].mounts)) entries.push({ name, kind: 'mount' });
     entries.sort((a, b) => a.name.localeCompare(b.name, 'en'));
     const selected = entries.slice(Number(offset), Number(offset) + Number(limit)).map(entry => ({ ...entry, path: logical ? `${logical}/${entry.name}` : entry.name }));

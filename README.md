@@ -85,6 +85,7 @@ Reviews run in the workspace you supply. Keep it unchanged until completion, inc
 - [Register optional text, image and desktop tools](packages/default-tools/README.md).
 - [Compose folders and mounts](examples/artifact-folders/README.md), including coding-style and blind image comparison Critics.
 - [Compute views on demand](examples/computed-views/README.md) from scenario material.
+- [Declare an Artifact family](examples/artifact-families/README.md): many Artifacts sharing one folder, script and Critic.
 - [Design reviewer tools](docs/reviewer-tools.md) that return only what the reviewer requests.
 - [Configure Agent and Human reviewers](docs/reviewers.md).
 - [Try Why → Spec → Tests → Implementation](docs/demo.md).

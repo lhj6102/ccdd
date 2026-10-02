@@ -217,6 +217,7 @@ process.stdout.write(JSON.stringify({content:[{type:'text',text}],observation:{k
   for (const [example, artifact, tool, args] of [
     ['custom-text-reader', 'spec', 'read', { startLine: 1, lineCount: 20 }],
     ['computed-views', 'checkout', 'overview', {}],
+    ['artifact-families', 'search', 'detail', { id: 'query' }],
     ...(withDefaults ? [['artifact-folders', 'explosion', 'blind_pair', {}]] : []),
   ]) {
     const examplePath = join(project, `example-${example}`), exampleState = join(scratch, `${name}-${example}-state`);

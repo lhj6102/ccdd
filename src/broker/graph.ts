@@ -8,6 +8,8 @@ export interface GraphRequest { id: string; criticId: string; status: ReviewStat
 export interface GraphArtifactState {
   id: string; path: string; basis: boolean; status: ArtifactStatus;
   mounts: Record<string, string>; children: Record<string, string>;
+  /** The family whose shared declaration defines this instance. */
+  family?: string;
   criticIds: string[]; passed: number; total: number; included: number; validationStatus?: ValidationStatus;
 }
 export interface GraphCriticState extends GraphCriticDefinition { requestId: string | null; status: ReviewStatus | null; claimedBy: string | null; blockedReason: string | null; validationStatus?: ValidationStatus; validationReason?: string; reusedFrom?: { requestId: string; runId: string; completedAt: string } }
@@ -74,7 +76,7 @@ export function projectGraph(graph: GraphDefinition, requests: readonly GraphReq
     const own = critics.filter(critic => critic.target === id), passed = own.filter(critic => critic.status === 'GREEN').length;
     const status: ArtifactStatus = artifact.basis ? 'BASIS' : own.length && passed === own.length ? 'GREEN' :
       (['ERROR', 'RED', 'RUNNING', 'WAITING_HUMAN', 'QUEUED'] as const).find(candidate => own.some(critic => critic.status === candidate)) ?? 'UNREVIEWED';
-    return { id, path: artifact.path, children: artifact.children, mounts: artifact.mounts, basis: artifact.basis === true, status,
+    return { id, path: artifact.path, children: artifact.children, mounts: artifact.mounts, basis: artifact.basis === true, status, ...(artifact.family ? { family: artifact.family.name } : {}),
       criticIds: own.map(critic => critic.id), passed, total: own.length, included: own.filter(critic => critic.requestId !== null).length };
   });
   const components = stronglyConnectedComponents(Object.keys(graph.artifacts), graph.relations), componentOf = new Map(components.flatMap((members, index) => members.map(id => [id, index] as const)));

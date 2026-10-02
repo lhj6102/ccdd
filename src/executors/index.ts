@@ -77,7 +77,7 @@ async function runtimeEnvironment(workspacePath: string, runDir: string) {
 }
 
 async function runtimeArguments(request: ReviewEnvelope & { profile: RuntimeProfile }, root: string): Promise<string[]> {
-  const scope = Object.fromEntries(request.artifacts.map(artifact => [artifact.id, { path: resolve(root, artifact.path), children: artifact.children, mounts: artifact.mounts }]));
+  const scope = Object.fromEntries(request.artifacts.map(artifact => [artifact.id, { path: resolve(root, artifact.path), children: artifact.children, mounts: artifact.mounts, ...(artifact.family ? { family: artifact.family } : {}) }]));
   return ['--test', ...await Promise.all(request.profile.args.slice(1).map(async name => {
     const location = resolveScopePath(scope, request.target, name);
     return scopedPath(scope[location.artifactId].path, location.path);
@@ -208,8 +208,8 @@ export function createExecutorRegistry({ piOptions, streamFn, alarmMethods = [],
         const { final, toolCalls } = await invokePi({ piOptions, streamFn, request, worktreePath, runDir, signal, onEvent, schema: finalResultSchema(request), async inspectResult(final, toolCalls, reviewSignal): Promise<FinalResultDiagnostic | undefined> {
           const result = final as ReviewResult;
           if (request.resultCheck) {
-            const ownerPath = request.artifacts.find(artifact => artifact.id === request.target)!.path;
-            const messages = await runResultCheck({ worktreePath, ownerPath, check: request.resultCheck, result, toolCalls, runDir, signal: reviewSignal });
+            const owner = request.artifacts.find(artifact => artifact.id === request.target)!;
+            const messages = await runResultCheck({ worktreePath, ownerPath: owner.path, artifactId: owner.id, family: owner.family, check: request.resultCheck, result, toolCalls, runDir, signal: reviewSignal });
             if (messages.length) return { category: 'result_check', messages };
           }
           try {

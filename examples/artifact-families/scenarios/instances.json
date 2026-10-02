@@ -1,0 +1,16 @@
+{
+  "checkout": {
+    "params": {
+      "detailIds": ["summary", "navigation"],
+      "instruction": "Read the overview of {checkout}, then inspect every listed detail. Decide whether observations satisfy each criterion. Cite detail IDs and explain missing or contradictory evidence."
+    },
+    "material": ["checkout.json"]
+  },
+  "search": {
+    "params": {
+      "detailIds": ["message", "query"],
+      "instruction": "Read the overview of {search}, then inspect every listed detail. Decide whether observations satisfy each criterion. Cite detail IDs and explain missing or contradictory evidence."
+    },
+    "material": ["search.json"]
+  }
+}

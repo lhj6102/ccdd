@@ -10,6 +10,7 @@ import { kindLabels } from './format';
 import { criticPresentation } from './critic-presentation';
 import { layoutGraph, type GraphLayout } from './graph-layout';
 import type { ArtifactEdgeData, ArtifactNodeData } from './graph-flow';
+import { groupFamilies } from './family-groups';
 import ArtifactFlowNode from './ArtifactFlowNode.vue';
 import GraphFlowEdge from './GraphFlowEdge.vue';
 
@@ -25,36 +26,46 @@ const flowInstanceId = useId(), flowId = computed(() => `${flowInstanceId}-${pro
 let controller: AbortController | undefined, layoutController: AbortController | undefined;
 let version = 0, layoutVersion = 0, fitPending = false, disposed = false, media: MediaQueryList | undefined;
 const graph = computed(() => data.value?.available ? data.value.graph : null);
-const artifacts = computed(() => new Map(graph.value?.artifacts.map(artifact => [artifact.id, artifact]) ?? []));
+// Families are collapsed into one node until expanded, so a large family keeps the graph readable.
+const expandedFamilies = ref<ReadonlySet<string>>(new Set()), focusedMemberId = ref('');
+const grouped = computed(() => graph.value ? groupFamilies(graph.value, expandedFamilies.value) : null);
+const artifacts = computed(() => new Map(grouped.value?.artifacts.map(artifact => [artifact.id, artifact]) ?? []));
 const requests = computed(() => new Map(data.value?.requests.map(request => [request.id, request]) ?? []));
 const selectedArtifact = computed(() => artifacts.value.get(selectedArtifactId.value));
-const selectedCritics = computed(() => graph.value?.critics.filter(critic => critic.target === selectedArtifactId.value) ?? []);
-const selectedRelations = computed(() => graph.value?.edges.filter(edge => edge.source === selectedArtifactId.value || edge.target === selectedArtifactId.value) ?? []);
+const selectedFamily = computed(() => grouped.value?.groups.get(selectedArtifactId.value));
+const membersInOrder = (members: readonly Artifact[]): Artifact[] => [...members].sort((a, b) => Number(b.included > 0) - Number(a.included > 0) || a.id.localeCompare(b.id));
+const familyMembers = computed(() => membersInOrder(selectedFamily.value?.members ?? []));
+// Focus is meaningful only for a member of the selected family.
+const focusedMember = computed(() => familyMembers.value.some(member => member.id === focusedMemberId.value) ? focusedMemberId.value : '');
+const criticTarget = computed(() => selectedFamily.value ? focusedMember.value : selectedArtifactId.value);
+const selectedCritics = computed(() => graph.value?.critics.filter(critic => critic.target === criticTarget.value) ?? []);
+const selectedRelations = computed(() => grouped.value?.edges.filter(edge => edge.source === selectedArtifactId.value || edge.target === selectedArtifactId.value) ?? []);
 const cycleCount = computed(() => graph.value?.edges.filter(edge => edge.cyclic).length ?? 0);
 const partial = computed(() => data.value?.run.scope?.kind === 'critic');
 // Request state does not affect layout. Keeping this key stable preserves the user's viewport during polling.
-const topologyKey = computed(() => graph.value ? JSON.stringify([
+const topologyKey = computed(() => grouped.value ? JSON.stringify([
   props.projectId, props.runId, vertical.value,
-  [...graph.value.artifacts].sort((a, b) => a.id.localeCompare(b.id)).map(artifact => [artifact.id, artifact.path, [...artifact.criticIds].sort()]),
-  [...graph.value.edges].sort((a, b) => a.source.localeCompare(b.source) || a.target.localeCompare(b.target)).map(edge => [edge.source, edge.target, [...edge.criticIds].sort()]),
+  [...grouped.value.artifacts].sort((a, b) => a.id.localeCompare(b.id)).map(artifact => [artifact.id, artifact.path, [...artifact.criticIds].sort()]),
+  [...grouped.value.edges].sort((a, b) => a.source.localeCompare(b.source) || a.target.localeCompare(b.target)).map(edge => [edge.source, edge.target, [...edge.criticIds].sort()]),
 ]) : '');
 const nodes = computed<Node<ArtifactNodeData>[]>(() => drawing.value?.nodes.flatMap(position => {
-  const artifact = artifacts.value.get(position.id);
-  if (!artifact || !graph.value) return [];
+  const artifact = artifacts.value.get(position.id), view = grouped.value;
+  if (!artifact || !graph.value || !view) return [];
+  const members = view.groups.get(artifact.id)?.members.length;
   return [{
     id: position.id, type: 'artifact', position: { x: position.x, y: position.y }, width: position.width, height: position.height,
     draggable: false, selectable: false, connectable: false, focusable: false, deletable: false,
     data: {
-      artifact, critics: graph.value.critics.filter(critic => critic.target === artifact.id), requests: requests.value,
-      statusLabel: artifactLabel(artifact), accessibleLabel: artifactAccessibleLabel(artifact),
+      artifact, critics: members === undefined ? graph.value.critics.filter(critic => critic.target === artifact.id) : [], requests: requests.value,
+      statusLabel: artifactLabel(artifact), accessibleLabel: artifactAccessibleLabel(artifact), ...(members === undefined ? {} : { members }),
       selected: selectedArtifactId.value === artifact.id, selectedRequestId: props.selectedRequestId, vertical: layoutVertical.value,
-      hasInput: graph.value.edges.some(edge => edge.target === artifact.id), hasOutput: graph.value.edges.some(edge => edge.source === artifact.id),
+      hasInput: view.edges.some(edge => edge.target === artifact.id), hasOutput: view.edges.some(edge => edge.source === artifact.id),
     },
   }];
 }) ?? []);
 const edges = computed<Edge<ArtifactEdgeData>[]>(() => drawing.value?.edges.map(route => {
   const connected = route.source === selectedArtifactId.value || route.target === selectedArtifactId.value;
-  const relation = graph.value?.edges.find(edge => edge.source === route.source && edge.target === route.target);
+  const relation = grouped.value?.edges.find(edge => edge.source === route.source && edge.target === route.target);
   return {
     id: JSON.stringify([route.source, route.target]), source: route.source, target: route.target,
     sourceHandle: 'source', targetHandle: 'target', type: 'artifact', selectable: false, focusable: false, deletable: false, updatable: false,
@@ -72,15 +83,35 @@ function artifactLabel(artifact: Artifact): string {
   if (artifact.status === 'BLOCKED' && graph.value?.critics.some(critic => critic.target === artifact.id && criticBlocked(critic))) return 'Blocked by failure';
   return { WAIT_DEPENDENCY: 'Waiting for dependency evidence', BASIS: 'Basis Artifact', UNREVIEWED: 'Unreviewed', BLOCKED: 'Awaiting dependencies', QUEUED: 'Queued', RUNNING: 'Running', WAITING_HUMAN: 'Awaiting Human', GREEN: 'Passed', RED: 'Criteria not met', ERROR: 'Execution error' }[artifact.status];
 }
-function artifactAccessibleLabel(artifact: Artifact): string { return `${artifact.id}, folder ${artifact.path || '.'}, ${artifactLabel(artifact)}, ${artifact.passed}/${artifact.total} Critics passed`; }
+function artifactAccessibleLabel(artifact: Artifact): string {
+  const members = grouped.value?.groups.get(artifact.id)?.members.length;
+  return `${artifact.id}, ${members === undefined ? '' : `Artifact family of ${members} instances, `}folder ${artifact.path || '.'}, ${artifactLabel(artifact)}, ${artifact.passed}/${artifact.total} Critics passed`;
+}
 function criticBlocked(critic: Critic): boolean {
   return Boolean(critic.requestId && requests.value.get(critic.requestId)?.blockedByFailure);
 }
+/** Select an Artifact through its displayed node; a member of a collapsed family is focused inside that node. */
+function selectArtifact(id: string): void {
+  const node = grouped.value?.nodeOf(id) ?? id;
+  selectedArtifactId.value = node;
+  if (node !== id) focusedMemberId.value = id;
+}
+/** Expanding selects the focused member, or the first member; collapsing selects the family and keeps the member focused. */
+function toggleFamily(name: string, expand: boolean): void {
+  const members = membersInOrder(graph.value?.artifacts.filter(artifact => artifact.family === name) ?? []);
+  if (!members.length) return;
+  const selected = members.find(member => member.id === (expand ? focusedMemberId.value : selectedArtifactId.value)) ?? members[0];
+  const next = new Set(expandedFamilies.value);
+  if (expand) next.add(name); else next.delete(name);
+  expandedFamilies.value = next;
+  selectedArtifactId.value = expand ? selected.id : name;
+  focusedMemberId.value = selected.id;
+}
 function chooseInitialArtifact(): void {
-  if (!graph.value) return;
-  if (graph.value.artifacts.some(artifact => artifact.id === selectedArtifactId.value)) return;
+  if (!graph.value || !grouped.value) return;
+  if (artifacts.value.has(selectedArtifactId.value)) return;
   const wanted = graph.value.critics.find(critic => props.selectedRequestId && critic.requestId === props.selectedRequestId)?.target;
-  selectedArtifactId.value = wanted ?? graph.value.artifacts.find(artifact => artifact.criticIds.length)?.id ?? graph.value.artifacts[0]?.id ?? '';
+  selectArtifact(wanted ?? graph.value.artifacts.find(artifact => artifact.criticIds.length)?.id ?? graph.value.artifacts[0]?.id ?? '');
 }
 async function refresh(force = false): Promise<void> {
   if (!props.projectId || !props.runId || (loading.value && !force)) return;
@@ -98,7 +129,7 @@ async function refresh(force = false): Promise<void> {
 }
 function openCritic(critic: Critic): void {
   if (critic.requestId && data.value) {
-    selectedArtifactId.value = critic.target;
+    selectArtifact(critic.target);
     emit('open-request', { projectId: data.value.project.id, id: critic.requestId });
   }
 }
@@ -145,7 +176,7 @@ function zoom(direction: 1 | -1): void {
 }
 watch([topologyKey, layoutAttempt], async ([key]) => {
   layoutController?.abort(); layoutController = new AbortController();
-  const requestVersion = ++layoutVersion, value = graph.value, direction = vertical.value;
+  const requestVersion = ++layoutVersion, value = grouped.value, direction = vertical.value;
   layoutError.value = '';
   if (!key || !value) { drawing.value = null; flow.value = null; layingOut.value = false; return; }
   layingOut.value = true;
@@ -164,12 +195,13 @@ watch([topologyKey, layoutAttempt], async ([key]) => {
 });
 watch(() => [props.projectId, props.runId], () => {
   controller?.abort(); layoutController?.abort(); version++; layoutVersion++; loading.value = false; data.value = null; error.value = ''; selectedArtifactId.value = '';
+  expandedFamilies.value = new Set(); focusedMemberId.value = '';
   drawing.value = null; layoutError.value = ''; fitPending = false; flow.value = null;
   void refresh(true);
 }, { immediate: true });
 watch(() => props.selectedRequestId, id => {
   const critic = graph.value?.critics.find(item => id && item.requestId === id);
-  if (critic) selectedArtifactId.value = critic.target;
+  if (critic) selectArtifact(critic.target);
 });
 onMounted(() => { media = matchMedia('(max-width: 700px)'); resize(); media.addEventListener('change', resize); });
 onUnmounted(() => { disposed = true; controller?.abort(); layoutController?.abort(); version++; layoutVersion++; media?.removeEventListener('change', resize); flow.value = null; });
@@ -204,9 +236,15 @@ defineExpose({ refresh });
       </div>
       <div class="graph-legend"><span>Dependency Artifact <span aria-hidden="true">→</span><span class="sr-only">to</span> Review target</span><span class="graph-state-legend"><span class="requested">Requested</span><span class="running">In review</span><span class="success">Succeeded</span><span class="failure">Failed</span></span></div>
       <section v-if="selectedArtifact" class="graph-detail" :aria-label="`${selectedArtifact.id} Critics`">
-        <header class="graph-detail-heading"><div><h2>{{ selectedArtifact.id }} <span>Critics</span></h2><p>Folder {{ selectedArtifact.path || '.' }}</p></div><span class="graph-detail-count">{{ selectedArtifact.passed }} / {{ selectedArtifact.total }} passed</span></header>
+        <header class="graph-detail-heading"><div><h2>{{ selectedArtifact.id }} <span>{{ selectedFamily ? `Artifact family · ${selectedFamily.members.length} instances` : 'Critics' }}</span></h2><p>Folder {{ selectedArtifact.path || '.' }}<template v-if="selectedArtifact.family && !selectedFamily"> <span class="graph-separator">·</span> Family {{ selectedArtifact.family }}</template></p></div><span class="graph-detail-count">{{ selectedArtifact.passed }} / {{ selectedArtifact.total }} passed</span></header>
+        <p v-if="selectedFamily" class="graph-family-actions"><button type="button" class="text-button" @click="toggleFamily(selectedFamily.name, true)">Show instances in graph</button></p>
+        <p v-else-if="selectedArtifact.family" class="graph-family-actions"><button type="button" class="text-button" @click="toggleFamily(selectedArtifact.family, false)">Collapse family {{ selectedArtifact.family }}</button></p>
         <ul v-if="selectedRelations.length" class="artifact-references" aria-label="Artifact relations"><li v-for="edge in selectedRelations" :key="`${edge.source}/${edge.target}`"><strong>{{ edge.source }} → {{ edge.target }}</strong><span>{{ edge.relations.map(relation => relation.kind + (relation.name ? `: ${relation.name}` : '')).join(', ') }}{{ edge.cyclic ? ' · Cycle' : '' }}</span></li></ul>
-        <p v-if="!selectedCritics.length" class="graph-basis-note">No Critics are registered to review this Artifact.</p>
+        <ul v-if="selectedFamily" class="graph-family-members" :aria-label="`${selectedFamily.name} instances`">
+          <li v-for="member in familyMembers" :key="member.id"><button type="button" :aria-pressed="focusedMember === member.id" :class="{ selected: focusedMember === member.id, 'not-included': !member.included }" @click="focusedMemberId = member.id"><strong>{{ member.id }}</strong><span class="card-status" :class="member.status.toLowerCase()">{{ artifactLabel(member) }}</span><span class="graph-detail-count">{{ member.passed }} / {{ member.total }}</span></button></li>
+        </ul>
+        <p v-if="selectedFamily && !focusedMember" class="graph-basis-note">Select an instance to see its Critics.</p>
+        <p v-else-if="!selectedCritics.length" class="graph-basis-note">No Critics are registered to review this Artifact.</p>
         <ul v-else class="graph-critic-list">
           <li v-for="critic in selectedCritics" :key="critic.id">
             <button type="button" class="graph-critic" :class="{ 'not-included': !critic.requestId, selected: critic.requestId && critic.requestId === selectedRequestId }" :disabled="!critic.requestId" @click="openCritic(critic)">

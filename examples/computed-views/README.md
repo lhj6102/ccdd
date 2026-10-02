@@ -9,4 +9,4 @@ ccdd-project verify checkout --human-inbox
 ccdd-project monitor
 ```
 
-Run these commands from this directory after installing `@ccdd/ccdd`. Submit the Human verdict explicitly through the monitor. Scenario files, the manifest and the shared script determine input identity. Output belongs in `context.outputDir`, outside the supplied workspace. Parameter combinations that generate Artifact declarations are not supported in version 4.
+Run these commands from this directory after installing `@ccdd/ccdd`. Submit the Human verdict explicitly through the monitor. Scenario files, the manifest and the shared script determine input identity. Output belongs in `context.outputDir`, outside the supplied workspace. When many scenarios share one script and Critic, the [Artifact family example](../artifact-families/README.md) declares them once with a static instance list instead of one folder each.

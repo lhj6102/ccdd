@@ -3,6 +3,7 @@
 Project Validation answers whether the current required scope has matching actual review evidence. It discovers static `ccdd.json` files, derives typed relationships and finite identities, and requests missing selected evaluations through the Broker.
 
 - **Artifact**: a named folder owning its view tools and Critics. Unmarked children are its material; marked children remain independent.
+- **Artifact Family**: one folder whose static instance list declares several Artifacts sharing its views and Critics. `$param` values copy instance parameters into those declarations. Each instance's identity covers the shared material and its own entry and listed material, so siblings do not invalidate each other.
 - **Artifact Identity**: the content/config/runtime/relation identity of material. Cycles are hashed as strongly connected components. Review IDs and times never affect it.
 - **Validation Input**: the effective Critic conditions, target and explicit references, with the current identity version and execution policy.
 - **Validation Evidence**: an actual semantic review result bound to its Validation Input. Reuse references that result; it is not another evaluation.
