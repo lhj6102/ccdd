@@ -176,3 +176,28 @@ test('closing an iterator or aborting its wait leaves the live computation untou
   assert.equal(a.broker.getRun(run.id)!.status,'RUNNING');await writeFile(join(f.root,'release'),'release');await pending;
   assert.equal(a.broker.getRun(run.id)!.status,'GREEN');
 });
+
+test('GC reclaims retired execution audit directories but preserves retained source results', async t => {
+  const {openIdentityCache,identityCacheDirectory}=await import('../src/cache/index.js');
+  const f=await fixture(t),a=await f.repo('gc-first','gc-first'),b=await f.repo('gc-second','gc-second');
+  for(const item of [a,b]){const run=await item.broker.submitProject({selection:{kind:'all'}});await item.broker.run(run.id);}
+  const first=readIdentityCache('gc-first')!,second=readIdentityCache('gc-second')!;
+  assert.ok(existsSync(first.value.origin.stateDir!));assert.ok(existsSync(second.value.origin.stateDir!));
+  const collector=openIdentityCache({directory:identityCacheDirectory(),maxEntries:1});t.after(()=>collector.close());
+  const gc=await collector.gc({limit:1});assert.equal(gc.removed,1);assert.equal(gc.entries,1);
+  assert.equal(readIdentityCache('gc-first'),null);assert.equal(existsSync(first.value.origin.stateDir!),false);
+  assert.ok(existsSync(second.value.origin.stateDir!));assert.equal(readIdentityCache('gc-second')!.executionId,second.executionId);
+});
+
+test('source usage mirrored while running is not added again at terminal publication',async t=>{
+  const {artifactFixture,runtimeCritic}=await import('./helpers/artifacts.js');
+  const data=await artifactFixture(t);await data.write('a',{name:'a',critics:[runtimeCritic()]});await data.identity('a');
+  const broker=createBroker({...data,detail:'full',executors:{canExecute:()=>({ok:true}),execute:async(_request,{onEvent})=>{
+    await onEvent?.({type:'executor.usage',usage:{input:3,totalTokens:3}});await delay(180);
+    await onEvent?.({type:'executor.usage',usage:{input:5,totalTokens:5}});await delay(180);return{verdict:'GREEN'};
+  }}});data.cleanup(()=>broker.close());
+  const run=await broker.submitProject({selection:{kind:'all'}});await broker.run(run.id);
+  assert.equal(broker.getRun(run.id)!.requests[0].usage!.totalTokens,8);assert.equal(broker.runSummary(run.id)!.usage!.totalTokens,8);
+  const hit=await broker.submitProject({selection:{kind:'all'},maxExecutions:0});assert.equal(hit.requests[0].usage!.totalTokens,8);
+  assert.equal(broker.runSummary(hit.id)!.executorStarts,0);assert.equal(broker.runSummary(hit.id)!.usage,undefined);
+});

@@ -140,7 +140,7 @@ export function openIdentityCache({ directory = identityCacheDirectory(), maxByt
     db.exec('COMMIT'); db.exec('PRAGMA journal_mode=WAL; PRAGMA busy_timeout=25');
     chmodSync(join(directory, 'cache.sqlite'), 0o600);
   } catch (cause) { try { db.exec('ROLLBACK'); } catch {} db.close(); throw cause; }
-  let closed = false, closing = false;
+  let closed = false, closing = false, closePromise: Promise<void> | undefined;
   const owned = new Map<string, { controller: AbortController; promise: Promise<void>; scope?: string }>();
   const subscribers = new Set<string>();
   const shuttingDown = new AbortController();
@@ -180,7 +180,15 @@ export function openIdentityCache({ directory = identityCacheDirectory(), maxByt
       for (const [id, task] of owned) {
         const row = db.prepare('SELECT state FROM cache_jobs WHERE id=?').get(id);
         if (row?.state !== 'RUNNING') task.controller.abort(error('CACHE_OWNERSHIP_LOST', 'Shared computation ownership was lost.'));
-        else if (!db.prepare('SELECT 1 FROM cache_subscribers WHERE job_id=? LIMIT 1').get(id)) task.controller.abort(error('ABORTED', 'All subscribers canceled the shared computation.'));
+        else if (!db.prepare('SELECT 1 FROM cache_subscribers WHERE job_id=? LIMIT 1').get(id)) {
+          // Fence the abandoned alias before aborting. A later subscriber must
+          // not join a computation whose cancellation is already irreversible.
+          const abandoned = await retry(() => transaction(() => {
+            if(db.prepare('SELECT 1 FROM cache_subscribers WHERE job_id=? LIMIT 1').get(id)) return false;
+            db.prepare('DELETE FROM cache_active WHERE job_id=?').run(id); return true;
+          }));
+          if(abandoned) task.controller.abort(error('ABORTED','All subscribers canceled the shared computation.'));
+        }
       }
       if (touches.size) {
         const batch = [...touches].slice(0, 128);
@@ -381,7 +389,9 @@ export function openIdentityCache({ directory = identityCacheDirectory(), maxByt
     },
     gc,
     async drain(scope?: string) { await Promise.allSettled([...owned.values()].filter(task => scope === undefined || task.scope === scope).map(task => task.promise)); },
-    async close() {
+    close(): Promise<void> {
+      if(closePromise) return closePromise;
+      closePromise = (async () => {
       if (closed) return; closing = true;
       shuttingDown.abort(error('CACHE_CLOSED', 'Identity cache closed.'));
       await Promise.allSettled([...clients]);
@@ -392,6 +402,8 @@ export function openIdentityCache({ directory = identityCacheDirectory(), maxByt
       while (maintaining) await delay(5);
       await maintain();
       db.close(); closed = true;
+      })();
+      return closePromise;
     },
   };
 }

@@ -57,14 +57,15 @@ test('scoped manifests include composition, instruction dependencies and only th
   await assert.rejects(createReviewTools({ ...request, worktreePath: data.repoPath, audience: 'agent' }), { code: 'WORKSPACE_ARTIFACT_MISMATCH' });
 });
 
-test('5.0 and 5.1 full-manifest fixture remains executable with identical identity and reuse keys', async t => {
+test('historical full manifests remain executable but old implicit keys are not reusable identities', async t => {
   const data = await artifactFixture(t);
   const fixture = JSON.parse(await readFile(join(process.cwd(), 'test/fixtures/full-manifest-request.json'), 'utf8')) as { files: Record<string, string>; envelope: ReviewEnvelope; inputs: unknown; artifactHashes: unknown };
   for (const [file, text] of Object.entries(fixture.files)) { await mkdir(join(data.repoPath, file, '..'), { recursive: true }); await writeFile(join(data.repoPath, file), text); }
   const config = await data.config();
   assert.equal(config.configManifest.configHash, fixture.envelope.configManifest.configHash);
   const snapshot = await createProjectSnapshot(config, data.repoPath, fixture.envelope.snapshotHash);
-  assert.deepEqual(snapshot.inputs, fixture.inputs); assert.deepEqual(snapshot.artifactHashes, fixture.artifactHashes);
+  assert.equal(snapshot.inputs['a/review'].version,4); assert.equal(snapshot.inputs['a/review'].reusable,false);
+  assert.equal(snapshot.inputs['a/review'].cacheIdentity,undefined); assert.deepEqual(snapshot.artifactHashes, fixture.artifactHashes);
   const [current] = await data.requests('a/review');
   assert.deepEqual({ ...current, configManifest: fixture.envelope.configManifest }, fixture.envelope);
   assert.deepEqual(Object.keys(current.configManifest.artifacts), ['a']);
@@ -86,8 +87,9 @@ test('5.0 and 5.1 full-manifest fixture remains executable with identical identi
   assert.equal(executions, 1);
   assert.equal(projectRuns(data.stateDir)[0].requests[0].inputKey, snapshot.inputs['a/review'].key);
   const reused = await broker.submitProject({ selection: { kind: 'critic', criticId: 'a/review' } });
-  assert.equal(reused.status, 'GREEN'); assert.equal(reused.requests.length, 0);
-  assert.equal(executions, 1, 'historical evidence is reused without another execution');
+  assert.equal(reused.status, 'QUEUED'); assert.equal(reused.requests.length, 1);
+  assert.equal((await broker.run(reused.id))!.status,'GREEN');
+  assert.equal(executions, 2, 'historical evidence without an explicit identity never enters the shared cache');
   await writeFile(join(data.repoPath, 'a/ccdd.json'), fixture.files['a/ccdd.json'].replace('Read a fixture.', 'Changed fixture.'));
   await assert.rejects(createReviewTools({ ...saved, worktreePath: data.repoPath, audience: 'agent' }), { code: 'WORKSPACE_ARTIFACT_MISMATCH' });
 });

@@ -54,16 +54,17 @@ test('real detached Runtime verification returns GREEN and RED without Git or a 
 });
 
 test('detached worker continues after submission exits and a later verification reuses actual results', async t => {
-  const data = await fixture(t, { slow: 350 }), submitted = await separate(['verify', '--all', ...data.args]);
+  const data = await fixture(t, { slow: 350 }); await data.identity('a'); const submitted = await separate(['verify', '--all', ...data.args]);
   assert.equal(submitted.code, 0); const id = submitted.data.id;
   const completed = await separate(['run', 'show', id, '--wait', ...data.args]); assert.equal(completed.code, 0); assert.equal(completed.data.status, 'GREEN');
-  const reused = await separate(['verify', '--all', '--wait', ...data.args]); assert.equal(reused.code, 0); assert.equal(reused.data.requests.length, 0);
+  const reused = await separate(['verify', '--all', '--wait', ...data.args]); assert.equal(reused.code, 0); assert.equal(reused.data.requests.length, 1); assert.equal(reused.data.requests[0].cacheDisposition, 'hit');
 });
 
 test('single Critic selection persists its result while recursive verification fills missing cycle evidence', async t => {
   const data = await fixture(t); await data.edit('a', m => { m.mounts = { peer: 'b' }; }); await data.write('b', { name: 'b', mounts: { peer: 'a' }, critics: [runtimeCritic()] });
+  await data.identity('a'); await data.identity('b');
   const partial = await separate(['verify', '--critic', 'a/check', '--wait', ...data.args]); assert.equal(partial.code, 4); assert.equal(partial.data.requests[0].status, 'GREEN');
-  const complete = await separate(['verify', 'a', '--recursive', '--wait', ...data.args]); assert.equal(complete.code, 0); assert.deepEqual(complete.data.requests.map((r: any) => r.criticId), ['b/check']);
+  const complete = await separate(['verify', 'a', '--recursive', '--wait', ...data.args]); assert.equal(complete.code, 0); assert.deepEqual(complete.data.requests.filter((r:any)=>r.cacheDisposition !== 'hit').map((r: any) => r.criticId), ['b/check']);
 });
 
 test('workspace edits during a detached Runtime review invalidate the active result', async t => {

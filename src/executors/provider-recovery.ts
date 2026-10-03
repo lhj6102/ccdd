@@ -14,6 +14,7 @@ export function classifyProviderFailure(value: unknown, response?: ProviderRespo
   const code = String(body.code ?? input.code ?? '').slice(0, 128);
   const text = `${code} ${message}`;
   const status = response?.status ?? input.status ?? input.statusCode;
+  if(code==='PROVIDER_TIMEOUT') return {kind:'permanent',code:'PROVIDER_TIMEOUT'};
   if (status === 401 || /AUTHENTICATION|\b401\b|unauthori[sz]ed|invalid_api_key|token_expired|credential/i.test(text)) return { kind: 'authentication', code: 'AUTHENTICATION_FAILED' };
   if (/insufficient_quota|QUOTA_EXHAUSTED|quota|billing[_ ](?:limit|hard)|credits? (?:exhausted|depleted)|usage limit/i.test(text)) return { kind: 'quota', code: 'QUOTA_EXHAUSTED' };
   if (status === 403 || /\b403\b|forbidden|access_denied|model_not_found|invalid_request|unsupported|not supported|certificate|TLS/i.test(text)) return { kind: 'permanent', code: 'PROVIDER_REQUEST_REJECTED' };

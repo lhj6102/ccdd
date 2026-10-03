@@ -186,7 +186,7 @@ test('nested instance material and narrowed shared paths never reach sibling ide
 });
 
 test('an ordinary owner-identity Artifact keeps its validation input when moved into a family', async t => {
-  // The owner value, Artifact name and Critic ID determine the key; the folder layout does not.
+  // The owner's value alone determines the key; names and folder layout do not.
   const identity = `import {readFileSync} from 'node:fs';
 let text=''; for await (const chunk of process.stdin) text+=chunk;
 const input=JSON.parse(text);
@@ -253,8 +253,13 @@ test('inline instances keep other instances valid when the list grows', async t 
   assert.equal((await data.config()).artifacts.a.family!.instances, undefined);
 });
 
-test('actual reviews of unchanged instances are reused when a sibling changes', async t => {
-  const data = await familyFixture(t), broker = createBroker({ detail: 'full', ...data, executors: createExecutorRegistry() });
+test('explicit owner identities reuse unchanged family instances when a sibling changes', async t => {
+  const data = await familyFixture(t);
+  await data.edit('scenarios', manifest => { manifest.stale = {kind:'identity',script:{command:'node',args:['identity.mjs']}}; });
+  await writeFile(join(data.repoPath,'scenarios/identity.mjs'), `import {createHash} from 'node:crypto'; import {readFileSync} from 'node:fs';
+    let text=''; for await(const chunk of process.stdin)text+=chunk; const input=JSON.parse(text);
+    const hash=createHash('sha256'); for(const file of input.family.material)hash.update(readFileSync(file)); console.log(hash.digest('hex'));`);
+  const broker = createBroker({ detail: 'full', ...data, executors: createExecutorRegistry() });
   data.cleanup(() => broker.close());
   const verify = async () => {
     const run = await broker.submitProject({ selection: { kind: 'all' } });
@@ -265,9 +270,11 @@ test('actual reviews of unchanged instances are reused when a sibling changes', 
   assert.equal(first.status, 'GREEN'); assert.deepEqual(first.requests.map(request => request.criticId).sort(), ['a/review', 'b/review']);
   await writeFile(join(data.repoPath, 'scenarios/b.txt'), 'two, revised');
   const second = await verify();
-  assert.equal(second.status, 'GREEN'); assert.deepEqual(second.requests.map(request => request.criticId), ['b/review']);
+  assert.equal(second.status, 'GREEN'); assert.deepEqual(second.requests.filter(request => request.cacheDisposition !== 'hit').map(request => request.criticId), ['b/review']);
   const reused = second.validation!.items.find(item => item.id === 'a/review')!;
-  assert.equal(reused.action, 'REUSE'); assert.equal(reused.result!.requestId, first.requests.find(request => request.criticId === 'a/review')!.id);
+  assert.equal(reused.action, 'REUSE');
+  assert.equal(reused.result!.requestId, second.requests.find(request => request.criticId === 'a/review')!.id);
+  assert.deepEqual(second.requests.find(request => request.criticId === 'a/review')!.executionSource, first.requests.find(request => request.criticId === 'a/review')!.executionSource);
   // History resolves a family name from each stored request's own definitions.
   for (const args of [['scenarios'], ['--artifacts', 'scenarios,rules'], ['a']]) {
     let output = '';

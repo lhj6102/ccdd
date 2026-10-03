@@ -36,13 +36,16 @@ test('durable submission budget survives retry and zero permits only existing re
   assert.equal(starts, 1); assert.equal(broker.getRun(run.id)!.requests[0].errorCode, 'EXECUTION_BUDGET_EXHAUSTED');
 });
 
-test('coalescing expiry charges receiver budget instead of reusing source allowance', async t => {
-  const data = await fixture(t); await data.write('a', { name: 'a', critics: [runtimeCritic()] });
-  const broker = createBroker({ detail: 'full', ...data, coalescingGraceMs: 80, executors: simple }); data.cleanup(() => broker.close());
-  await broker.submitProject({ selection: { kind: 'all' }, maxExecutions: 1 });
+test('unstarted submissions cannot lend their execution budget to another request', async t => {
+  const data = await fixture(t); await data.write('a', { name: 'a', critics: [runtimeCritic()] }); await data.identity('a');
+  const broker = createBroker({ detail: 'full', ...data, executors: simple }); data.cleanup(() => broker.close());
+  const first = await broker.submitProject({ selection: { kind: 'all' }, maxExecutions: 1 });
+  await assert.rejects(broker.submitProject({ selection: { kind: 'all' }, maxExecutions: 0 }), /requires 1 new executions/);
+  assert.equal(broker.executionBudget(first.id)!.attempts.length, 0);
+  await broker.run(first.id);
   const receiver = await broker.submitProject({ selection: { kind: 'all' }, maxExecutions: 0 });
-  assert.equal(receiver.requests.length, 0); await delay(100); await broker.run(receiver.id);
-  assert.equal(broker.getRun(receiver.id)!.requests[0].errorCode, 'EXECUTION_BUDGET_EXHAUSTED'); assert.equal(broker.executionBudget(receiver.id)!.attempts.length, 0);
+  assert.equal(receiver.requests[0].cacheDisposition, 'hit');
+  assert.equal(broker.executionBudget(receiver.id)!.attempts.length, 0);
 });
 
 test('custom admission is only a precondition and cannot bypass the machine cap or budget', async t => {
@@ -103,10 +106,10 @@ test('actual pinned bytes produce immutable raw/structural provenance across com
   assert.notEqual(provenance.inputs[0].structuralSha256, raw.rawContentSha256);
   const changes = broker.changes(first.id)!.changes.filter(change => change.result); assert.deepEqual(changes.at(-1)!.result!.executionProvenance, provenance);
   await writeFile(join(data.repoPath, 'runtime/binary'), 'new session binary');
-  const reused = await broker.submitProject({ selection: { kind: 'all' }, maxExecutions: 0 }); assert.equal(reused.requests.length, 0);
+  const reused = await broker.submitProject({ selection: { kind: 'all' }, maxExecutions: 0 }); assert.equal(reused.requests.length, 1); assert.equal(reused.requests[0].cacheDisposition, 'hit');
   const compact = await inspectProject({ ...data }); assert.deepEqual(compact.plan.results[0].executionProvenance, provenance); assert.deepEqual(compact.plan.items[0].result!.executionProvenance, provenance);
   const db = new DatabaseSync(join(data.stateDir, 'broker.sqlite')); const row = db.prepare('SELECT data FROM requests WHERE id=?').get(first.requests[0].id)!; const header = JSON.parse(String(row.data)); delete header.executionProvenance; db.prepare('UPDATE requests SET data=? WHERE id=?').run(JSON.stringify(header), first.requests[0].id); db.close();
-  assert.equal(projectHistory(data.stateDir)[0].executionProvenance, null);
+  assert.equal(projectHistory(data.stateDir, { detail: 'full' }).find(entry => entry.requestId === first.requests[0].id)!.executionProvenance, null);
 });
 
 test('runtime replacement after capture never runs changed bytes under the original provenance', async t => {
@@ -144,11 +147,12 @@ test('offline load-check performs real guarded tool calls and cannot supply prod
 test('multi-root union deduplicates selected Critics under one budget while retaining dependency gates', async t => {
   const data = await fixture(t); await data.write('a', { name: 'a', critics: [runtimeCritic()] }); await data.write('b', { name: 'b', critics: [runtimeCritic()] });
   const broker = createBroker({ detail: 'full', ...data, executors: simple }); data.cleanup(() => broker.close());
+  await data.identity('a'); await data.identity('b');
   const selection = { kind: 'critics' as const, criticIds: ['a/check', 'b/check', 'a/check'] };
   const plan = await inspectProject({ detail: 'full', ...data, selection }); assert.deepEqual(plan.plan.selectedCriticIds, ['a/check', 'b/check']);
   await assert.rejects(broker.submitProject({ selection, maxExecutions: 1 }), /requires 2 new executions/);
   const run = await broker.submitProject({ selection, maxExecutions: 2 }); await broker.run(run.id); assert.equal(broker.executionBudget(run.id)!.attempts.length, 2);
-  const reuse = await broker.submitProject({ selection, maxExecutions: 0 }); assert.equal(reuse.requests.length, 0);
+  const reuse = await broker.submitProject({ selection, maxExecutions: 0 }); assert.equal(reuse.requests.length, 2); assert.ok(reuse.requests.every(request => request.cacheDisposition === 'hit'));
   await data.write('a/child', { name: 'child', critics: [runtimeCritic()] });
   const gated = await inspectProject({ detail: 'full', ...data, selection: { kind: 'artifacts', artifactIds: ['a', 'b', 'a'] } });
   assert.equal(gated.plan.items.find(item => item.id === 'a/check')!.action, 'WAIT_DEPENDENCY'); assert.equal(gated.plan.items.some(item => item.id === 'child/check'), false);

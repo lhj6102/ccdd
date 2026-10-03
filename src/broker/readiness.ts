@@ -125,13 +125,14 @@ export function createReadiness(db: DatabaseSync, store: ReturnType<typeof recor
       preparedTemplates = new Map(project.templates.map(envelope => [envelope.criticId,envelope])); preparedWorkspace = run.workspace;
       try {
         const plan = planProject(project.snapshot, readEvidence(db), { selection: project.selection, recursive: project.recursive, force: project.force, ignoreGates: true, runId: run.id });
+        const forced = new Set(project.force ? plan.selectedCriticIds : []);
         const included = new Set(plan.includedCriticIds), templates = new Map(project.templates.map(envelope => [envelope.criticId, envelope]));
         const members = new Map<string, Member>();
         const counts = { queued: 0, running: 0, waiting: 0, errors: 0, red: 0, missing: plan.artifacts.filter(artifact => artifact.total === 0 && artifact.status !== 'BASIS').length };
         let ordinal = 0;
         for (const critic of plan.critics) {
           const envelope = templates.get(critic.id);
-          const entry = !project.force && critic.input.cacheIdentity ? cached.get(critic.input.cacheIdentity) : undefined;
+          const entry = !forced.has(critic.id) && critic.input.cacheIdentity ? cached.get(critic.input.cacheIdentity) : undefined;
           const state = entry?.value.result.verdict ?? critic.result?.verdict ?? 'MISSING';
           members.set(critic.id, { run_id: run.id, critic_id: critic.id, ordinal: ordinal++, target: critic.target, input_key: critic.input.key,
             input_ref: prepared?.inputs.get(critic.id) ?? store.put(critic.input), envelope_ref: envelope ? prepared?.envelopes.get(critic.id) ?? store.put(envelope) : null,
@@ -167,7 +168,7 @@ export function createReadiness(db: DatabaseSync, store: ReturnType<typeof recor
         for (const row of db.prepare('SELECT * FROM run_members WHERE run_id=? ORDER BY ordinal').all(run.id)) {
           const member = row as unknown as Member;
           const input = project.snapshot.inputs[member.critic_id];
-          const entry = !project.force && input.cacheIdentity ? cached.get(input.cacheIdentity) : undefined;
+          const entry = !forced.has(member.critic_id) && input.cacheIdentity ? cached.get(input.cacheIdentity) : undefined;
           if (entry) {
             // This is a subscriber receipt, explicitly attributed to the original
             // execution, not a fabricated re-evaluation of another Critic.

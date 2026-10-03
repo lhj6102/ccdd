@@ -172,7 +172,7 @@ test('workspace preflight rejects embedded credentials before any tickets or inp
 });
 
 
-test('run telemetry survives readonly reopening but never changes identities, evidence or reuse', async t => {
+test('run telemetry survives readonly reopening and cannot turn an uncached request into reusable evidence', async t => {
   const data = await artifactFixture(t);
   await data.write('a', { name: 'a', views: fixtureViews(), critics: [{ id: 'review', title: 'Review', profile: agentProfile, payload: { instruction: 'Read {a}.' } }] });
   const broker = createBroker({ detail: 'full', ...data, executors: createExecutorRegistry({ streamFn: artifactStream() }) }); data.cleanup(() => broker.close());
@@ -188,7 +188,7 @@ test('run telemetry survives readonly reopening but never changes identities, ev
   assert.doesNotMatch(JSON.stringify(projectHistory(data.stateDir, { detail: 'full' })), /durationMs|startedAt|usage|cost/);
   assert.doesNotMatch(JSON.stringify(run.requests[0].result!.toolCalls), /durationMs|startedAt|usage/);
   const reused = await broker.submitProject({ selection: { kind: 'all' } });
-  assert.equal(reused.requests.length, 0); assert.equal(reused.status, 'GREEN');
+  assert.equal(reused.requests.length, 1); assert.equal(reused.status, 'QUEUED');
   assert.equal(projectRun(data.stateDir, reused.id)!.events.some(event => event.type === 'executor.usage'), false);
   await broker.close();
   assert.deepEqual(projectRun(data.stateDir, run.id)!.events, run.events);
@@ -261,7 +261,7 @@ for (const nonzero of [false, true]) test(`script ${nonzero ? 'nonzero failures 
   assert.deepEqual(reopened.getRun(run.id)!.requests[0].result!.toolCalls, calls);
 });
 
-for (const repaired of [true, false]) test(`final-format repair audit survives reopening and ${repaired ? 'preserves normal reuse' : 'cannot create reusable evidence on failure'}`, async t => {
+for (const repaired of [true, false]) test(`final-format repair audit survives reopening and ${repaired ? 'preserves the uncached execution contract' : 'cannot create reusable evidence on failure'}`, async t => {
   const data = await artifactFixture(t);
   await data.write('a', { name: 'a', views: fixtureViews(), critics: [{ id: 'review', title: 'Review', profile: agentProfile, payload: { instruction: 'Read {a}.' } }] });
   let faux: ReturnType<typeof fauxProvider> | undefined, calls = 0;
@@ -292,7 +292,7 @@ for (const repaired of [true, false]) test(`final-format repair audit survives r
   if (repaired) {
     assert.equal(run.requests[0].result!.toolCalls!.length, 1);
     const reused = await broker.submitProject({ selection: { kind: 'all' } });
-    assert.equal(reused.requests.length, 0); assert.equal(reused.status, 'GREEN');
+    assert.equal(reused.requests.length, 1); assert.equal(reused.status, 'QUEUED');
     assert.equal(projectRun(data.stateDir, reused.id)!.events.some(event => event.type.startsWith('executor.final.')), false);
   } else {
     assert.equal(run.requests[0].result, null);

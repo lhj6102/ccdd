@@ -114,8 +114,8 @@ export function planProject(snapshot: ProjectSnapshot, history: readonly Validat
   const includedSet = new Set(includedCriticIds);
   const items = query.critics.filter(c => includedSet.has(c.id)).map(c => {
     const action = (c.status === 'BLOCKED' || c.status === 'WAIT_DEPENDENCY' ? c.status : c.result ? 'REUSE' : ['QUEUED', 'RUNNING', 'WAITING_HUMAN'].includes(c.status) ? 'ACTIVE' : c.canExecute ? 'EXECUTE' : c.requestId ? 'FAILED' : 'WAIT') as ProjectPlan['items'][number]['action'];
-    // Force bypasses adoption for the whole submission, matching the Broker.
-    const source = action === 'EXECUTE' && !options.force && !options.forceCriticIds?.includes(c.id) ? coalesce?.(c) : null;
+    // Force applies to the explicitly selected Critics, not recursive dependencies.
+    const source = action === 'EXECUTE' && !(options.force && selectedCriticIds.includes(c.id)) && !options.forceCriticIds?.includes(c.id) ? coalesce?.(c) : null;
     return source ? { ...c, ...source, canExecute: false, reason: 'An identical active request can supply this review.', action: 'COALESCE' as const } : { ...c, action };
   });
   return { ...query, recursive: Boolean(options.recursive), force: Boolean(options.force), selectedCriticIds, includedCriticIds, items,

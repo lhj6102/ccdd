@@ -38,7 +38,7 @@ import { createHumanClaims, HUMAN_PREPARATION_LEASE_MS } from './human-claims.js
 import { prepareHumanReview } from '../executors/human-preparation.js';
 import { prepareWorkspace, reopenWorkspace, type WorkspaceDescriptor, type WorkspaceHandle, type WorkspaceIntegrity } from '../workspaces/index.js';
 import { createProjectSnapshot, positiveConcurrency } from '../project/identity.js';
-import { includedCritics, planProject } from '../project/query.js';
+import { includedCritics, selectedCritics, planProject } from '../project/query.js';
 import { readEvidence, storedRequesterRun } from '../project/store.js';
 import type { ProjectRunDefinition, ProjectSelection } from '../project/types.js';
 import type { RunStatus, ExecutionSource } from '../contracts.js';
@@ -351,10 +351,13 @@ export function createBroker<D extends ResultDetail = 'compact'>({ [executionMod
     try { const origin = projectRequestState(source.stateDir, source.requestId); if (origin) copyExecutionState(header,origin); }
     catch { /* Missing diagnostics are explicitly unreported, never invented. */ }
   }
+  const mirroredStates = new Map<string,string>();
   function mirrorExecution(requestId: string, source: ExecutionSource) {
     if (closed || terminal.has(polling.requestStatus(requestId) ?? 'ERROR')) return;
     const origin = projectRequestState(source.stateDir, source.requestId, false);
     if (!origin) return;
+    const signature = JSON.stringify(origin);
+    if(mirroredStates.get(requestId) === signature) return;
     transaction(() => {
       const header = requestHeader(requestId); if (!header || terminal.has(header.status)) return;
       const before = JSON.stringify(header);
@@ -362,13 +365,16 @@ export function createBroker<D extends ResultDetail = 'compact'>({ [executionMod
       if (origin.status === 'WAITING_HUMAN') header.status = 'WAITING_HUMAN';
       if (before !== JSON.stringify(header)) saveHeader(header);
     });
+    mirroredStates.set(requestId,signature);
     changed();
   }
 
   async function executeOne(requestId: string, workspace: WorkspaceHandle, token: string, signal: AbortSignal) {
     const initial = required(requestHeader(requestId), 'Request');
     const input = initial.inputRef ? store.get<import('../project/types.js').ValidationInput>(initial.inputRef) : null;
-    if (rawExecution || readiness.header(initial.runId)?.project.force || readiness.header(initial.runId)?.executionOwned || diagnosticScope.getStore() || input?.version !== 4 || !input.cacheIdentity) return executeUncached(requestId, workspace, token, signal);
+    const project = readiness.header(initial.runId)?.project;
+    const forced = project?.force && (!project.forceCriticIds || project.forceCriticIds.includes(initial.criticId));
+    if (rawExecution || forced || readiness.header(initial.runId)?.executionOwned || diagnosticScope.getStore() || input?.version !== 4 || !input.cacheIdentity) return executeUncached(requestId, workspace, token, signal);
     const runId = initial.runId, request = copy(required(requestData(requestId), 'Request'));
     const service = sharedCache();
     let source: ExecutionSource | undefined, mirror: NodeJS.Timeout | undefined;
@@ -402,7 +408,7 @@ export function createBroker<D extends ResultDetail = 'compact'>({ [executionMod
             definition: { criticId: request.criticId, payload: request.payload, passSchema: request.passSchema, failSchema: request.failSchema, resultCheck: request.resultCheck },
           };
         } finally { await owner.close(); }
-      }, { signal, force: Boolean(readiness.header(runId)?.project.force), scope: runId,
+      }, { signal, scope: runId,
         onState(state, executionId) {
           source = { stateDir: path.join(service.directory, 'executions', executionId), runId: executionId, requestId: executionId, executionId, identity: input.cacheIdentity! };
           transaction(() => {
@@ -434,7 +440,7 @@ export function createBroker<D extends ResultDetail = 'compact'>({ [executionMod
       if (signal.aborted || fatalExecutionError(cause)) throw signal.aborted ? signal.reason : cause;
       transaction(() => { if (ownerData(runId)?.token === token) finishWithin(requestId, { error: cause }, ['QUEUED','RUNNING','WAITING_HUMAN']); });
       changed();
-    } finally { clearInterval(mirror); }
+    } finally { clearInterval(mirror); mirroredStates.delete(requestId); }
   }
 
   async function executeUncached(requestId: string, workspace: WorkspaceHandle, token: string, signal: AbortSignal) {
@@ -739,7 +745,7 @@ export function createBroker<D extends ResultDetail = 'compact'>({ [executionMod
 
         const id = randomUUID(), createdAt = now();
         const record: RunRecord = { id, repoId, workerProtocol: 'resources-1', maxExecutions, repoExecutorCap: config.reviewPolicy?.maxConcurrentExecutors, coalescingGraceMs, snapshotHash: descriptor.hash, workspace: descriptor, requesterId,
-          scope: { kind: 'project' }, graph: createGraphDefinition(config, false), project: { version: 3, snapshot, selection, recursive, force, ignoreGates, templates }, status: 'QUEUED', createdAt };
+          scope: { kind: 'project' }, graph: createGraphDefinition(config, false), project: { version: 3, snapshot, selection, recursive, force, forceCriticIds: force ? selectedCritics(snapshot, selection) : [], ignoreGates, templates }, status: 'QUEUED', createdAt };
         const cached = snapshotCache(snapshot), sharedActive = snapshotActive(snapshot);
         const prepared = await store.prepareRun(record, workspace.signal);
         await workspace.assertUnchanged(); workspace.signal.throwIfAborted();
@@ -754,8 +760,9 @@ export function createBroker<D extends ResultDetail = 'compact'>({ [executionMod
           if (maxExecutions !== undefined) {
             const starts = new Set(db.prepare("SELECT id,data FROM requests WHERE run_id=? AND status='QUEUED' AND json_extract(data,'$.profile.kind')!='human'").all(id).flatMap(row => {
               const header = JSON.parse(String(row.data)), input = snapshot.inputs[header.criticId];
-              if (!force && input.cacheIdentity && sharedActive.has(input.cacheIdentity)) return [];
-              return [input.cacheIdentity ?? String(row.id)];
+              const forced = force && record.project!.forceCriticIds!.includes(header.criticId);
+              if (!forced && input.cacheIdentity && sharedActive.has(input.cacheIdentity)) return [];
+              return [!forced && input.cacheIdentity ? input.cacheIdentity : String(row.id)];
             })).size;
             if (starts > maxExecutions) throw codedError(`Plan requires ${starts} new executions, exceeding maxExecutions ${maxExecutions}.`, 'EXECUTION_BUDGET_EXCEEDED');
           }

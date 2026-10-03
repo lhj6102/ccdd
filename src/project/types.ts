@@ -29,7 +29,7 @@ export interface ValidationEvidence {
 }
 export interface ProjectRunDefinition {
   version: 3; snapshot: ProjectSnapshot; selection: ProjectSelection;
-  recursive: boolean; force: boolean; ignoreGates?: boolean;
+  recursive: boolean; force: boolean; forceCriticIds?: string[]; ignoreGates?: boolean;
   /** Prepared definitions, not tickets or persisted stale states. */
   templates: ReviewEnvelope[];
   /** Original evidence consumed by a completed execution; never a cached stale flag. */
@@ -55,7 +55,7 @@ export interface ProjectQuery {
   artifacts: ArtifactValidation[]; critics: CriticValidation[];
 }
 export interface ProjectPlan extends ProjectQuery {
-  recursive: boolean; force: boolean; ignoreGates?: boolean; selectedCriticIds: string[]; includedCriticIds: string[];
+  recursive: boolean; force: boolean; forceCriticIds?: string[]; ignoreGates?: boolean; selectedCriticIds: string[]; includedCriticIds: string[];
   items: (CriticValidation & { action: 'BLOCKED' | 'WAIT_DEPENDENCY' | 'REUSE' | 'COALESCE' | 'EXECUTE' | 'WAIT' | 'ACTIVE' | 'FAILED'; leaseExpiresAt?: string })[];
   counts: { gated: number; reuse: number; coalesce: number; execute: number; wait: number; active: number; failed: number };
 }
