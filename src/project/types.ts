@@ -2,7 +2,9 @@ import type { RepoConfig, ReviewEnvelope, ReviewResult, ReviewRequest, Workspace
 
 export type ProjectSelection = { kind: 'all' } | { kind: 'artifact'; artifactId: string } | { kind: 'critic'; criticId: string } | { kind: 'critics'; criticIds: string[] } | { kind: 'artifacts'; artifactIds: string[] };
 export interface ValidationInput {
-  version: 3; key: string; criticHash: string;
+  version: 3 | 4; key: string; criticHash: string;
+  /** Only an explicit owner value participates in shared result reuse. */
+  cacheIdentity?: string;
   target: { id: string; hash: string }; deps: { id: string; hash: string }[];
   reusable: boolean;
   /** Omitted for default content verification. Included in default Artifact identity. */
@@ -18,6 +20,10 @@ export interface ProjectSnapshot {
 }
 export interface ValidationEvidence {
   executionProvenance?: import('../provenance.js').ExecutionProvenance | null;
+  source?: import('../contracts.js').ExecutionSource;
+  profile?: import('../contracts.js').CriticProfile;
+  /** Set only by a live shared-cache lookup, never inferred from project history. */
+  cacheLookup?: boolean;
   requestId: string; runId: string; criticId: string; input: ValidationInput;
   completedAt: string; verdict: ReviewResult['verdict']; result: ReviewResult;
 }

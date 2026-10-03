@@ -14,7 +14,7 @@ export function createLocalAlarmMethods({stateDir,humanInbox=false}: {stateDir:s
   return humanInbox ? [{id:'local-inbox',notify:async request=>{
     await mkdir(stateDir,{recursive:true,mode:0o700});
     await appendFile(join(stateDir,'human-inbox.jsonl'),JSON.stringify({
-      requestId:request.id,runId:request.runId,at:new Date().toISOString(),
+      stateDir:request.executionSource?.stateDir ?? stateDir,requestId:request.id,runId:request.runId,at:new Date().toISOString(),
       title:request.title,snapshotHash:request.snapshotHash,
       message:'Human review is waiting. Inspect the request and artifacts, then claim and submit a result with the CCDD CLI.',
     })+'\n',{mode:0o600});

@@ -47,17 +47,19 @@ export function queryProject(snapshot: ProjectSnapshot, history: readonly Valida
   createGraphDefinition(snapshot.config, false);
   const selection = options.selection ?? { kind: 'all' }, required = requiredArtifacts(snapshot, selection);
   const byKey = new Map<string, ValidationEvidence>(), byRunKey = new Map<string, ValidationEvidence>(), byCritic = new Map<string, ValidationEvidence>();
-  for (const evidence of [...history].filter(e => e.input.version === 3).sort((a, b) => a.completedAt.localeCompare(b.completedAt))) {
+  for (const evidence of [...history].filter(e => e.input.version === 3 || e.input.version === 4).sort((a, b) => a.completedAt.localeCompare(b.completedAt))) {
     const key = `${evidence.criticId}:${evidence.input.key}`;
-    byKey.set(key, evidence); byCritic.set(evidence.criticId, evidence);
+    if (evidence.input.version === 4 && evidence.cacheLookup && evidence.input.cacheIdentity) byKey.set(evidence.input.cacheIdentity, evidence);
+    byCritic.set(evidence.criticId, evidence);
     if (evidence.runId === options.runId || options.coalescedRequestIds?.includes(evidence.requestId)) byRunKey.set(key, evidence);
   }
   const attempts = new Map(options.attempts?.map(request => [request.criticId, request])), forced = new Set(options.forceCriticIds ?? []);
   const requiredSet = new Set(required);
   const critics: CriticValidation[] = snapshot.config.critics.filter(definition => requiredSet.has(definition.target)).map(definition => {
     const id = definition.id, input = snapshot.inputs[id];
-    if (!input || input.version !== 3) throw new Error(`Missing current validation input: ${id}`);
-    const key = `${id}:${input.key}`, evidence = (input.reusable && !forced.has(id) ? byKey : byRunKey).get(key) ?? null;
+    if (!input || ![3, 4].includes(input.version)) throw new Error(`Missing current validation input: ${id}`);
+    const key = `${id}:${input.key}`;
+    const evidence = byRunKey.get(key) ?? (input.version === 4 && input.cacheIdentity && !forced.has(id) ? byKey.get(input.cacheIdentity) : null) ?? null;
     const attempt = attempts.get(id), ownPass = evidence?.verdict === 'GREEN';
     let status: ValidationStatus, reason: string;
     if (attempt && ['QUEUED', 'RUNNING', 'WAITING_HUMAN', 'WAIT_DEPENDENCY', 'BLOCKED'].includes(attempt.status)) {
@@ -67,7 +69,7 @@ export function queryProject(snapshot: ProjectSnapshot, history: readonly Valida
     } else if (ownPass) { status = 'PASS'; reason = `Actual PASS evidence ${evidence!.requestId} matches this input.`; }
     else if (evidence?.verdict === 'RED') { status = 'RED'; reason = `Actual RED evidence ${evidence.requestId} matches this input.`; }
     else if (forced.has(id)) { status = 'STALE'; reason = 'This request explicitly requires a new review.'; }
-    else if (!input.reusable) { status = 'STALE'; reason = 'The always strategy requires a review in this validation request.'; }
+    else if (!input.reusable) { status = 'STALE'; reason = 'No identity function is declared; this request executes without reusable caching.'; }
     else if (byCritic.has(id)) { status = 'STALE'; reason = 'Artifact content, referenced inputs, or Critic conditions changed.'; }
     else { status = 'UNREVIEWED'; reason = 'No actual review has been recorded for this input.'; }
     return { id, title: definition.title, target: definition.target, deps: [...definition.deps], status, isStale: status !== 'PASS', needsReview: !evidence,

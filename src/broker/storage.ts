@@ -224,7 +224,7 @@ export function records(db: DatabaseSync) {
     // Older compact headers omitted execution settings; recover only from their original envelope.
     const profile = header.profile?.kind === 'agent' && header.profile.reasoning === undefined || header.profile?.kind === 'runtime' && header.profile.command === undefined
       ? get<ReviewEnvelope>(envelopeRef).profile : header.profile;
-    return { ...rest, profile, ...(full ? get<ReviewEnvelope>(envelopeRef) : {}), workspace: get(workspaceRef), ...(inputRef ? { validationInput: get(inputRef) } : {}), result,
+    return { ...(full && envelopeRef ? get<ReviewEnvelope>(envelopeRef) : {}), ...rest, profile, workspace: get(workspaceRef), ...(inputRef ? { validationInput: get(inputRef) } : {}), result,
       ...(full && header.status === 'ERROR' ? toolCallRecord(id, header.attemptId) : {}), ...(full ? requestUsage(id, header.attemptId) : {}) } as ReviewRequest;
   };
   return { put, get, packRun, prepareRun, packRequest, run, request, clear: () => { nodes.clear(); bytes = 0; } };

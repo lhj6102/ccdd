@@ -1,3 +1,7 @@
+import { openIdentityCache, identityCacheDirectory, type IdentityCache, type CachedReview } from '../cache/index.js';
+import { snapshotCache, cacheSource } from '../project/cache-evidence.js';
+import { executionRecord } from './cache-execution.js';
+import { projectRequests } from '../project/store.js';
 import { diagnosticScope } from '../diagnostic-scope.js';
 import { captureExecution } from '../provenance.js';
 import { executionScope } from '../execution-scope.js';
@@ -33,12 +37,23 @@ import { createProjectSnapshot, positiveConcurrency } from '../project/identity.
 import { includedCritics, planProject } from '../project/query.js';
 import { readEvidence, storedRequesterRun } from '../project/store.js';
 import type { ProjectRunDefinition, ProjectSelection } from '../project/types.js';
-import type { RunStatus } from '../contracts.js';
+import type { RunStatus, ExecutionSource } from '../contracts.js';
 import type { ReviewEnvelope, ReviewRequest, ReviewResult, ReviewStatus, ReviewToolCall, ExecutionContext, ExecutorReadiness, ExecutionEvent } from '../contracts.js';
 
 /** Internal instrumentation for deterministic scheduler regression tests. */
 export const brokerTestHooks: { onHydrate?: (bytes: number) => void; onPlan?: () => void; onIdleTick?: () => void; onSubmissionCommit?: (durationMs: number) => void } = {};
+const executionMode = Symbol('cache-owned-execution');
+const enqueueExecution = Symbol('enqueue-prepared-execution');
+interface ExecutionBroker {
+  [enqueueExecution](request: ReviewRequest, workspace: WorkspaceDescriptor, id: string, budgetRunId: string): Promise<void>;
+  run(id: string, options?: { signal?: AbortSignal }): Promise<unknown>;
+  getRequest(id: string): ReviewRequest | null;
+  tryClaimHuman: (...args: any[]) => any; renewHumanTryClaim: (...args: any[]) => any; releaseHumanTryClaim: (...args: any[]) => any;
+  claimHuman: (...args: any[]) => Promise<unknown>; executeHumanTool: (...args: any[]) => Promise<any>; completeHuman: (...args: any[]) => Promise<unknown>;
+  close(): Promise<void>;
+}
 export interface RunRecord {
+  executionOwned?: boolean; budgetRunId?: string;
   id: string; repoId: string; snapshotHash: string; workspace: WorkspaceDescriptor;
   requesterId: string; scope?: { kind: 'graph' } | { kind: 'chain' } | { kind: 'critic'; criticId: string } | { kind: 'project' };
   project?: ProjectRunDefinition;
@@ -53,7 +68,7 @@ export interface BrokerExecutors {
   execute(request: ReviewRequest, context: ExecutionContext & { signal: AbortSignal }): Promise<unknown>;
   notifyHuman?(request: ReviewRequest, context: { signal: AbortSignal }): Promise<unknown>;
 }
-export interface BrokerOptions { repoPath: string; stateDir: string; repoId?: string; coalescingGraceMs?: number; maxConcurrentExecutors?: number; admission?: Admission; identityConcurrency?: number; executors?: BrokerExecutors; workspaceIntegrity?: WorkspaceIntegrity; workspaceAdapter?: { prepareWorkspace: typeof prepareWorkspace; reopenWorkspace: typeof reopenWorkspace } }
+export interface BrokerOptions { [executionMode]?: boolean; repoPath: string; stateDir: string; repoId?: string; coalescingGraceMs?: number; maxConcurrentExecutors?: number; admission?: Admission; identityConcurrency?: number; executors?: BrokerExecutors; workspaceIntegrity?: WorkspaceIntegrity; workspaceAdapter?: { prepareWorkspace: typeof prepareWorkspace; reopenWorkspace: typeof reopenWorkspace } }
 interface ActiveRun { runId: string; token: string; abort: AbortController; promise: Promise<RunRecord & { requests: ReviewRequest[] }> | null }
 const object = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === 'object' && !Array.isArray(value);
 const errorCode = (error: unknown): string | undefined => object(error) && typeof error.code === 'string' ? error.code : undefined;
@@ -112,7 +127,7 @@ function prepareStateDirectory(repoPath: string, stateDir: string) {
 }
 
 /** Durable broker operations. Merely opening the store never starts a worker. */
-export function createBroker<D extends ResultDetail = 'compact'>({ detail, repoPath, stateDir, repoId = 'demo', coalescingGraceMs = 15_000, maxConcurrentExecutors, admission, identityConcurrency, executors, workspaceIntegrity = 'content', workspaceAdapter = { prepareWorkspace, reopenWorkspace } }: BrokerOptions & ResultOptions<D>) {
+export function createBroker<D extends ResultDetail = 'compact'>({ [executionMode]: rawExecution = false, detail, repoPath, stateDir, repoId = 'demo', coalescingGraceMs = 15_000, maxConcurrentExecutors, admission, identityConcurrency, executors, workspaceIntegrity = 'content', workspaceAdapter = { prepareWorkspace, reopenWorkspace } }: BrokerOptions & ResultOptions<D>) {
   if (maxConcurrentExecutors !== undefined) positiveConcurrency(maxConcurrentExecutors, 'maxConcurrentExecutors');
   rejectIdentityConcurrency(identityConcurrency);
   if (!Number.isSafeInteger(coalescingGraceMs) || coalescingGraceMs < 0 || coalescingGraceMs > 300_000) throw new Error('coalescingGraceMs must be an integer from 0 to 300000.');
@@ -159,6 +174,9 @@ export function createBroker<D extends ResultDetail = 'compact'>({ detail, repoP
     if (db.prepare('SELECT value FROM metadata WHERE key = ?').get('registered-repo')?.value !== identity) throw new Error('This state directory belongs to a different registered repository.');
   } catch (error) { db?.close(); throw error; }
 
+  let cache: IdentityCache | undefined;
+  const peers = new Map<string, ExecutionBroker>();
+  const sharedCache = () => cache ??= openIdentityCache({ directory: prepareStateDirectory(repoPath, identityCacheDirectory()) });
   const resources = openResources();
   const repositoryKey = canonicalRepositoryId(repoPath);
   const localCap = maxConcurrentExecutors ?? Number.MAX_SAFE_INTEGER;
@@ -305,14 +323,99 @@ export function createBroker<D extends ResultDetail = 'compact'>({ detail, repoP
     changed();
   }
 
+  function mirrorExecution(requestId: string, source: ExecutionSource) {
+    if (closed || terminal.has(polling.requestStatus(requestId) ?? 'ERROR')) return;
+    const origin = projectRequests(source.stateDir, source.runId, { detail: 'full' }).find(request => request.id === source.requestId);
+    if (!origin) return;
+    transaction(() => {
+      const header = requestHeader(requestId); if (!header || terminal.has(header.status)) return;
+      const before = JSON.stringify(header);
+      for (const key of ['claimedBy', 'claimedAt', 'notifiedAt', 'tryClaim', 'preparationAttempt', 'claimAttemptId', 'attemptId', 'executionProvenance'] as const) {
+        if (origin[key] === undefined) delete header[key]; else header[key] = origin[key];
+      }
+      header.profile = origin.profile;
+      if (origin.status === 'WAITING_HUMAN') header.status = 'WAITING_HUMAN';
+      if (before !== JSON.stringify(header)) saveHeader(header);
+    });
+    changed();
+  }
+
   async function executeOne(requestId: string, workspace: WorkspaceHandle, token: string, signal: AbortSignal) {
+    const initial = required(requestHeader(requestId), 'Request');
+    const input = initial.inputRef ? store.get<import('../project/types.js').ValidationInput>(initial.inputRef) : null;
+    if (rawExecution || diagnosticScope.getStore() || input?.version !== 4 || !input.cacheIdentity) return executeUncached(requestId, workspace, token, signal);
+    const runId = initial.runId, request = copy(required(requestData(requestId), 'Request'));
+    const service = sharedCache();
+    let source: ExecutionSource | undefined, mirror: NodeJS.Timeout | undefined;
+    try {
+      signal.throwIfAborted();
+      transaction(() => {
+        const header = required(requestHeader(requestId), 'Request');
+        if (header.status !== 'QUEUED' || ownerData(runId)?.token !== token) throw codedError('Review ownership changed before subscription.', 'RUN_OWNERSHIP_LOST');
+        header.status = 'RUNNING'; header.startedAt = now(); header.requestedProfile = request.profile;
+        saveHeader(header);
+      });
+      const outcome = await service.compute(input.cacheIdentity, async (executionSignal, executionId): Promise<CachedReview> => {
+        const executionState = path.join(service.directory, 'executions', executionId);
+        const executor = requireExecutors();
+        const owner: ExecutionBroker = createBroker({ repoPath, stateDir: executionState, repoId: 'cache-execution',
+          detail: 'full', [executionMode]: true, workspaceAdapter, maxConcurrentExecutors, admission,
+          executors: { ...executor, notifyHuman: executor.notifyHuman ? (review, context) => executor.notifyHuman!({ ...review,
+            executionSource: { stateDir: executionState, runId: executionId, requestId: executionId, executionId, identity: input.cacheIdentity! } }, context) : undefined },
+        });
+        try {
+          await owner[enqueueExecution](request, copy(workspace.descriptor), executionId, runId);
+          await owner.run(executionId, { signal: executionSignal });
+          const completed = required(owner.getRequest(executionId), 'shared execution');
+          if (!completed.result) throw codedError(completed.error ?? 'Shared execution did not produce a semantic result.', completed.errorCode ?? 'COMPUTE_FAILED');
+          return { result: completed.result, profile: completed.profile, origin: { stateDir: executionState, runId: executionId, requestId: executionId },
+            attemptId: completed.attemptId ?? null, executionProvenance: completed.executionProvenance ?? null,
+            ...(completed.usage ? { usage: completed.usage } : {}),
+            definition: { criticId: request.criticId, payload: request.payload, passSchema: request.passSchema, failSchema: request.failSchema, resultCheck: request.resultCheck },
+          };
+        } finally { await owner.close(); }
+      }, { signal, force: Boolean(readiness.header(runId)?.project.force), scope: runId,
+        onState(state, executionId) {
+          source = { stateDir: path.join(service.directory, 'executions', executionId), runId: executionId, requestId: executionId, executionId, identity: input.cacheIdentity! };
+          transaction(() => {
+            const header = requestHeader(requestId); if (!header || terminal.has(header.status)) return;
+            header.executionSource = source; header.cacheDisposition = state === 'executing' ? 'executed' : state;
+            saveHeader(header);
+            appendEvent(runId, requestId, `request.cache.${state}`, 'Subscribed to an explicit-identity computation.', { executionId });
+          });
+          mirror ??= setInterval(() => { try { if (source) mirrorExecution(requestId, source); } catch { /* Terminal cache publication remains authoritative. */ } }, 100);
+        },
+      });
+      signal.throwIfAborted();
+      transaction(() => {
+        const header = requestHeader(requestId); if (!header || terminal.has(header.status) || ownerData(runId)?.token !== token) return;
+        header.executionSource = cacheSource(outcome.entry);
+        header.cacheDisposition = outcome.disposition;
+        header.profile = outcome.entry.value.profile;
+        header.attemptId = outcome.entry.value.attemptId;
+        header.executionProvenance = outcome.entry.value.executionProvenance;
+        saveHeader(header);
+        if (outcome.entry.value.usage && header.attemptId) addUsage(requestId, header.attemptId, outcome.entry.value.usage);
+        // The owner already validated its schema and input. Applying a different
+        // subscriber schema here would silently introduce another cache key.
+        finishWithin(requestId, { result: outcome.entry.value.result, executionProvenance: outcome.entry.value.executionProvenance });
+      });
+      changed();
+    } catch (cause) {
+      if (signal.aborted || fatalExecutionError(cause)) throw signal.aborted ? signal.reason : cause;
+      transaction(() => { if (ownerData(runId)?.token === token) finishWithin(requestId, { error: cause }, ['QUEUED','RUNNING','WAITING_HUMAN']); });
+      changed();
+    } finally { clearInterval(mirror); }
+  }
+
+  async function executeUncached(requestId: string, workspace: WorkspaceHandle, token: string, signal: AbortSignal) {
     const initial = required(requestHeader(requestId), 'Request');
     const runId = initial.runId;
     let lease: ResourceLease | undefined;
     let customLease: AdmissionLease | undefined;
     try {
       if (initial.profile.kind !== 'human') {
-        const admissionRequest = { requestId, runId, kind: initial.profile.kind, provider: initial.profile.provider, model: initial.profile.model };
+        const admissionRequest = { requestId, runId: readiness.header(runId)?.budgetRunId ?? runId, kind: initial.profile.kind, provider: initial.profile.provider, model: initial.profile.model };
         // Optional admission is a stricter precondition, never the machine authority.
         customLease = await admission?.acquire(admissionRequest, { signal, waiting(reason) { transaction(() => { const current = required(requestHeader(requestId), 'Request'); if (current.status !== 'QUEUED') return; current.blockedReason = reason.slice(0, 2000); saveHeader(current); }); changed(); } });
         const caps = [maxConcurrentExecutors, readiness.header(runId)?.repoExecutorCap].filter((value): value is number => value !== undefined);
@@ -460,6 +563,7 @@ export function createBroker<D extends ResultDetail = 'compact'>({ detail, repoP
       stored = header ? { ...header, workspace: store.get(header.workspaceRef) } : null;
       if (!stored) throw new Error('Unknown Run.');
       if (stored.workerProtocol !== 'resources-1') throw new Error('This Run uses an old worker protocol. Stop all 6.0 workers, preserve their history, and submit a new Run.');
+      if (!stored.executionOwned && Object.values(required(runData(runId), 'Run').project?.snapshot.inputs ?? {}).some(input => input.version !== 4)) throw new Error('Historical composite identities are audit-only. Submit a new Run with explicit identities.');
       if (stored.project?.version !== 3) throw new Error('Invalid stored Run format; submit a new validation request.');
       if (terminal.has(stored.status)) return false;
       if (!stored.workspace) throw new Error('Invalid Run: no workspace descriptor.');
@@ -569,6 +673,17 @@ export function createBroker<D extends ResultDetail = 'compact'>({ detail, repoP
   }
 
   const broker = {
+    async [enqueueExecution](request: ReviewRequest, descriptor: WorkspaceDescriptor, id: string, budgetRunId: string): Promise<void> {
+      if (!rawExecution) throw new Error('Only the cache may enqueue an execution record.');
+      const record = executionRecord(copy(request), descriptor, id, budgetRunId);
+      const prepared = await store.prepareRun(record);
+      resources.registerSubmission(id, undefined);
+      transaction(() => {
+        prepared.verify();
+        db.prepare('INSERT INTO runs(id,created_at,status,data) VALUES(?,?,?,?)').run(id,record.createdAt,record.status,JSON.stringify(prepared.header));
+        readiness.initialize(record, prepared);
+      });
+    },
     async submitProject({ requesterId = 'cli', selection, recursive = false, force = false, ignoreGates, maxExecutions, signal, identityConcurrency: submissionIdentityConcurrency = identityConcurrency, ...removed }: { requesterId?: string; selection: ProjectSelection; recursive?: boolean; force?: boolean; ignoreGates?: boolean; maxExecutions?: number; signal?: AbortSignal; identityConcurrency?: number }) {
       // Options are destructured before entry; selection is the sole mutable data
       // input. Keep signal live for cancellation rather than cloning its state.
@@ -594,6 +709,7 @@ export function createBroker<D extends ResultDetail = 'compact'>({ detail, repoP
         const id = randomUUID(), createdAt = now();
         const record: RunRecord = { id, repoId, workerProtocol: 'resources-1', maxExecutions, repoExecutorCap: config.reviewPolicy?.maxConcurrentExecutors, coalescingGraceMs, snapshotHash: descriptor.hash, workspace: descriptor, requesterId,
           scope: { kind: 'project' }, graph: createGraphDefinition(config, false), project: { version: 3, snapshot, selection, recursive, force, ignoreGates, templates }, status: 'QUEUED', createdAt };
+        const cached = snapshotCache(snapshot);
         const prepared = await store.prepareRun(record, workspace.signal);
         await workspace.assertUnchanged(); workspace.signal.throwIfAborted();
         ensureOpen();
@@ -603,9 +719,9 @@ export function createBroker<D extends ResultDetail = 'compact'>({ detail, repoP
           prepared.verify();
           db.prepare('INSERT INTO runs(id,created_at,status,data) VALUES (?,?,?,?)').run(id, createdAt, record.status, JSON.stringify(prepared.header));
           appendEvent(id, null, 'run.submitted', 'Project validation requested against fixed input.', { selection, recursive, force });
-          brokerTestHooks.onPlan?.(); readiness.initialize(record, prepared);
+          brokerTestHooks.onPlan?.(); readiness.initialize(record, prepared, cached);
           if (maxExecutions !== undefined) {
-            const starts = Number(db.prepare("SELECT count(*) AS n FROM requests WHERE run_id=? AND status='QUEUED' AND json_extract(data,'$.profile.kind')!='human'").get(id)!.n);
+            const starts = Number(db.prepare("SELECT count(DISTINCT CASE WHEN json_extract(data,'$.inputVersion')=4 AND json_extract(data,'$.inputKey') IN (SELECT input_key FROM run_members WHERE run_id=?) THEN json_extract(data,'$.inputKey') ELSE id END) AS n FROM requests WHERE run_id=? AND status='QUEUED' AND json_extract(data,'$.profile.kind')!='human'").get(id,id)!.n);
             if (starts > maxExecutions) throw codedError(`Plan requires ${starts} new executions, exceeding maxExecutions ${maxExecutions}.`, 'EXECUTION_BUDGET_EXCEEDED');
           }
         });
@@ -813,8 +929,17 @@ export function createBroker<D extends ResultDetail = 'compact'>({ detail, repoP
       const owned = [...active.values()];
       for (const entry of owned) entry.abort.abort(codedError('The review worker stopped before completion.', 'WORKER_STOPPED'));
       await Promise.allSettled(owned.map(entry => entry.promise));
+      await cache?.close();
+      await Promise.allSettled([...peers.values()].map(peer => peer.close())); peers.clear();
       clearReadCaches(); submissionDeadlines.clear(); listeners.clear(); db.close(); resources.close(); closed = true;
     },
+  };
+  const humanPeer = (id: string): { peer: ExecutionBroker; source: ExecutionSource } | null => {
+    const request = requestData(id), source = request?.executionSource;
+    if (rawExecution || !source || terminal.has(request!.status)) return null;
+    let peer = peers.get(source.stateDir);
+    if (!peer) { peer = createBroker({ ...readStateContext(source.stateDir), detail: 'full', [executionMode]: true }); peers.set(source.stateDir, peer); }
+    return { peer, source };
   };
   const viewRun = <T extends Parameters<typeof requesterRun>[0] | null>(value: T) => resultView({ detail }, value, () => value ? storedRequesterRun(db, value.id, stateDir) ?? requesterRun(value, stateDir) : null);
   const viewRequest = (value: ReviewRequest | null) => resultView({ detail }, value, () => value ? requesterRequest(value, stateDir) : null);
@@ -825,8 +950,27 @@ export function createBroker<D extends ResultDetail = 'compact'>({ detail, repoP
     getRun: (id: string) => { ensureOpen(); if (ownerData(id)) reconcile(id); return resultView({ detail }, detail === 'full' ? broker.getRun(id) : null, () => storedRequesterRun(db, id, stateDir)); },
     listRuns: () => { ensureOpen(); return db.prepare('SELECT id FROM runs ORDER BY created_at DESC,rowid DESC').all().map(row => { const id = String(row.id); return resultView({ detail }, detail === 'full' ? required(broker.getRun(id), 'Run') : null!, () => required(storedRequesterRun(db, id, stateDir), 'Run')); }); },
     getRequest: (id: string) => viewRequest(broker.getRequest(id)),
-    claimHuman: async (...args: Parameters<typeof broker.claimHuman>) => viewRequest(await broker.claimHuman(...args))!,
-    completeHuman: async (...args: Parameters<typeof broker.completeHuman>) => viewRequest(await broker.completeHuman(...args)),
+    tryClaimHuman: (id: string, reviewer: string, options?: { leaseMs?: number }) => { const target = humanPeer(id); return target ? target.peer.tryClaimHuman(target.source.requestId,reviewer,options) : broker.tryClaimHuman(id,reviewer,options); },
+    renewHumanTryClaim: (...args: Parameters<typeof humanClaims.renew>) => { const target = humanPeer(args[0]); return target ? target.peer.renewHumanTryClaim(target.source.requestId,...args.slice(1)) : humanClaims.renew(...args); },
+    releaseHumanTryClaim: (...args: Parameters<typeof humanClaims.release>) => { const target = humanPeer(args[0]); return target ? target.peer.releaseHumanTryClaim(target.source.requestId,...args.slice(1)) : humanClaims.release(...args); },
+    claimHuman: async (...args: Parameters<typeof broker.claimHuman>) => {
+      const target = humanPeer(args[0]);
+      if (!target) return viewRequest(await broker.claimHuman(...args))!;
+      await target.peer.claimHuman(target.source.requestId,...args.slice(1)); mirrorExecution(args[0],target.source);
+      return viewRequest(requestData(args[0]))!;
+    },
+    executeHumanTool: async (...args: Parameters<typeof broker.executeHumanTool>) => { const target = humanPeer(args[0]); return target ? target.peer.executeHumanTool(target.source.requestId,...args.slice(1)) : broker.executeHumanTool(...args); },
+    completeHuman: async (...args: Parameters<typeof broker.completeHuman>) => {
+      const target = humanPeer(args[0]);
+      if (!target) return viewRequest(await broker.completeHuman(...args));
+      await target.peer.completeHuman(target.source.requestId,...args.slice(1));
+      const deadline = performance.now() + 5000;
+      while (!terminal.has(polling.requestStatus(args[0]) ?? 'ERROR')) {
+        if (performance.now() > deadline) throw codedError('The Human result is recorded; shared publication is still pending.', 'CACHE_BUSY');
+        await delay(25);
+      }
+      return viewRequest(requestData(args[0]));
+    },
     failRun: (...args: Parameters<typeof broker.failRun>) => viewRun(broker.failRun(...args)),
     cancel: (...args: Parameters<typeof broker.cancel>) => viewRun(broker.cancel(...args)),
   };

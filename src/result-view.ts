@@ -15,7 +15,7 @@ export interface RequesterResult {
 export interface RequesterRequest {
   attemptId: string | null; executionProvenance: ExecutionProvenance | null;
   id: string; runId: string; criticId: string; target: string; status: ReviewRequest['status'];
-  profile: ReviewRequest['profile'];
+  profile: ReviewRequest['profile']; requestedProfile?: ReviewRequest['profile']; executionSource?: ReviewRequest['executionSource']; cacheDisposition?: ReviewRequest['cacheDisposition'];
   inputKey: string | null; reference: ReviewReference; result: RequesterResult | null;
   error?: string | null; errorCode?: string | null; blockedReason?: string | null;
 }
@@ -35,13 +35,14 @@ export const reviewReference = (stateDir: string, runId: string, requestId: stri
 /** Whitelists deliberately keep new audit fields out of requester output. Never mutate stored evidence. */
 export function requesterEvidence(evidence: ValidationEvidence, stateDir: string): RequesterResult {
   return { ...semanticResult(evidence.result), executionProvenance: evidence.executionProvenance ?? null, verdict: evidence.verdict,
-    reference: reviewReference(stateDir, evidence.runId, evidence.requestId) };
+    profile: evidence.profile, reference: evidence.cacheLookup && evidence.source ? reviewReference(evidence.source.stateDir,evidence.source.runId,evidence.source.requestId) : reviewReference(stateDir, evidence.runId, evidence.requestId),
+    ...(evidence.source ? { reusedFrom: reviewReference(evidence.source.stateDir,evidence.source.runId,evidence.source.requestId) } : {}) };
 }
 export function requesterRequest(request: ReviewRequest, stateDir: string): RequesterRequest {
   const reference = reviewReference(stateDir, request.runId, request.id), inputKey = request.validationInput?.key ?? null;
-  return { id: request.id, runId: request.runId, criticId: request.criticId, target: request.target, status: request.status, profile: structuredClone(request.profile),
+  return { id: request.id, runId: request.runId, criticId: request.criticId, target: request.target, status: request.status, profile: structuredClone(request.profile), requestedProfile: request.requestedProfile, executionSource: request.executionSource, cacheDisposition: request.cacheDisposition,
     attemptId: request.attemptId ?? null, executionProvenance: request.executionProvenance ?? null, inputKey, reference, error: request.error, errorCode: request.errorCode, blockedReason: request.blockedReason,
-    result: request.result ? { ...semanticResult(request.result), executionProvenance: request.executionProvenance ?? null, verdict: request.result.verdict, reference } : null };
+    result: request.result ? { ...semanticResult(request.result), executionProvenance: request.executionProvenance ?? null, verdict: request.result.verdict, profile: structuredClone(request.profile), reference, ...(request.executionSource ? { reusedFrom: reviewReference(request.executionSource.stateDir,request.executionSource.runId,request.executionSource.requestId) } : {}) } : null };
 }
 function requesterCritic<T extends CriticValidation>(critic: T): Omit<T, 'input' | 'result'> & RequesterCritic {
   const { input, result, ...rest } = critic;

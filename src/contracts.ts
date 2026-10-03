@@ -28,7 +28,14 @@ export interface ReviewResult {
   provider?: string; model?: string; stdout?: string; stderr?: string;
   durationMs?: number; exitCode?: number; toolCalls?: ReviewToolCall[];
 }
+export interface ExecutionSource {
+  stateDir: string; runId: string; requestId: string; executionId: string; identity: string;
+}
 export interface ReviewRequest extends ReviewEnvelope {
+  /** Subscriber attribution. It is not an additional cache key. */
+  executionSource?: ExecutionSource;
+  requestedProfile?: CriticProfile;
+  cacheDisposition?: 'hit' | 'coalesced' | 'executed';
   /** Identity of the input actually reviewed; provided by project validation. */
   validationInput?: ValidationInput;
   attemptId?: string;

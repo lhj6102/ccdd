@@ -19,7 +19,10 @@ export const identityCacheDirectory = () => join(process.env.CCDD_STATE_HOME || 
 export interface CachedReview {
   result: ReviewResult;
   profile: CriticProfile;
-  origin: { runId: string; requestId: string };
+  origin: { runId: string; requestId: string; stateDir?: string };
+  definition?: { criticId: string; payload: unknown; passSchema?: unknown; failSchema?: unknown; resultCheck?: unknown };
+  /** Diagnostic attempt summary; never used to decide reuse. */
+  summary?: { toolCalls: Record<string, number>; executorStarts: number; wallMs: number };
   attemptId: string | null;
   executionProvenance: ExecutionProvenance | null;
   usage?: ReviewRequest['usage'];
@@ -34,6 +37,8 @@ export interface CacheEntry {
 export interface CacheOptions { directory?: string; maxBytes?: number; maxEntries?: number; maxEntryBytes?: number }
 export interface CacheComputeOptions {
   signal?: AbortSignal;
+  /** Explicitly request a fresh execution, without inventing another semantic key. */
+  force?: boolean;
   /** Scope is diagnostic/lifetime metadata, never a cache partition. */
   scope?: string;
   onState?: (state: 'executing' | 'coalesced' | 'hit', executionId: string) => void;
@@ -68,6 +73,20 @@ export function readIdentityCache(identity: string, directory = identityCacheDir
   const db = new DatabaseSync(filename, { readOnly: true, timeout: 5000 });
   try { format(db); return decode(db.prepare('SELECT identity,data,digest FROM cache_entries WHERE identity=?').get(identity)); }
   finally { db.close(); }
+}
+
+/** Read only the selected identities in one SQLite snapshot; missing stores remain absent. */
+export function readIdentityEntries(identities: Iterable<string>, directory = identityCacheDirectory()): Map<string, CacheEntry> {
+  const keys = [...new Set(identities)]; for (const key of keys) validateCacheIdentity(key);
+  const result = new Map<string, CacheEntry>(), filename = join(directory, 'cache.sqlite');
+  if (!keys.length || !existsSync(filename)) return result;
+  const db = new DatabaseSync(filename, { readOnly: true, timeout: 5000 });
+  try {
+    db.exec('BEGIN'); format(db);
+    const read = db.prepare('SELECT identity,data,digest FROM cache_entries WHERE identity=?');
+    for (const key of keys) { const entry = decode(read.get(key)); if (entry) result.set(key, entry); }
+    db.exec('COMMIT'); return result;
+  } finally { db.close(); }
 }
 
 /**
@@ -191,7 +210,7 @@ export function openIdentityCache({ directory = identityCacheDirectory(), maxByt
           const job = db.prepare("SELECT pid,process_identity FROM cache_jobs WHERE id=? AND state='RUNNING'").get(jobId);
           if (!job || job.pid !== process.pid || job.process_identity !== ownProcessIdentity || db.prepare('SELECT job_id FROM cache_active WHERE identity=?').get(identity)?.job_id !== jobId) throw error('CACHE_OWNERSHIP_LOST', 'Shared computation ownership was lost before publication.');
           if (!db.prepare('SELECT 1 FROM cache_subscribers WHERE job_id=? LIMIT 1').get(jobId)) throw error('ABORTED', 'The shared computation has no remaining subscriber.');
-          if (row.bytes <= maxEntryBytes && row.bytes <= maxBytes) db.prepare('INSERT OR IGNORE INTO cache_entries VALUES(?,?,?,?,?,?)').run(identity, row.data, row.digest, row.bytes, Date.now(), Date.now());
+          if (row.bytes <= maxEntryBytes && row.bytes <= maxBytes) db.prepare('INSERT INTO cache_entries VALUES(?,?,?,?,?,?) ON CONFLICT(identity) DO UPDATE SET data=excluded.data,digest=excluded.digest,bytes=excluded.bytes,created_at=excluded.created_at,accessed_at=excluded.accessed_at').run(identity, row.data, row.digest, row.bytes, Date.now(), Date.now());
           db.prepare("UPDATE cache_jobs SET state='COMPLETED',data=?,digest=? WHERE id=?").run(row.data, row.digest, jobId);
           db.prepare('DELETE FROM cache_active WHERE identity=? AND job_id=?').run(identity, jobId);
         }));
@@ -232,18 +251,19 @@ export function openIdentityCache({ directory = identityCacheDirectory(), maxByt
         return { entry: decode(encoded(null, executionId, value))!, disposition: 'uncached' };
       }
       validateCacheIdentity(identity);
-      const hit = await retry(() => lookup(identity), options.signal);
+      const hit = options.force ? null : await retry(() => lookup(identity), options.signal);
       if (hit) { touch(identity); options.onState?.('hit', hit.executionId); return { entry: hit, disposition: 'hit' }; }
       const subscriber = randomUUID(); let jobId = '', creator = false;
       try {
         for (;;) {
           const attached = await retry(() => transaction(() => {
-            const hit = lookup(identity!); if (hit) return { hit };
+            const hit = options.force ? null : lookup(identity!); if (hit) return { hit };
             let job = db.prepare("SELECT j.* FROM cache_active a JOIN cache_jobs j ON j.id=a.job_id WHERE a.identity=? AND j.state='RUNNING'").get(identity!);
             if (job && !alive(job as unknown as Owner)) {
               db.prepare("UPDATE cache_jobs SET state='ERROR',error_code='COMPUTE_OWNER_EXITED',error_message='Shared computation owner exited.' WHERE id=? AND state='RUNNING'").run(job.id);
               db.prepare('DELETE FROM cache_active WHERE identity=? AND job_id=?').run(identity!, job.id); job = undefined;
             }
+            if (job && options.force) return { wait: true as const };
             let own = false;
             if (!job) {
               const id = randomUUID();
@@ -253,6 +273,7 @@ export function openIdentityCache({ directory = identityCacheDirectory(), maxByt
             db.prepare('INSERT OR REPLACE INTO cache_subscribers VALUES(?,?,?,?)').run(subscriber, job.id, process.pid, ownProcessIdentity);
             return { jobId: String(job.id), own };
           }), options.signal);
+          if ('wait' in attached) { await delay(50, undefined, { signal: options.signal }); continue; }
           if ('hit' in attached && attached.hit) { touch(identity); options.onState?.('hit', attached.hit.executionId); return { entry: attached.hit, disposition: 'hit' }; }
           jobId = attached.jobId!; creator = Boolean(attached.own); subscribers.add(subscriber);
           if (creator) start(jobId, identity, execute, options.scope);

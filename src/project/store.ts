@@ -1,3 +1,4 @@
+import { cacheEvidence } from './cache-evidence.js';
 import { diagnosticScope } from '../diagnostic-scope.js';
 import { records } from '../broker/storage.js';
 import { assertStateFormat } from '../state-format.js';
@@ -22,8 +23,8 @@ export function readEvidence(database: DatabaseSync, runId?: string): Validation
     if (!header.inputRef || !header.resultRef || !header.completedAt) return [];
     const input = store.get<ValidationEvidence['input']>(header.inputRef), result = store.get<ReviewRequest['result']>(header.semanticRef);
     if (!result || result.verdict !== header.status) throw new Error('Stored result/status mismatch.');
-    if (input.version !== 3 || !/^[a-f0-9]{64}$/.test(input.key)) return [];
-    return [{ executionProvenance: header.executionProvenance ?? null, requestId: header.id, runId: header.runId, criticId: header.criticId, input, completedAt: header.completedAt, verdict: result.verdict, result: semanticResult(result) as NonNullable<ReviewRequest['result']> }];
+    if (![3, 4].includes(input.version) || typeof input.key !== 'string') return [];
+    return [{ source: header.executionSource, profile: header.profile, executionProvenance: header.executionProvenance ?? null, requestId: header.id, runId: header.runId, criticId: header.criticId, input, completedAt: header.completedAt, verdict: result.verdict, result: semanticResult(result) as NonNullable<ReviewRequest['result']> }];
   });
 }
 
@@ -83,8 +84,6 @@ export function projectRequests<D extends ResultDetail = 'compact'>(stateDir: st
 
 /** Evidence and active candidates belong to one readonly snapshot; never reconcile stored owners. */
 export function currentProjectPlan(stateDir: string, snapshot: Parameters<typeof planProject>[0], options: Parameters<typeof planProject>[2]): ProjectPlan {
-  return withProjectStore<ProjectPlan | null>(stateDir, db => planProject(snapshot, readEvidence(db), options, critic => {
-    const source = findCoalescibleRequest(db, critic.id, critic.input.key, { ignoreGates: options?.ignoreGates });
-    return source ? { requestId: source.request.id, ...(source.leaseExpiresAt ? { leaseExpiresAt: source.leaseExpiresAt } : {}) } : null;
-  }), null) ?? planProject(snapshot, [], options);
+  const evidence = cacheEvidence(snapshot);
+  return planProject(snapshot, evidence, options);
 }

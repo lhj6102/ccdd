@@ -208,7 +208,9 @@ export async function createProjectSnapshot(config: RepoConfig, root: string, sn
     if (!required.has(critic.target)) continue;
     const criticHash = inputHash({ version: 3, criticId: critic.id });
     const target = { id: critic.target, hash: artifactHashes[critic.target] }, deps = critic.deps.slice().sort().map(id => ({ id, hash: artifactHashes[id] }));
-    inputs[critic.id] = { version: 3, key: inputHash({ version: 3, criticId: critic.id, target, deps }), criticHash, target, deps, reusable: [critic.target, ...critic.deps].every(id => reusable[id]), workspaceIntegrity };
+    const cacheIdentity = artifactIdentities[critic.target]?.value;
+    inputs[critic.id] = { version: 4, key: cacheIdentity ?? inputHash({ version: 4, criticId: critic.id, target, deps }),
+      ...(cacheIdentity === undefined ? {} : { cacheIdentity }), criticHash, target, deps, reusable: cacheIdentity !== undefined, workspaceIntegrity };
   }
   return { version: 3, config: structuredClone(config), snapshotHash, artifactHashes, inputs, workspaceIntegrity, ...(Object.keys(artifactIdentities).length ? { artifactIdentities } : {}) };
 }
