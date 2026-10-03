@@ -31,8 +31,19 @@ jobs:
           set -euo pipefail
           branch=feat/project-independent-identity-cache
           test "$(git ls-remote origin "refs/heads/$branch" | cut -f1)" = "$EXPECTED_HEAD"
-          git apply --unidiff-zero --check scripts/.identity-cache-progress.patch
-          git apply --unidiff-zero --index scripts/.identity-cache-progress.patch
+          python3 - <<'PY'
+          import base64, hashlib, json, os, pathlib, zlib
+          data = pathlib.Path('scripts/.identity-cache-progress.patch').read_bytes()
+          if data.startswith(b'{'):
+              envelope = json.loads(data)
+              decoder = zlib.decompressobj(31)
+              data = decoder.decompress(base64.b64decode(envelope['gzipBase64'], validate=True), 2097152)
+              if not decoder.eof or decoder.unused_data or hashlib.sha256(data).hexdigest() != envelope['sha256']:
+                  raise ValueError('Patch integrity or size check failed')
+          pathlib.Path(os.environ['RUNNER_TEMP'], 'changes.patch').write_bytes(data)
+          PY
+          git apply --unidiff-zero --check "$RUNNER_TEMP/changes.patch"
+          git apply --unidiff-zero --index "$RUNNER_TEMP/changes.patch"
           git rm scripts/.identity-cache-progress.patch
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
@@ -42,6 +53,7 @@ jobs:
   test:
     needs: apply
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       contents: read
     steps:
