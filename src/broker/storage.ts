@@ -13,6 +13,8 @@ export const storageTestHooks: { read?: (bytes: number) => void; write?: (bytes:
 export const RECORDED_TOOL_CALLS = 200, RECORDED_ARGUMENT_BYTES = 256 * 1024;
 export function initializeRecords(db: DatabaseSync) {
   db.exec(`CREATE TABLE IF NOT EXISTS definitions(hash TEXT PRIMARY KEY, data TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS attempt_summaries(request_id TEXT NOT NULL,attempt_id TEXT NOT NULL,started_at TEXT NOT NULL,completed_at TEXT,data TEXT NOT NULL,PRIMARY KEY(request_id,attempt_id));
+    CREATE TABLE IF NOT EXISTS change_attribution(cursor INTEGER PRIMARY KEY REFERENCES request_changes(cursor),data TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS request_usage(request_id TEXT NOT NULL, attempt_id TEXT NOT NULL, data TEXT NOT NULL, PRIMARY KEY(request_id,attempt_id));
     CREATE TABLE IF NOT EXISTS tool_call_records(request_id TEXT NOT NULL, attempt_id TEXT NOT NULL, ordinal INTEGER NOT NULL, data TEXT,
       PRIMARY KEY(request_id,attempt_id,ordinal));
@@ -225,7 +227,7 @@ export function records(db: DatabaseSync) {
     const profile = header.profile?.kind === 'agent' && header.profile.reasoning === undefined || header.profile?.kind === 'runtime' && header.profile.command === undefined
       ? get<ReviewEnvelope>(envelopeRef).profile : header.profile;
     return { ...(full && envelopeRef ? get<ReviewEnvelope>(envelopeRef) : {}), ...rest, profile, workspace: get(workspaceRef), ...(inputRef ? { validationInput: get(inputRef) } : {}), result,
-      ...(full && header.status === 'ERROR' ? toolCallRecord(id, header.attemptId) : {}), ...(full ? requestUsage(id, header.attemptId) : {}) } as ReviewRequest;
+      ...(full && header.status === 'ERROR' ? toolCallRecord(id, header.attemptId) : {}), ...requestUsage(id, header.attemptId) } as ReviewRequest;
   };
   return { put, get, packRun, prepareRun, packRequest, run, request, clear: () => { nodes.clear(); bytes = 0; } };
 }

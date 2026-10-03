@@ -1,4 +1,5 @@
-import { cacheEvidence } from './cache-evidence.js';
+import { readAttemptSummary } from '../broker/attempt-summary.js';
+import { cacheEvidence, snapshotActive } from './cache-evidence.js';
 import { diagnosticScope } from '../diagnostic-scope.js';
 import { records } from '../broker/storage.js';
 import { assertStateFormat } from '../state-format.js';
@@ -43,7 +44,7 @@ export function evidenceFamilies(stateDir: string, evidence: readonly Pick<Valid
   return withProjectStore(stateDir, db => {
     const store = records(db), families = new Map<string, string>();
     for (const { requestId, input } of evidence) {
-      const family = store.request(requestId, true)?.artifacts.find(artifact => artifact.id === input.target.id)?.family?.name;
+      const family = store.request(requestId, true)?.artifacts?.find(artifact => artifact.id === input.target.id)?.family?.name;
       if (family !== undefined) families.set(requestId, family);
     }
     return families;
@@ -85,5 +86,17 @@ export function projectRequests<D extends ResultDetail = 'compact'>(stateDir: st
 /** Evidence and active candidates belong to one readonly snapshot; never reconcile stored owners. */
 export function currentProjectPlan(stateDir: string, snapshot: Parameters<typeof planProject>[0], options: Parameters<typeof planProject>[2]): ProjectPlan {
   const evidence = cacheEvidence(snapshot);
-  return planProject(snapshot, evidence, options);
+  const active = snapshotActive(snapshot);
+  return planProject(snapshot, evidence, options, critic => { const id = critic.input.cacheIdentity ? active.get(critic.input.cacheIdentity) : undefined; return id ? { requestId: id } : null; });
+}
+
+/** Scalar execution state for subscribers. No manifests, workspaces or input trees are hydrated. */
+export function projectRequestState(stateDir: string, requestId: string, summary = true): Record<string, any> | null {
+  return withProjectStore(stateDir, db => {
+    const row = db.prepare('SELECT data FROM requests WHERE id=?').get(requestId);
+    if (!row) return null;
+    const header = JSON.parse(String(row.data)) as Record<string, any>;
+    const usage = header.attemptId ? db.prepare('SELECT data FROM request_usage WHERE request_id=? AND attempt_id=?').get(requestId,header.attemptId) : null;
+    return { ...header, usage: usage ? JSON.parse(String(usage.data)) : undefined, summary: summary ? readAttemptSummary(db,requestId,header.attemptId) : undefined };
+  }, null);
 }

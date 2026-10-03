@@ -9,7 +9,7 @@ export type CriticProfile = AgentProfile | HumanProfile | RuntimeProfile;
 export interface ReviewPayload { instruction: string; [key: string]: unknown }
 /** An Agent Critic's owner-relative Node script that checks a schema-valid result against the review's tool calls. */
 export interface ResultCheck { script: string; timeoutMs?: number }
-export interface CriticDefinition { id: string; title: string; profile: CriticProfile; payload: ReviewPayload; passSchema?: JsonSchema; failSchema?: JsonSchema; resultCheck?: ResultCheck }
+export interface CriticDefinition { id: string; title: string; profile: CriticProfile; profileVariants?: Record<string, CriticProfile>; payload: ReviewPayload; passSchema?: JsonSchema; failSchema?: JsonSchema; resultCheck?: ResultCheck }
 export type StaleStrategy = { kind: 'file-hash'; paths?: string[] } | { kind: 'always' }
   | { kind: 'identity'; script: ScriptDefinition; inputs?: string[]; timeoutMs?: number; weight?: number };
 export interface ReviewPolicy { dependencyGates?: 'green' | 'ignore'; maxConcurrentExecutors?: number }

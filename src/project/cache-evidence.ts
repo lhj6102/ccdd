@@ -1,4 +1,4 @@
-import { identityCacheDirectory, readIdentityEntries, type CacheEntry } from '../cache/index.js';
+import { identityCacheDirectory, readIdentityEntries, readActiveIdentities, type CacheEntry } from '../cache/index.js';
 import type { ExecutionSource } from '../contracts.js';
 import type { ProjectSnapshot, ValidationEvidence } from './types.js';
 import { diagnosticScope } from '../diagnostic-scope.js';
@@ -18,4 +18,8 @@ export function cacheEvidence(snapshot: ProjectSnapshot, entries = snapshotCache
       completedAt: entry.completedAt, verdict: entry.value.result.verdict, result: entry.value.result,
       executionProvenance: entry.value.executionProvenance, source: cacheSource(entry), profile: entry.value.profile, cacheLookup: true }] : [];
   });
+}
+
+export function snapshotActive(snapshot: ProjectSnapshot) {
+  return diagnosticScope.getStore() ? new Map<string,string>() : readActiveIdentities(Object.values(snapshot.inputs).flatMap(input => input.version === 4 && input.cacheIdentity ? [input.cacheIdentity] : []));
 }

@@ -89,6 +89,19 @@ export function readIdentityEntries(identities: Iterable<string>, directory = id
   } finally { db.close(); }
 }
 
+export function readActiveIdentities(identities: Iterable<string>, directory = identityCacheDirectory()): Map<string, string> {
+  const keys = [...new Set(identities)]; for (const key of keys) validateCacheIdentity(key);
+  const result = new Map<string, string>(), filename = join(directory, 'cache.sqlite');
+  if (!keys.length || !existsSync(filename)) return result;
+  const db = new DatabaseSync(filename, { readOnly: true, timeout: 5000 });
+  try {
+    db.exec('BEGIN'); format(db);
+    const statement = db.prepare("SELECT j.id,j.pid,j.process_identity FROM cache_active a JOIN cache_jobs j ON j.id=a.job_id WHERE a.identity=? AND j.state='RUNNING'");
+    for (const key of keys) { const row = statement.get(key); if (row && alive(row as unknown as Owner)) result.set(key, String(row.id)); }
+    db.exec('COMMIT'); return result;
+  } finally { db.close(); }
+}
+
 /**
  * One local trust domain, no repository registration. Job ownership and subscribers
  * are operational records, not alternative identity keys. Complete values own all

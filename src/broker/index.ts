@@ -1,7 +1,11 @@
+import { streamProjectResults, projectRequestSummary, projectRunSummary } from '../project/results.js';
+import { beginAttempt, recordAttemptTool, readAttemptSummary, finishAttempt } from './attempt-summary.js';
+import { prepareProject, preparedProjectData, type PreparedProject, type PrepareProjectOptions } from '../project/prepared.js';
+import { selectProfiles, type ProfileSelection } from '../project/profiles.js';
 import { openIdentityCache, identityCacheDirectory, type IdentityCache, type CachedReview } from '../cache/index.js';
-import { snapshotCache, cacheSource } from '../project/cache-evidence.js';
+import { snapshotCache, snapshotActive, cacheSource } from '../project/cache-evidence.js';
 import { executionRecord } from './cache-execution.js';
-import { projectRequests } from '../project/store.js';
+import { projectRequestState } from '../project/store.js';
 import { diagnosticScope } from '../diagnostic-scope.js';
 import { captureExecution } from '../provenance.js';
 import { executionScope } from '../execution-scope.js';
@@ -42,6 +46,7 @@ import type { ReviewEnvelope, ReviewRequest, ReviewResult, ReviewStatus, ReviewT
 
 /** Internal instrumentation for deterministic scheduler regression tests. */
 export const brokerTestHooks: { onHydrate?: (bytes: number) => void; onPlan?: () => void; onIdleTick?: () => void; onSubmissionCommit?: (durationMs: number) => void } = {};
+const preparedInput = Symbol('prepared-project');
 const executionMode = Symbol('cache-owned-execution');
 const enqueueExecution = Symbol('enqueue-prepared-execution');
 interface ExecutionBroker {
@@ -259,6 +264,7 @@ export function createBroker<D extends ResultDetail = 'compact'>({ [executionMod
     const { result, error } = outcome, hasError = Object.hasOwn(outcome, 'error');
     const request = requestHeader(requestId);
     if (!request || !expectedStates.includes(request.status) || terminal.has(required(polling.runStatus(request.runId), 'Run'))) return false;
+    if (hasError) captureSourceState(request);
     if (outcome.executionProvenance !== undefined) request.executionProvenance = outcome.executionProvenance;
     request.status = hasError ? 'ERROR' : required(result, 'review result').verdict;
     request.resultRef = result ? store.put(result) : null;
@@ -266,6 +272,7 @@ export function createBroker<D extends ResultDetail = 'compact'>({ [executionMod
     request.error = hasError ? errorText(error) : null;
     request.errorCode = errorCode(error) ?? null;
     request.completedAt = now();
+    finishAttempt(db,requestId,request.attemptId,request.completedAt);
     saveHeader(request);
     // A result carries its own toolCalls; the attempt record would only duplicate them unseen.
     if (!hasError) db.prepare('DELETE FROM tool_call_records WHERE request_id=?').run(request.id);
@@ -282,7 +289,9 @@ export function createBroker<D extends ResultDetail = 'compact'>({ [executionMod
     db.prepare('UPDATE runs SET status=?,data=? WHERE id=?').run(run.status, JSON.stringify(run), runId);
     for (const row of db.prepare("SELECT data FROM requests WHERE run_id=? AND status IN ('QUEUED','RUNNING','WAITING_HUMAN','WAIT_DEPENDENCY','BLOCKED')").all(runId)) {
       const request = parseStored<Record<string, any>>(row.data);
+      captureSourceState(request);
       request.status = 'ERROR'; request.resultRef = null; request.semanticRef = null; request.error = errorText(error); request.errorCode = errorCode(error) ?? null; request.completedAt = now(); request.blockedReason = null;
+      finishAttempt(db,request.id,request.attemptId,request.completedAt);
       db.prepare('UPDATE requests SET status=?,data=? WHERE id=?').run('ERROR', JSON.stringify(request), request.id);
       readiness.transition(request);
       appendEvent(runId, request.id, 'request.error', request.error, { status: request.status, ...(request.errorCode ? { code: request.errorCode } : {}) });
@@ -323,17 +332,33 @@ export function createBroker<D extends ResultDetail = 'compact'>({ [executionMod
     changed();
   }
 
+  function copyExecutionState(header: Record<string, any>, origin: Record<string, any>) {
+    for (const key of ['claimedBy', 'claimedAt', 'notifiedAt', 'tryClaim', 'preparationAttempt', 'claimAttemptId', 'attemptId', 'executionProvenance'] as const) {
+      if (origin[key] === undefined) delete header[key]; else header[key] = origin[key];
+    }
+    header.profile = origin.profile;
+    if (origin.summary && header.attemptId) {
+      const summary = { ...origin.summary, executorStarts: header.cacheDisposition === 'executed' ? origin.summary.executorStarts : 0 };
+      const startedAt = origin.startedAt ?? header.startedAt ?? now();
+      db.prepare('INSERT INTO attempt_summaries VALUES(?,?,?,?,?) ON CONFLICT(request_id,attempt_id) DO UPDATE SET completed_at=excluded.completed_at,data=excluded.data').run(header.id,header.attemptId,startedAt,origin.completedAt ?? null,JSON.stringify(summary));
+      header.sourceSummary = origin.summary;
+    }
+    if (origin.usage && header.attemptId) db.prepare('INSERT INTO request_usage VALUES(?,?,?) ON CONFLICT(request_id,attempt_id) DO UPDATE SET data=excluded.data').run(header.id,header.attemptId,JSON.stringify(origin.usage));
+  }
+  function captureSourceState(header: Record<string, any>) {
+    const source = header.executionSource as ExecutionSource | undefined;
+    if (!source || source.stateDir === stateDir) return;
+    try { const origin = projectRequestState(source.stateDir, source.requestId); if (origin) copyExecutionState(header,origin); }
+    catch { /* Missing diagnostics are explicitly unreported, never invented. */ }
+  }
   function mirrorExecution(requestId: string, source: ExecutionSource) {
     if (closed || terminal.has(polling.requestStatus(requestId) ?? 'ERROR')) return;
-    const origin = projectRequests(source.stateDir, source.runId, { detail: 'full' }).find(request => request.id === source.requestId);
+    const origin = projectRequestState(source.stateDir, source.requestId, false);
     if (!origin) return;
     transaction(() => {
       const header = requestHeader(requestId); if (!header || terminal.has(header.status)) return;
       const before = JSON.stringify(header);
-      for (const key of ['claimedBy', 'claimedAt', 'notifiedAt', 'tryClaim', 'preparationAttempt', 'claimAttemptId', 'attemptId', 'executionProvenance'] as const) {
-        if (origin[key] === undefined) delete header[key]; else header[key] = origin[key];
-      }
-      header.profile = origin.profile;
+      copyExecutionState(header, origin);
       if (origin.status === 'WAITING_HUMAN') header.status = 'WAITING_HUMAN';
       if (before !== JSON.stringify(header)) saveHeader(header);
     });
@@ -343,7 +368,7 @@ export function createBroker<D extends ResultDetail = 'compact'>({ [executionMod
   async function executeOne(requestId: string, workspace: WorkspaceHandle, token: string, signal: AbortSignal) {
     const initial = required(requestHeader(requestId), 'Request');
     const input = initial.inputRef ? store.get<import('../project/types.js').ValidationInput>(initial.inputRef) : null;
-    if (rawExecution || diagnosticScope.getStore() || input?.version !== 4 || !input.cacheIdentity) return executeUncached(requestId, workspace, token, signal);
+    if (rawExecution || readiness.header(initial.runId)?.executionOwned || diagnosticScope.getStore() || input?.version !== 4 || !input.cacheIdentity) return executeUncached(requestId, workspace, token, signal);
     const runId = initial.runId, request = copy(required(requestData(requestId), 'Request'));
     const service = sharedCache();
     let source: ExecutionSource | undefined, mirror: NodeJS.Timeout | undefined;
@@ -367,10 +392,13 @@ export function createBroker<D extends ResultDetail = 'compact'>({ [executionMod
           await owner[enqueueExecution](request, copy(workspace.descriptor), executionId, runId);
           await owner.run(executionId, { signal: executionSignal });
           const completed = required(owner.getRequest(executionId), 'shared execution');
+          const summary = projectRequestState(executionState,executionId)?.summary;
+          if (!closed && summary) transaction(() => { const receipt = requestHeader(requestId); if (receipt) { copyExecutionState(receipt,{...completed,summary}); db.prepare('UPDATE requests SET data=? WHERE id=?').run(JSON.stringify(receipt),requestId); } });
           if (!completed.result) throw codedError(completed.error ?? 'Shared execution did not produce a semantic result.', completed.errorCode ?? 'COMPUTE_FAILED');
           return { result: completed.result, profile: completed.profile, origin: { stateDir: executionState, runId: executionId, requestId: executionId },
             attemptId: completed.attemptId ?? null, executionProvenance: completed.executionProvenance ?? null,
             ...(completed.usage ? { usage: completed.usage } : {}),
+            summary,
             definition: { criticId: request.criticId, payload: request.payload, passSchema: request.passSchema, failSchema: request.failSchema, resultCheck: request.resultCheck },
           };
         } finally { await owner.close(); }
@@ -394,6 +422,7 @@ export function createBroker<D extends ResultDetail = 'compact'>({ [executionMod
         header.profile = outcome.entry.value.profile;
         header.attemptId = outcome.entry.value.attemptId;
         header.executionProvenance = outcome.entry.value.executionProvenance;
+        header.sourceSummary = outcome.entry.value.summary;
         saveHeader(header);
         if (outcome.entry.value.usage && header.attemptId) addUsage(requestId, header.attemptId, outcome.entry.value.usage);
         // The owner already validated its schema and input. Applying a different
@@ -447,7 +476,8 @@ export function createBroker<D extends ResultDetail = 'compact'>({ [executionMod
         transaction(() => {
           const current = required(requestData(requestId), 'Request');
           if (current.status !== 'RUNNING') throw codedError('Review was canceled before Human notification.', 'REVIEW_CANCELED');
-          current.status = 'WAITING_HUMAN'; saveRequest(current);
+          current.status = 'WAITING_HUMAN'; current.attemptId = randomUUID();
+          beginAttempt(db,requestId,current.attemptId,now(),0); saveRequest(current);
           appendEvent(runId, requestId, 'human.waiting', 'Human review is ready; registered alarm delivery is pending.');
           updateRunStatus(runId);
         });
@@ -474,6 +504,7 @@ export function createBroker<D extends ResultDetail = 'compact'>({ [executionMod
         if (header.status !== 'RUNNING' || terminal.has(required(polling.runStatus(runId), 'Run'))) throw codedError('Review was canceled before executor start.', 'REVIEW_CANCELED');
         lease!.started(capture?.provenance ?? null);
         header.attemptId = lease!.token; header.executionProvenance = capture?.provenance ?? null;
+        beginAttempt(db,requestId,lease!.token,now(),1);
         db.prepare('UPDATE requests SET data=? WHERE id=?').run(JSON.stringify(header), requestId);
       });
       // This attempt's argument record, kept apart from metadata-only events and written while
@@ -528,7 +559,7 @@ export function createBroker<D extends ResultDetail = 'compact'>({ [executionMod
           // A usage event and its attempt sum commit together or not at all.
           if (event.type === 'executor.usage') transaction(() => { appendEvent(runId, requestId, event.type, message, safe); addUsage(requestId, lease!.token, safe.usage as Record<string, number>); });
           else appendEvent(runId, requestId, event.type, message, safe);
-          if (event.type === 'artifact.tool.called') recordToolCall(safe, event);
+          if (event.type === 'artifact.tool.called') { recordToolCall(safe, event); recordAttemptTool(db,requestId,lease!.token,String(object(safe.observation) ? safe.observation.operation : safe.name ?? '(unknown)')); }
           changed();
         },
       })));
@@ -684,32 +715,32 @@ export function createBroker<D extends ResultDetail = 'compact'>({ [executionMod
         readiness.initialize(record, prepared);
       });
     },
-    async submitProject({ requesterId = 'cli', selection, recursive = false, force = false, ignoreGates, maxExecutions, signal, identityConcurrency: submissionIdentityConcurrency = identityConcurrency, ...removed }: { requesterId?: string; selection: ProjectSelection; recursive?: boolean; force?: boolean; ignoreGates?: boolean; maxExecutions?: number; signal?: AbortSignal; identityConcurrency?: number }) {
+    async submitProject({ [preparedInput]: ready, profile, requesterId = 'cli', selection, recursive = false, force = false, ignoreGates, maxExecutions, signal, identityConcurrency: submissionIdentityConcurrency = identityConcurrency, ...removed }: { [preparedInput]?: ReturnType<typeof preparedProjectData>; profile?: ProfileSelection; requesterId?: string; selection: ProjectSelection; recursive?: boolean; force?: boolean; ignoreGates?: boolean; maxExecutions?: number; signal?: AbortSignal; identityConcurrency?: number }) {
       // Options are destructured before entry; selection is the sole mutable data
       // input. Keep signal live for cancellation rather than cloning its state.
-      selection = structuredClone(selection);
+      selection = structuredClone(selection); profile = structuredClone(profile);
       ensureOpen(); requireExecutors(); sweepSubmissionDeadlines();
       rejectIdentityConcurrency(submissionIdentityConcurrency); validateMaxExecutions(maxExecutions);
       if ('mode' in removed) throw new Error('Workspace modes are no longer supported; supply an unchanged workspace.');
       if (!requesterId.trim() || requesterId.length > 200) throw new Error('requesterId is required (maximum 200 characters).');
       await requireExecutors().validateWorkspace?.(repoPath);
-      const workspace = await workspaceAdapter.prepareWorkspace({ repoPath, stateDir, integrity: workspaceIntegrity, signal });
+      const workspace = ready ? await workspaceAdapter.reopenWorkspace(ready.descriptor, { signal }) : await workspaceAdapter.prepareWorkspace({ repoPath, stateDir, integrity: workspaceIntegrity, signal });
       try {
         // A custom adapter may retain a mutable descriptor. Snapshot it once,
         // before any later await, and never store its externally owned object.
         const descriptor = structuredClone(workspace.descriptor);
-        const { config } = await readWorkspaceConfig(descriptor.path, workspace.signal);
+        const config = ready?.config ?? selectProfiles((await readWorkspaceConfig(descriptor.path, workspace.signal)).config, profile, selection, recursive);
         ignoreGates ??= config.reviewPolicy?.dependencyGates === 'ignore';
-        const snapshot = await createProjectSnapshot(config, descriptor.path, descriptor.hash, workspace.signal, descriptor.integrity, selection, { identityConcurrency: submissionIdentityConcurrency });
+        const snapshot = ready?.snapshot ?? await createProjectSnapshot(config, descriptor.path, descriptor.hash, workspace.signal, descriptor.integrity, selection, { identityConcurrency: submissionIdentityConcurrency });
         const ids = includedCritics(snapshot, selection, recursive);
-        const templates: ReviewEnvelope[] = [];
+        const templates: ReviewEnvelope[] = ready?.templates ?? [];
         const critics = new Map(config.critics.map(critic => [critic.id, critic]));
-        for (const id of ids) { templates.push(...await prepareReviewRequests({ repoPath: descriptor.path, repoId, snapshotHash: descriptor.hash, criticId: id, preparedConfig: { ...config, critics: [critics.get(id)!] }, copy: false })); if (templates.length % 16 === 0) { workspace.signal.throwIfAborted(); await yieldTurn(); } }
+        for (const id of ready ? [] : ids) { templates.push(...await prepareReviewRequests({ repoPath: descriptor.path, repoId, snapshotHash: descriptor.hash, criticId: id, preparedConfig: { ...config, critics: [critics.get(id)!] }, copy: false })); if (templates.length % 16 === 0) { workspace.signal.throwIfAborted(); await yieldTurn(); } }
 
         const id = randomUUID(), createdAt = now();
         const record: RunRecord = { id, repoId, workerProtocol: 'resources-1', maxExecutions, repoExecutorCap: config.reviewPolicy?.maxConcurrentExecutors, coalescingGraceMs, snapshotHash: descriptor.hash, workspace: descriptor, requesterId,
           scope: { kind: 'project' }, graph: createGraphDefinition(config, false), project: { version: 3, snapshot, selection, recursive, force, ignoreGates, templates }, status: 'QUEUED', createdAt };
-        const cached = snapshotCache(snapshot);
+        const cached = snapshotCache(snapshot), sharedActive = snapshotActive(snapshot);
         const prepared = await store.prepareRun(record, workspace.signal);
         await workspace.assertUnchanged(); workspace.signal.throwIfAborted();
         ensureOpen();
@@ -721,7 +752,11 @@ export function createBroker<D extends ResultDetail = 'compact'>({ [executionMod
           appendEvent(id, null, 'run.submitted', 'Project validation requested against fixed input.', { selection, recursive, force });
           brokerTestHooks.onPlan?.(); readiness.initialize(record, prepared, cached);
           if (maxExecutions !== undefined) {
-            const starts = Number(db.prepare("SELECT count(DISTINCT CASE WHEN json_extract(data,'$.inputVersion')=4 AND json_extract(data,'$.inputKey') IN (SELECT input_key FROM run_members WHERE run_id=?) THEN json_extract(data,'$.inputKey') ELSE id END) AS n FROM requests WHERE run_id=? AND status='QUEUED' AND json_extract(data,'$.profile.kind')!='human'").get(id,id)!.n);
+            const starts = new Set(db.prepare("SELECT id,data FROM requests WHERE run_id=? AND status='QUEUED' AND json_extract(data,'$.profile.kind')!='human'").all(id).flatMap(row => {
+              const header = JSON.parse(String(row.data)), input = snapshot.inputs[header.criticId];
+              if (!force && input.cacheIdentity && sharedActive.has(input.cacheIdentity)) return [];
+              return [input.cacheIdentity ?? String(row.id)];
+            })).size;
             if (starts > maxExecutions) throw codedError(`Plan requires ${starts} new executions, exceeding maxExecutions ${maxExecutions}.`, 'EXECUTION_BUDGET_EXCEEDED');
           }
         });
@@ -820,6 +855,7 @@ export function createBroker<D extends ResultDetail = 'compact'>({ [executionMod
           if (timing) {
             const record = () => transaction(() => {
               assertClaim();
+              recordAttemptTool(db,requestId,requestHeader(requestId)?.attemptId,timing!.operation);
               appendEvent(request.runId, requestId, 'human.tool.executed', 'The claimed reviewer attempted a registered Artifact tool.', { ...timing, ...(attempt.ok && attempt.result.isError ? { isError: true } : {}) });
             });
             if (attempt.ok) record(); else { try { record(); } catch { /* Optional failure diagnostics never replace the original error. */ } }
@@ -907,15 +943,18 @@ export function createBroker<D extends ResultDetail = 'compact'>({ [executionMod
         run.status = 'QUEUED'; delete run.completedAt; delete run.error;
         db.prepare('UPDATE runs SET status=?,data=? WHERE id=?').run(run.status, JSON.stringify(run), run.id);
         const gate = db.prepare('SELECT unmet,red FROM gate_counts WHERE run_id=? AND critic_id=?').get(request.runId,request.criticId);
-        request.status = Number(gate?.unmet ?? 0) ? Number(gate?.red ?? 0) ? 'BLOCKED' : 'WAIT_DEPENDENCY' : 'QUEUED'; request.error = null; request.errorCode = null; request.resultRef = null; request.semanticRef = null; request.startedAt = null; request.completedAt = null; delete request.executionProvenance; delete request.attemptId;
+        request.status = Number(gate?.unmet ?? 0) ? Number(gate?.red ?? 0) ? 'BLOCKED' : 'WAIT_DEPENDENCY' : 'QUEUED'; request.error = null; request.errorCode = null; request.resultRef = null; request.semanticRef = null; request.startedAt = null; request.completedAt = null; delete request.executionProvenance; delete request.attemptId; delete request.executionSource; delete request.cacheDisposition; delete request.sourceSummary;
         saveHeader(request);
         // The new attempt starts without a record; the failed one is no longer shown.
         db.prepare('DELETE FROM tool_call_records WHERE request_id=?').run(request.id);
-        db.prepare('DELETE FROM request_usage WHERE request_id=?').run(request.id);
+        // Prior attempt usage stays addressable by its immutable attempt ID.
         appendEvent(run.id, request.id, 'request.retried', 'Retry requested against the same immutable input.');
       });
       changed(); return viewRequest(requestData(requestId));
     },
+    results(runId: string, options?: import('../project/results.js').ResultStreamOptions) { ensureOpen(); return streamProjectResults(stateDir,runId,options); },
+    requestSummary(requestId: string) { ensureOpen(); return projectRequestSummary(stateDir,requestId); },
+    runSummary(runId: string) { ensureOpen(); return projectRunSummary(stateDir,runId); },
     changes(runId: string, options?: ChangeOptions) {
       ensureOpen(); db.exec('BEGIN');
       try { const page = readChanges(db, runId, stateDir, options); db.exec('COMMIT'); return page; }
@@ -945,6 +984,18 @@ export function createBroker<D extends ResultDetail = 'compact'>({ [executionMod
   const viewRequest = (value: ReviewRequest | null) => resultView({ detail }, value, () => value ? requesterRequest(value, stateDir) : null);
   return {
     ...broker,
+    async prepareProject(options: Omit<PrepareProjectOptions, 'repoPath' | 'stateDir' | 'repoId' | 'workspaceIntegrity'>) {
+      ensureOpen();
+      const { signal, ...rest } = options; const frozen = structuredClone(rest);
+      await requireExecutors().validateWorkspace?.(repoPath);
+      return prepareProject({ ...frozen, signal, repoPath, stateDir, repoId, workspaceIntegrity });
+    },
+    async submitPrepared(handle: PreparedProject, options: { requesterId?: string; maxExecutions?: number; signal?: AbortSignal } = {}) {
+      const ready = preparedProjectData(handle);
+      if (ready.descriptor.path !== repoPath || ready.descriptor.stateDir !== stateDir || (ready.descriptor.integrity ?? 'content') !== workspaceIntegrity) throw new Error('Prepared Project belongs to a different workspace, store or integrity policy.');
+      const { selection, recursive, force, ignoreGates } = ready;
+      return viewRun(await broker.submitProject({ ...options, selection, recursive, force, ignoreGates, [preparedInput]: ready }))!;
+    },
     submitProject: async (...args: Parameters<typeof broker.submitProject>) => viewRun(await broker.submitProject(...args))!,
     run: async (...args: Parameters<typeof broker.run>) => viewRun(await broker.run(...args)),
     getRun: (id: string) => { ensureOpen(); if (ownerData(id)) reconcile(id); return resultView({ detail }, detail === 'full' ? broker.getRun(id) : null, () => storedRequesterRun(db, id, stateDir)); },

@@ -14,6 +14,7 @@ export interface RequesterResult {
 }
 export interface RequesterRequest {
   attemptId: string | null; executionProvenance: ExecutionProvenance | null;
+  usageState: 'reported' | 'unreported'; usage?: ReviewRequest['usage'];
   id: string; runId: string; criticId: string; target: string; status: ReviewRequest['status'];
   profile: ReviewRequest['profile']; requestedProfile?: ReviewRequest['profile']; executionSource?: ReviewRequest['executionSource']; cacheDisposition?: ReviewRequest['cacheDisposition'];
   inputKey: string | null; reference: ReviewReference; result: RequesterResult | null;
@@ -40,7 +41,7 @@ export function requesterEvidence(evidence: ValidationEvidence, stateDir: string
 }
 export function requesterRequest(request: ReviewRequest, stateDir: string): RequesterRequest {
   const reference = reviewReference(stateDir, request.runId, request.id), inputKey = request.validationInput?.key ?? null;
-  return { id: request.id, runId: request.runId, criticId: request.criticId, target: request.target, status: request.status, profile: structuredClone(request.profile), requestedProfile: request.requestedProfile, executionSource: request.executionSource, cacheDisposition: request.cacheDisposition,
+  return { usageState: request.usage ? 'reported' : 'unreported', ...(request.usage ? { usage: structuredClone(request.usage) } : {}), id: request.id, runId: request.runId, criticId: request.criticId, target: request.target, status: request.status, profile: structuredClone(request.profile), requestedProfile: request.requestedProfile, executionSource: request.executionSource, cacheDisposition: request.cacheDisposition,
     attemptId: request.attemptId ?? null, executionProvenance: request.executionProvenance ?? null, inputKey, reference, error: request.error, errorCode: request.errorCode, blockedReason: request.blockedReason,
     result: request.result ? { ...semanticResult(request.result), executionProvenance: request.executionProvenance ?? null, verdict: request.result.verdict, profile: structuredClone(request.profile), reference, ...(request.executionSource ? { reusedFrom: reviewReference(request.executionSource.stateDir,request.executionSource.runId,request.executionSource.requestId) } : {}) } : null };
 }

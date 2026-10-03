@@ -107,3 +107,72 @@ test('force executes actual new work and atomically replaces the reusable result
   const reused=await a.broker.submitProject({selection:{kind:'all'}});
   assert.equal(reused.status,'RED');assert.equal(reused.requests[0].cacheDisposition,'hit');
 });
+
+test('prepared submission reuses identity values in one session and rejects changed or forged preparation', async t => {
+  const f=await fixture(t), a=await f.repo('prepared','prepared-value'), identityCalls=join(f.root,'identity-calls');
+  await writeFile(join(a.repoPath,'identity.mjs'),`import{appendFileSync}from'node:fs';appendFileSync(${JSON.stringify(identityCalls)},'identity\\n');console.log('prepared-value');`);
+  const prepared=await a.broker.prepareProject({selection:{kind:'all'}});
+  assert.equal((await readFile(identityCalls,'utf8')).trim(),'identity');
+  prepared.plan.selection={kind:'critic',criticId:'not/a-critic'};
+  const run=await a.broker.submitPrepared(prepared);await a.broker.run(run.id);
+  assert.equal(a.broker.getRun(run.id)!.status,'GREEN');
+  assert.equal((await readFile(identityCalls,'utf8')).trim(),'identity');
+  await assert.rejects(a.broker.submitPrepared(structuredClone(prepared)),/Unknown or disposed/);
+  const before=a.broker.listRuns().length;
+  await writeFile(join(a.repoPath,'new-material'),'changed');
+  await assert.rejects(a.broker.submitPrepared(prepared),/changed/i);
+  assert.equal(a.broker.listRuns().length,before);
+});
+
+test('declared request-time profiles preserve source bytes and distinguish requested from reused profiles', async t => {
+  const f=await fixture(t), a=await f.repo('variants','profile-value');
+  const manifestPath=join(a.repoPath,'ccdd.json'), manifest=JSON.parse(await readFile(manifestPath,'utf8'));
+  manifest.critics[0].profileVariants={patient:{...manifest.critics[0].profile,timeoutMs:20000}};
+  await writeFile(manifestPath,JSON.stringify(manifest));const original=await readFile(manifestPath);
+  await assert.rejects(a.broker.prepareProject({selection:{kind:'all'},profile:'unknown'}),/Unknown profile/);
+  const prepared=await a.broker.prepareProject({selection:{kind:'all'},profile:'patient'});
+  const first=await a.broker.submitPrepared(prepared);await a.broker.run(first.id);
+  const result=a.broker.getRun(first.id)!.requests[0];assert.equal(Reflect.get(result.profile,'timeoutMs'),20000);
+  const reused=await a.broker.submitProject({selection:{kind:'all'}});
+  assert.equal(reused.status,'GREEN');assert.equal(Reflect.get(reused.requests[0].profile,'timeoutMs'),20000);
+  assert.equal(Reflect.get(reused.requests[0].requestedProfile!,'timeoutMs'),15000);
+  assert.deepEqual(await readFile(manifestPath),original);
+});
+
+test('plan and zero-budget submission attach to actual shared work without scheduling another execution', async t => {
+  const f=await fixture(t), a=await f.repo('active-owner','active-value',true), b=await f.repo('active-follower','active-value');
+  t.after(()=>writeFile(join(f.root,'release'),'release').catch(()=>{}));
+  const first=await a.broker.submitProject({selection:{kind:'all'}}), pendingA=a.broker.run(first.id);
+  await f.until(()=>existsSync(f.count));
+  const plan=await inspectProject({repoPath:b.repoPath,stateDir:b.stateDir,selection:{kind:'all'}});assert.equal(plan.plan.counts.coalesce,1);
+  const next=await b.broker.submitProject({selection:{kind:'all'},maxExecutions:0}), pendingB=b.broker.run(next.id);
+  await f.until(()=>b.broker.getRun(next.id)!.requests[0].cacheDisposition==='coalesced');
+  await writeFile(join(f.root,'release'),'release');await Promise.all([pendingA,pendingB]);
+  assert.equal(b.broker.getRun(next.id)!.status,'GREEN');assert.equal(b.broker.executionBudget(next.id)!.attempts.length,0);
+});
+
+test('terminal result iterator preserves attribution, finishes without a poll delay and never double-counts reuse', async t => {
+  const f=await fixture(t), a=await f.repo('stream','stream-value');
+  const run=await a.broker.submitProject({selection:{kind:'all'}});
+  const received:unknown[]=[];const reader=(async()=>{for await(const entry of a.broker.results(run.id,{pollIntervalMs:10}))received.push(entry);})();
+  await a.broker.run(run.id);await reader;
+  assert.equal(received.length,1);const record=received[0] as Record<string,any>;
+  assert.equal(record.type,'result');assert.equal(record.criticId,'stream/review');assert.equal(record.inputKey,'stream-value');
+  assert.equal(record.status,'GREEN');assert.equal(record.profile.kind,'runtime');assert.equal(record.usageState,'unreported');assert.equal(Object.hasOwn(record,'usage'),false);
+  assert.equal(record.executionSource.executionId,a.broker.getRun(run.id)!.requests[0].executionSource!.executionId);
+  const summary=a.broker.runSummary(run.id)!;assert.equal(summary.executorStarts,1);assert.equal(summary.usageState,'unreported');
+  const reused=await a.broker.submitProject({selection:{kind:'all'},maxExecutions:0});
+  const hits=[];for await(const entry of a.broker.results(reused.id))hits.push(entry);
+  assert.equal(hits.length,1);assert.equal(hits[0].cacheDisposition,'hit');assert.equal(a.broker.runSummary(reused.id)!.executorStarts,0);
+  const replay=[];for await(const entry of a.broker.results(run.id,{after:record.cursor}))replay.push(entry);assert.equal(replay.length,0);
+});
+
+test('closing an iterator or aborting its wait leaves the live computation untouched', async t => {
+  const f=await fixture(t), a=await f.repo('stream-owner','stream-cancel',true);
+  t.after(()=>writeFile(join(f.root,'release'),'release').catch(()=>{}));
+  const run=await a.broker.submitProject({selection:{kind:'all'}}), pending=a.broker.run(run.id);await f.until(()=>existsSync(f.count));
+  const abort=new AbortController(), iterator=a.broker.results(run.id,{signal:abort.signal,pollIntervalMs:10});
+  const waiting=iterator.next();abort.abort(new Error('Reader stopped'));await assert.rejects(waiting,/Reader stopped|aborted/);
+  assert.equal(a.broker.getRun(run.id)!.status,'RUNNING');await writeFile(join(f.root,'release'),'release');await pending;
+  assert.equal(a.broker.getRun(run.id)!.status,'GREEN');
+});

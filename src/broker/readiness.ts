@@ -33,6 +33,13 @@ export function createReadiness(db: DatabaseSync, store: ReturnType<typeof recor
   const publish = (member: Member, request: Record<string, any>) => {
     const change = db.prepare('INSERT INTO request_changes(run_id,request_id,critic_id,status,result_ref,error,error_code) VALUES (?,?,?,?,?,?,?)').run(member.run_id, request.id, member.critic_id, request.status, request.semanticRef ?? null, request.error ?? null, request.errorCode ?? null);
     db.prepare('INSERT INTO change_attempts(cursor,attempt_id,provenance_ref) VALUES(?,?,?)').run(change.lastInsertRowid, request.attemptId ?? null, request.executionProvenance ? store.put(request.executionProvenance) : null);
+    const usage = request.attemptId ? db.prepare('SELECT data FROM request_usage WHERE request_id=? AND attempt_id=?').get(request.id,request.attemptId) : undefined;
+    const counters = usage ? JSON.parse(String(usage.data)) : request.usage;
+    const attribution = { inputKey: member.input_key, target: member.target, profile: request.profile,
+      requestedProfile: request.requestedProfile ?? null, executionSource: request.executionSource ?? null,
+      cacheDisposition: request.cacheDisposition ?? 'uncached', completedAt: request.completedAt ?? null,
+      usageState: counters ? 'reported' : 'unreported', ...(counters ? { usage: counters } : {}) };
+    db.prepare('INSERT INTO change_attribution VALUES(?,?)').run(change.lastInsertRowid,JSON.stringify(attribution));
   };
   const effectiveState = (member: Member, request: Record<string, any>) => {
     const gate = db.prepare('SELECT unmet,red FROM gate_counts WHERE run_id=? AND critic_id=?').get(member.run_id,member.critic_id);
@@ -41,6 +48,8 @@ export function createReadiness(db: DatabaseSync, store: ReturnType<typeof recor
   const setMember = (member: Member, request: Record<string, any>) => {
     readinessTestHooks.member?.();
     const status = effectiveState(member, request);
+    const evidence = request.status === 'GREEN' || request.status === 'RED' ? request.id : null;
+    if(member.state===status && member.request_id===request.id && member.evidence_id===evidence)return status;
     changeCount(member.run_id, member.state, -1); changeCount(member.run_id, status, 1);
     db.prepare('UPDATE run_members SET state=?,request_id=?,evidence_id=? WHERE run_id=? AND critic_id=?').run(status, request.id, request.status === 'GREEN' || request.status === 'RED' ? request.id : null, member.run_id, member.critic_id);
     if (request.runId !== member.run_id && !terminal.has(request.status)) db.prepare('INSERT OR REPLACE INTO shared_members VALUES (?,?,?,?)').run(member.run_id,member.critic_id,request.id,request.runId);
@@ -81,6 +90,10 @@ export function createReadiness(db: DatabaseSync, store: ReturnType<typeof recor
     db.prepare('UPDATE run_members SET state=? WHERE run_id=? AND critic_id=?').run(state, member.run_id, member.critic_id);
     if (member.request_id) {
       const row = db.prepare('SELECT data,run_id FROM requests WHERE id=?').get(member.request_id);
+      if (row && JSON.parse(String(row.data)).resultRef) {
+        const request = JSON.parse(String(row.data));
+        publish(member,{...request,status:state,semanticRef:state===request.status ? request.semanticRef : null});
+      }
       if (row && row.run_id === member.run_id && !JSON.parse(String(row.data)).resultRef) {
         const request = JSON.parse(String(row.data)); request.status = state;
         const blockers = db.prepare("SELECT e.dependency,m.state FROM gate_edges e JOIN run_members m ON m.run_id=e.run_id AND m.critic_id=e.dependency WHERE e.run_id=? AND e.dependent=? AND m.state!='GREEN' LIMIT 16").all(member.run_id, member.critic_id);
@@ -172,7 +185,7 @@ export function createReadiness(db: DatabaseSync, store: ReturnType<typeof recor
               semanticRef: store.put(importSemantic(entry.value.result)), completedAt: entry.completedAt,
               executionSource: cacheSource(entry), cacheDisposition: 'hit', requestedProfile,
               profile: structuredClone(entry.value.profile), attemptId: entry.value.attemptId,
-              executionProvenance: entry.value.executionProvenance, usage: entry.value.usage });
+              executionProvenance: entry.value.executionProvenance, usage: entry.value.usage, sourceSummary: entry.value.summary });
             if (envelope) db.prepare('UPDATE requests SET status=?,data=? WHERE id=?').run(receipt.status, JSON.stringify(receipt), receipt.id);
             else db.prepare('INSERT INTO requests(id,run_id,ordinal,status,data) VALUES(?,?,?,?,?)').run(receipt.id,run.id,member.ordinal,receipt.status,JSON.stringify(receipt));
             setMember(member, receipt);

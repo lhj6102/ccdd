@@ -31,7 +31,7 @@ import { claimHumanFromCli } from '../review/local-claim.js';
 type Output = { write(value: string): unknown };
 const terminal = new Set(['GREEN', 'RED', 'ERROR', 'INCOMPLETE']);
 const flags = new Set(['--compact', '--all', '--recursive', '--force', '--ignore-gates', '--wait', '--json', '--full', '--help', '--human-inbox']);
-const values = new Set(['--repo', '--state-dir', '--critic', '--timeout-ms', '--requester', '--reviewer', '--result-file', '--tool', '--args', '--run', '--pi-auth-file', '--codex-auth-file', '--integrity', '--concurrency', '--identity-concurrency', '--max-executions', '--requests', '--output-dir', '--critics', '--artifacts', '--critics-file', '--artifacts-file', '--scenario-file', '--processes', '--resource-mode']);
+const values = new Set(['--profile', '--repo', '--state-dir', '--critic', '--timeout-ms', '--requester', '--reviewer', '--result-file', '--tool', '--args', '--run', '--pi-auth-file', '--codex-auth-file', '--integrity', '--concurrency', '--identity-concurrency', '--max-executions', '--requests', '--output-dir', '--critics', '--artifacts', '--critics-file', '--artifacts-file', '--scenario-file', '--processes', '--resource-mode']);
 const help = `CCDD Project — pull validation and explicit review execution
 
   ccdd-project cache show ID | list | compare LEFT RIGHT | gc | delete ID [--cache-dir PATH] [--json]
@@ -126,7 +126,7 @@ export async function main(argv = process.argv.slice(2), { stdout = process.stdo
     const common = ['--repo', '--state-dir', '--json'];
     const full = Boolean(options['--full']) || command === 'run' && positional[0] === 'show';
     const permitted = new Set([...common, ...(['status', 'plan', 'verify', 'history', 'run', 'request'].includes(command) ? ['--full'] : []), ...(['status', 'plan', 'verify', 'history'].includes(command) ? ['--critic', '--critics', '--artifacts', '--critics-file', '--artifacts-file', '--all'] : []),
-      ...(['status', 'plan', 'verify'].includes(command) ? ['--integrity', '--identity-concurrency'] : []),
+      ...(['status', 'plan', 'verify'].includes(command) ? ['--integrity', '--identity-concurrency', '--profile'] : []),
       ...(['plan', 'verify'].includes(command) ? ['--recursive', '--force', '--ignore-gates'] : []),
       ...(command === 'verify' ? ['--max-executions', '--concurrency', '--wait', '--timeout-ms', '--requester', '--human-inbox', '--pi-auth-file', '--codex-auth-file'] : []),
       ...(command === 'run' ? ['--wait', '--timeout-ms'] : []),
@@ -206,7 +206,7 @@ export async function main(argv = process.argv.slice(2), { stdout = process.stdo
     }
     if (command === 'status' || command === 'plan') {
       const selection = select(command === 'plan');
-      const { plan } = await withCliCancellation('Project validation cancelled.', signal => inspectProject({ detail: 'full', ...context, selection, recursive: Boolean(options['--recursive']), force: Boolean(options['--force']), ignoreGates: options['--ignore-gates'] ? true : undefined, workspaceIntegrity, identityConcurrency, signal }));
+      const { plan } = await withCliCancellation('Project validation cancelled.', signal => inspectProject({ profile: get('--profile'), detail: 'full', ...context, selection, recursive: Boolean(options['--recursive']), force: Boolean(options['--force']), ignoreGates: options['--ignore-gates'] ? true : undefined, workspaceIntegrity, identityConcurrency, signal }));
       const output = full ? plan : requesterPlan(plan, context.stateDir);
       print(output, full ? undefined : planText(requesterPlan(plan, context.stateDir))); return command === 'plan' || plan.satisfied ? 0 : 1;
     }
@@ -243,7 +243,7 @@ export async function main(argv = process.argv.slice(2), { stdout = process.stdo
     const executors = createExecutorRegistry({ piOptions, alarmMethods: createLocalAlarmMethods({ ...context, humanInbox }) });
     broker = createBroker({ detail: 'full', ...context, executors, workspaceIntegrity, maxConcurrentExecutors, identityConcurrency });
     if (command === 'verify') {
-      const run = await withCliCancellation('Project validation cancelled.', signal => broker!.submitProject({ maxExecutions, selection: verifySelection!, recursive: Boolean(options['--recursive']), force: Boolean(options['--force']), ignoreGates: options['--ignore-gates'] ? true : undefined, requesterId: get('--requester') ?? 'cli', signal }));
+      const run = await withCliCancellation('Project validation cancelled.', signal => broker!.submitProject({ profile: get('--profile'), maxExecutions, selection: verifySelection!, recursive: Boolean(options['--recursive']), force: Boolean(options['--force']), ignoreGates: options['--ignore-gates'] ? true : undefined, requesterId: get('--requester') ?? 'cli', signal }));
       if (!terminal.has(run.status)) await ensureRunWorker({ broker, context, run, initialConfig: { piOptions, humanInbox, maxConcurrentExecutors } });
       if (options['--wait']) return await wait(run.id);
       const view = projectRun(context.stateDir, run.id)!; printRun(view);
