@@ -1,0 +1,29 @@
+name: Identity cache source snapshot
+on:
+  push:
+    branches: [feat/project-independent-identity-cache]
+    paths: [.github/workflows/identity-cache-source.yml]
+permissions:
+  contents: read
+jobs:
+  snapshot:
+    if: github.repository == 'lhj6102/ccdd'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Export tracked public source only
+        shell: bash
+        run: |
+          set -euo pipefail
+          git rev-parse HEAD > "$RUNNER_TEMP/commit.txt"
+          git archive --format=tar.gz HEAD > "$RUNNER_TEMP/source.tar.gz"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: identity-cache-source-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/commit.txt
+            ${{ runner.temp }}/source.tar.gz
+          retention-days: 1
+# Temporary source-only development snapshot; remove before merge.
