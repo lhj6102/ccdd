@@ -147,6 +147,13 @@ Stored manifests contain only serializable metadata and declarations. Execution 
 
 ## Requester results and audit lookup
 
+The monitor applies the same derived publication state to Run/request listings,
+overviews and details (including HTTP). Audit-only GREEN/RED is never in its
+success lane: pending is shown as RUNNING with attention, rejected as ERROR with
+attention and its reason. `rawStatus` and the unchanged detail result retain the
+reviewer's verdict; the UI labels these results as audit only.
+
+
 A cache-owned execution's raw GREEN/RED verdict is immutable audit, separate
 from `publication: {state: 'accepted' | 'pending' | 'rejected', code?, message?}`.
 Run show, summaries, lifecycle pages/streams, request lists and history expose

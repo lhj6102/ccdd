@@ -15,7 +15,10 @@ export function projectChanges(stateDir: string, runId: string, options: ChangeO
 export function projectRunState(stateDir: string, runId: string) {
   return withProjectStore(stateDir, db => {
     const row=db.prepare('SELECT status FROM runs WHERE id=?').get(runId);
-    return row ? String(row.status) : null;
+    if(!row)return null;
+    const publication=executionPublication(db);
+    return publication && publication.state!=='accepted' && ['GREEN','RED'].includes(String(row.status))
+      ? publication.state==='rejected' ? 'ERROR' : 'RUNNING' : String(row.status);
   }, null);
 }
 export interface ResultStreamOptions extends ChangeOptions { signal?: AbortSignal; timeoutMs?: number; pollIntervalMs?: number }

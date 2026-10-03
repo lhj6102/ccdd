@@ -2,6 +2,7 @@ import type { MonitorRequest } from '../types.js';
 
 export const kindLabels = { agent: 'Agent', human: 'Human', runtime: 'Runtime' } as const;
 export function statusLabel(request: MonitorRequest): string {
+  if (request.publication && request.publication.state !== 'accepted') return `Audit only · Publication ${request.publication.state}`;
   if (request.blockedByFailure) return 'Blocked by failure';
   if (request.status === 'WAITING_HUMAN') return request.claimedBy ? 'Reviewer working' : 'Awaiting reviewer';
   return { WAIT_DEPENDENCY: 'Waiting for dependency evidence', BLOCKED: 'Blocked by dependency verdict', QUEUED: 'Queued', RUNNING: 'Running', GREEN: 'Passed', RED: 'Criteria not met', ERROR: 'Execution error' }[request.status];

@@ -3,6 +3,7 @@ import type { ArtifactReferenceMetadata } from '../artifacts/index.js';
 import type { GraphProjection } from '../broker/graph.js';
 import type { RequesterPlan, RequesterResult } from '../result-view.js';
 import type { HumanPreparationAttempt } from '../broker/human-claims.js';
+import type { ExecutionPublication } from '../project/publication.js';
 
 export type MonitorLane = 'requested' | 'running' | 'success' | 'failure';
 export type MonitorFilter = 'all' | 'active' | 'attention';
@@ -10,6 +11,7 @@ export interface MonitorProject { id: string; name: string; path: string; issue?
 export interface MonitorRequest {
   id: string; projectId: string; runId: string; title: string; criticId: string;
   status: ReviewStatus; kind: CriticProfile['kind'];
+  rawStatus?: ReviewStatus; publication?: ExecutionPublication;
   createdAt: string; startedAt: string | null; completedAt: string | null;
   claimedAt: string | null; claimedBy: string | null;
   activityAt: string; waitingReason: string | null;
@@ -42,6 +44,7 @@ export interface MonitorHumanTool {
 export interface MonitorToolResponse { result: unknown }
 export interface MonitorDetail {
   request: MonitorRequest;
+  publication?: ExecutionPublication;
   responseSchemas?: import('../response-schema.js').ResponseSchemas;
   instruction: string; profile: CriticProfile;
   result: RequesterResult | null;
@@ -59,6 +62,7 @@ export interface MonitorSources { stateHome?: string; stateDirs?: string[] }
 
 export interface MonitorRun {
   id: string; projectId: string; snapshotHash: string | null; status: RunStatus;
+  rawStatus?: RunStatus; publication?: ExecutionPublication;
   createdAt: string; completedAt: string | null;
   scope: { kind: 'graph' | 'chain' | 'project' } | { kind: 'critic'; criticId: string } | null;
   graphAvailable: boolean;

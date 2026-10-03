@@ -13,6 +13,7 @@ import { promisify } from 'node:util';
 import type { CriticProfile, ReviewRequest, ReviewStatus, RunStatus } from '../contracts.js';
 import { projectGraph, validateGraphDefinition } from '../broker/graph.js';
 import { storedValidation } from '../project/store.js';
+import { executionPublication, type ExecutionPublication } from '../project/publication.js';
 import { projectValidationGraph } from '../project/graph.js';
 import type { ProjectPlan } from '../project/types.js';
 import type { MonitorDetail, MonitorLane, MonitorOverview, MonitorProject, MonitorQuery, MonitorRequest, MonitorSources, MonitorRun, MonitorRunOverview, MonitorRunQuery, MonitorGraph } from './types.js';
@@ -20,6 +21,7 @@ import type { MonitorDetail, MonitorLane, MonitorOverview, MonitorProject, Monit
 interface Source { id: string; stateDir: string; issue?: string }
 interface Identity { repoId: string; repoPath: string }
 interface Header {
+  rawStatus?: ReviewStatus; publication?: ExecutionPublication;
   id: string; runId: string; title: string; criticId: string; status: ReviewStatus; kind: CriticProfile['kind'];
   predecessorId: string | null; target: string | null; deps: string[] | null; snapshotHash: string | null; blockedReason: string | null; createdAt: string; startedAt: string | null; completedAt: string | null;
   claimedAt: string | null; claimedBy: string | null; notifiedAt: string | null;
@@ -28,7 +30,7 @@ interface Header {
 interface Owner { pid: number; identity: string | null }
 interface Event { id: number; requestId: string | null; type: string; at: string }
 interface Snapshot {
-  source: Source; project: MonitorProject; identity: Identity | null; requests: Header[]; runs: MonitorRun[]; graph: unknown; validation?: ProjectPlan;
+  source: Source; project: MonitorProject; identity: Identity | null; requests: Header[]; runs: MonitorRun[]; graph: unknown; validation?: ProjectPlan; publication?: ExecutionPublication;
   owners: Map<string, Owner>; activity: Map<string, string>; events: Event[]; target: Record<string, unknown> | null;
 }
 export interface MonitorStoredRequest { request: ReviewRequest; repoPath: string; stateDir: string; repoId: string }
@@ -36,7 +38,8 @@ type ProcessCheck = { exists: boolean | null; identity: string | null };
 type ProcessChecks = Map<number, Promise<ProcessCheck>>;
 
 const statuses = new Set<string>(['WAIT_DEPENDENCY', 'BLOCKED', 'QUEUED', 'RUNNING', 'WAITING_HUMAN', 'GREEN', 'RED', 'ERROR']);
-export function monitorLane(request: Pick<MonitorRequest, 'status' | 'claimedBy'>): MonitorLane {
+export function monitorLane(request: Pick<MonitorRequest, 'status' | 'claimedBy' | 'publication'>): MonitorLane {
+  if (request.publication && request.publication.state !== 'accepted') return request.publication.state === 'rejected' ? 'failure' : 'running';
   if (request.status === 'GREEN') return 'success';
   if (request.status === 'RED' || request.status === 'ERROR') return 'failure';
   if (request.status === 'RUNNING' || (request.status === 'WAITING_HUMAN' && request.claimedBy)) return 'running';
@@ -133,8 +136,19 @@ async function readSnapshot(source: Source, requestId?: string, runId?: string):
     if (typeof identity.repoPath !== 'string' || !isAbsolute(identity.repoPath) || typeof identity.repoId !== 'string') throw storageError();
     snapshot.identity = { repoPath: identity.repoPath, repoId: identity.repoId };
     snapshot.project = { id: source.id, name: basename(identity.repoPath) || identity.repoPath, path: identity.repoPath };
-    snapshot.requests = db.prepare(headerSql).all().map(readHeader);
-    snapshot.runs = db.prepare(runSql).all().map(row => readRun(row, source.id));
+    const publication = executionPublication(db) ?? undefined;
+    snapshot.publication = publication;
+    // Project raw verdicts into operational monitor status without rewriting audit.
+    const visibleStatus = <S extends ReviewStatus | RunStatus>(status: S): S => publication && publication.state !== 'accepted' && ['GREEN', 'RED'].includes(status)
+      ? (publication.state === 'rejected' ? 'ERROR' : 'RUNNING') as S : status;
+    snapshot.requests = db.prepare(headerSql).all().map(row => {
+      const request = readHeader(row);
+      return { ...request, status: visibleStatus(request.status), ...(publication ? { rawStatus: request.status, publication } : {}) };
+    });
+    snapshot.runs = db.prepare(runSql).all().map(row => {
+      const run = readRun(row, source.id);
+      return { ...run, status: visibleStatus(run.status), ...(publication ? { rawStatus: run.status, publication } : {}) };
+    });
     if (runId !== undefined) {
       const graph = records(db).run(runId)?.graph;
       const row = graph ? { graph: JSON.stringify(graph) } : undefined;
@@ -152,8 +166,8 @@ async function readSnapshot(source: Source, requestId?: string, runId?: string):
     if (requestId !== undefined) {
       const header = snapshot.requests.find(request => request.id === requestId);
       if (header) {
-        const target = db.prepare('SELECT data FROM requests WHERE id=?').get(requestId);
-        snapshot.target = records(db).request(requestId) as unknown as Record<string, unknown>;
+        const target = records(db).request(requestId);
+        snapshot.target = target ? { ...target, ...(publication ? { publication } : {}) } as unknown as Record<string, unknown> : null;
         snapshot.events = db.prepare('SELECT id,request_id,type,created_at FROM events WHERE run_id=? AND (request_id=? OR request_id IS NULL) ORDER BY id').all(header.runId, requestId).map(row => ({
           id: Number(row.id), requestId: nullableString(row.request_id), type: string(row.type), at: date(row.created_at),
         }));
@@ -256,6 +270,7 @@ function failedPredecessor(request: Header, byId: Map<string, Header>): Header |
 }
 
 function waitingReason(request: Header, state: MonitorRequest['workerState'], byId: Map<string, Header>): string | null {
+  if (request.publication && request.publication.state !== 'accepted') return `Publication ${request.publication.state}${request.publication.code ? ` (${request.publication.code})` : ''}: ${request.publication.message ?? 'The raw reviewer verdict is audit only until publication is accepted.'}`;
   if (finished.has(request.status)) return null;
   if (state === 'missing') return 'The worker process could not be found. Showing the stored state.';
   if (request.status === 'BLOCKED') {
@@ -282,7 +297,7 @@ async function projectRequests(snapshot: Snapshot, checks: ProcessChecks, onlyId
     const times = [request.createdAt, request.startedAt, request.completedAt, request.claimedAt, request.notifiedAt, snapshot.activity.get(request.id)].filter((at): at is string => typeof at === 'string');
     return {
       id: request.id, projectId: snapshot.project.id, runId: request.runId, title: request.title, criticId: request.criticId,
-      status: request.status, kind: request.kind, createdAt: request.createdAt, startedAt: request.startedAt, completedAt: request.completedAt,
+      status: request.status, kind: request.kind, ...(request.publication ? { publication: request.publication, rawStatus: request.rawStatus } : {}), createdAt: request.createdAt, startedAt: request.startedAt, completedAt: request.completedAt,
       claimedAt: request.claimedAt, claimedBy: request.claimedBy, activityAt: times.sort((a, b) => Date.parse(b) - Date.parse(a))[0],
       waitingReason: waitingReason(request, worker, byId), workerState: worker, blockedByFailure,
     };
@@ -293,7 +308,7 @@ function categories(request: MonitorRequest): { active: boolean; attention: bool
   const blockedByFailure = request.blockedByFailure;
   return {
     active: !finished.has(request.status) && !blockedByFailure,
-    attention: request.status === 'RED' || request.status === 'ERROR' || request.status === 'WAITING_HUMAN' || blockedByFailure || request.workerState === 'missing' || request.workerState === 'unknown',
+    attention: Boolean(request.publication && request.publication.state !== 'accepted') || request.status === 'RED' || request.status === 'ERROR' || request.status === 'WAITING_HUMAN' || blockedByFailure || request.workerState === 'missing' || request.workerState === 'unknown',
   };
 }
 
@@ -416,11 +431,11 @@ export function createMonitorStore(options: MonitorSources = {}) {
         const raw = snapshot.target;
         if (!object(raw.payload)) throw storageError();
         const outcome: MonitorDetail['result'] = object(raw.result) && (raw.result.verdict === 'GREEN' || raw.result.verdict === 'RED')
-          ? { ...semanticResult(raw.result), executionProvenance: (raw.executionProvenance ?? null) as import('../provenance.js').ExecutionProvenance | null, verdict: raw.result.verdict, reference: reviewReference(snapshot.source.stateDir, header.runId, header.id) } : null;
+          ? { ...semanticResult(raw.result), executionProvenance: (raw.executionProvenance ?? null) as import('../provenance.js').ExecutionProvenance | null, verdict: raw.result.verdict, reference: reviewReference(snapshot.source.stateDir, header.runId, header.id), ...(snapshot.publication ? { publication: snapshot.publication } : {}) } : null;
         const request = (await projectRequests(snapshot, new Map(), requestId))[0];
         const artifacts = artifactReferences(raw.artifacts);
         return {
-          request, responseSchemas: { ...(object(raw.passSchema) ? { passSchema: raw.passSchema } : {}), ...(object(raw.failSchema) ? { failSchema: raw.failSchema } : {}) }, instruction: text(string(raw.payload.instruction), 24_000), profile: profile(raw.profile), result: outcome,
+          request, ...(snapshot.publication ? { publication: snapshot.publication } : {}), responseSchemas: { ...(object(raw.passSchema) ? { passSchema: raw.passSchema } : {}), ...(object(raw.failSchema) ? { failSchema: raw.failSchema } : {}) }, instruction: text(string(raw.payload.instruction), 24_000), profile: profile(raw.profile), result: outcome,
           error: typeof raw.error === 'string' ? text(raw.error, 2_000) : null, timeline: timeline(header, snapshot.events), artifacts,
           references: object(raw.references) ? Object.fromEntries(Object.entries(raw.references).filter((entry): entry is [string, string] => typeof entry[1] === 'string')) : {},
         };

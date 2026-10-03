@@ -113,6 +113,7 @@ export function projectRequestState(stateDir: string, requestId: string, summary
     if (!row) return null;
     const header = JSON.parse(String(row.data)) as Record<string, any>;
     const usage = header.attemptId ? db.prepare('SELECT data FROM request_usage WHERE request_id=? AND attempt_id=?').get(requestId,header.attemptId) : null;
-    return { ...header, usage: usage ? JSON.parse(String(usage.data)) : undefined, summary: summary ? readAttemptSummary(db,requestId,header.attemptId) : undefined };
+    const publication = executionPublication(db);
+    return { ...header, ...(publication ? { publication } : {}), usage: usage ? JSON.parse(String(usage.data)) : undefined, summary: summary ? readAttemptSummary(db,requestId,header.attemptId) : undefined };
   }, null);
 }
