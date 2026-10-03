@@ -26,4 +26,4 @@ jobs:
             ${{ runner.temp }}/commit.txt
             ${{ runner.temp }}/source.tar.gz
           retention-days: 1
-# Temporary source-only development snapshot; remove before merge.
+# Temporary tracked-source snapshot for final verification; remove before merge.
