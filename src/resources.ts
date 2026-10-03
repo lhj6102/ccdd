@@ -112,9 +112,10 @@ function connectResources(filename: string) {
   };
   let nextReclaim = 0;
   // FIFO admission never passes an earlier waiter of the same lane. While an earlier waiter
-  // of this process is pending, a later one cannot be admitted, so it waits for that waiter
-  // to settle instead of polling: each lane has at most one polling local waiter (#104).
-  const pendingByLane = new Map<string, Map<number, Promise<void>>>();
+  // of this process is blocked, a later one cannot be admitted, so it waits for that waiter
+  // to settle instead of polling (#104). A waiter that has not yet been refused does not
+  // hold its successors back: a burst that fits is admitted as promptly as before.
+  const pendingByLane = new Map<string, Map<number, { settled: Promise<void>; blocked: boolean }>>();
   const settledOrAborted = (promise: Promise<void>, signal: AbortSignal) => new Promise<void>((resolve, reject) => {
     if (signal.aborted) { reject(signal.reason); return; }
     const abort = () => reject(signal.reason);
@@ -189,14 +190,16 @@ function connectResources(filename: string) {
       return db.prepare("INSERT INTO resource_leases(token,pid,process_identity,heartbeat,lane,state,run_id,request_id,provider,model,repo,repo_cap,weight) VALUES(?,?,?,?,?,'waiting',?,?,?,?,?,?,?)")
         .run(token, process.pid, ownProcessIdentity, Date.now(), lane, identity ? null : request.runId, request.requestId, provider, model, request.repo, request.repoCap ?? null, weight).lastInsertRowid;
     }), signal));
-    const pending = pendingByLane.get(lane) ?? new Map<number, Promise<void>>();
+    const pending = pendingByLane.get(lane) ?? new Map<number, { settled: Promise<void>; blocked: boolean }>();
     pendingByLane.set(lane, pending);
     let settle!: () => void;
-    pending.set(seq, new Promise<void>(resolve => { settle = resolve; }));
+    const self = { settled: new Promise<void>(resolve => { settle = resolve; }), blocked: false };
+    pending.set(seq, self);
     const predecessor = () => {
       let found: number | undefined;
       for (const other of pending.keys()) if (other < seq && (found === undefined || other > found)) found = other;
-      return found === undefined ? undefined : pending.get(found);
+      const earlier = found === undefined ? undefined : pending.get(found);
+      return earlier?.blocked ? earlier.settled : undefined;
     };
     let heartbeat: NodeJS.Timeout | undefined;
     try {
@@ -255,6 +258,7 @@ function connectResources(filename: string) {
           });
         }, signal);
         if (admitted) break;
+        self.blocked = true;
         report();
         await delay(40 + Math.floor(Math.random() * 20), undefined, { signal });
       }
