@@ -154,7 +154,8 @@ export function openIdentityCache({ directory = identityCacheDirectory(), maxByt
   const clients = new Set<Promise<CacheComputation>>();
   const touches = new Map<string, number>();
   let maintenance: NodeJS.Timeout | undefined;
-  let maintaining = false, lastReap = 0;
+  let maintaining = false, lastReap = 0, gcJobCursor = '';
+  let subscriberCursor: { pid: number; identity: string } | undefined;
   const assertOpen = () => { if (closed || closing) throw new Error('Identity cache is closed.'); };
   const transaction = <T>(fn: () => T): T => {
     let began = false;
@@ -172,9 +173,15 @@ export function openIdentityCache({ directory = identityCacheDirectory(), maxByt
   };
   const lookup = (identity: string) => decode(db.prepare('SELECT identity,data,digest FROM cache_entries WHERE identity=?').get(identity));
   const reapSubscribers = () => {
-    const owners = db.prepare('SELECT DISTINCT pid,process_identity FROM cache_subscribers LIMIT 256').all() as unknown as Owner[];
+    // Walk bounded pages instead of repeatedly inspecting the first live owners.
+    const owners = db.prepare(`SELECT DISTINCT pid,process_identity FROM cache_subscribers
+      WHERE pid>? OR (pid=? AND COALESCE(process_identity,'')>?)
+      ORDER BY pid,COALESCE(process_identity,'') LIMIT 256`)
+      .all(subscriberCursor?.pid ?? -1, subscriberCursor?.pid ?? -1, subscriberCursor?.identity ?? '') as unknown as Owner[];
     const dead = owners.filter(owner => !alive(owner));
     if (dead.length) transaction(() => { for (const owner of dead) db.prepare('DELETE FROM cache_subscribers WHERE pid=? AND process_identity IS ?').run(owner.pid, owner.process_identity); });
+    const last = owners.at(-1);
+    subscriberCursor = owners.length === 256 && last ? { pid: last.pid, identity: last.process_identity ?? '' } : undefined;
   };
   const removeJob = (jobId: string) => {
     db.prepare("DELETE FROM cache_jobs WHERE id=? AND state!='RUNNING' AND NOT EXISTS(SELECT 1 FROM cache_subscribers WHERE job_id=?)").run(jobId, jobId);
@@ -255,7 +262,7 @@ export function openIdentityCache({ directory = identityCacheDirectory(), maxByt
     await maintain();
     await retry(reapSubscribers);
     const result = await retry(() => transaction(() => {
-      const jobs = db.prepare("SELECT id,identity,pid,process_identity FROM cache_jobs WHERE state='RUNNING' ORDER BY created_at LIMIT ?").all(limit);
+      const jobs = db.prepare("SELECT id,identity,pid,process_identity FROM cache_jobs WHERE state='RUNNING' AND id>? ORDER BY id LIMIT ?").all(gcJobCursor, limit);
       for (const job of jobs) if (!alive(job as unknown as Owner)) {
         db.prepare("UPDATE cache_jobs SET state='ERROR',error_code='COMPUTE_OWNER_EXITED',error_message='Shared computation owner exited.' WHERE id=? AND state='RUNNING'").run(job.id);
         db.prepare('DELETE FROM cache_active WHERE identity=? AND job_id=?').run(job.identity, job.id);
@@ -273,10 +280,14 @@ export function openIdentityCache({ directory = identityCacheDirectory(), maxByt
       }
       const deadJobs = db.prepare("SELECT id FROM cache_jobs j WHERE state!='RUNNING' AND NOT EXISTS(SELECT 1 FROM cache_subscribers WHERE job_id=j.id) LIMIT ?").all(limit);
       for (const row of deadJobs) removeJob(String(row.id));
-      return { removed, bytes: Number(bytes), entries: Number(count), needsMore: bytes > maxBytes || count > maxEntries };
+      return { removed, bytes: Number(bytes), entries: Number(count), needsMore: bytes > maxBytes || count > maxEntries || jobs.length === limit || deadJobs.length === limit,
+        nextJobCursor: jobs.length === limit ? String(jobs.at(-1)!.id) : '' };
     }));
+    // Advance only after the write transaction committed. A retry must not skip a page.
+    gcJobCursor = result.nextJobCursor;
     await retireStorage(limit);
-    return result;
+    const { nextJobCursor: _cursor, ...publicResult } = result;
+    return publicResult;
   };
   const start = (jobId: string, identity: string, execute: (signal: AbortSignal, executionId: string) => Promise<CachedReview>, scope?: string) => {
     const controller = new AbortController();

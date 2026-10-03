@@ -7,6 +7,7 @@ import { randomUUID } from 'node:crypto';
 import { performance } from 'node:perf_hooks';
 import { setTimeout as delay } from 'node:timers/promises';
 import { DatabaseSync } from 'node:sqlite';
+import { ownProcessIdentity } from '../src/broker/ownership.js';
 import { openIdentityCache, type CachedReview } from '../src/cache/index.js';
 
 const value = (): CachedReview => ({ result: { verdict: 'GREEN' }, profile: { kind: 'human' },
@@ -79,4 +80,22 @@ test('publication contention cannot strand a RUNNING job owned by a live process
     const recovered = await cache.compute('contended', async () => { calls++; return value(); });
     assert.equal(recovered.entry.value.result.verdict, 'GREEN'); assert.equal(calls, 2);
   } finally { abort.abort(); }
+});
+
+
+test('bounded GC progresses past live jobs to reclaim later dead owners', async t => {
+  const { cache } = await fixture(t), db = new DatabaseSync(join(cache.directory, 'cache.sqlite'));
+  try {
+    for (const [id, pid, identity] of [['a-live', process.pid, ownProcessIdentity], ['b-live', process.pid, ownProcessIdentity], ['c-dead', 2147483647, null]] as const) {
+      db.prepare("INSERT INTO cache_jobs(id,identity,pid,process_identity,state,created_at) VALUES(?,?,?,?,'RUNNING',0)").run(id,id,pid,identity);
+      db.prepare('INSERT INTO cache_active VALUES(?,?)').run(id,id);
+    }
+    assert.equal((await cache.gc({ limit: 1 })).needsMore, true);
+    assert.ok(db.prepare("SELECT 1 FROM cache_active WHERE identity='c-dead'").get());
+    await cache.gc({ limit: 1 });
+    await cache.gc({ limit: 1 });
+    assert.equal(db.prepare("SELECT 1 FROM cache_active WHERE identity='c-dead'").get(), undefined);
+    assert.equal(db.prepare("SELECT COUNT(*) AS n FROM cache_jobs WHERE state='RUNNING'").get()!.n, 2);
+    assert.equal((await cache.gc({ limit: 1 })).needsMore, false);
+  } finally { db.close(); }
 });
