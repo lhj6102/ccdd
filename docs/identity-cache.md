@@ -89,10 +89,11 @@ one subscriber detaches it; other subscribers can still receive the result.
 When all subscribers cancel, the execution is aborted. A lost owner cannot
 publish over a replacement owner. Human claims/tools/completion are forwarded
 to the cache-owned execution rather than depending on the initiating receipt.
-The monitor lists that execution's Human tools. A process that stops while other
-subscribers remain drains its owned executions for up to 10 seconds, then aborts
-them with `COMPUTE_OWNER_EXITED`; a remaining subscriber executes the identity
-again. Subscribers receive a redacted operational error; the initiating receipt
+The monitor lists that execution's Human tools. A worker whose Run is terminal,
+including a canceled initiating Run, keeps serving the shared executions it owns
+until they complete. An explicitly stopped worker or closed Broker drains them for
+up to 10 seconds, then aborts them with `COMPUTE_OWNER_EXITED`; a remaining
+subscriber executes the identity again and any Human claim starts over. Subscribers receive a redacted operational error; the initiating receipt
 keeps its own execution's message.
 
 A cache-owned execution keeps the initiating Run's root

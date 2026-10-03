@@ -240,7 +240,7 @@ export function openIdentityCache({ directory = identityCacheDirectory(), maxByt
       const rows = db.prepare(`SELECT * FROM cache_execution_storage s WHERE
         NOT EXISTS(SELECT 1 FROM cache_jobs WHERE id=s.id) AND
         NOT EXISTS(SELECT 1 FROM cache_entries WHERE json_extract(data,'$.executionId')=s.id) LIMIT ?`).all(limit);
-      return { scanned: rows.length, rows: rows.filter(row => {
+      return { rows: rows.filter(row => {
         if (row.retire_pid != null && alive({pid: Number(row.retire_pid), process_identity: row.retire_identity as string | null})) return false;
         db.prepare('UPDATE cache_execution_storage SET retire_pid=?,retire_identity=? WHERE id=?').run(process.pid,ownProcessIdentity,row.id);
         return true;
@@ -267,7 +267,7 @@ export function openIdentityCache({ directory = identityCacheDirectory(), maxByt
         throw cause;
       }
     }
-    return candidates.scanned;
+    return candidates.rows.length;
   };
   const gc = async ({ limit = 128 }: { limit?: number } = {}) => {
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > 1000) throw new Error('GC limit must be 1-1000.');
@@ -457,7 +457,9 @@ export function openIdentityCache({ directory = identityCacheDirectory(), maxByt
       clearTimeout(timer);
       if (expired) {
         for (const task of owned.values()) task.controller.abort(error('COMPUTE_OWNER_EXITED', 'Shared computation owner shut down before completion.'));
-        await drained;
+        const settled = await Promise.race([drained.then(() => true), new Promise<boolean>(done => { timer = setTimeout(() => done(false), drainMs); })]);
+        clearTimeout(timer);
+        if (!settled) throw error('CACHE_BUSY', 'Shared computation did not stop after its shutdown deadline; retry close.');
       }
       const deadline = performance.now() + 5500;
       while (maintaining) {

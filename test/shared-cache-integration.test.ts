@@ -248,3 +248,19 @@ test('retrying a failed coalesced subscriber executes its own requested profile'
   assert.deepEqual(timeouts, [9999]);
   assert.equal((b.getRun(second.id)!.requests[0].profile as { timeoutMs?: number }).timeoutMs, 9999);
 });
+
+test('a canceled initiating worker keeps serving the shared execution until it completes', async t => {
+  const f=await fixture(t), a=await f.repo('drain-owner','shared-drain',true), b=await f.repo('drain-follower','shared-drain');
+  t.after(()=>writeFile(join(f.root,'release'),'release').catch(()=>{}));
+  const first=await a.broker.submitProject({selection:{kind:'all'}}), runningA=a.broker.run(first.id);
+  await f.until(()=>existsSync(f.count));
+  const second=await b.broker.submitProject({selection:{kind:'all'}}), runningB=b.broker.run(second.id);
+  await f.until(()=>b.broker.getRun(second.id)!.requests[0].cacheDisposition==='coalesced');
+  a.broker.cancel(first.id);await runningA;
+  let drained=false; const draining=a.broker.drainShared().then(()=>{drained=true;});
+  await delay(300); assert.equal(drained,false);
+  await writeFile(join(f.root,'release'),'release');await Promise.all([draining,runningB]);
+  await a.broker.close();
+  assert.equal(b.broker.getRun(second.id)!.status,'GREEN');
+  assert.equal((await readFile(f.count,'utf8')).trim(),'drain-owner');
+});

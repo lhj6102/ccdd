@@ -90,12 +90,12 @@ export function currentProjectPlan(stateDir: string, snapshot: Parameters<typeof
   return planProject(snapshot, evidence, options, critic => { const id = critic.input.cacheIdentity ? active.get(critic.input.cacheIdentity) : undefined; return id ? { requestId: id } : null; });
 }
 
-/** Scalar execution state for subscribers. No manifests, workspaces or input trees are hydrated. */
 /** The stored envelope of one request, read without mutating its state. */
 export function projectRequestData(stateDir: string, requestId: string): ReviewRequest | null {
   return withProjectStore(stateDir, db => records(db).request(requestId) as ReviewRequest | null, null);
 }
 
+/** Scalar execution state for subscribers. No manifests, workspaces or input trees are hydrated. */
 export function projectRequestState(stateDir: string, requestId: string, summary = true): Record<string, any> | null {
   return withProjectStore(stateDir, db => {
     const row = db.prepare('SELECT data FROM requests WHERE id=?').get(requestId);

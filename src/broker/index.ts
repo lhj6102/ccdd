@@ -411,9 +411,15 @@ export function createBroker<D extends ResultDetail = 'compact'>({ [executionMod
         } finally { await owner.close(); }
       }, { signal, scope: runId,
         onState(state, executionId) {
+          const handover = source !== undefined && source.executionId !== executionId;
           source = { stateDir: path.join(service.directory, 'executions', executionId), runId: executionId, requestId: executionId, executionId, identity: input.cacheIdentity! };
           transaction(() => {
             const header = requestHeader(requestId); if (!header || terminal.has(header.status)) return;
+            if (handover) {
+              // A replacement execution starts over; earlier Human claim state no longer applies.
+              for (const key of ['claimedBy', 'claimedAt', 'notifiedAt', 'tryClaim', 'preparationAttempt', 'claimAttemptId', 'attemptId'] as const) delete header[key];
+              header.status = 'RUNNING';
+            }
             header.executionSource = source; header.cacheDisposition = state === 'executing' ? 'executed' : state;
             saveHeader(header);
             appendEvent(runId, requestId, `request.cache.${state}`, 'Subscribed to an explicit-identity computation.', { executionId });
@@ -981,6 +987,13 @@ export function createBroker<D extends ResultDetail = 'compact'>({ [executionMod
       catch (error) { db.exec('ROLLBACK'); throw error; }
     },
     onChange(callback: () => void) { listeners.add(callback); return () => listeners.delete(callback); },
+    /** Wait for shared executions this process owns; other subscribers still depend on them. */
+    async drainShared(signal?: AbortSignal) {
+      if (!cache || signal?.aborted) return;
+      let stop: (() => void) | undefined;
+      await Promise.race([cache.drain(), new Promise<void>(resolve => { stop = () => resolve(); signal?.addEventListener('abort', stop, { once: true }); })]);
+      if (stop) signal?.removeEventListener('abort', stop);
+    },
     async close() {
       if (closed) return;
       if (closing) { await Promise.allSettled([...active.values()].map(entry => entry.promise)); return; }
