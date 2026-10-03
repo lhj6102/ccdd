@@ -33,7 +33,8 @@ async function fixture(t: TestContext) {
 }
 
 test('cache-owned executions neither observe nor walk the workspace per owner; each re-runs only its owner identity', async t => {
-  const f = await fixture(t), owners = 120, repoPath = join(f.root, 'catalog'), calls = join(f.root, 'identity-calls');
+  // Enough owners that one walk each would exceed the bound; scale itself is covered by test:scale.
+  const f = await fixture(t), owners = 24, repoPath = join(f.root, 'catalog'), calls = join(f.root, 'identity-calls');
   await fs.mkdir(join(repoPath, 'family'), { recursive: true });
   for (let i = 0; i < 200; i++) await fs.writeFile(join(repoPath, `material-${i}.txt`), `workspace material ${i}\n`);
   await fs.writeFile(join(repoPath, 'family', 'ccdd.json'), JSON.stringify({ name: 'catalog', family: { instances: Object.fromEntries(Array.from({ length: owners }, (_, i) => [`item-${i}`, {}])) },
