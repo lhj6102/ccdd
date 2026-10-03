@@ -1,6 +1,6 @@
 import { join } from 'node:path';
 import type { ReviewEnvelope, WorkspaceDescriptor } from '../contracts.js';
-import { reopenWorkspace, type WorkspaceScanProgress } from '../workspaces/index.js';
+import { reopenWorkspace, type WorkspaceHandle, type WorkspaceScanProgress } from '../workspaces/index.js';
 import { createReviewTools } from '../tools/runner.js';
 import { checkEnvironmentRequirements } from '../tools/environment.js';
 
@@ -13,16 +13,20 @@ export interface HumanPreparation {
 export type HumanPreparationPhase = 'validating-input' | 'checking-manifest' | 'checking-environment' | 'preflighting-tools' | 'final-validation' | 'confirming-assignment';
 export interface HumanPreparationProgress { phase: HumanPreparationPhase; progress?: WorkspaceScanProgress }
 
-/** A claimant prepares the fixed input on the machine that will run its tools. */
-export async function prepareHumanReview(request: ReviewEnvelope, workspace: WorkspaceDescriptor, outputDir: string, signal?: AbortSignal, onProgress?: (progress: HumanPreparationProgress) => void): Promise<HumanPreparation> {
+/**
+ * A claimant prepares the fixed input on the machine that will run its tools. `open` replaces
+ * the observed workspace for a cache-owned review, whose final boundary is its owner identity.
+ */
+export async function prepareHumanReview(request: ReviewEnvelope, workspace: WorkspaceDescriptor, outputDir: string, signal?: AbortSignal, onProgress?: (progress: HumanPreparationProgress) => void, open?: (signal?: AbortSignal) => WorkspaceHandle): Promise<HumanPreparation> {
   if (request.profile.kind !== 'human' || workspace.hash !== request.snapshotHash) throw new Error('Human preparation requires the recorded review input.');
   let phase: HumanPreparationPhase = 'validating-input';
   const report = (next: HumanPreparationPhase) => { phase = next; onProgress?.({ phase }); };
   report('validating-input');
-  const handle = await reopenWorkspace(workspace, { signal, onProgress: progress => onProgress?.({ phase, progress }) });
+  const handle = open ? open(signal) : await reopenWorkspace(workspace, { signal, onProgress: progress => onProgress?.({ phase, progress }) });
   try {
-    // Reopening already validates input under its recorded integrity policy.
-    // Keep the next integrity check after configuration and readiness code run.
+    // Reopening already validates input under its recorded integrity policy; an owner
+    // identity is checked once, at the final validation after configuration and readiness
+    // code run.
     handle.signal.throwIfAborted();
     report('checking-manifest');
     // Opening the registry verifies the recorded manifest before any check script runs.

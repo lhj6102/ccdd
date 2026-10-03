@@ -23,8 +23,9 @@ worktree registration. Project receipts retain their actual historical results.
 
 Artifact Runner reconnects the pinned manifest and supplied workspace into
 scoped reviewer tools. It validates arguments, content and observations; outputs
-remain outside input. Workspace integrity remains an execution boundary, not a
-cache hit filter. The optional monitor is observational on GET and delegates
+remain outside input. A Run observes its workspace as an execution boundary; a
+cache-owned execution instead re-runs its owner identity before accepting a
+result. Neither is a cache hit filter. The optional monitor is observational on GET and delegates
 explicit current inspection and Human actions to their owning contexts.
 
 See [contracts](docs/contracts.md), [Project APIs](docs/project-validation.md)

@@ -50,6 +50,13 @@ const alive = (owner: Owner) => ownerAlive({ ...owner, run_id: '', token: '', cl
 const digest = (text: string) => createHash('sha256').update(text, 'utf8').digest('hex');
 const busy = (error: unknown) => !!error && typeof error === 'object' && ((Number((error as { errcode?: number }).errcode) & 255) === 5 || (error as { code?: string }).code === 'SQLITE_BUSY');
 const error = (code: string, message: string) => Object.assign(new Error(message), { code });
+/** Resolve when `promise` settles; reject with the reason if `signal` aborts first. */
+const settled = (promise: Promise<unknown>, signal?: AbortSignal) => new Promise<void>((resolve, reject) => {
+  if (signal?.aborted) { reject(signal.reason); return; }
+  const abort = () => reject(signal!.reason);
+  signal?.addEventListener('abort', abort, { once: true });
+  void promise.then(() => {}, () => {}).then(() => { signal?.removeEventListener('abort', abort); resolve(); });
+});
 const format = (db: DatabaseSync) => {
   if (Number(db.prepare('PRAGMA user_version').get()!.user_version) !== 1 || Number(db.prepare('PRAGMA application_id').get()!.application_id) !== 1128481859) throw error('CACHE_FORMAT_UNSUPPORTED', 'Unsupported identity cache format; do not relabel or import legacy project keys.');
 };
@@ -152,7 +159,7 @@ export function openIdentityCache({ directory = identityCacheDirectory(), maxByt
     chmodSync(join(directory, 'cache.sqlite'), 0o600);
   } catch (cause) { try { db.exec('ROLLBACK'); } catch {} db.close(); throw cause; }
   let closed = false, closing = false, closePromise: Promise<void> | undefined;
-  const owned = new Map<string, { controller: AbortController; promise: Promise<void>; scope?: string }>();
+  const owned = new Map<string, { controller: AbortController; promise: Promise<void>; wake: Promise<void>; scope?: string }>();
   const subscribers = new Set<string>();
   const pendingFailures = new Map<string, { identity: string; code: string }>();
   // Subscriptions whose removal could not commit yet; maintenance retries them.
@@ -213,10 +220,15 @@ export function openIdentityCache({ directory = identityCacheDirectory(), maxByt
         pendingDetaches.delete(subscriber);
       }
       if (performance.now() - lastReap > 1000) { await retry(reapSubscribers); lastReap = performance.now(); }
-      for (const [id, task] of owned) {
-        const row = db.prepare('SELECT state FROM cache_jobs WHERE id=?').get(id);
-        if (row?.state !== 'RUNNING') task.controller.abort(error('CACHE_OWNERSHIP_LOST', 'Shared computation ownership was lost.'));
-        else if (!db.prepare('SELECT 1 FROM cache_subscribers WHERE job_id=? LIMIT 1').get(id)) {
+      // One statement per pass, not two per owned computation: a large submission owns
+      // hundreds, and maintenance also runs after every completion and detach (#104).
+      const jobs = owned.size ? db.prepare(`SELECT e.value AS id,j.state,EXISTS(SELECT 1 FROM cache_subscribers s WHERE s.job_id=e.value) AS subscribed
+        FROM json_each(?) e LEFT JOIN cache_jobs j ON j.id=e.value`).all(JSON.stringify([...owned.keys()])) : [];
+      for (const job of jobs) {
+        const id = String(job.id), task = owned.get(id);
+        if (!task) continue;
+        if (job.state !== 'RUNNING') task.controller.abort(error('CACHE_OWNERSHIP_LOST', 'Shared computation ownership was lost.'));
+        else if (!job.subscribed) {
           // Fence the abandoned alias before aborting. A later subscriber must
           // not join a computation whose cancellation is already irreversible.
           const abandoned = await retry(() => transaction(() => {
@@ -333,8 +345,10 @@ export function openIdentityCache({ directory = identityCacheDirectory(), maxByt
         await gc().catch(() => { /* Explicit GC reports maintenance errors; do not replace a completed result. */ });
       }
     })();
+    // Local subscribers wake when the task settles or maintenance aborts it, never by polling.
+    const wake = new Promise<void>(resolve => { controller.signal.addEventListener('abort', () => resolve(), { once: true }); void promise.then(() => resolve(), () => resolve()); });
     // Execute is asynchronous; install the owner before its first continuation.
-    owned.set(jobId, { controller, promise, scope });
+    owned.set(jobId, { controller, promise, wake, scope });
     void promise.catch(() => { /* Subscribers observe the persisted outcome or owner liveness. */ });
     startMaintenance();
   };
@@ -400,7 +414,12 @@ export function openIdentityCache({ directory = identityCacheDirectory(), maxByt
               throw error(String(row.error_code), String(row.error_message));
             }
             if (!alive(row as unknown as Owner)) { await detach(subscriber, jobId); break; }
-            await delay(50, undefined, { signal: options.signal });
+            // A computation owned by this process settles its task after its terminal record
+            // commits, and maintenance aborts it when its record changes (ownership lost or
+            // abandoned). Wait for that instead of polling; other owners are polled (#104).
+            const local = owned.get(jobId);
+            if (local) await settled(local.controller.signal.aborted ? local.promise : local.wake, options.signal);
+            else await delay(50, undefined, { signal: options.signal });
           }
         }
       } catch (cause) { throw options.signal?.aborted ? options.signal.reason : cause; }

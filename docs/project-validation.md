@@ -136,6 +136,8 @@ thread where Worker is available.
 Reviews use the supplied unchanged workspace, including during Human waiting.
 CCDD does not create/link worktrees or lock external editors. Output and state
 must remain outside reviewed input. `--integrity metadata` is an explicit weaker
-filesystem validation assumption, not a different cache key. Tool permissions,
+filesystem validation assumption, not a different cache key. It applies to the
+submitting Run's observation; a cache-owned execution is checked by re-running its
+owner identity ([details](identity-cache.md#integrity-of-a-cache-owned-execution)). Tool permissions,
 Human claim ownership, observation requirements and result validation remain in
 force for actual executions.

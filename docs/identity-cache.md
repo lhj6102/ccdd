@@ -106,6 +106,42 @@ cannot spend the earlier caller's allowance. Provider turn recovery stays inside
 the same bounded review, without resetting its deadline or replaying tools.
 External Provider delivery or charging is not guaranteed exactly-once.
 
+## Integrity of a cache-owned execution
+
+The identity is the whole reuse key, so it is also what a cache-owned execution
+is checked against. The execution reads the supplied workspace in place, as every
+review does, but it starts no workspace watcher and walks no workspace of its own.
+Before it accepts a result, it runs the owner function again in the same
+workspace, under the same machine identity capacity. A different value fails the
+execution with `WORKSPACE_CHANGED` and publishes nothing; the same value accepts
+the result, because by the owner's definition it describes that identity.
+
+| Event during the execution | Result |
+| --- | --- |
+| A change the identity covers, still present at completion | `WORKSPACE_CHANGED`; nothing is published. |
+| A change the identity does not cover | The result is published. |
+| A covered change restored before completion | Not detected. |
+| Human claim preparation | Its final validation re-runs the identity. |
+| Human tool call | No check; the result submission decides. |
+| Human result submission | Re-runs the identity before the result is recorded. |
+| Human waiting | No workspace monitoring; owner death still fails the execution. |
+
+Only a change that is still present when the identity is re-run is detected,
+and only inside what the owner function covers. Owners who need stronger
+protection should include that input in the identity, or keep the workspace
+unchanged until reviews finish.
+
+The submitting Run still observes its own workspace for its receipts and for
+requests without an identity. A change it detects fails that Run and detaches its
+subscriptions; a computation left without subscribers is aborted, while one that
+another subscriber still needs continues under the rule above.
+
+A large submission therefore costs one workspace observer for the submitting
+Run, not one per identity. Subscribers in the owning process wait for the
+execution's own completion instead of polling, a receipt mirrors the execution's
+state only after its store changes, and one machine-resource connection serves
+every Broker in a process.
+
 ## Public cache operations
 
 These require no repository and always emit JSON:

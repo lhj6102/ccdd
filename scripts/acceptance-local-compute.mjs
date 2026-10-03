@@ -1,14 +1,15 @@
 // Reproducible offline scale acceptance. Never invokes a live Provider.
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { mkdtemp, mkdir, readFile, writeFile, rm } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
+import fsp, { mkdtemp, mkdir, readFile, writeFile, rm } from 'node:fs/promises';
+import fs, { existsSync, readFileSync } from 'node:fs';
+import { syncBuiltinESMExports } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { performance } from 'node:perf_hooks';
 import { DatabaseSync } from 'node:sqlite';
-import { inspectProject, loadCheck } from '../dist/src/project/index.js';
+import { createBroker, inspectProject, loadCheck } from '../dist/src/project/index.js';
 import { openResources, resourcePaths } from '../dist/src/resources.js';
 
 if (process.argv[2] === '--plan-worker') {
@@ -84,6 +85,40 @@ if (process.argv[2] === '--plan-worker') {
     assert.equal(await readFile(join(folder, 'ccdd.json'), 'utf8'), manifest);
     assert.equal(existsSync(join(root, 'machine', 'identity-cache', 'cache.sqlite')), false);
     reports.largeCatalog = { selectedCritics: ids.length, scenarioBytes, completed: result.completed, toolCalls: result.providerGuard.guardedToolCalls, maxActive: result.maxActive, elapsedMs: result.elapsedMs, toolLatencyMs: result.toolLatencyMs };
+    console.error(JSON.stringify({ phase: 'large-catalog', elapsedMs: result.elapsedMs }));
+
+    // 1,000 explicit identities become 1,000 cache-owned executions (#104). A controlled
+    // executor stands in for reviewers: this measures dispatch and workspace work, not reviews.
+    const ownersRepo = join(root, 'owners'), owners = 1000;
+    await mkdir(join(ownersRepo, 'family'), { recursive: true });
+    for (let i = 0; i < 1000; i++) await writeFile(join(ownersRepo, `material-${i}.bin`), Buffer.alloc(32 * 1024, i % 251));
+    await writeFile(join(ownersRepo, 'family', 'ccdd.json'), JSON.stringify({ name: 'owners', family: { instances: Object.fromEntries(Array.from({ length: owners }, (_, i) => [`owner-${i}`, {}])) },
+      stale: { kind: 'identity', weight: 1, script: { command: 'node', args: ['identity.mjs'] } },
+      critics: [{ id: 'review', title: 'Controlled executor', profile: { kind: 'runtime', command: 'node', args: ['--version'], timeoutMs: 5000 }, payload: { instruction: 'Controlled executor; not review evidence.' } }] }));
+    await writeFile(join(ownersRepo, 'family', 'identity.mjs'), "let text='';for await(const chunk of process.stdin)text+=chunk;console.log('scale-'+JSON.parse(text).artifactId);\n");
+    let observers = 0, walks = 0, starts = 0, firstStart;
+    const watch = fs.watch, readdir = fsp.readdir;
+    fs.watch = function (path, ...rest) { if (path === ownersRepo && rest[0]?.recursive) observers++; return watch.call(this, path, ...rest); };
+    fsp.readdir = function (path, ...rest) { if (path === ownersRepo) walks++; return readdir.call(this, path, ...rest); };
+    syncBuiltinESMExports();
+    const bytesRead = () => process.platform === 'linux' ? Number(/rchar: (\d+)/.exec(readFileSync('/proc/self/io', 'utf8'))[1]) : 0;
+    const broker = createBroker({ repoPath: ownersRepo, stateDir: join(root, 'owners-state'), repoId: 'owners', detail: 'full', executors: {
+      canExecute: () => ({ ok: true }), execute: async () => { starts++; firstStart ??= performance.now(); return { verdict: 'GREEN' }; } } });
+    try {
+      const submitted = await broker.submitProject({ selection: { kind: 'all' } });
+      observers = 0; walks = 0;
+      const readBefore = bytesRead(), runStarted = performance.now();
+      await broker.run(submitted.id, { signal: AbortSignal.timeout(240000) });
+      const run = broker.getRun(submitted.id), elapsedMs = performance.now() - runStarted;
+      assert.equal(run.status, 'GREEN'); assert.equal(starts, owners);
+      assert.ok(run.requests.every(request => request.cacheDisposition === 'executed'));
+      assert.equal(observers, 1, 'Only the submitting Run observes its workspace.');
+      assert.ok(walks <= 3 + Math.ceil(elapsedMs / 1000), `${walks} workspace walks: an owner walked the workspace.`);
+      assert.ok(firstStart - runStarted < 60000, `First cache-owned executor started after ${Math.round(firstStart - runStarted)} ms.`);
+      reports.cacheOwners = { owners, firstExecutorStartMs: Math.round(firstStart - runStarted), elapsedMs: Math.round(elapsedMs), workspaceObservers: observers, workspaceWalks: walks,
+        ...(process.platform === 'linux' ? { readMiB: Math.round((bytesRead() - readBefore) / 2 ** 20) } : {}), rssMiB: Math.round(process.memoryUsage().rss / 2 ** 20) };
+      console.error(JSON.stringify({ phase: 'cache-owners', ...reports.cacheOwners }));
+    } finally { await broker.close(); fs.watch = watch; fsp.readdir = readdir; syncBuiltinESMExports(); }
     console.log(JSON.stringify({ status: 'PASS', diagnosticOnly: true, ...reports }, null, 2));
   } finally {
     for (const child of children) child.kill('SIGTERM');
