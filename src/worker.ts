@@ -23,6 +23,9 @@ try {
   broker=await createBroker({ detail: 'full',...context,executors});
   await broker.run(runId,{signal:controller.signal,onStarted:()=>{notified=true;notify({type:'ready',runId});}});
   if(!notified)notify({type:'ready',runId});
+  // A terminal Run may still own a shared execution with other subscribers. Keep
+  // serving it until it completes; an explicit stop uses the bounded close drain.
+  await broker.drainShared(controller.signal);
 } catch(error) {
   notify({type:'error',message:errorMessage(error),code:errorCode(error)});
   if(errorCode(error)!=='RUN_ALREADY_OWNED'){

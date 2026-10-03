@@ -4,7 +4,7 @@ import { inputHash } from '../project/identity.js';
 import { createGraphDefinition } from './graph.js';
 
 /** One execution owns only its admitted envelope, never the entire caller catalog. */
-export function executionRecord(request: ReviewRequest, workspace: WorkspaceDescriptor, id: string, budgetRunId: string): RunRecord {
+export function executionRecord(request: ReviewRequest, workspace: WorkspaceDescriptor, id: string, budgetRunId: string, repoExecutorCap?: number): RunRecord {
   const envelope: ReviewEnvelope = { repoId: request.repoId, snapshotHash: request.snapshotHash, criticId: request.criticId, title: request.title,
     artifacts: request.artifacts, references: request.references, requiredObservations: request.requiredObservations,
     configManifest: request.configManifest, payload: request.payload, profile: request.profile, target: request.target, deps: request.deps,
@@ -25,6 +25,7 @@ export function executionRecord(request: ReviewRequest, workspace: WorkspaceDesc
     inputs: { [request.criticId]: input }, artifactHashes: Object.fromEntries(request.artifacts.map(artifact => [artifact.id,
       artifact.id === input.target.id ? input.target.hash : input.deps.find(dep => dep.id === artifact.id)?.hash ?? inputHash(artifact)])) };
   return { id, repoId: 'cache-execution', workerProtocol: 'resources-1', executionOwned: true, budgetRunId,
+    ...(repoExecutorCap === undefined ? {} : { repoExecutorCap }),
     snapshotHash: workspace.hash, workspace, requesterId: 'identity-cache', scope: { kind: 'project' },
     graph: createGraphDefinition(config, false), project: { version: 3, snapshot, selection: { kind: 'critic', criticId: request.criticId },
       force: true, recursive: false, ignoreGates: true, templates: [envelope] }, status: 'QUEUED', createdAt: new Date().toISOString() };

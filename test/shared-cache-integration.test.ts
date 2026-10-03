@@ -8,7 +8,8 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { createBroker } from '../src/broker/index.js';
 import { createExecutorRegistry } from '../src/executors/index.js';
 import { inspectProject, readIdentityCache } from '../src/project/index.js';
-import { projectRun } from '../src/project/store.js';
+import { projectRun, projectRequestData } from '../src/project/store.js';
+import { describeReviewTools } from '../src/tools/runner.js';
 
 async function fixture(t: test.TestContext) {
   const root = await mkdtemp(join(tmpdir(), 'ccdd-shared-integration-'));
@@ -85,9 +86,13 @@ test('a shared Human review is claimed and completed from a different repository
   const second=await b.broker.submitProject({selection:{kind:'all'}}), runningB=b.broker.run(second.id);
   await f.until(()=>b.broker.getRun(second.id)!.requests[0].notifiedAt!=null);
   a.broker.cancel(first.id);await runningA;
-  const id=b.broker.getRun(second.id)!.requests[0].id;
+  const follower=b.broker.getRun(second.id)!.requests[0], id=follower.id, source=follower.executionSource!;
+  // The monitor advertises the shared execution's tools, which are the ones Human actions route to.
+  const shared=projectRequestData(source.stateDir,source.requestId)!;
+  const [tool]=describeReviewTools({artifacts:shared.artifacts,configManifest:shared.configManifest,audience:'human'});
+  assert.equal(tool.name,'read_human-a');
   await b.broker.claimHuman(id,'reviewer');
-  const observed=await b.broker.executeHumanTool(id,{reviewerId:'reviewer',toolName:'read_human-a',arguments:{}});
+  const observed=await b.broker.executeHumanTool(id,{reviewerId:'reviewer',toolName:tool.name,arguments:{}});
   assert.equal(observed.observation?.kind,'content');
   await assert.rejects(b.broker.completeHuman(id,{reviewerId:'intruder',result:{verdict:'GREEN'}}),/claimed/);
   await b.broker.completeHuman(id,{reviewerId:'reviewer',result:{verdict:'GREEN'}});await runningB;
@@ -200,4 +205,62 @@ test('source usage mirrored while running is not added again at terminal publica
   assert.equal(broker.getRun(run.id)!.requests[0].usage!.totalTokens,8);assert.equal(broker.runSummary(run.id)!.usage!.totalTokens,8);
   const hit=await broker.submitProject({selection:{kind:'all'},maxExecutions:0});assert.equal(hit.requests[0].usage!.totalTokens,8);
   assert.equal(broker.runSummary(hit.id)!.executorStarts,0);assert.equal(broker.runSummary(hit.id)!.usage,undefined);
+});
+
+async function controlledRepo(root: string, name: string, files: Record<string, unknown>) {
+  const repoPath = join(root, name); await mkdir(repoPath, { recursive: true });
+  for (const [file, content] of Object.entries(files)) { await mkdir(join(repoPath, file, '..'), { recursive: true }); await writeFile(join(repoPath, file), typeof content === 'string' ? content : JSON.stringify(content)); }
+  return repoPath;
+}
+const runtimeCritic = (timeoutMs = 15000) => ({ id: 'check', title: 'Check', profile: { kind: 'runtime', command: 'node', args: ['--test', 'check.test.mjs'], timeoutMs }, payload: { instruction: 'Check.' } });
+const identityStale = { kind: 'identity', script: { command: 'node', args: ['identity.mjs'] } };
+
+test('root reviewPolicy.maxConcurrentExecutors also caps cache-owned executions', async t => {
+  const f = await fixture(t), files: Record<string, unknown> = { 'ccdd.json': { name: 'root', reviewPolicy: { maxConcurrentExecutors: 1 } } };
+  for (let i = 0; i < 3; i++) Object.assign(files, { [`a${i}/ccdd.json`]: { name: `a${i}`, stale: identityStale, critics: [runtimeCritic()] }, [`a${i}/identity.mjs`]: `console.log('cap-${i}');` });
+  const repoPath = await controlledRepo(f.root, 'capped', files);
+  let active = 0, peak = 0;
+  const broker = createBroker({ repoPath, stateDir: join(f.root, 'capped-state'), repoId: 'capped', detail: 'full',
+    executors: { canExecute: () => ({ ok: true }), execute: async () => { active++; peak = Math.max(peak, active); await delay(150); active--; return { verdict: 'GREEN' }; } } as never });
+  t.after(() => broker.close());
+  const run = await broker.submitProject({ selection: { kind: 'all' } }); await broker.run(run.id);
+  assert.equal(broker.getRun(run.id)!.requests.filter(request => request.cacheDisposition === 'executed').length, 3);
+  assert.equal(peak, 1);
+});
+
+test('retrying a failed coalesced subscriber executes its own requested profile', async t => {
+  const f = await fixture(t), timeouts: number[] = [];
+  let releaseOwner!: () => void; const released = new Promise<void>(resolve => { releaseOwner = resolve; });
+  const repo = (name: string, timeoutMs: number) => controlledRepo(f.root, name, { 'ccdd.json': { name, stale: identityStale, critics: [runtimeCritic(timeoutMs)] }, 'identity.mjs': `console.log('retry-shared');` });
+  const a = createBroker({ repoPath: await repo('owner', 1000), stateDir: join(f.root, 'owner-state'), repoId: 'owner', detail: 'full',
+    executors: { canExecute: () => ({ ok: true }), execute: async () => { await released; throw Error('Controlled operational failure'); } } as never });
+  const b = createBroker({ repoPath: await repo('follower', 9999), stateDir: join(f.root, 'follower-state'), repoId: 'follower', detail: 'full',
+    executors: { canExecute: () => ({ ok: true }), execute: async (request: { profile: { timeoutMs: number } }) => { timeouts.push(request.profile.timeoutMs); return { verdict: 'GREEN' }; } } as never });
+  t.after(async () => { await a.close(); await b.close(); });
+  const first = await a.submitProject({ selection: { kind: 'all' } }), runningA = a.run(first.id);
+  await f.until(() => Boolean(a.getRun(first.id)!.requests[0].attemptId));
+  const second = await b.submitProject({ selection: { kind: 'all' } }), runningB = b.run(second.id);
+  await f.until(() => b.getRun(second.id)!.requests[0].cacheDisposition === 'coalesced');
+  releaseOwner(); await Promise.all([runningA, runningB]);
+  const failed = b.getRun(second.id)!.requests[0];
+  assert.equal(failed.status, 'ERROR');
+  b.retryRequest(failed.id); await b.run(second.id);
+  assert.deepEqual(timeouts, [9999]);
+  assert.equal((b.getRun(second.id)!.requests[0].profile as { timeoutMs?: number }).timeoutMs, 9999);
+});
+
+test('a canceled initiating worker keeps serving the shared execution until it completes', async t => {
+  const f=await fixture(t), a=await f.repo('drain-owner','shared-drain',true), b=await f.repo('drain-follower','shared-drain');
+  t.after(()=>writeFile(join(f.root,'release'),'release').catch(()=>{}));
+  const first=await a.broker.submitProject({selection:{kind:'all'}}), runningA=a.broker.run(first.id);
+  await f.until(()=>existsSync(f.count));
+  const second=await b.broker.submitProject({selection:{kind:'all'}}), runningB=b.broker.run(second.id);
+  await f.until(()=>b.broker.getRun(second.id)!.requests[0].cacheDisposition==='coalesced');
+  a.broker.cancel(first.id);await runningA;
+  let drained=false; const draining=a.broker.drainShared().then(()=>{drained=true;});
+  await delay(300); assert.equal(drained,false);
+  await writeFile(join(f.root,'release'),'release');await Promise.all([draining,runningB]);
+  await a.broker.close();
+  assert.equal(b.broker.getRun(second.id)!.status,'GREEN');
+  assert.equal((await readFile(f.count,'utf8')).trim(),'drain-owner');
 });

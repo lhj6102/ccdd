@@ -2,8 +2,7 @@
 
 Version 7 changes the meaning of reusable identity. It is not a transparent
 storage migration. Stop old workers before upgrading and use matching 7.x
-packages. PR #100 supplies the implementation; this document does not claim that
-a 7.0.0 registry release has already been published.
+packages. See the [7.0.0 release notes](releases/v7.0.0.md).
 
 ## What changes
 
@@ -27,6 +26,12 @@ The Project schema retains `stale` for declaring identity scripts. `file-hash`
 and `always` do not create a reusable key. Workspace integrity and dependency
 GREEN gates remain execution/validation concerns, not cache eligibility rules.
 Cycles remain finite and supported.
+
+Dependency gates read the same current evidence. Without an identity function on
+the dependency, an earlier GREEN Run no longer satisfies a later non-recursive
+`verify` of a dependent Critic: it reports `WAIT_DEPENDENCY` with the dependency
+`MISSING`. Declare identities on dependencies, verify with `--recursive`, or use
+`--ignore-gates` deliberately.
 
 ## Existing state
 
@@ -54,7 +59,7 @@ semantic evidence.
   and envelopes. The supplied workspace is checked again; this is neither a
   persistent identity-function memo nor an execution reservation.
 - `streamProjectResults`, `run stream`, `run summary`, `request summary` and
-  `run compare` provide public cursor/result/attempt views. Stream cancellation
+  `run diff` provide public cursor/result/attempt views. Stream cancellation
   does not cancel the review.
 - `cache show/list/compare/gc/delete` operate without a repository.
 - `provider status/resume` expose shared account recovery state.

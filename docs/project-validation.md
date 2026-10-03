@@ -87,11 +87,11 @@ ccdd run stream RUN_ID --state-dir STATE --after 0
 ccdd verify --all --recursive --wait --stream
 ccdd run summary RUN_ID --state-dir STATE
 ccdd request summary REQUEST_ID --state-dir STATE
-ccdd run compare LEFT_RUN RIGHT_RUN --state-dir STATE
+ccdd run diff LEFT_RUN RIGHT_RUN --state-dir STATE
 ```
 
 `--stream` emits NDJSON and is separate from the existing single JSON/full output
-modes. `verify --stream` requires `--wait`. `run stream` follows an existing Run
+modes. `verify --stream` follows the Run until it is terminal, so `--wait` is implied. `run stream` follows an existing Run
 without invoking its worker. API clients can apply backpressure directly:
 
 ```ts
