@@ -9,7 +9,8 @@ const failure = (message: string, code: string) => Object.assign(new Error(messa
  * not to live observation of the workspace. Opening walks nothing and starts no watcher.
  * The boundary re-runs the owner identity function against the same supplied workspace:
  * a different value means the result would describe another identity, so it fails as
- * WORKSPACE_CHANGED and is never published.
+ * WORKSPACE_CHANGED and is never published. CCDD does not lock the workspace, so this
+ * detects covered changes completed before the check, not an edit racing the check.
  */
 export function ownerInput(request: Pick<ReviewRequest, 'workspace' | 'artifacts' | 'validationInput'>, resources: Pick<ReturnType<typeof openResources>, 'acquire'>, signal?: AbortSignal): WorkspaceHandle {
   const input = request.validationInput, artifact = request.artifacts.find(candidate => candidate.id === input?.target.id);

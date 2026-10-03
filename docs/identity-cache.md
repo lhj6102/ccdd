@@ -111,25 +111,35 @@ External Provider delivery or charging is not guaranteed exactly-once.
 The identity is the whole reuse key, so it is also what a cache-owned execution
 is checked against. The execution reads the supplied workspace in place, as every
 review does, but it starts no workspace watcher and walks no workspace of its own.
-Before it accepts a result, it runs the owner function again in the same
-workspace, under the same machine identity capacity. A different value fails the
-execution with `WORKSPACE_CHANGED` and publishes nothing; the same value accepts
-the result, because by the owner's definition it describes that identity.
 
-| Event during the execution | Result |
+**CCDD does not lock the workspace.** Do not edit input that an identity covers
+while an execution of that identity is in flight. CCDD checks for such edits, but
+it cannot prevent them, and it detects only some of them.
+
+After the execution has finished, released its machine resources and closed its
+own store, CCDD runs the owner function again in the same workspace, under the
+same machine identity capacity. That check is the last await before the cache
+publication commit; nothing else runs between them. A different value fails the
+execution with `WORKSPACE_CHANGED` and publishes nothing. The same value
+publishes the result, because by the owner's definition it describes that
+identity. A failed or timed-out identity script fails the execution without
+publishing it. When publication is rejected, the execution's own audit still
+records the reviewer's verdict; the cache job and every subscriber receive the
+failure.
+
+| Event | Result |
 | --- | --- |
-| A change the identity covers, still present at completion | `WORKSPACE_CHANGED`; nothing is published. |
+| A covered change completed before the completion check | `WORKSPACE_CHANGED`; nothing is published. |
 | A change the identity does not cover | The result is published. |
-| A covered change restored before completion | Not detected. |
+| A covered change restored before the completion check | Not detected. |
+| A covered change racing the completion check itself, after the owner function read that input | Not detected. |
 | Human claim preparation | Its final validation re-runs the identity. |
-| Human tool call | No check; the result submission decides. |
-| Human result submission | Re-runs the identity before the result is recorded. |
+| Human tool call | No check. |
+| Human result submission | Re-runs the identity before the result is recorded; the completion check runs again before publication. |
 | Human waiting | No workspace monitoring; owner death still fails the execution. |
 
-Only a change that is still present when the identity is re-run is detected,
-and only inside what the owner function covers. Owners who need stronger
-protection should include that input in the identity, or keep the workspace
-unchanged until reviews finish.
+An owner who needs stronger protection must include that input in the identity
+and keep identity-covered input unchanged until its executions finish.
 
 The submitting Run still observes its own workspace for its receipts and for
 requests without an identity. A change it detects fails that Run and detaches its
@@ -138,9 +148,10 @@ another subscriber still needs continues under the rule above.
 
 A large submission therefore costs one workspace observer for the submitting
 Run, not one per identity. Subscribers in the owning process wait for the
-execution's own completion instead of polling, a receipt mirrors the execution's
-state only after its store changes, and one machine-resource connection serves
-every Broker in a process.
+execution's own completion instead of polling. Once that computation is aborted,
+they read its stored outcome instead of waiting for its executor. A receipt
+mirrors the execution's state only after its store changes, and one
+machine-resource connection serves every Broker in a process.
 
 ## Public cache operations
 

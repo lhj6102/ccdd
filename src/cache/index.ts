@@ -43,6 +43,11 @@ export interface CacheComputeOptions {
   /** Scope is diagnostic/lifetime metadata, never a cache partition. */
   scope?: string;
   onState?: (state: 'executing' | 'coalesced' | 'hit', executionId: string) => void;
+  /**
+   * For the call that starts the computation: runs after `execute` settles, as the last await
+   * before each publication attempt. A rejection fails the computation and publishes nothing.
+   */
+  accept?: (signal: AbortSignal) => Promise<void>;
 }
 export interface CacheComputation { entry: CacheEntry; disposition: 'executed' | 'coalesced' | 'hit' | 'uncached' }
 type Owner = { pid: number; process_identity: string | null };
@@ -314,14 +319,14 @@ export function openIdentityCache({ directory = identityCacheDirectory(), maxByt
     const { nextJobCursor: _cursor, ...publicResult } = result;
     return { ...publicResult, needsMore: publicResult.needsMore || retired === limit };
   };
-  const start = (jobId: string, identity: string, execute: (signal: AbortSignal, executionId: string) => Promise<CachedReview>, scope?: string) => {
+  const start = (jobId: string, identity: string, execute: (signal: AbortSignal, executionId: string) => Promise<CachedReview>, scope?: string, accept?: CacheComputeOptions['accept']) => {
     const controller = new AbortController();
     const promise = (async () => {
       try {
         const value = await execute(controller.signal, jobId);
         controller.signal.throwIfAborted();
         const row = encoded(identity, jobId, value);
-        await retry(() => transaction(() => {
+        const publish = () => transaction(() => {
           controller.signal.throwIfAborted();
           const job = db.prepare("SELECT pid,process_identity FROM cache_jobs WHERE id=? AND state='RUNNING'").get(jobId);
           if (!job || job.pid !== process.pid || job.process_identity !== ownProcessIdentity || db.prepare('SELECT job_id FROM cache_active WHERE identity=?').get(identity)?.job_id !== jobId) throw error('CACHE_OWNERSHIP_LOST', 'Shared computation ownership was lost before publication.');
@@ -329,7 +334,17 @@ export function openIdentityCache({ directory = identityCacheDirectory(), maxByt
           if (row.bytes <= maxEntryBytes && row.bytes <= maxBytes) db.prepare('INSERT INTO cache_entries VALUES(?,?,?,?,?,?) ON CONFLICT(identity) DO UPDATE SET data=excluded.data,digest=excluded.digest,bytes=excluded.bytes,created_at=excluded.created_at,accessed_at=excluded.accessed_at').run(identity, row.data, row.digest, row.bytes, Date.now(), Date.now());
           db.prepare("UPDATE cache_jobs SET state='COMPLETED',data=?,digest=? WHERE id=?").run(row.data, row.digest, jobId);
           db.prepare('DELETE FROM cache_active WHERE identity=? AND job_id=?').run(identity, jobId);
-        }));
+        });
+        // The acceptance check is the last await before every commit attempt, including a
+        // retry after a busy writer, so no other work runs between them (#104).
+        const deadline = performance.now() + 5000; let pause = 10;
+        for (;;) {
+          await accept?.(controller.signal);
+          controller.signal.throwIfAborted();
+          try { publish(); break; }
+          catch (cause) { if (!busy(cause)) throw cause; if (performance.now() >= deadline) throw error('CACHE_BUSY', 'Identity cache is busy; retry the operation.'); }
+          await delay(Math.min(pause, Math.max(1, deadline - performance.now())) + Math.floor(Math.random() * 10), undefined, { signal: controller.signal }); pause = Math.min(200, pause * 2);
+        }
       } catch (cause) {
         // Operational errors are visible only to this attempt's subscribers. They
         // never become identity->result entries or negative-cache future requests.
@@ -345,7 +360,7 @@ export function openIdentityCache({ directory = identityCacheDirectory(), maxByt
         await gc().catch(() => { /* Explicit GC reports maintenance errors; do not replace a completed result. */ });
       }
     })();
-    // Local subscribers wake when the task settles or maintenance aborts it, never by polling.
+    // Local subscribers wake when the task settles or maintenance aborts it.
     const wake = new Promise<void>(resolve => { controller.signal.addEventListener('abort', () => resolve(), { once: true }); void promise.then(() => resolve(), () => resolve()); });
     // Execute is asynchronous; install the owner before its first continuation.
     owned.set(jobId, { controller, promise, wake, scope });
@@ -371,6 +386,7 @@ export function openIdentityCache({ directory = identityCacheDirectory(), maxByt
         const executionId = randomUUID(), signal = options.signal ?? new AbortController().signal;
         options.onState?.('executing', executionId);
         const value = await execute(signal, executionId); signal.throwIfAborted();
+        await options.accept?.(signal); signal.throwIfAborted();
         return { entry: decode(encoded(null, executionId, value))!, disposition: 'uncached' };
       }
       validateCacheIdentity(identity);
@@ -400,7 +416,7 @@ export function openIdentityCache({ directory = identityCacheDirectory(), maxByt
           if ('wait' in attached) { await delay(50, undefined, { signal: options.signal }); continue; }
           if ('hit' in attached && attached.hit) { touch(identity); options.onState?.('hit', attached.hit.executionId); return { entry: attached.hit, disposition: 'hit' }; }
           jobId = attached.jobId!; creator = Boolean(attached.own); subscribers.add(subscriber);
-          if (creator) start(jobId, identity, execute, options.scope);
+          if (creator) start(jobId, identity, execute, options.scope, options.accept);
           options.onState?.(creator ? 'executing' : 'coalesced', jobId);
           for (;;) {
             options.signal?.throwIfAborted();
@@ -414,11 +430,12 @@ export function openIdentityCache({ directory = identityCacheDirectory(), maxByt
               throw error(String(row.error_code), String(row.error_message));
             }
             if (!alive(row as unknown as Owner)) { await detach(subscriber, jobId); break; }
-            // A computation owned by this process settles its task after its terminal record
-            // commits, and maintenance aborts it when its record changes (ownership lost or
-            // abandoned). Wait for that instead of polling; other owners are polled (#104).
+            // A running computation owned by this process wakes its subscribers when its task
+            // settles or maintenance aborts it, so they need not poll (#104). Once aborted, its
+            // terminal record may already be committed while the executor has not settled: the
+            // store, not the executor, decides, so poll it like a computation of another owner.
             const local = owned.get(jobId);
-            if (local) await settled(local.controller.signal.aborted ? local.promise : local.wake, options.signal);
+            if (local && !local.controller.signal.aborted) await settled(local.wake, options.signal);
             else await delay(50, undefined, { signal: options.signal });
           }
         }

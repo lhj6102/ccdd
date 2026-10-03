@@ -412,10 +412,13 @@ but does not preserve old source after later edits.
 
 A cache-owned execution, which serves a request with an explicit identity, is
 the exception. It reads the same supplied workspace but starts no watcher and
-walks nothing. Before it accepts a result, it re-runs the owner identity; a
-different value fails it with `WORKSPACE_CHANGED` and publishes nothing. Changes
-outside the identity, and covered changes restored before that check, do not
-invalidate it. The submitting Run still observes its workspace. See
+walks nothing. CCDD does not lock the workspace; do not edit identity-covered
+input while an execution of that identity is in flight. After the execution has
+released its resources and closed its store, the owner identity is re-run as the
+last await before publication. A different value fails it with
+`WORKSPACE_CHANGED` and publishes nothing. Changes outside the identity, covered
+changes restored before that check, and covered changes racing the check itself
+are not detected. The submitting Run still observes its workspace. See
 [the identity cache](identity-cache.md#integrity-of-a-cache-owned-execution).
 
 The snapshot hash is SHA-256 over sorted relative paths, entry types, file

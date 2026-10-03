@@ -420,6 +420,13 @@ export function createBroker<D extends ResultDetail = 'compact'>({ [executionMod
           };
         } finally { await owner.close(); }
       }, { signal, scope: runId,
+        // The owner identity is checked after the execution has released its resources and
+        // closed its store, as the last await before publication. CCDD does not lock the
+        // workspace: an edit racing this check itself is not detected (#104).
+        async accept(acceptSignal) {
+          try { await ownerInput(request, resources, acceptSignal).assertUnchanged(); }
+          catch (cause) { ownFailure ??= cause as Error; throw cause; }
+        },
         onState(state, executionId) {
           const handover = source !== undefined && source.executionId !== executionId;
           source = { stateDir: path.join(service.directory, 'executions', executionId), runId: executionId, requestId: executionId, executionId, identity: input.cacheIdentity! };
@@ -472,9 +479,9 @@ export function createBroker<D extends ResultDetail = 'compact'>({ [executionMod
   async function executeUncached(requestId: string, workspace: WorkspaceHandle, token: string, signal: AbortSignal) {
     const initial = required(requestHeader(requestId), 'Request');
     const runId = initial.runId;
-    // A cache-owned execution is bound to its owner identity: the only boundary is the
-    // identity check before its result is accepted (see ownerInput). Observed Runs keep
-    // their full workspace boundaries before, around Human notification and after.
+    // A cache-owned execution is bound to its owner identity, which its subscriber checks
+    // immediately before publication (see executeOne). Observed Runs keep their workspace
+    // boundaries before execution, around Human notification and after execution.
     const observed = !readiness.header(runId)?.executionOwned;
     let lease: ResourceLease | undefined;
     let customLease: AdmissionLease | undefined;
@@ -601,8 +608,7 @@ export function createBroker<D extends ResultDetail = 'compact'>({ [executionMod
       })));
       await capture?.verify();
       validateFinalResult(semanticResult(result), request);
-      // Observed: a fresh workspace boundary. Cache-owned: the owner identity is unchanged.
-      await workspace.assertUnchanged();
+      if (observed) await workspace.assertUnchanged();
       signal.throwIfAborted();
       transaction(() => { if (ownerData(runId)?.token === token) finishWithin(requestId, { result, executionProvenance: capture?.provenance ?? null }); });
       changed();
@@ -714,7 +720,7 @@ export function createBroker<D extends ResultDetail = 'compact'>({ [executionMod
               notified.add(request.id);
             }
             // An observed Run keeps its workspace observer alive with filesystem events and
-            // metadata polls; a cache-owned execution checks its owner identity at completion.
+            // metadata polls; a cache-owned execution checks its owner identity before publication.
             // Idle waiting must not rehash the entire workspace on every scheduling iteration.
             brokerTestHooks.onIdleTick?.();
             await delay(100, undefined, { signal: reviewSignal });
