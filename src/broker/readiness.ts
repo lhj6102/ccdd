@@ -1,3 +1,6 @@
+import { semanticResult as importSemantic } from '../response-schema.js';
+import type { CacheEntry } from '../cache/index.js';
+import { cacheSource } from '../project/cache-evidence.js';
 import type { DatabaseSync } from 'node:sqlite';
 import type { ReviewEnvelope, ReviewRequest, ReviewStatus, RunStatus } from '../contracts.js';
 import type { RunRecord } from './index.js';
@@ -30,14 +33,23 @@ export function createReadiness(db: DatabaseSync, store: ReturnType<typeof recor
   const publish = (member: Member, request: Record<string, any>) => {
     const change = db.prepare('INSERT INTO request_changes(run_id,request_id,critic_id,status,result_ref,error,error_code) VALUES (?,?,?,?,?,?,?)').run(member.run_id, request.id, member.critic_id, request.status, request.semanticRef ?? null, request.error ?? null, request.errorCode ?? null);
     db.prepare('INSERT INTO change_attempts(cursor,attempt_id,provenance_ref) VALUES(?,?,?)').run(change.lastInsertRowid, request.attemptId ?? null, request.executionProvenance ? store.put(request.executionProvenance) : null);
+    const usage = request.attemptId ? db.prepare('SELECT data FROM request_usage WHERE request_id=? AND attempt_id=?').get(request.id,request.attemptId) : undefined;
+    const counters = usage ? JSON.parse(String(usage.data)) : request.usage;
+    const attribution = { inputKey: member.input_key, target: member.target, profile: request.profile,
+      requestedProfile: request.requestedProfile ?? null, executionSource: request.executionSource ?? null,
+      cacheDisposition: request.cacheDisposition ?? 'uncached', completedAt: request.completedAt ?? null,
+      usageState: counters ? 'reported' : 'unreported', ...(counters ? { usage: counters } : {}) };
+    db.prepare('INSERT INTO change_attribution VALUES(?,?)').run(change.lastInsertRowid,JSON.stringify(attribution));
   };
   const effectiveState = (member: Member, request: Record<string, any>) => {
     const gate = db.prepare('SELECT unmet,red FROM gate_counts WHERE run_id=? AND critic_id=?').get(member.run_id,member.critic_id);
-    return request.runId !== member.run_id && Number(gate?.unmet ?? 0) ? Number(gate?.red ?? 0) ? 'BLOCKED' : 'WAIT_DEPENDENCY' : request.status;
+    return (request.runId !== member.run_id || request.cacheDisposition) && Number(gate?.unmet ?? 0) ? Number(gate?.red ?? 0) ? 'BLOCKED' : 'WAIT_DEPENDENCY' : request.status;
   };
   const setMember = (member: Member, request: Record<string, any>) => {
     readinessTestHooks.member?.();
     const status = effectiveState(member, request);
+    const evidence = request.status === 'GREEN' || request.status === 'RED' ? request.id : null;
+    if(member.state===status && member.request_id===request.id && member.evidence_id===evidence)return status;
     changeCount(member.run_id, member.state, -1); changeCount(member.run_id, status, 1);
     db.prepare('UPDATE run_members SET state=?,request_id=?,evidence_id=? WHERE run_id=? AND critic_id=?').run(status, request.id, request.status === 'GREEN' || request.status === 'RED' ? request.id : null, member.run_id, member.critic_id);
     if (request.runId !== member.run_id && !terminal.has(request.status)) db.prepare('INSERT OR REPLACE INTO shared_members VALUES (?,?,?,?)').run(member.run_id,member.critic_id,request.id,request.runId);
@@ -55,10 +67,10 @@ export function createReadiness(db: DatabaseSync, store: ReturnType<typeof recor
     const gate = db.prepare('SELECT unmet,red FROM gate_counts WHERE run_id=? AND critic_id=?').get(member.run_id, member.critic_id);
     const gated = Number(gate?.unmet ?? 0) > 0;
     const workspace = preparedWorkspace ?? store.get<ReviewRequest['workspace']>(run.workspaceRef);
-    const packed = { id: randomUUID(), runId: member.run_id, worktreePath: workspace.path,
+    const packed = { id: run.executionOwned ? run.id : randomUUID(), runId: member.run_id, worktreePath: workspace.path,
       criticId: member.critic_id, target: member.target, title: envelope.title, snapshotHash: envelope.snapshotHash, deps: envelope.deps,
-      profile: { kind: envelope.profile.kind, ...(envelope.profile.kind === 'agent' ? { provider: envelope.profile.provider, model: envelope.profile.model } : {}) },
-      envelopeRef: member.envelope_ref, workspaceRef: run.workspaceRef, inputRef: member.input_ref, inputKey: member.input_key, inputVersion: 3,
+      profile: structuredClone(envelope.profile),
+      envelopeRef: member.envelope_ref, workspaceRef: run.workspaceRef, inputRef: member.input_ref, inputKey: member.input_key, inputVersion: store.get<ValidationInput>(member.input_ref).version,
       status: gated ? Number(gate?.red) ? 'BLOCKED' : 'WAIT_DEPENDENCY' : 'QUEUED', createdAt: new Date().toISOString(), startedAt: null, completedAt: null, claimedBy: null, claimedAt: null, notifiedAt: null,
       resultRef: null, semanticRef: null, error: null, blockedReason: gated ? `${Number(gate?.red) ? 'BLOCKED' : 'WAIT_DEPENDENCY'}: ${db.prepare("SELECT e.dependency,m.state FROM gate_edges e JOIN run_members m ON m.run_id=e.run_id AND m.critic_id=e.dependency WHERE e.run_id=? AND e.dependent=? AND m.state!='GREEN' LIMIT 16").all(member.run_id,member.critic_id).map(row=>`${row.dependency} (${row.state})`).join(', ')}` : null };
     db.prepare('INSERT INTO requests(id,run_id,ordinal,status,data) VALUES (?,?,?,?,?)').run(packed.id, member.run_id, member.ordinal, packed.status, JSON.stringify(packed));
@@ -68,7 +80,7 @@ export function createReadiness(db: DatabaseSync, store: ReturnType<typeof recor
   const adoptOrCreate = (member: Member) => {
     const run = header(member.run_id);
     const gate = db.prepare('SELECT unmet FROM gate_counts WHERE run_id=? AND critic_id=?').get(member.run_id, member.critic_id);
-    const source = !run.project.force ? findCoalescibleRequest(db, member.critic_id, member.input_key, { ...options, ignoreGates: run.project.ignoreGates })?.request : null;
+    const source = !run.project.force && store.get<ValidationInput>(member.input_ref).version === 3 ? findCoalescibleRequest(db, member.critic_id, member.input_key, { ...options, ignoreGates: run.project.ignoreGates })?.request : null;
     const request = source ? JSON.parse(String(db.prepare('SELECT data FROM requests WHERE id=?').get(source.id)!.data)) : createRequest(member);
     setMember(member, request);
     if (source) event(member.run_id, source.id, 'request.coalesced', 'Waiting for an identical active review.', { sourceRunId: source.runId });
@@ -78,7 +90,11 @@ export function createReadiness(db: DatabaseSync, store: ReturnType<typeof recor
     db.prepare('UPDATE run_members SET state=? WHERE run_id=? AND critic_id=?').run(state, member.run_id, member.critic_id);
     if (member.request_id) {
       const row = db.prepare('SELECT data,run_id FROM requests WHERE id=?').get(member.request_id);
-      if (row && row.run_id === member.run_id) {
+      if (row && JSON.parse(String(row.data)).resultRef) {
+        const request = JSON.parse(String(row.data));
+        publish(member,{...request,status:state,semanticRef:state===request.status ? request.semanticRef : null});
+      }
+      if (row && row.run_id === member.run_id && !JSON.parse(String(row.data)).resultRef) {
         const request = JSON.parse(String(row.data)); request.status = state;
         const blockers = db.prepare("SELECT e.dependency,m.state FROM gate_edges e JOIN run_members m ON m.run_id=e.run_id AND m.critic_id=e.dependency WHERE e.run_id=? AND e.dependent=? AND m.state!='GREEN' LIMIT 16").all(member.run_id, member.critic_id);
         request.blockedReason = state === 'QUEUED' ? null : `${state}: ${blockers.map(row => `${row.dependency} (${row.state})`).join(', ')}`;
@@ -104,17 +120,20 @@ export function createReadiness(db: DatabaseSync, store: ReturnType<typeof recor
   };
   return {
     header,
-    initialize(run: RunRecord, prepared?: Awaited<ReturnType<typeof store.prepareRun>>) {
+    initialize(run: RunRecord, prepared?: Awaited<ReturnType<typeof store.prepareRun>>, cached = new Map<string, CacheEntry>()) {
       const project = run.project!;
       preparedTemplates = new Map(project.templates.map(envelope => [envelope.criticId,envelope])); preparedWorkspace = run.workspace;
       try {
         const plan = planProject(project.snapshot, readEvidence(db), { selection: project.selection, recursive: project.recursive, force: project.force, ignoreGates: true, runId: run.id });
+        const forced = new Set(project.force ? plan.selectedCriticIds : []);
         const included = new Set(plan.includedCriticIds), templates = new Map(project.templates.map(envelope => [envelope.criticId, envelope]));
         const members = new Map<string, Member>();
         const counts = { queued: 0, running: 0, waiting: 0, errors: 0, red: 0, missing: plan.artifacts.filter(artifact => artifact.total === 0 && artifact.status !== 'BASIS').length };
         let ordinal = 0;
         for (const critic of plan.critics) {
-          const envelope = templates.get(critic.id), state = critic.result?.verdict ?? 'MISSING';
+          const envelope = templates.get(critic.id);
+          const entry = !forced.has(critic.id) && critic.input.cacheIdentity ? cached.get(critic.input.cacheIdentity) : undefined;
+          const state = entry?.value.result.verdict ?? critic.result?.verdict ?? 'MISSING';
           members.set(critic.id, { run_id: run.id, critic_id: critic.id, ordinal: ordinal++, target: critic.target, input_key: critic.input.key,
             input_ref: prepared?.inputs.get(critic.id) ?? store.put(critic.input), envelope_ref: envelope ? prepared?.envelopes.get(critic.id) ?? store.put(envelope) : null,
             request_id: null, evidence_id: critic.result?.requestId ?? null, state, included: included.has(critic.id) ? 1 : 0 });
@@ -146,8 +165,35 @@ export function createReadiness(db: DatabaseSync, store: ReturnType<typeof recor
         db.prepare('INSERT INTO run_counts VALUES (?,?,?,?,?,?,?)').run(run.id,counts.queued,counts.running,counts.waiting,counts.errors,counts.red,counts.missing);
         const relationRows = new Map(project.snapshot.config.relations.map(edge => [JSON.stringify([edge.target,edge.source]),[run.id,edge.target,edge.source]]));
         batch('run_dependencies',3,[...relationRows.values()]);
-        for (const row of db.prepare('SELECT * FROM run_members WHERE run_id=? AND included=1 AND evidence_id IS NULL ORDER BY ordinal').all(run.id)) adoptOrCreate(row as unknown as Member);
-        for (const row of db.prepare('SELECT * FROM run_members WHERE run_id=? AND evidence_id IS NOT NULL').all(run.id)) { const member = row as unknown as Member; const evidence = JSON.parse(String(db.prepare('SELECT data FROM requests WHERE id=?').get(member.evidence_id)!.data)); publish(member, { ...evidence, status: member.state, semanticRef: member.state === 'GREEN' || member.state === 'RED' ? evidence.semanticRef : null }); }
+        for (const row of db.prepare('SELECT * FROM run_members WHERE run_id=? ORDER BY ordinal').all(run.id)) {
+          const member = row as unknown as Member;
+          const input = project.snapshot.inputs[member.critic_id];
+          const entry = !forced.has(member.critic_id) && input.cacheIdentity ? cached.get(input.cacheIdentity) : undefined;
+          if (entry) {
+            // This is a subscriber receipt, explicitly attributed to the original
+            // execution, not a fabricated re-evaluation of another Critic.
+            const envelope = templates.get(member.critic_id);
+            const definition = project.snapshot.config.critics.find(critic => critic.id === member.critic_id)!;
+            const receipt: Record<string, any> = envelope ? createRequest(member) : {
+              id: randomUUID(), runId: run.id, criticId: member.critic_id, target: member.target,
+              title: definition.title, profile: structuredClone(definition.profile), deps: definition.deps,
+              snapshotHash: run.snapshotHash, inputKey: input.key, inputVersion: input.version,
+              inputRef: member.input_ref, workspaceRef: prepared?.header.workspaceRef ?? store.put(run.workspace),
+              envelopeRef: null, createdAt: new Date().toISOString(),
+            };
+            const requestedProfile = receipt.profile;
+            Object.assign(receipt, { status: entry.value.result.verdict, resultRef: store.put(entry.value.result),
+              semanticRef: store.put(importSemantic(entry.value.result)), completedAt: entry.completedAt,
+              executionSource: cacheSource(entry), cacheDisposition: 'hit', requestedProfile,
+              profile: structuredClone(entry.value.profile), attemptId: entry.value.attemptId,
+              executionProvenance: entry.value.executionProvenance, usage: entry.value.usage, sourceSummary: entry.value.summary });
+            if (envelope) db.prepare('UPDATE requests SET status=?,data=? WHERE id=?').run(receipt.status, JSON.stringify(receipt), receipt.id);
+            else db.prepare('INSERT INTO requests(id,run_id,ordinal,status,data) VALUES(?,?,?,?,?)').run(receipt.id,run.id,member.ordinal,receipt.status,JSON.stringify(receipt));
+            setMember(member, receipt);
+            event(run.id, receipt.id, 'request.cache.hit', 'Consumed a completed explicit-identity result.', { executionId: entry.executionId });
+          } else if (member.included && !member.evidence_id) adoptOrCreate(member);
+        }
+        for (const row of db.prepare('SELECT * FROM run_members WHERE run_id=? AND evidence_id IS NOT NULL AND request_id IS NULL').all(run.id)) { const member = row as unknown as Member; const evidence = JSON.parse(String(db.prepare('SELECT data FROM requests WHERE id=?').get(member.evidence_id)!.data)); publish(member, { ...evidence, status: member.state, semanticRef: member.state === 'GREEN' || member.state === 'RED' ? evidence.semanticRef : null }); }
         updateRun(run.id);
       } finally { preparedTemplates = undefined; preparedWorkspace = undefined; }
     },

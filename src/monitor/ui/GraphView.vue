@@ -11,6 +11,7 @@ import { criticPresentation } from './critic-presentation';
 import { layoutGraph, type GraphLayout } from './graph-layout';
 import type { ArtifactEdgeData, ArtifactNodeData } from './graph-flow';
 import { groupFamilies } from './family-groups';
+import { familyPage, FAMILY_GRAPH_EXPANSION_LIMIT } from './family-pagination';
 import ArtifactFlowNode from './ArtifactFlowNode.vue';
 import GraphFlowEdge from './GraphFlowEdge.vue';
 
@@ -35,6 +36,9 @@ const selectedArtifact = computed(() => artifacts.value.get(selectedArtifactId.v
 const selectedFamily = computed(() => grouped.value?.groups.get(selectedArtifactId.value));
 const membersInOrder = (members: readonly Artifact[]): Artifact[] => [...members].sort((a, b) => Number(b.included > 0) - Number(a.included > 0) || a.id.localeCompare(b.id));
 const familyMembers = computed(() => membersInOrder(selectedFamily.value?.members ?? []));
+const familyPageIndex = ref(0);
+const visibleFamilyMembers = computed(() => familyPage(familyMembers.value, familyPageIndex.value));
+watch(selectedArtifactId, () => { familyPageIndex.value = 0; });
 // Focus is meaningful only for a member of the selected family.
 const focusedMember = computed(() => familyMembers.value.some(member => member.id === focusedMemberId.value) ? focusedMemberId.value : '');
 const criticTarget = computed(() => selectedFamily.value ? focusedMember.value : selectedArtifactId.value);
@@ -99,7 +103,7 @@ function selectArtifact(id: string): void {
 /** Expanding selects the focused member, or the first member; collapsing selects the family and keeps the member focused. */
 function toggleFamily(name: string, expand: boolean): void {
   const members = membersInOrder(graph.value?.artifacts.filter(artifact => artifact.family === name) ?? []);
-  if (!members.length) return;
+  if (!members.length || expand && members.length > FAMILY_GRAPH_EXPANSION_LIMIT) return;
   const selected = members.find(member => member.id === (expand ? focusedMemberId.value : selectedArtifactId.value)) ?? members[0];
   const next = new Set(expandedFamilies.value);
   if (expand) next.add(name); else next.delete(name);
@@ -237,11 +241,17 @@ defineExpose({ refresh });
       <div class="graph-legend"><span>Dependency Artifact <span aria-hidden="true">→</span><span class="sr-only">to</span> Review target</span><span class="graph-state-legend"><span class="requested">Requested</span><span class="running">In review</span><span class="success">Succeeded</span><span class="failure">Failed</span></span></div>
       <section v-if="selectedArtifact" class="graph-detail" :aria-label="`${selectedArtifact.id} Critics`">
         <header class="graph-detail-heading"><div><h2>{{ selectedArtifact.id }} <span>{{ selectedFamily ? `Artifact family · ${selectedFamily.members.length} instances` : 'Critics' }}</span></h2><p>Folder {{ selectedArtifact.path || '.' }}<template v-if="selectedArtifact.family && !selectedFamily"> <span class="graph-separator">·</span> Family {{ selectedArtifact.family }}</template></p></div><span class="graph-detail-count">{{ selectedArtifact.passed }} / {{ selectedArtifact.total }} passed</span></header>
-        <p v-if="selectedFamily" class="graph-family-actions"><button type="button" class="text-button" @click="toggleFamily(selectedFamily.name, true)">Show instances in graph</button></p>
+        <p v-if="selectedFamily" class="graph-family-actions"><button type="button" class="text-button" :disabled="selectedFamily.members.length > FAMILY_GRAPH_EXPANSION_LIMIT" @click="toggleFamily(selectedFamily.name, true)">Show instances in graph</button></p>
         <p v-else-if="selectedArtifact.family" class="graph-family-actions"><button type="button" class="text-button" @click="toggleFamily(selectedArtifact.family, false)">Collapse family {{ selectedArtifact.family }}</button></p>
         <ul v-if="selectedRelations.length" class="artifact-references" aria-label="Artifact relations"><li v-for="edge in selectedRelations" :key="`${edge.source}/${edge.target}`"><strong>{{ edge.source }} → {{ edge.target }}</strong><span>{{ edge.relations.map(relation => relation.kind + (relation.name ? `: ${relation.name}` : '')).join(', ') }}{{ edge.cyclic ? ' · Cycle' : '' }}</span></li></ul>
+        <p v-if="selectedFamily && selectedFamily.members.length > FAMILY_GRAPH_EXPANSION_LIMIT" class="graph-basis-note">This family stays collapsed to keep layout bounded. Browse every instance below.</p>
+        <nav v-if="selectedFamily && visibleFamilyMembers.pages > 1" class="graph-family-actions" aria-label="Family instance pages">
+          <button type="button" class="text-button" :disabled="visibleFamilyMembers.page === 0" @click="familyPageIndex = visibleFamilyMembers.page - 1">Previous</button>
+          <span role="status">Page {{ visibleFamilyMembers.page + 1 }} / {{ visibleFamilyMembers.pages }} ({{ visibleFamilyMembers.total }} instances)</span>
+          <button type="button" class="text-button" :disabled="visibleFamilyMembers.page + 1 === visibleFamilyMembers.pages" @click="familyPageIndex = visibleFamilyMembers.page + 1">Next</button>
+        </nav>
         <ul v-if="selectedFamily" class="graph-family-members" :aria-label="`${selectedFamily.name} instances`">
-          <li v-for="member in familyMembers" :key="member.id"><button type="button" :aria-pressed="focusedMember === member.id" :class="{ selected: focusedMember === member.id, 'not-included': !member.included }" @click="focusedMemberId = member.id"><strong>{{ member.id }}</strong><span class="card-status" :class="member.status.toLowerCase()">{{ artifactLabel(member) }}</span><span class="graph-detail-count">{{ member.passed }} / {{ member.total }}</span></button></li>
+          <li v-for="member in visibleFamilyMembers.items" :key="member.id"><button type="button" :aria-pressed="focusedMember === member.id" :class="{ selected: focusedMember === member.id, 'not-included': !member.included }" @click="focusedMemberId = member.id"><strong>{{ member.id }}</strong><span class="card-status" :class="member.status.toLowerCase()">{{ artifactLabel(member) }}</span><span class="graph-detail-count">{{ member.passed }} / {{ member.total }}</span></button></li>
         </ul>
         <p v-if="selectedFamily && !focusedMember" class="graph-basis-note">Select an instance to see its Critics.</p>
         <p v-else-if="!selectedCritics.length" class="graph-basis-note">No Critics are registered to review this Artifact.</p>

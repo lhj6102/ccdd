@@ -1,6 +1,6 @@
 {
   "name": "@ccdd/default-tools",
-  "version": "6.6.0",
+  "version": "7.0.0",
   "license": "MIT",
   "publishConfig": {
     "access": "public",
@@ -38,7 +38,7 @@
     "prepack": "npm run build"
   },
   "peerDependencies": {
-    "@ccdd/core": ">=6.6.0 <7"
+    "@ccdd/core": ">=7.0.0 <8"
   },
   "devDependencies": {
     "@ccdd/core": "file:../.."

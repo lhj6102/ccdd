@@ -49,7 +49,7 @@ test('each request sums its own usage, independent of the Run\'s latest-500 even
   assert.deepEqual(b.usage, { input: 531, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 531 });
   // Wall time and calls were already on every request.
   assert.ok(a.startedAt && a.completedAt); assert.equal(a.result!.toolCalls!.length, 1);
-  assert.ok(projectRequests(data.stateDir, run.id).every(request => !('usage' in request)));
+  assert.deepEqual(projectRequests(data.stateDir, run.id).map(request => request.usage?.totalTokens).sort((a,b)=>a!-b!), [150,531]);
 });
 
 test('usage covers a cancelled attempt up to cancellation and starts again with a retry', async t => {

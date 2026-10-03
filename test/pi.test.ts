@@ -731,3 +731,30 @@ test('Agent profile accepts twenty minutes and rejects Node timer overflow witho
     assert.throws(() => validatePiProfile({ ...profile, timeoutMs }), { code: 'EXECUTOR_PROFILE_INVALID' });
   }
 });
+
+test('CCDD recovers a rejected Provider turn without replaying tools or changing the requested profile', async t => {
+  const data = await fixture(t), events: ExecutionEvent[] = [];
+  const successful = artifactStream({ mode: 'partial' }); let calls = 0;
+  const result = await invokePi({ ...data, onEvent: event => { events.push(event); }, streamFn: (model, context, options) => {
+    assert.equal(options?.sessionId, data.request.id); assert.equal(options?.reasoning, profile.reasoning);
+    if (++calls === 1) {
+      const stream = createAssistantMessageEventStream();
+      const failure = { role: 'assistant' as const, content: [], api: model.api, provider: model.provider, model: model.id, timestamp: Date.now(), stopReason: 'error' as const, errorMessage: '503 temporarily unavailable',
+        usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } };
+      stream.push({ type: 'error', reason: 'error', error: failure }); stream.end(failure); return stream;
+    }
+    return successful(model, context, options);
+  } });
+  assert.equal((result.final as { verdict: string }).verdict, 'GREEN'); assert.equal(calls, 3);
+  assert.equal(events.filter(event => event.type === 'artifact.tool.called').length, 1);
+  const retry = events.filter(event => event.type === 'executor.provider.retry');
+  assert.equal(retry.length, 1); assert.equal(retry[0].usageState, 'unreported');
+});
+
+test('quota exhaustion is distinct from a transient rate limit and is not automatically replayed', async t => {
+  const data = await fixture(t); let calls = 0;
+  await assert.rejects(invokePi({ ...data, streamFn: () => { calls++; throw new Error('429 insufficient_quota'); } }), error => {
+    assert.equal((error as { code: string }).code, 'QUOTA_EXHAUSTED'); return true;
+  });
+  assert.equal(calls, 1);
+});

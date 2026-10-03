@@ -1,5 +1,5 @@
 import { executionScope } from '../execution-scope.js';
-import { openResources, rejectIdentityConcurrency, validateIdentityWeight, canonicalRepositoryId } from '../resources.js';
+import { readResourceConfiguration, openResources, rejectIdentityConcurrency, validateIdentityWeight, canonicalRepositoryId } from '../resources.js';
 import { createHash } from 'node:crypto';
 import { createReadStream } from 'node:fs';
 import { lstat, readdir, readlink } from 'node:fs/promises';
@@ -106,7 +106,15 @@ export async function createProjectSnapshot(config: RepoConfig, root: string, sn
   // Validate the entire selected scope before executing any owner script.
   for (const [, artifact] of owners) if (artifact.stale?.kind === 'identity') validateIdentityWeight(artifact.stale.weight);
   const resources = owners.length ? openResources() : undefined;
-  const workers = owners.map(async ([id, artifact]) => {
+  // Bounded local preparation: do not enqueue one polling lease per Artifact.
+  // The machine authority still decides every weighted admission.
+  const capacity = readResourceConfiguration().identityCapacity;
+  const smallestWeight = Math.min(...owners.map(([, artifact]) => artifact.stale?.kind === 'identity' ? artifact.stale.weight ?? 25 : 25), capacity);
+  const parallelism = Math.min(owners.length, 64, Math.max(1, Math.floor(capacity / smallestWeight)));
+  let nextOwner = 0;
+  const workers = Array.from({ length: parallelism }, async () => {
+    while (!identitySignal.aborted && nextOwner < owners.length) {
+    const [id, artifact] = owners[nextOwner++];
     try {
       if (artifact.stale?.kind !== 'identity') throw new Error('Invalid owner identity strategy.');
       const lease = await resources!.acquire({ requestId: id, runId: '', kind: 'identity', repo: canonicalRepositoryId(root), identityWeight: artifact.stale.weight ?? 25 }, { signal: identitySignal, waiting() {} });
@@ -115,6 +123,7 @@ export async function createProjectSnapshot(config: RepoConfig, root: string, sn
         values.set(id, value);
       } finally { await lease.release(); }
     } catch (error) { if (!controller.signal.aborted) controller.abort(error); throw error; }
+    }
   });
   await Promise.allSettled(workers);
   resources?.close();
@@ -199,7 +208,9 @@ export async function createProjectSnapshot(config: RepoConfig, root: string, sn
     if (!required.has(critic.target)) continue;
     const criticHash = inputHash({ version: 3, criticId: critic.id });
     const target = { id: critic.target, hash: artifactHashes[critic.target] }, deps = critic.deps.slice().sort().map(id => ({ id, hash: artifactHashes[id] }));
-    inputs[critic.id] = { version: 3, key: inputHash({ version: 3, criticId: critic.id, target, deps }), criticHash, target, deps, reusable: [critic.target, ...critic.deps].every(id => reusable[id]), workspaceIntegrity };
+    const cacheIdentity = artifactIdentities[critic.target]?.value;
+    inputs[critic.id] = { version: 4, key: cacheIdentity ?? inputHash({ version: 4, criticId: critic.id, target, deps }),
+      ...(cacheIdentity === undefined ? {} : { cacheIdentity }), criticHash, target, deps, reusable: cacheIdentity !== undefined, workspaceIntegrity };
   }
   return { version: 3, config: structuredClone(config), snapshotHash, artifactHashes, inputs, workspaceIntegrity, ...(Object.keys(artifactIdentities).length ? { artifactIdentities } : {}) };
 }

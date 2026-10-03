@@ -49,13 +49,7 @@ function views(value: unknown): ArtifactViews {
   }
   return result;
 }
-function critic(value: unknown): CriticDefinition {
-  if (!object(value)) throw new Error('Invalid Critic declaration.');
-  fields(value, ['id', 'title', 'profile', 'payload', 'passSchema', 'failSchema', 'resultCheck'], 'Critic');
-  if (typeof value.id !== 'string' || !identifier.test(value.id) || typeof value.title !== 'string' || !value.title.trim()) throw new Error('A Critic needs a local id and title.');
-  if (!object(value.payload) || typeof value.payload.instruction !== 'string' || !value.payload.instruction.trim()) throw new Error('A Critic needs payload.instruction.');
-  for (const key of ['passSchema', 'failSchema']) if (value[key] !== undefined) validateResponseSchema(value[key]);
-  const profile = value.profile;
+export function validateCriticProfile(profile: unknown): asserts profile is import('../definitions.js').CriticProfile {
   if (!object(profile) || !['agent', 'human', 'runtime'].includes(profile.kind)) throw new Error('Invalid Critic profile.');
   if (profile.kind === 'agent') {
     fields(profile, ['kind', 'provider', 'model', 'reasoning', 'timeoutMs', 'maxToolCalls', 'maxTokens'], 'Agent profile');
@@ -67,6 +61,23 @@ function critic(value: unknown): CriticDefinition {
     validateScript({ command: profile.command, args: profile.args });
   }
   if (profile.timeoutMs !== undefined && (!Number.isSafeInteger(profile.timeoutMs) || profile.timeoutMs < 1 || profile.timeoutMs > 2_147_483_647)) throw new Error('Invalid Critic timeoutMs.');
+}
+function critic(value: unknown): CriticDefinition {
+  if (!object(value)) throw new Error('Invalid Critic declaration.');
+  fields(value, ['id', 'title', 'profile', 'profileVariants', 'payload', 'passSchema', 'failSchema', 'resultCheck'], 'Critic');
+  if (typeof value.id !== 'string' || !identifier.test(value.id) || typeof value.title !== 'string' || !value.title.trim()) throw new Error('A Critic needs a local id and title.');
+  if (!object(value.payload) || typeof value.payload.instruction !== 'string' || !value.payload.instruction.trim()) throw new Error('A Critic needs payload.instruction.');
+  for (const key of ['passSchema', 'failSchema']) if (value[key] !== undefined) validateResponseSchema(value[key]);
+  validateCriticProfile(value.profile);
+  const profile = value.profile;
+  if (value.profileVariants !== undefined) {
+    if (!object(value.profileVariants) || Object.keys(value.profileVariants).length > 64) throw new Error('profileVariants must contain at most 64 named profiles.');
+    for (const [name, variant] of Object.entries(value.profileVariants)) {
+      if (!identifier.test(name)) throw new Error('Profile variant names must be safe identifiers.');
+      validateCriticProfile(variant);
+      if (variant.kind !== profile.kind) throw new Error('Profile variants must retain the declared reviewer kind.');
+    }
+  }
   if (value.resultCheck !== undefined) {
     // Only Agent reviews record tool-call arguments for a check to compare against.
     if (profile.kind !== 'agent') throw new Error('resultCheck requires an Agent Critic.');

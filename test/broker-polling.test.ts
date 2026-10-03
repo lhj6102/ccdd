@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { join } from 'node:path';
 import { once } from 'node:events';
 import { DatabaseSync } from 'node:sqlite';
 import { createStatusPolling } from '../src/broker/polling.js';
@@ -102,35 +103,24 @@ test('real idle broker ticks neither hydrate records nor replan and a remote Hum
   assert.equal((await running)!.status, 'GREEN');
 });
 
-test('coalesced idle ticks hydrate zero bytes and make zero plans', { timeout: 10000 }, async t => {
-  const { artifactFixture, runtimeCritic } = await import('./helpers/artifacts.js');
-  const { createBroker, brokerTestHooks } = await import('../src/broker/index.js');
-  const data = await artifactFixture(t); await data.write('a', { name: 'a', critics: [runtimeCritic()] });
-  let release!: () => void, entered!: () => void;
-  const gate = new Promise<void>(resolve => { release = resolve; });
-  const sourceEntered = new Promise<void>(resolve => { entered = resolve; });
-  const broker = createBroker({ ...data, executors: { canExecute: () => ({ ok: true }), execute: async () => { entered(); await gate; return { verdict: 'GREEN' }; } } });
-  data.cleanup(async () => { release(); await broker.close(); });
-  const source = await broker.submitProject({ selection: { kind: 'all' } }), running = broker.run(source.id);
-  // Measure unchanged idle work only after actual source startup has settled.
-  await sourceEntered;
-  const follower = await broker.submitProject({ selection: { kind: 'all' } });
-  let bytes = 0, plans = 0, ticks = 0, previous: { bytes: number; plans: number } | undefined;
-  const samples: { bytes: number; plans: number }[] = [];
-  let ready!: () => void; const idle = new Promise<void>(resolve => { ready = resolve; });
-  brokerTestHooks.onHydrate = count => { bytes += count; };
-  brokerTestHooks.onPlan = () => { plans++; };
-  brokerTestHooks.onIdleTick = () => {
-    if (previous) samples.push({ bytes: bytes - previous.bytes, plans: plans - previous.plans });
-    previous = { bytes, plans }; if (++ticks === 5) ready();
-  };
-  t.after(() => { delete brokerTestHooks.onHydrate; delete brokerTestHooks.onPlan; delete brokerTestHooks.onIdleTick; });
-  const waiting = broker.run(follower.id);
+test('idle shared subscribers neither replan nor rewrite unchanged receipt state', {timeout:10000}, async t=>{
+  const {artifactFixture,runtimeCritic}=await import('./helpers/artifacts.js');
+  const {createBroker,brokerTestHooks}=await import('../src/broker/index.js');
+  const data=await artifactFixture(t);await data.write('a',{name:'a',critics:[runtimeCritic()]});await data.identity('a');
+  let release!:()=>void,entered!:()=>void;const gate=new Promise<void>(r=>release=r),ready=new Promise<void>(r=>entered=r);
+  const broker=createBroker({...data,executors:{canExecute:()=>({ok:true}),execute:async()=>{entered();await gate;return{verdict:'GREEN'};}}});
+  data.cleanup(async()=>{release();await broker.close();});
+  const first=await broker.submitProject({selection:{kind:'all'}}),one=broker.run(first.id);await ready;
+  const second=await broker.submitProject({selection:{kind:'all'}}),two=broker.run(second.id);
+  await new Promise(r=>setTimeout(r,250));
+  const observer=new DatabaseSync(join(data.stateDir,'broker.sqlite'),{readOnly:true});
+  let plans=0;brokerTestHooks.onPlan=()=>{plans++;};
   try {
-    await idle;
-    assert.deepEqual(samples.slice(-3), Array.from({ length: 3 }, () => ({ bytes: 0, plans: 0 })));
-    t.diagnostic('Coalesced follower: 3 unchanged idle ticks, 0 hydrated JSON bytes and 0 plans per tick.');
-  } finally { release(); await running; await waiting; }
+    const version=observer.prepare('PRAGMA data_version').get()!.data_version;
+    await new Promise(r=>setTimeout(r,350));
+    assert.equal(observer.prepare('PRAGMA data_version').get()!.data_version,version,'unchanged mirrors must not acquire writes');
+    assert.equal(plans,0);
+  }finally{delete brokerTestHooks.onPlan;observer.close();release();await Promise.all([one,two]);}
 });
 
 test('polling rejects old state before creating scheduling tables even on readonly connections', t => {

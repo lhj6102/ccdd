@@ -2,10 +2,12 @@ import type { RepoConfig, ReviewEnvelope, ReviewResult, ReviewRequest, Workspace
 
 export type ProjectSelection = { kind: 'all' } | { kind: 'artifact'; artifactId: string } | { kind: 'critic'; criticId: string } | { kind: 'critics'; criticIds: string[] } | { kind: 'artifacts'; artifactIds: string[] };
 export interface ValidationInput {
-  version: 3; key: string; criticHash: string;
+  version: 3 | 4; key: string; criticHash: string;
+  /** Only an explicit owner value participates in shared result reuse. */
+  cacheIdentity?: string;
   target: { id: string; hash: string }; deps: { id: string; hash: string }[];
   reusable: boolean;
-  /** Omitted for default content verification. Included in default Artifact identity. */
+  /** Omitted for default content verification. Execution integrity metadata; never an additional cache key. */
   workspaceIntegrity?: WorkspaceIntegrity;
 }
 export interface ArtifactIdentity { identity: 'script'; value: string }
@@ -18,12 +20,16 @@ export interface ProjectSnapshot {
 }
 export interface ValidationEvidence {
   executionProvenance?: import('../provenance.js').ExecutionProvenance | null;
+  source?: import('../contracts.js').ExecutionSource;
+  profile?: import('../contracts.js').CriticProfile;
+  /** Set only by a live shared-cache lookup, never inferred from project history. */
+  cacheLookup?: boolean;
   requestId: string; runId: string; criticId: string; input: ValidationInput;
   completedAt: string; verdict: ReviewResult['verdict']; result: ReviewResult;
 }
 export interface ProjectRunDefinition {
   version: 3; snapshot: ProjectSnapshot; selection: ProjectSelection;
-  recursive: boolean; force: boolean; ignoreGates?: boolean;
+  recursive: boolean; force: boolean; forceCriticIds?: string[]; ignoreGates?: boolean;
   /** Prepared definitions, not tickets or persisted stale states. */
   templates: ReviewEnvelope[];
   /** Original evidence consumed by a completed execution; never a cached stale flag. */
@@ -49,7 +55,7 @@ export interface ProjectQuery {
   artifacts: ArtifactValidation[]; critics: CriticValidation[];
 }
 export interface ProjectPlan extends ProjectQuery {
-  recursive: boolean; force: boolean; ignoreGates?: boolean; selectedCriticIds: string[]; includedCriticIds: string[];
+  recursive: boolean; force: boolean; forceCriticIds?: string[]; ignoreGates?: boolean; selectedCriticIds: string[]; includedCriticIds: string[];
   items: (CriticValidation & { action: 'BLOCKED' | 'WAIT_DEPENDENCY' | 'REUSE' | 'COALESCE' | 'EXECUTE' | 'WAIT' | 'ACTIVE' | 'FAILED'; leaseExpiresAt?: string })[];
   counts: { gated: number; reuse: number; coalesce: number; execute: number; wait: number; active: number; failed: number };
 }

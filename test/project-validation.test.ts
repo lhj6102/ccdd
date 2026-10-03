@@ -30,27 +30,28 @@ test('current queries read only JSON and material and never create a store or ex
 });
 
 test('individual verification executes selected inputs immediately and preserves PASS when other evidence is missing', async t => {
-  const data = await fixture(t, true);
+  const data = await fixture(t, true); await data.identity('a'); await data.identity('b');
   const first = await data.verify({ selection: { kind: 'critic', criticId: 'a/check' } });
   assert.equal(first.status, 'INCOMPLETE'); assert.equal(first.requests.length, 1); assert.equal(first.requests[0].status, 'GREEN');
   assert.equal(first.validation!.critics.find(c => c.id === 'a/check')!.status, 'PASS');
   const second = await data.verify({ selection: { kind: 'artifact', artifactId: 'b' } });
-  assert.equal(second.status, 'GREEN'); assert.equal(second.requests.length, 1);
+  assert.equal(second.status, 'GREEN'); assert.equal(second.requests.length, 2);
+  assert.deepEqual(second.requests.filter(r => r.cacheDisposition !== 'hit').map(r => r.criticId), ['b/check']);
   const current = await inspectProject({ detail: 'full', ...data, selection: { kind: 'artifact', artifactId: 'a' } });
   assert.equal(current.plan.satisfied, true);
   assert.deepEqual(current.plan.critics.map(c => c.id), ['a/check', 'b/check']);
   assert.deepEqual(current.plan.artifacts.map(a => a.id), ['a', 'b']);
   const whole = await inspectProject({ ...data, detail: 'full' });
-  assert.equal(whole.plan.critics.find(c => c.id === 'independent/check')!.status, 'UNREVIEWED');
+  assert.equal(whole.plan.critics.find(c => c.id === 'independent/check')!.status, 'STALE');
 });
 
 test('recursive verification of a cycle runs real processes without PASS gates and reuses the same actual evidence', async t => {
-  const data = await fixture(t, true);
+  const data = await fixture(t, true); await data.identity('a'); await data.identity('b');
   const run = await data.verify({ selection: { kind: 'artifact', artifactId: 'a' }, recursive: true });
   assert.equal(run.status, 'GREEN'); assert.deepEqual(run.requests.map(r => r.criticId).sort(), ['a/check', 'b/check']);
-  assert.ok(run.requests.every(r => r.result?.exitCode === 0 && r.validationInput?.version === 3));
+  assert.ok(run.requests.every(r => r.result?.exitCode === 0 && r.validationInput?.version === 4));
   const again = await data.verify({ selection: { kind: 'artifact', artifactId: 'b' }, recursive: true });
-  assert.equal(again.status, 'GREEN'); assert.equal(again.requests.length, 0);
+  assert.equal(again.status, 'GREEN'); assert.equal(again.requests.length, 2); assert.ok(again.requests.every(r => r.cacheDisposition === 'hit'));
   assert.deepEqual(again.validation!.items.map(c => c.action), ['REUSE', 'REUSE']);
 });
 
@@ -111,14 +112,16 @@ test('narrow material selection still fingerprints the manifest and script entry
   assert.notEqual((await inspectProject({ ...data, detail: 'full' })).snapshot.inputs['a/check'].key, changed.inputs['a/check'].key);
 });
 
-test('force replaces evidence only for selected Critics and a later actual RED supersedes old PASS', async t => {
-  const data = await fixture(t);
+test('force bypasses only selected Critics and a new owner identity records actual RED', async t => {
+  const data = await fixture(t); await data.identity('a'); await data.identity('b',['check.test.mjs']); await data.identity('independent');
   await data.verify({ selection: { kind: 'all' } });
   const forced = await data.verify({ selection: { kind: 'critic', criticId: 'a/check' }, recursive: true, force: true });
-  assert.equal(forced.status, 'GREEN'); assert.deepEqual(forced.requests.map(r => r.criticId), ['a/check']);
+  assert.equal(forced.status, 'GREEN'); assert.deepEqual(forced.requests.filter(r => r.cacheDisposition !== 'hit').map(r => r.criticId), ['a/check']);
   await writeFile(join(data.repoPath, 'b/check.test.mjs'), "import test from 'node:test';import assert from 'node:assert/strict';test('actual failure',()=>assert.equal(1,2));");
   const failing = await data.verify({ selection: { kind: 'artifact', artifactId: 'a' }, recursive: true });
-  assert.equal(failing.status, 'RED'); assert.equal(failing.requests.find(r => r.criticId === 'a/check')!.status, 'BLOCKED');
+  assert.equal(failing.status, 'RED');
+  assert.equal(failing.requests.find(r => r.criticId === 'a/check')!.status, 'GREEN', 'The cached semantic verdict is not rewritten by a dependency gate.');
+  assert.equal(failing.validation!.critics.find(r => r.id === 'a/check')!.status, 'BLOCKED');
   assert.equal(failing.requests.find(r => r.criticId === 'b/check')!.status, 'RED');
   assert.equal(failing.validation!.satisfied, false);
 });

@@ -1,5 +1,7 @@
 # Getting started
 
+This guide targets the 7.x source contract; package publication is a separate release. Without an explicit identity function, the runtime example executes anew on every submission. Its completed result remains available through its Run handle. See [migration](migration-v7.md) and [caching](identity-cache.md).
+
 Use Node 22 LTS, at least 22.19.0. Create an empty project and install matching CCDD packages (or install the corresponding local tarballs while developing an unpublished release).
 
 ```sh
@@ -32,16 +34,14 @@ Installing common tools does not register views in `ccdd.json`.
 
 Consumers deliberately omitting common tools can install core and Project
 directly, using matching release versions; add default-tools only when needed.
-Project declares core `>=6.1.0 <7` and default-tools core `>=6.6.0 <7` as a peer. The umbrella is
+Project declares core `>=7.0.0 <8` and default-tools core `>=7.0.0 <8` as a peer. The umbrella is
 not needed for these advanced module-specific installs, and Project alone still
 does not install default-tools. Keep each directly imported module declared.
 
 ## Resource settings and upgrades
 
-Use matching package versions (6.6.0 for this release). Core adds owner identity weights, root review
-policy and pinned script execution-path declarations; mixed 6.0 core with 6.1
-Project/default-tools is not a supported installation. For upgrades, stop all
-old workers first and follow [the upgrade steps](releases.md#upgrading-to-61).
+Use matching 7.x packages for this source contract. Do not mix major versions.
+Stop earlier workers before upgrading and follow [7.x migration](migration-v7.md).
 
 All processes share the machine resource authority when using the same local
 configuration and state root. Defaults are identity capacity 100 and provider
@@ -91,7 +91,7 @@ npx ccdd-project status implementation
 npx ccdd-project history implementation
 ```
 
-The first verify executes real tests. A second unchanged verify reuses its evidence without executing another review. Change addition to subtraction to produce a real RED result. Restoring the exact earlier input can reuse the earlier matching PASS. A failed process or broken configuration is an operational error, not a semantic failure.
+The first verify executes real tests. This example declares no [identity function](identity-cache.md), so every verify executes again and no result is reused; add `stale.kind: "identity"` to share results across Runs. Change addition to subtraction to produce a real RED result. A failed process or broken configuration is an operational error, not a semantic failure.
 
 State defaults to `~/.local/state/ccdd/<workspace-path-hash>`. Use `--state-dir /absolute/external/path` to choose another location. Output, caches, result files and state must remain outside the workspace. Do not edit input while a review is active. A user-created worktree passed with `--repo` lets development continue elsewhere.
 

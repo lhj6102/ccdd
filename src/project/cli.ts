@@ -1,5 +1,10 @@
 #!/usr/bin/env node
+import { providerStatus, resumeProvider } from '../executors/provider-coordinator.js';
+import { streamProjectResults, projectRunSummary, projectRequestSummary, compareProjectRuns } from './results.js';
+import { once } from 'node:events';
+import { cacheCommand } from '../cache/cli.js';
 import { rejectIdentityConcurrency, validateMaxExecutions } from '../resources.js';
+import { readSelectionFile } from './selection-file.js';
 import { loadCheck } from './load-check.js';
 import { requiredArtifacts } from './query.js';
 import { positiveConcurrency } from './identity.js';
@@ -11,7 +16,7 @@ import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 import { diagnosticsMain } from '../diagnostics-cli.js';
 import { createBroker, readStateContext } from '../broker/index.js';
-import { createGraphDefinition } from '../broker/graph.js';
+import { compactGraphDefinition, createGraphDefinition } from '../broker/graph.js';
 import { dependencyClosure } from '../artifacts/scope.js';
 import { readWorkspaceConfig } from '../broker/config.js';
 import { prepareWorkspace } from '../workspaces/index.js';
@@ -28,10 +33,11 @@ import { claimHumanFromCli } from '../review/local-claim.js';
 
 type Output = { write(value: string): unknown };
 const terminal = new Set(['GREEN', 'RED', 'ERROR', 'INCOMPLETE']);
-const flags = new Set(['--all', '--recursive', '--force', '--ignore-gates', '--wait', '--json', '--full', '--help', '--human-inbox']);
-const values = new Set(['--repo', '--state-dir', '--critic', '--timeout-ms', '--requester', '--reviewer', '--result-file', '--tool', '--args', '--run', '--pi-auth-file', '--codex-auth-file', '--integrity', '--concurrency', '--identity-concurrency', '--max-executions', '--requests', '--output-dir', '--critics', '--artifacts', '--scenario-file', '--processes', '--resource-mode']);
+const flags = new Set(['--stream','--compact', '--all', '--recursive', '--force', '--ignore-gates', '--wait', '--json', '--full', '--help', '--human-inbox']);
+const values = new Set(['--after','--profile', '--repo', '--state-dir', '--critic', '--timeout-ms', '--requester', '--reviewer', '--result-file', '--tool', '--args', '--run', '--pi-auth-file', '--codex-auth-file', '--integrity', '--concurrency', '--identity-concurrency', '--max-executions', '--requests', '--output-dir', '--critics', '--artifacts', '--critics-file', '--artifacts-file', '--scenario-file', '--processes', '--resource-mode']);
 const help = `CCDD Project — pull validation and explicit review execution
 
+  ccdd-project cache show ID | list | compare LEFT RIGHT | gc | delete ID [--cache-dir PATH] [--json]
   ccdd-project load-check [--concurrency 60] [--requests 60] [--output-dir PATH] [--json]
   ccdd-project status [ARTIFACT | --critic ID] [--json]
   ccdd-project plan (ARTIFACT | --critic ID | --all) [--recursive] [--force]
@@ -58,12 +64,19 @@ Dependency Critics must have current GREEN evidence before execution. RED blocks
 Queries never create review tickets, send alarms or execute review tools or Providers.
 Reviews run in the supplied workspace. Keep it unchanged until completion.
 State and review output must stay outside the repository.
+provider status|resume NAME inspects cooldowns or resumes after account intervention.
+verify --stream emits terminal NDJSON results; run stream ID --after N resumes a subscription.
+run summary ID, request summary ID and run diff LEFT RIGHT are read-only queries.
+--force bypasses caching for one execution and never replaces a shared result.
 verify accepts --max-executions N (durable submission starts; 0 means reuse-only).
 verify accepts optional --concurrency N as a tighter cap; it never raises machine capacity.
 Identity scheduling uses local resources.json identityCapacity and Artifact stale.weight.
 verify/status/plan accept --integrity content|metadata (default: content).
 metadata trusts unchanged filesystem metadata to reuse captured content identity;
-it is opt-in, weaker than full content checks, and its evidence cannot satisfy content verification.
+it is opt-in and weaker than full content checks; it is not part of an identity cache key.
+Graph: graph --compact --json omits per-instance view definitions.
+Selection: --critics-file PATH or --artifacts-file PATH (JSON array or one ID per line).
+File selections cannot be combined with other selectors. Families are Artifact selectors.
 Common options: --repo PATH, --state-dir PATH, --json.
 Results are compact by default; --full includes the audit payload. run show always includes full detail.
 Execution: --human-inbox, --pi-auth-file PATH, --codex-auth-file PATH.
@@ -103,6 +116,13 @@ export async function main(argv = process.argv.slice(2), { stdout = process.stdo
   const print = (value: unknown, plain?: string) => stdout.write((!json && plain !== undefined ? plain : JSON.stringify(value, null, 2)) + '\n');
   try {
     const command = argv[0] ?? 'help';
+    if (command === 'provider') {
+      const parts = argv.slice(1).filter(part => part !== '--json');
+      if (parts.length === 1 && parts[0] === 'status') { print(providerStatus()); return 0; }
+      if (parts.length === 2 && parts[0] === 'resume') { print({ provider: parts[1], resumed: resumeProvider(parts[1]) }); return 0; }
+      throw new Error('Use provider status or provider resume NAME.');
+    }
+    if (command === 'cache') return await cacheCommand(argv.slice(1), stdout);
     if (['doctor', 'tools', 'monitor', 'prepare-demo'].includes(command)) return await diagnosticsMain(argv, { stdout, stderr });
     const { options, positional } = parse(argv.slice(1)); json = Boolean(options['--json']);
     const get = (key: string) => typeof options[key] === 'string' ? options[key] as string : undefined;
@@ -118,11 +138,12 @@ export async function main(argv = process.argv.slice(2), { stdout = process.stdo
     if (!['status', 'plan', 'verify', 'history', 'graph', 'config', 'run', 'request', 'prune'].includes(command)) throw new Error(`Unknown command: ${command}`);
     const common = ['--repo', '--state-dir', '--json'];
     const full = Boolean(options['--full']) || command === 'run' && positional[0] === 'show';
-    const permitted = new Set([...common, ...(['status', 'plan', 'verify', 'history', 'run', 'request'].includes(command) ? ['--full'] : []), ...(['status', 'plan', 'verify', 'history'].includes(command) ? ['--critic', '--critics', '--artifacts', '--all'] : []),
-      ...(['status', 'plan', 'verify'].includes(command) ? ['--integrity', '--identity-concurrency'] : []),
+    const permitted = new Set([...common, ...(['status', 'plan', 'verify', 'history', 'run', 'request'].includes(command) ? ['--full'] : []), ...(['status', 'plan', 'verify', 'history'].includes(command) ? ['--critic', '--critics', '--artifacts', '--critics-file', '--artifacts-file', '--all'] : []),
+      ...(['status', 'plan', 'verify'].includes(command) ? ['--integrity', '--identity-concurrency', '--profile'] : []),
       ...(['plan', 'verify'].includes(command) ? ['--recursive', '--force', '--ignore-gates'] : []),
-      ...(command === 'verify' ? ['--max-executions', '--concurrency', '--wait', '--timeout-ms', '--requester', '--human-inbox', '--pi-auth-file', '--codex-auth-file'] : []),
-      ...(command === 'run' ? ['--wait', '--timeout-ms'] : []),
+      ...(command === 'verify' ? ['--stream', '--max-executions', '--concurrency', '--wait', '--timeout-ms', '--requester', '--human-inbox', '--pi-auth-file', '--codex-auth-file'] : []),
+      ...(command === 'run' ? ['--after', '--wait', '--timeout-ms'] : []),
+      ...(command === 'graph' ? ['--compact'] : []),
       ...(command === 'request' ? ['--run', '--reviewer', '--result-file', '--tool', '--args'] : [])]);
     for (const key of Object.keys(options)) if (!permitted.has(key)) throw new Error(`${key} is not supported by ${command}.`);
     const maxConcurrentExecutors = get('--concurrency') === undefined ? undefined : positiveConcurrency(Number(get('--concurrency')), '--concurrency');
@@ -152,8 +173,12 @@ export async function main(argv = process.argv.slice(2), { stdout = process.stdo
       print(result, `Removed ${result.removed.length} transient paths; skipped ${result.skippedRequests.length} active or owned requests. Audit evidence is preserved.`);
       return 0;
     }
+    const fileCritics = get('--critics-file') ? await readSelectionFile(resolve(get('--critics-file')!)) : undefined;
+    const fileArtifacts = get('--artifacts-file') ? await readSelectionFile(resolve(get('--artifacts-file')!)) : undefined;
     const select = (required = false): ProjectSelection => {
-      if (positional.length > 1 || Number(Boolean(positional[0])) + Number(Boolean(get('--critic'))) + Number(Boolean(get('--critics'))) + Number(Boolean(get('--artifacts'))) + Number(Boolean(options['--all'])) > 1) throw new Error('Choose one Artifact, --critic ID, or --all.');
+      if (positional.length > 1 || Number(Boolean(positional[0])) + Number(Boolean(get('--critic'))) + Number(Boolean(get('--critics'))) + Number(Boolean(get('--artifacts'))) + Number(Boolean(options['--all'])) + Number(Boolean(fileCritics)) + Number(Boolean(fileArtifacts)) > 1) throw new Error('Choose one Artifact, --critic, --critics, --artifacts, --critics-file, --artifacts-file, or --all.');
+      if (fileCritics) return { kind: 'critics', criticIds: fileCritics };
+      if (fileArtifacts) return { kind: 'artifacts', artifactIds: fileArtifacts };
       if (positional[0]) return { kind: 'artifact', artifactId: positional[0] };
       if (get('--critics')) return { kind: 'critics', criticIds: get('--critics')!.split(',') };
       if (get('--artifacts')) return { kind: 'artifacts', artifactIds: get('--artifacts')!.split(',') };
@@ -161,6 +186,16 @@ export async function main(argv = process.argv.slice(2), { stdout = process.stdo
       if (required && !options['--all']) throw new Error('An Artifact, --critic ID, or --all is required.');
       return { kind: 'all' };
     };
+    const stream = async (id: string) => withCliCancellation('Result subscription cancelled; execution continues.', async signal => {
+      const after = Number(get('--after') ?? 0);
+      if (!Number.isSafeInteger(after) || after < 0) throw new Error('--after must be a non-negative integer cursor.');
+      for await (const result of streamProjectResults(context.stateDir,id,{after,timeoutMs,signal})) {
+        if (stdout.write(JSON.stringify(result)+'\n') === false && 'once' in stdout) await once(stdout as unknown as NodeJS.EventEmitter,'drain',{signal});
+      }
+      const run = projectRun(context.stateDir,id)!;
+      stdout.write(JSON.stringify({type:'run',runId:id,status:run.status})+'\n');
+      return exitFor(run);
+    });
     const verifySelection = command === 'verify' ? select(true) : undefined;
     const runOutput = (run: ProjectRunView) => full ? { ...run, workspaceIntegrity: run.workspace?.integrity ?? 'content' } : requesterRun(run, context.stateDir);
     const printRun = (run: ProjectRunView) => print(runOutput(run), full ? undefined : `Run: ${run.id}\nExecution: ${run.status}\nIntegrity: ${run.workspace?.integrity ?? 'content'}${run.validation ? `\n${planText(requesterPlan(run.validation, context.stateDir))}` : ''}`);
@@ -182,19 +217,19 @@ export async function main(argv = process.argv.slice(2), { stdout = process.stdo
         const { config } = await readWorkspaceConfig(workspace.descriptor.path, workspace.signal);
         await workspace.assertUnchanged();
         if (command === 'config') { print({ ok: true, artifacts: Object.keys(config.artifacts).length, critics: config.critics.length, snapshotHash: workspace.descriptor.hash }, 'Folder configuration and Artifact references are valid.'); return 0; }
-        const graph = createGraphDefinition(config);
+        const graph = createGraphDefinition(config, false);
         if (selection.kind !== 'all') {
           const artifacts = new Set(requiredArtifacts({ config }, selection));
           graph.critics = graph.critics.filter(c => artifacts.has(c.target));
           graph.artifacts = Object.fromEntries(Object.entries(graph.artifacts).filter(([id]) => artifacts.has(id)));
           graph.relations = graph.relations.filter(edge => artifacts.has(edge.source) && artifacts.has(edge.target));
         }
-        print(graph, graph.critics.map(c => `${c.id}: ${c.deps.join(', ') || '(no deps)'} -> ${c.target}`).join('\n') || Object.keys(graph.artifacts).join('\n')); return 0;
+        print(options['--compact'] ? compactGraphDefinition(graph) : graph, graph.critics.map(c => `${c.id}: ${c.deps.join(', ') || '(no deps)'} -> ${c.target}`).join('\n') || Object.keys(graph.artifacts).join('\n')); return 0;
       } finally { await workspace.close(); }
     }
     if (command === 'status' || command === 'plan') {
       const selection = select(command === 'plan');
-      const { plan } = await withCliCancellation('Project validation cancelled.', signal => inspectProject({ detail: 'full', ...context, selection, recursive: Boolean(options['--recursive']), force: Boolean(options['--force']), ignoreGates: options['--ignore-gates'] ? true : undefined, workspaceIntegrity, identityConcurrency, signal }));
+      const { plan } = await withCliCancellation('Project validation cancelled.', signal => inspectProject({ profile: get('--profile'), detail: 'full', ...context, selection, recursive: Boolean(options['--recursive']), force: Boolean(options['--force']), ignoreGates: options['--ignore-gates'] ? true : undefined, workspaceIntegrity, identityConcurrency, signal }));
       const output = full ? plan : requesterPlan(plan, context.stateDir);
       print(output, full ? undefined : planText(requesterPlan(plan, context.stateDir))); return command === 'plan' || plan.satisfied ? 0 : 1;
     }
@@ -212,9 +247,12 @@ export async function main(argv = process.argv.slice(2), { stdout = process.stdo
     }
     if (command === 'run' || command === 'request') {
       const [action, id] = positional;
-      const actions = command === 'run' ? ['list', 'show', 'resume', 'cancel'] : ['list', 'show', 'claim', 'tool', 'submit'];
-      if (!actions.includes(action) || positional.length !== (action === 'list' ? 1 : 2)) throw new Error(`Use ${command} ${actions.join('|')} with the appropriate ID.`);
+      const actions = command === 'run' ? ['list', 'show', 'resume', 'cancel', 'stream', 'summary', 'diff'] : ['list', 'show', 'claim', 'tool', 'submit', 'summary'];
+      if (!actions.includes(action) || positional.length !== (action === 'list' ? 1 : action === 'diff' ? 3 : 2)) throw new Error(`Use ${command} ${actions.join('|')} with the appropriate ID.`);
       if (command === 'run' && options['--wait'] && !['show', 'resume'].includes(action)) throw new Error('--wait requires run show or run resume.');
+      if (action === 'stream') return await stream(id);
+      if (action === 'summary') { const summary = command === 'run' ? projectRunSummary(context.stateDir,id) : projectRequestSummary(context.stateDir,id); if (!summary) throw new Error('Review handle not found.'); print(summary); return 0; }
+      if (action === 'diff') { print(compareProjectRuns({stateDir:context.stateDir,runId:id},{stateDir:context.stateDir,runId:positional[2]})); return 0; }
       if (action === 'list') { print(command === 'run' ? projectRuns(context.stateDir, { detail: full ? 'full' : 'compact' }) : projectRequests(context.stateDir, get('--run'), { detail: full ? 'full' : 'compact' })); return 0; }
       if (action === 'show') {
         if (command === 'run') { if (options['--wait']) return await wait(id); const run = projectRun(context.stateDir, id); if (!run) throw new Error('Review handle not found.'); printRun(run); }
@@ -231,8 +269,9 @@ export async function main(argv = process.argv.slice(2), { stdout = process.stdo
     const executors = createExecutorRegistry({ piOptions, alarmMethods: createLocalAlarmMethods({ ...context, humanInbox }) });
     broker = createBroker({ detail: 'full', ...context, executors, workspaceIntegrity, maxConcurrentExecutors, identityConcurrency });
     if (command === 'verify') {
-      const run = await withCliCancellation('Project validation cancelled.', signal => broker!.submitProject({ maxExecutions, selection: verifySelection!, recursive: Boolean(options['--recursive']), force: Boolean(options['--force']), ignoreGates: options['--ignore-gates'] ? true : undefined, requesterId: get('--requester') ?? 'cli', signal }));
+      const run = await withCliCancellation('Project validation cancelled.', signal => broker!.submitProject({ profile: get('--profile'), maxExecutions, selection: verifySelection!, recursive: Boolean(options['--recursive']), force: Boolean(options['--force']), ignoreGates: options['--ignore-gates'] ? true : undefined, requesterId: get('--requester') ?? 'cli', signal }));
       if (!terminal.has(run.status)) await ensureRunWorker({ broker, context, run, initialConfig: { piOptions, humanInbox, maxConcurrentExecutors } });
+      if (options['--stream']) return await stream(run.id);
       if (options['--wait']) return await wait(run.id);
       const view = projectRun(context.stateDir, run.id)!; printRun(view);
       return view.status === 'INCOMPLETE' ? 4 : view.status === 'ERROR' ? 2 : 0;

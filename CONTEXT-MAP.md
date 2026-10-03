@@ -1,17 +1,31 @@
 # Context Map
 
-- [Project Validation](src/project/CONTEXT.md) discovers static folder declarations, derives input identities and checks actual review evidence.
-- [Broker](src/broker/CONTEXT.md) owns review tickets, worker ownership, Human claims and recorded results.
-- [Executors](src/executors/CONTEXT.md) perform actual Runtime, Agent and Human evaluation.
+- [Project Validation](src/project/CONTEXT.md) discovers static Artifact declarations,
+  prepares explicit owner identities and requests missing actual results.
+- [Broker](src/broker/CONTEXT.md) owns Run receipts, execution lifecycle, admission
+  and Human claims. Cache-owned executions are independent of one caller Run.
+- [Executors](src/executors/CONTEXT.md) perform real Runtime, Agent and Human work,
+  with built-in bounded Provider/account recovery.
+- [Identity cache](docs/identity-cache.md) maps an explicit identity to a completed
+  result across projects. It owns in-flight subscriptions, publication fencing
+  and capacity-based GC, not input equivalence or workspace policy.
 
-`@ccdd/ccdd` is the single-install facade with exact dependencies and public subpaths; it owns no independent runtime. `@ccdd/core` provides definitions and a pure scope resolver. `@ccdd/project` packages the three contexts. Optional `@ccdd/default-tools` supplies ordinary scripts; installing it registers no tool.
+`@ccdd/ccdd` is the single-install facade with exact coordinated dependencies.
+`@ccdd/core` provides pure definitions/scope resolution; `@ccdd/project` packages
+the runtime and public cache/Project APIs. `@ccdd/default-tools` supplies optional
+scripts. Installing a library never registers tools or creates state.
 
-Each Artifact folder owns `ccdd.json`, its views and its Critics. An Artifact family folder's `ccdd.json` instead declares a static list of instance Artifacts that share its folder, views and Critics; each instance keeps its own evidence. Project Validation discovers markers and derives child, mount and instruction relations. Cycles are allowed. Strongly connected components provide finite content identities, and per-query traversal collects required actual evidence. In 6.0, dependency Critics outside the same SCC must have current GREEN evidence before execution; basis/no-Critic inputs do not gate. Explicit ignoreGates bypasses this default.
+Static folder/family `ccdd.json` discovery never runs scripts. Child, mount and
+instruction relations define a finite graph. SCCs support cycles and execution
+gates, not hidden cache-key salts. The owner function alone defines reuse; no
+function means no reusable cache. Same identities are shared without repo or
+worktree registration. Project receipts retain their actual historical results.
 
-The Requester builds immutable envelopes from static declarations. Artifact Runner reconnects script definitions from the same manifest and workspace, binds them to reviewer-specific tools, and validates JSON arguments/results. It creates no Artifact copies or generated material. Scripts receive canonical paths and logical connections; writable output belongs outside input.
+Artifact Runner reconnects the pinned manifest and supplied workspace into
+scoped reviewer tools. It validates arguments, content and observations; outputs
+remain outside input. Workspace integrity remains an execution boundary, not a
+cache hit filter. The optional monitor is observational on GET and delegates
+explicit current inspection and Human actions to their owning contexts.
 
-The Broker asks Executors to evaluate missing selected evidence. Results return to Project Validation for final satisfaction queries. The Broker stores execution history; it never propagates stale flags. Missing required evidence produces INCOMPLETE while preserving completed selected results.
-
-The optional local monitor displays stored records through readonly GETs, delegates explicit current-input inspection to Project Validation and Human actions to the Broker. It owns no worker. The supplied workspace remains unchanged throughout execution and Human waiting. Users can provide their own worktree; CCDD creates neither copies nor mount symlinks.
-
-See [implementation contracts](docs/contracts.md) and [version 4 migration](docs/migration-v4.md).
+See [contracts](docs/contracts.md), [Project APIs](docs/project-validation.md)
+and [7.x migration](docs/migration-v7.md).

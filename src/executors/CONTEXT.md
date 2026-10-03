@@ -1,6 +1,6 @@
 # Executors
 
-Executors perform actual evaluation and return evidence. The Broker owns assignment and lifecycle; Project Validation owns reuse and final satisfaction.
+Executors perform actual evaluation and return evidence. The Broker owns assignment and lifecycle; explicit owner identity defines reuse; Project Validation owns final satisfaction.
 
 - **Runtime Critic** executes the fixed Node test profile against resolved Artifact paths.
 - **Agent Critic** uses the requested Provider, model and reasoning profile with scoped observation tools.
@@ -31,3 +31,7 @@ server honored the request. CCDD does not infer it from response text, implement
 a second SSE parser, or reject replies solely because Pi omitted it. The Go
 Completions adapter does preserve an explicit mismatch, covered by a real-adapter
 fake-HTTP rejection test. Offline wire tests do not establish live model access.
+
+## Automatic recovery
+
+CCDD shares Provider/account cooldowns and auth/quota stops. Retry eligible turns within the original deadline and bounded attempts without model substitution, delivered-output replay or repeated tools. Do not store credentials in coordinator metadata. Usage unavailable from an attempt is unreported, not zero. See [the recovery contract](../../docs/identity-cache.md#provider-recovery-belongs-to-ccdd).

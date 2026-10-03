@@ -15,9 +15,10 @@ const audit = {
   provider: 'fixture', model: 'fixture', durationMs: 42, stdout: 'diagnostic output', stderr: '', exitCode: 0,
   toolCalls: Array.from({ length: 12 }, () => ({ name: 'a.read', arguments: { character: 'x'.repeat(4000) }, observation: { artifactId: 'a', operation: 'read', kind: 'content' as const } })),
 };
-async function fixture(t: Parameters<typeof artifactFixture>[0]) {
+async function fixture(t: Parameters<typeof artifactFixture>[0], cached = false) {
   const data = await artifactFixture(t);
   await data.write('a', { name: 'a', critics: [{ ...runtimeCritic(), passSchema: { type: 'object', properties: { summary: { type: 'string' }, evidence: { type: 'array', items: { type: 'string' } } }, required: ['summary', 'evidence'] } }] });
+  if (cached) await data.identity('a');
   const broker = createBroker({ ...data, executors: { canExecute: () => ({ ok: true }), execute: async () => audit } });
   data.cleanup(() => broker.close());
   const submitted = await broker.submitProject({ selection: { kind: 'all' } });
@@ -32,7 +33,7 @@ async function cli(stateDir: string, args: string[]) {
 }
 function compact(value: unknown) {
   const json = JSON.stringify(value);
-  for (const field of ['toolCalls', 'arguments', 'observation', 'payload', 'configManifest', 'validationInput', 'completedAt', 'durationMs', 'events', 'telemetry', 'stdout', 'snapshot', 'templates', 'profile']) {
+  for (const field of ['toolCalls', 'arguments', 'observation', 'payload', 'configManifest', 'validationInput', 'completedAt', 'durationMs', 'events', 'telemetry', 'stdout', 'snapshot', 'templates']) {
     assert.ok(!json.includes(`"${field}":`), `Unexpected audit field: ${field}`);
   }
 }
@@ -47,6 +48,7 @@ test('requester defaults reference unchanged stored audit evidence and full API 
   assert.equal(JSON.stringify(completed).split(audit.evidence[0]).length - 1, 1);
   const result = completed.results[0];
   assert.equal(result.summary, audit.summary); assert.deepEqual(result.evidence, audit.evidence);
+  assert.deepEqual(completed.requests[0].profile, runtimeCritic().profile);
   assert.equal(completed.requests[0].target, 'a'); assert.equal(completed.requests[0].criticId, 'a/check');
   const { reference } = result;
   const stored = projectRun(reference.stateDir, reference.runId)!;
@@ -69,17 +71,16 @@ test('requester defaults reference unchanged stored audit evidence and full API 
   compact(queryProject(inspected.snapshot, history, { stateDir }));
   const standalonePlan = planProject(inspected.snapshot, history, { stateDir });
   compact(standalonePlan);
-  assert.equal(standalonePlan.results.length, 1);
-  assert.deepEqual(standalonePlan.critics[0].result, { requestId: request.id, executionProvenance: null });
-  assert.deepEqual(standalonePlan.items[0].result, { requestId: request.id, executionProvenance: null });
-  assert.equal(JSON.stringify(standalonePlan).split(audit.evidence[0]).length - 1, 1);
+  assert.equal(standalonePlan.results.length, 0, 'Historical records cannot supply implicit reusable evidence');
+  assert.equal(standalonePlan.critics[0].result, null);
+  assert.equal(standalonePlan.items[0].result, null);
   assert.equal(Object.hasOwn(completed.validation!, 'results'), false);
   assert.deepEqual(bytes(), before, 'Request JSON bytes are identical before and after all projections'); db.close();
-  const reused = await broker.submitProject({ selection: { kind: 'all' } });
-  assert.equal(reused.status, 'GREEN'); assert.equal(reused.requests.length, 0);
-  assert.deepEqual(reused.results[0].reference, reference);
-  assert.equal(reused.validation!.critics[0].inputKey, completed.requests[0].inputKey);
-  assert.equal((await inspectProject({ ...data, detail: 'full' })).snapshot.inputs['a/check'].key, completed.requests[0].inputKey);
+  const next = await broker.submitProject({ selection: { kind: 'all' } });
+  assert.equal(next.status, 'QUEUED'); assert.equal(next.requests.length, 1);
+  assert.equal(next.requests[0].inputKey, completed.requests[0].inputKey);
+  assert.equal((await broker.run(next.id))!.status, 'GREEN');
+  assert.deepEqual(projectRun(reference.stateDir, reference.runId)!.requests[0].result, request.result);
 
   // Normalize path lengths for a deterministic, reproducible transport-size measurement.
   const measure = (value: unknown) => Buffer.byteLength(JSON.stringify(value).replaceAll(data.root, '/fixture'));
@@ -89,13 +90,13 @@ test('requester defaults reference unchanged stored audit evidence and full API 
 });
 
 test('CLI verification, status, plan, history and requests are compact; full and run show expose audit', async t => {
-  const { stateDir, completed } = await fixture(t), requestId = completed.requests[0].id;
+  const { stateDir, completed } = await fixture(t, true), requestId = completed.requests[0].id;
   for (const args of [['verify', '--all', '--wait'], ['status'], ['plan', '--all'], ['history'], ['request', 'show', requestId], ['request', 'list'], ['run', 'list']]) {
     compact(JSON.parse(await cli(stateDir, [...args, '--json'])));
   }
   for (const args of [['status'], ['plan', '--all'], ['verify', '--all', '--wait']]) {
     const text = await cli(stateDir, args);
-    assert.ok(text.includes(audit.summary)); assert.ok(text.includes(audit.evidence[0])); assert.ok(text.includes(completed.id)); assert.ok(text.includes(stateDir));
+    assert.ok(text.includes(audit.summary)); assert.ok(text.includes(audit.evidence[0])); assert.ok(text.includes(completed.requests[0].executionSource!.runId)); assert.ok(text.includes(completed.requests[0].executionSource!.stateDir));
   }
   const shown = JSON.parse(await cli(stateDir, ['run', 'show', completed.id, '--json']));
   assert.equal(shown.requests[0].result.toolCalls.length, 12);

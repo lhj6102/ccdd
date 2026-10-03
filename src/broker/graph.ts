@@ -72,8 +72,10 @@ export function projectGraph(graph: GraphDefinition, requests: readonly GraphReq
     const request = byCritic.get(critic.id);
     return { ...critic, requestId: request?.id ?? null, status: request?.status ?? null, claimedBy: request?.claimedBy ?? null, blockedReason: request?.blockedReason ?? null };
   });
+  const owned = new Map<string, GraphCriticState[]>();
+  for (const critic of critics) { const group = owned.get(critic.target) ?? []; group.push(critic); owned.set(critic.target, group); }
   const artifacts = Object.entries(graph.artifacts).map(([id, artifact]): GraphArtifactState => {
-    const own = critics.filter(critic => critic.target === id), passed = own.filter(critic => critic.status === 'GREEN').length;
+    const own = owned.get(id) ?? [], passed = own.filter(critic => critic.status === 'GREEN').length;
     const status: ArtifactStatus = artifact.basis ? 'BASIS' : own.length && passed === own.length ? 'GREEN' :
       (['ERROR', 'RED', 'RUNNING', 'WAITING_HUMAN', 'QUEUED'] as const).find(candidate => own.some(critic => critic.status === candidate)) ?? 'UNREVIEWED';
     return { id, path: artifact.path, children: artifact.children, mounts: artifact.mounts, basis: artifact.basis === true, status, ...(artifact.family ? { family: artifact.family.name } : {}),
@@ -88,4 +90,23 @@ export function projectGraph(graph: GraphDefinition, requests: readonly GraphReq
     edges.set(key, edge);
   }
   return { artifacts, critics, edges: [...edges.values()] };
+}
+
+/** Explicit alternate wire projection; never silently change graph --json. */
+export interface CompactGraphDefinition {
+  version: 1; projection: 'compact';
+  artifacts: { id: string; path: string; basis: boolean; family?: string; criticIds: string[] }[];
+  critics: GraphCriticDefinition[];
+  relations: ArtifactRelation[];
+}
+export function compactGraphDefinition(graph: GraphDefinition): CompactGraphDefinition {
+  validateGraphDefinition(graph);
+  const owned = new Map<string, string[]>();
+  for (const critic of graph.critics) { const ids = owned.get(critic.target) ?? []; ids.push(critic.id); owned.set(critic.target, ids); }
+  return { version: 1, projection: 'compact',
+    artifacts: Object.entries(graph.artifacts).map(([id, artifact]) => ({ id, path: artifact.path, basis: artifact.basis === true,
+      ...(artifact.family ? { family: artifact.family.name } : {}), criticIds: owned.get(id) ?? [] })),
+    critics: graph.critics.map(critic => ({ ...critic, deps: [...critic.deps] })),
+    relations: graph.relations.map(relation => ({ ...relation })),
+  };
 }

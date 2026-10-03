@@ -1,3 +1,4 @@
+import { selectProfiles, type ProfileSelection } from './profiles.js';
 import { rejectIdentityConcurrency } from '../resources.js';
 import { readWorkspaceConfig } from '../broker/config.js';
 import { prepareWorkspace, type WorkspaceIntegrity } from '../workspaces/index.js';
@@ -27,11 +28,11 @@ export { createBroker } from '../broker/index.js';
 export { createExecutorRegistry } from '../executors/index.js';
 
 /** Explicit CLI query: briefly observe the current workspace without creating a store. */
-export async function inspectProject<D extends ResultDetail = 'compact'>({ detail, repoPath, stateDir, selection, recursive = false, force = false, ignoreGates, signal, identityConcurrency, workspaceIntegrity = 'content' }: { repoPath: string; stateDir: string; selection?: ProjectSelection; recursive?: boolean; force?: boolean; ignoreGates?: boolean; signal?: AbortSignal; identityConcurrency?: number; workspaceIntegrity?: WorkspaceIntegrity } & ResultOptions<D>) {
+export async function inspectProject<D extends ResultDetail = 'compact'>({ detail, repoPath, stateDir, selection, recursive = false, force = false, ignoreGates, signal, identityConcurrency, workspaceIntegrity = 'content', profile }: { repoPath: string; stateDir: string; selection?: ProjectSelection; recursive?: boolean; force?: boolean; ignoreGates?: boolean; signal?: AbortSignal; identityConcurrency?: number; workspaceIntegrity?: WorkspaceIntegrity; profile?: ProfileSelection } & ResultOptions<D>) {
   rejectIdentityConcurrency(identityConcurrency);
   const workspace = await prepareWorkspace({ repoPath, stateDir, signal, integrity: workspaceIntegrity });
   try {
-    const { config } = await readWorkspaceConfig(workspace.descriptor.path, workspace.signal);
+    const config = selectProfiles((await readWorkspaceConfig(workspace.descriptor.path, workspace.signal)).config, structuredClone(profile), selection, recursive);
     const snapshot = await createProjectSnapshot(config, workspace.descriptor.path, workspace.descriptor.hash, workspace.signal, workspace.descriptor.integrity, selection, { identityConcurrency });
     const plan = currentProjectPlan(stateDir, snapshot, { selection, recursive, force, ignoreGates: ignoreGates ?? config.reviewPolicy?.dependencyGates === 'ignore' });
     await workspace.assertUnchanged();
@@ -43,3 +44,16 @@ export { readResourceConfiguration, resourcePaths } from '../resources.js';
 export type { ResourceConfiguration } from '../resources.js';
 export type { ExecutionProvenance } from '../provenance.js';
 export { loadCheck, type LoadCheckOptions, type LoadCheckProject, type LoadCheckStep } from './load-check.js';
+
+export { compactGraphDefinition, type CompactGraphDefinition } from '../broker/graph.js';
+
+// Project-independent local-compute cache API, also used by the Project/Broker paths.
+export { openIdentityCache, readIdentityCache, identityCacheDirectory, type CacheOptions, type CacheEntry, type CacheComputation, type CachedReview } from '../cache/index.js';
+export { listIdentityCache, cachedResultView, compareIdentityCache, type CachePageOptions } from '../cache/query.js';
+
+export { prepareProject, disposePreparedProject, type PreparedProject, type PrepareProjectOptions } from './prepared.js';
+export type { ProfileSelection } from './profiles.js';
+
+export { projectChanges, streamProjectResults, projectRequestSummary, projectRunSummary, compareProjectRuns, type ResultStreamOptions, type RunReference } from './results.js';
+
+export { providerStatus, resumeProvider } from '../executors/provider-coordinator.js';

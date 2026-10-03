@@ -47,12 +47,13 @@ test('rollback discards locally saved run and attempt cache entries', async t =>
 test('remote Human claims and source completion refresh a cached coalesced follower', { timeout: 15000 }, async t => {
   const data = await artifactFixture(t);
   await data.write('a', { name: 'a', views: { humanTools: { read: readTool() } }, critics: [{ id: 'human', title: 'Review', profile: { kind: 'human' }, payload: { instruction: 'Inspect.' } }] });
+  await data.identity('a');
   const broker = createBroker({ ...data, detail: 'full', executors: { canExecute: () => ({ ok: true }), execute: async () => { throw new Error('Human only'); }, notifyHuman: async () => {} } });
   data.cleanup(() => broker.close());
   const source = await broker.submitProject({ selection: { kind: 'all' } }), running = broker.run(source.id);
   for (let n = 0; !broker.getRequest(source.requests[0].id)!.notifiedAt; n++) { assert.ok(n < 100); await delay(10); }
   const follower = await broker.submitProject({ selection: { kind: 'all' } }), waiting = broker.run(follower.id);
-  assert.equal(follower.requests.length, 0);
+  assert.equal(follower.requests.length, 1);
   await remote(data, `await broker.claimHuman(${JSON.stringify(source.requests[0].id)}, 'remote');`);
   assert.equal(broker.getRequest(source.requests[0].id)!.claimedBy, 'remote');
   await remote(data, `await broker.completeHuman(${JSON.stringify(source.requests[0].id)}, { reviewerId: 'remote', result: { verdict: 'GREEN' } });`);
@@ -125,8 +126,9 @@ for (const method of ['submitProject', 'getRun', 'listRuns', 'run', 'terminalRun
     } finally { database.close(); }
     if (expected.status === 'GREEN') {
       const reused = await broker.submitProject({ selection: { kind: 'all' } });
-      assert.equal(reused.status, 'GREEN', 'mutated returned results do not corrupt evidence');
-      assert.equal(reused.requests.length, 0);
+      assert.equal(reused.status, 'QUEUED', 'without an identity, history is never a cache hit');
+      assert.equal((await broker.run(reused.id))!.status, 'GREEN', 'mutated returned objects do not corrupt new execution');
+      assert.equal(reused.requests.length, 1);
     }
   });
 }

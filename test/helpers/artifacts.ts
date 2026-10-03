@@ -23,8 +23,12 @@ process.stdout.write(JSON.stringify({content:[{type:'json',data}],...(data.lineC
 export async function artifactFixture(t: TestContext) {
   const root = await realpath(await mkdtemp(join(tmpdir(), 'ccdd-artifact-'))), repoPath = join(root, 'repo'), stateDir = join(root, 'state');
   await mkdir(repoPath);
+  // A test is one local trust domain; parallel files must not share machine slots or results.
+  const previousHome = process.env.CCDD_STATE_HOME;
+  process.env.CCDD_STATE_HOME = join(root, 'machine');
+  await mkdir(process.env.CCDD_STATE_HOME);
   const cleanups: (() => unknown | Promise<unknown>)[] = [];
-  t.after(async () => { for (const close of cleanups.reverse()) await close(); await rm(root, { recursive: true, force: true }); });
+  t.after(async () => { for (const close of cleanups.reverse()) await close(); await rm(root, { recursive: true, force: true }); if (previousHome === undefined) delete process.env.CCDD_STATE_HOME; else process.env.CCDD_STATE_HOME = previousHome; });
   const cleanup = (close: () => unknown | Promise<unknown>) => { cleanups.push(close); };
   const manifests = new Map<string, ArtifactManifest>();
   async function write(folder: string, manifest: ArtifactManifest, files: Record<string, string | Buffer> = {}) {
@@ -40,7 +44,15 @@ export async function artifactFixture(t: TestContext) {
     const manifest = structuredClone(manifests.get(folder)!); change(manifest); manifests.set(folder, manifest);
     await writeFile(join(repoPath, folder, 'ccdd.json'), JSON.stringify(manifest, null, 2));
   }
-  return { root, repoPath, stateDir, write, edit, manifests, cleanup,
+  // Cache-focused tests must explicitly declare substitutability, just like owners.
+  // Ordinary fixtures remain uncached. File choices are test-owned, not CCDD defaults.
+  async function identity(folder: string, files: string[] = [], key = folder || 'root') {
+    await writeFile(join(repoPath, folder, 'fixture-identity.mjs'), `import {createHash} from 'node:crypto'; import {readFileSync} from 'node:fs';
+      const hash=createHash('sha256').update(${JSON.stringify(key)});
+      for(const file of ${JSON.stringify(files)}) hash.update(readFileSync(file)); console.log(hash.digest('hex'));`);
+    await edit(folder, manifest => { manifest.stale = {kind:'identity',script:{command:'node',args:['fixture-identity.mjs']}}; });
+  }
+  return { root, repoPath, stateDir, write, edit, identity, manifests, cleanup,
     config: async () => (await readWorkspaceConfig(repoPath)).config,
     requests: (criticId?: string) => prepareReviewRequests({ repoPath, repoId: 'fixture', snapshotHash: 'a'.repeat(64), criticId }),
   };

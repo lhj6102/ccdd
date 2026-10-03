@@ -102,19 +102,18 @@ or `local`.
 | Old saved `worker.json` | Resume fails explicitly; stop old workers and submit using the new protocol. |
 | Consumer native worker pool size | Remains an explicit consumer concern; never inferred from identity concurrency or CPU count. |
 
-**Stop all 6.0 workers before upgrading.** New workers and saved worker files
-use `resources-1`; old active owners in the same state are rejected, old Runs
-cannot be resumed, and old active candidates cannot be coalesced. New code
-cannot retroactively make an old running executable obey machine leases.
-Format **6** remains additive: completed evidence is readable/reusable and
-missing provenance is `null`. Do not delete state or change its format marker.
+**Stop earlier-version workers before upgrading to 7.x.** The machine resource
+protocol remains `resources-1`. Historical format-6 records can be read where
+supported, but previous composite input versions are never reused or resumed.
+Missing old provenance is `null`. See [migration](migration-v7.md).
 
-There is no package/Pi/capacity salt in semantic keys. Byte-identical existing
-configuration keeps its default identity. Owner identities depend on their
-returned value, not scheduler weight or local capacities. Default file-hash
-Artifacts continue hashing raw `ccdd.json` material: editing a root policy in
-that file is an explicit input edit, not an invisible package-version change.
-Owners must include meaningful profile/tool semantics in their identity.
+Resource capacity and scheduler weights never add cache salts. Only the explicit
+owner function's returned identity enables reuse, globally within the local
+user's state home. Default/file-hash declarations no longer enable reusable
+caching. Profile/tool/dependency distinctions belong in the owner's value when
+needed. Public profile selection, streams, summaries and prepared submissions
+are described in [Project APIs](project-validation.md); shared Provider/account
+cooldown and auth/quota resume are part of [CCDD recovery](identity-cache.md#provider-recovery-belongs-to-ccdd).
 
 ## Durable execution budgets
 

@@ -1,0 +1,74 @@
+name: PR validation
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-validation-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  acceptance:
+    name: ${{ matrix.check }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        check: [unit, scale, packages]
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+      - name: Record exact source and install locked dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          git rev-parse HEAD
+          node --version
+          npm ci --ignore-scripts --no-audit --no-fund
+      - name: Check repository language and build all packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm run check:language
+          npm run build
+      - name: Run full regression suite
+        if: matrix.check == 'unit'
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --test --test-reporter=tap --test-concurrency=4 dist/test/*.test.js 2>&1 | tee "$RUNNER_TEMP/unit.log"
+          grep -Eq '^# fail 0$' "$RUNNER_TEMP/unit.log"
+          grep -Eq '^# skipped 0$' "$RUNNER_TEMP/unit.log"
+          grep -Eq '^# cancelled 0$' "$RUNNER_TEMP/unit.log"
+      - name: Run actual selected-catalog and multi-process acceptance
+        if: matrix.check == 'scale'
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm run test:scale 2>&1 | tee "$RUNNER_TEMP/scale.log"
+      - name: Verify actual npm and pnpm tarball installations
+        if: matrix.check == 'packages'
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm run test:packages 2>&1 | tee "$RUNNER_TEMP/packages.log"
+      - name: Ensure verification did not alter tracked source
+        run: git diff --exit-code
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pr-validation-${{ matrix.check }}-${{ github.sha }}
+          path: ${{ runner.temp }}/${{ matrix.check }}.log
+          if-no-files-found: warn
+          retention-days: 7
+
+# Read-only acceptance only: no branch writes, publication, credentials or model calls.

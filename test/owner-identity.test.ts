@@ -48,9 +48,10 @@ test('owner identity reuses actual evidence across runtime and material changes,
   await writeFile(join(data.repoPath, 'a/content.txt'), 'different material');
   await writeFile(join(data.repoPath, 'a/view.mjs'), '// different view implementation');
   const second = await verify();
-  assert.equal(second.status, 'GREEN'); assert.equal(second.requests.length, 0);
+  assert.equal(second.status, 'GREEN'); assert.equal(second.requests.length, 1); assert.equal(second.requests[0].cacheDisposition, 'hit');
   assert.equal(second.validation!.items[0].action, 'REUSE');
-  assert.equal(second.validation!.items[0].result!.requestId, first.requests[0].id);
+  assert.equal(second.validation!.items[0].result!.requestId, second.requests[0].id);
+  assert.deepEqual(second.requests[0].executionSource, first.requests[0].executionSource);
   assert.deepEqual(second.project!.snapshot.artifactIdentities, { a: { identity: 'script', value: 'equivalent-v1' } });
   assert.notEqual(second.snapshotHash, first.snapshotHash);
   for (const args of [['plan', 'a'], ['status', '--critic', 'a/check'], ['run', 'show', second.id]]) {
@@ -70,7 +71,7 @@ test('owner identity reuses actual evidence across runtime and material changes,
   assert.equal(changed.requests[0].validationInput!.criticHash, initial.criticHash);
 });
 
-test('owner values ignore entry, definitions and environment changes but retain dependency identities', async t => {
+test('owner values ignore entry, definitions and environment changes including dependency changes unless the function changes', async t => {
   const data = await fixture(t);
   await data.write('basis', { name: 'basis', basis: true });
   await data.edit('a', manifest => { manifest.mounts = { basis: 'basis' }; manifest.envRequirements = { ready: { description: 'Ready', script: 'ready.mjs' } }; });
@@ -79,8 +80,7 @@ test('owner values ignore entry, definitions and environment changes but retain 
   for (const [path, contents] of [['a/identity.mjs', 'console.log("equivalent-v1");'], ['a/rule.txt', 'rule two'], ['a/ready.mjs', '// changed environment'], ['basis/content.txt', 'dependency change']]) {
     await writeFile(join(data.repoPath, path), contents);
     const after = (await inspectProject({ ...data, detail: 'full' })).snapshot;
-    if (path.startsWith('basis/')) assert.notEqual(after.inputs['a/check'].key, before.inputs['a/check'].key, path);
-    else assert.equal(after.inputs['a/check'].key, before.inputs['a/check'].key, path);
+    assert.equal(after.inputs['a/check'].key, before.inputs['a/check'].key, path);
     before = after;
   }
   await data.edit('a', manifest => { manifest.views!.agentTools!.read.metadata.description = 'Changed tool contract'; });
@@ -253,8 +253,12 @@ setInterval(()=>{},1000);`);
     const result = await Promise.race([exited, delay(5000, undefined, { ref: false }).then(() => { throw new Error('Identity cancellation or timeout did not finish.'); })]);
     assert.deepEqual(result, { code: 2, signal: null }, stderr);
     assert.match(stderr, signal ? /Project validation cancelled\./ : /Identity script for Artifact a timed out after 1000 ms/);
-    assert.throws(() => process.kill(identity!.pid, 0), { code: 'ESRCH' });
-    assert.throws(() => process.kill(identity!.childPid, 0), { code: 'ESRCH' });
+    for (const pid of [identity.pid, identity.childPid]) {
+      if(process.platform === 'linux') {
+        const stat = await readFile(`/proc/${pid}/stat`,'utf8').catch(cause=>{if(cause.code==='ENOENT'||cause.code==='ESRCH')return null;throw cause;});
+        assert.ok(stat === null || /^[ZX]$/.test(stat.slice(stat.lastIndexOf(')')+2).split(' ')[0]), 'Identity and descendants must have exited, not merely received a signal.');
+      } else assert.throws(() => process.kill(pid,0), {code:'ESRCH'});
+    }
     await assert.rejects(readdir(identity.outputDir), { code: 'ENOENT' });
   } finally {
     if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
@@ -282,7 +286,7 @@ test('identity schema rejects unknown fields, unsafe paths, inline commands and 
   }
 });
 
-test('default identities use the new format without package or runtime version signals', async t => {
+test('diagnostic fingerprints stay stable but never become implicit reusable identities', async t => {
   const data = await artifactFixture(t);
   for (const name of ['default', 'narrow', 'always']) await data.write(name, { name, critics: [runtimeCritic()], ...(name === 'narrow' ? { stale: { kind: 'file-hash' as const, paths: ['content.txt'] } } : name === 'always' ? { stale: { kind: 'always' as const } } : {}) });
   const config = await data.config(), before = await createProjectSnapshot(config, data.repoPath, 'a'.repeat(64));
@@ -294,8 +298,8 @@ test('default identities use the new format without package or runtime version s
   } finally { Object.defineProperty(process.versions, 'node', node); }
   for (const critic of config.critics) {
     const target = { id: critic.target, hash: before.artifactHashes[critic.target] };
-    assert.equal(before.inputs[critic.id].version, 3);
-    assert.equal(before.inputs[critic.id].key, inputHash({ version: 3, criticId: critic.id, target, deps: [] }));
+    assert.equal(before.inputs[critic.id].version, 4); assert.equal(before.inputs[critic.id].reusable,false); assert.equal(before.inputs[critic.id].cacheIdentity,undefined);
+    assert.equal(before.inputs[critic.id].key, inputHash({ version: 4, criticId: critic.id, target, deps: [] }));
   }
 });
 
@@ -311,7 +315,8 @@ test('Critic identity is pinned for Pi models and ignores Pi dependency versions
   await writeFile(join(data.repoPath, 'a', 'view.mjs'), 'export {};\n');
   const snapshot = await createProjectSnapshot(await data.config(), data.repoPath, 'a'.repeat(64));
   // Golden values recorded with @earendil-works/pi-* 0.87.1, before the 0.99.1 and 1.0.0 bumps, and unchanged after them.
-  assert.deepEqual(Object.fromEntries(Object.entries(snapshot.inputs).map(([id, input]) => [id, { criticHash: input.criticHash, key: input.key }])), GOLDEN);
+  assert.deepEqual(Object.fromEntries(Object.entries(snapshot.inputs).map(([id, input]) => [id, input.criticHash])), Object.fromEntries(Object.entries(GOLDEN).map(([id,value])=>[id,value.criticHash])));
+  assert.ok(Object.values(snapshot.inputs).every(input => input.version===4 && !input.reusable && input.cacheIdentity===undefined));
   assert.doesNotMatch(JSON.stringify(snapshot.inputs), /0\.87\.1|0\.99\.1/);
 });
 

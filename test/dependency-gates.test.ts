@@ -65,16 +65,19 @@ test('reused descendant evidence is blocked by current RED and changed input rep
   await data.write('a', { name: 'a', critics: [runtimeCritic()] });
   await data.write('b', { name: 'b', critics: [runtimeCritic('check', 'Inspect {a}.')] });
   const calls: string[] = [];
+  await data.identity('a', ['content.txt']); await data.identity('b');
   const broker = createBroker({ ...data, executors: { canExecute: () => ({ ok: true }), execute: async request => { calls.push(request.target); return { verdict: red && request.target === 'a' ? 'RED' : 'GREEN' }; } } }); data.cleanup(() => broker.close());
   let run = await broker.submitProject({ selection: { kind: 'all' } }); await broker.run(run.id);
-  red = true; run = await broker.submitProject({ selection: { kind: 'critic', criticId: 'a/check' }, force: true }); await broker.run(run.id);
+  const { writeFile } = await import('node:fs/promises'); const { join } = await import('node:path');
+  await writeFile(join(data.repoPath,'a/content.txt'),'Owner-declared RED input');
+  red = true; run = await broker.submitProject({ selection: { kind: 'critic', criticId: 'a/check' } }); await broker.run(run.id);
   const plan = (await inspectProject(data)).plan;
   assert.equal(plan.items.find(item => item.id === 'b/check')!.action, 'BLOCKED');
   assert.equal(plan.items.find(item => item.id === 'b/check')!.result, null);
-  red = false; const { writeFile } = await import('node:fs/promises'); const { join } = await import('node:path');
+  red = false;
   await writeFile(join(data.repoPath, 'a/content.txt'), 'Changed immutable input.');
   calls.length = 0; run = await broker.submitProject({ selection: { kind: 'all' } });
-  assert.equal((await broker.run(run.id))!.status, 'GREEN'); assert.deepEqual(calls, ['a','b']);
+  assert.equal((await broker.run(run.id))!.status, 'GREEN'); assert.deepEqual(calls, ['a']);
 });
 
 test('CLI ignore-gates quote reports executable descendants instead of gated reviews', async t => {
@@ -89,11 +92,12 @@ test('CLI ignore-gates quote reports executable descendants instead of gated rev
 test('coalesced chains observe source gates and never invoke duplicate descendants', async t => {
   const data = await artifactFixture(t); let release!: () => void; const gate = new Promise<void>(resolve => { release = resolve; }); const calls: string[] = [];
   await data.write('a', { name: 'a', critics: [runtimeCritic()] }); await data.write('b', { name: 'b', critics: [runtimeCritic('check', 'Inspect {a}.')] });
+  await data.identity('a'); await data.identity('b');
   const broker = createBroker({ ...data, executors: { canExecute: () => ({ ok: true }), execute: async request => { calls.push(request.target); if (request.target === 'a') await gate; return { verdict: 'GREEN' }; } } });
   data.cleanup(async () => { release(); await broker.close(); });
   const source = await broker.submitProject({ selection: { kind: 'all' } }), running = broker.run(source.id);
   const follower = await broker.submitProject({ selection: { kind: 'all' } }), following = broker.run(follower.id);
-  await delay(20); assert.deepEqual(calls, ['a']); release();
+  for(let i=0;!calls.length;i++){assert.ok(i<500);await delay(10);} assert.deepEqual(calls, ['a']); release();
   assert.equal((await running)!.status, 'GREEN'); assert.equal((await following)!.status, 'GREEN');
   assert.equal(calls.filter(c => c === 'b').length, 1);
 });
@@ -119,11 +123,12 @@ test('force respects gates and basis or no-Critic inputs do not gate', async t =
 test('forced ancestor releases a reused chain in reverse discovery order', async t => {
   const data = await artifactFixture(t), calls: string[] = [];
   for (const [id, dependency] of [['z',''],['m','z'],['a','m']]) await data.write(id, { name: id, critics: [runtimeCritic('check', dependency ? `Inspect {${dependency}}.` : 'Inspect.')] });
+  for (const id of ['z','m','a']) await data.identity(id);
   const broker = createBroker({ ...data, executors: { canExecute: () => ({ ok: true }), execute: async request => { calls.push(request.target); return { verdict: 'GREEN' }; } } }); data.cleanup(() => broker.close());
   let run = await broker.submitProject({ selection: { kind: 'all' } }); assert.equal((await broker.run(run.id))!.status, 'GREEN');
   calls.length = 0; run = await broker.submitProject({ selection: { kind: 'critic', criticId: 'z/check' }, force: true });
   assert.equal((await broker.run(run.id))!.status, 'GREEN'); assert.deepEqual(calls, ['z']);
-  const again = await broker.submitProject({ selection: { kind: 'all' } }); assert.equal(again.status, 'GREEN'); assert.equal(again.requests.length, 0);
+  const again = await broker.submitProject({ selection: { kind: 'all' } }); assert.equal(again.status, 'GREEN'); assert.equal(again.requests.length, 3); assert.ok(again.requests.every(request => request.cacheDisposition === 'hit'));
 });
 
 test('a gated follower cannot adopt satisfaction early from an ignore-gates source', async t => {
