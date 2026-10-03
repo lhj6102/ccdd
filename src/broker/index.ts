@@ -767,6 +767,14 @@ export function createBroker<D extends ResultDetail = 'compact'>({ [executionMod
             if (starts > maxExecutions) throw codedError(`Plan requires ${starts} new executions, exceeding maxExecutions ${maxExecutions}.`, 'EXECUTION_BUDGET_EXCEEDED');
           }
         });
+        // Queries stay read-only; admitted cache hits count as use for approximate LRU.
+        const hits = ids.flatMap(criticId => {
+          const identity = snapshot.inputs[criticId].cacheIdentity;
+          return identity && cached.has(identity) && !(force && record.project!.forceCriticIds!.includes(criticId)) ? [identity] : [];
+        });
+        if (hits.length) {
+          try { sharedCache().noteUsed(hits); } catch { /* Optional LRU accounting cannot undo an admitted result. */ }
+        }
         brokerTestHooks.onSubmissionCommit?.(performance.now() - commitStarted);
         changed(); return detail === 'full' ? required(getRun(id), 'Run') : { ...record, scope: record.scope!, requests: [], events: [], owner: null };
       } finally { await workspace.close(); }

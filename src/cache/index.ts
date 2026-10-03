@@ -114,6 +114,8 @@ export function openIdentityCache({ directory = identityCacheDirectory(), maxByt
   mkdirSync(directory, { recursive: true, mode: 0o700 });
   const db = new DatabaseSync(join(directory, 'cache.sqlite'), { timeout: 5000 });
   try {
+    const initialized = Number(db.prepare('PRAGMA user_version').get()!.user_version) === 1 && db.prepare("SELECT 1 FROM sqlite_master WHERE name='cache_execution_storage'").get();
+    if (!initialized) {
     db.exec('BEGIN IMMEDIATE');
     const version = Number(db.prepare('PRAGMA user_version').get()!.user_version);
     if (version === 0) {
@@ -137,12 +139,17 @@ export function openIdentityCache({ directory = identityCacheDirectory(), maxByt
     format(db);
     db.exec(`CREATE TABLE IF NOT EXISTS cache_execution_storage(id TEXT PRIMARY KEY,retire_pid INTEGER,retire_identity TEXT);
       CREATE INDEX IF NOT EXISTS cache_entry_execution ON cache_entries(json_extract(data,'$.executionId'));`);
-    db.exec('COMMIT'); db.exec('PRAGMA journal_mode=WAL; PRAGMA busy_timeout=25');
+    db.exec('COMMIT');
+    }
+    format(db);
+    if (db.prepare('PRAGMA journal_mode').get()!.journal_mode !== 'wal') db.exec('PRAGMA journal_mode=WAL');
+    db.exec('PRAGMA busy_timeout=25');
     chmodSync(join(directory, 'cache.sqlite'), 0o600);
   } catch (cause) { try { db.exec('ROLLBACK'); } catch {} db.close(); throw cause; }
   let closed = false, closing = false, closePromise: Promise<void> | undefined;
   const owned = new Map<string, { controller: AbortController; promise: Promise<void>; scope?: string }>();
   const subscribers = new Set<string>();
+  const pendingFailures = new Map<string, { identity: string; code: string }>();
   const shuttingDown = new AbortController();
   const clients = new Set<Promise<CacheComputation>>();
   const touches = new Map<string, number>();
@@ -172,10 +179,21 @@ export function openIdentityCache({ directory = identityCacheDirectory(), maxByt
   const removeJob = (jobId: string) => {
     db.prepare("DELETE FROM cache_jobs WHERE id=? AND state!='RUNNING' AND NOT EXISTS(SELECT 1 FROM cache_subscribers WHERE job_id=?)").run(jobId, jobId);
   };
+  const publishFailure = (jobId: string, identity: string, code: string) => transaction(() => {
+    db.prepare("UPDATE cache_jobs SET state='ERROR',error_code=?,error_message=? WHERE id=? AND pid=? AND process_identity IS ? AND state='RUNNING'")
+      .run(code, 'Shared computation failed; inspect the original execution diagnostics.', jobId, process.pid, ownProcessIdentity);
+    db.prepare('DELETE FROM cache_active WHERE identity=? AND job_id=?').run(identity, jobId);
+  });
   const maintain = async () => {
     if (closed || maintaining) return;
     maintaining = true;
     try {
+      // A failed publication must not leave a live-process RUNNING tombstone.
+      // Retain the terminal transition until the writer becomes available.
+      for (const [id, failure] of pendingFailures) {
+        await retry(() => publishFailure(id, failure.identity, failure.code));
+        pendingFailures.delete(id);
+      }
       if (performance.now() - lastReap > 1000) { await retry(reapSubscribers); lastReap = performance.now(); }
       for (const [id, task] of owned) {
         const row = db.prepare('SELECT state FROM cache_jobs WHERE id=?').get(id);
@@ -234,6 +252,7 @@ export function openIdentityCache({ directory = identityCacheDirectory(), maxByt
   };
   const gc = async ({ limit = 128 }: { limit?: number } = {}) => {
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > 1000) throw new Error('GC limit must be 1-1000.');
+    await maintain();
     await retry(reapSubscribers);
     const result = await retry(() => transaction(() => {
       const jobs = db.prepare("SELECT id,identity,pid,process_identity FROM cache_jobs WHERE state='RUNNING' ORDER BY created_at LIMIT ?").all(limit);
@@ -279,15 +298,13 @@ export function openIdentityCache({ directory = identityCacheDirectory(), maxByt
         // Operational errors are visible only to this attempt's subscribers. They
         // never become identity->result entries or negative-cache future requests.
         const code = cause && typeof cause === 'object' && 'code' in cause && typeof cause.code === 'string' && /^[A-Z][A-Z0-9_]{0,63}$/.test(cause.code) ? cause.code : 'COMPUTE_FAILED';
-        const message = 'Shared computation failed; inspect the original execution diagnostics.';
-        await retry(() => transaction(() => {
-          db.prepare("UPDATE cache_jobs SET state='ERROR',error_code=?,error_message=? WHERE id=? AND pid=? AND process_identity IS ? AND state='RUNNING'").run(code, message, jobId, process.pid, ownProcessIdentity);
-          db.prepare('DELETE FROM cache_active WHERE identity=? AND job_id=?').run(identity, jobId);
-        }));
+        pendingFailures.set(jobId, { identity, code });
+        await retry(() => publishFailure(jobId, identity, code));
+        pendingFailures.delete(jobId);
       } finally {
         owned.delete(jobId);
         await retry(() => removeJob(jobId));
-        await gc();
+        await gc().catch(() => { /* Explicit GC reports maintenance errors; do not replace a completed result. */ });
       }
     })();
     // Execute is asynchronous; install the owner before its first continuation.
@@ -299,7 +316,7 @@ export function openIdentityCache({ directory = identityCacheDirectory(), maxByt
     subscribers.delete(subscriber);
     await retry(() => transaction(() => { db.prepare('DELETE FROM cache_subscribers WHERE id=?').run(subscriber); removeJob(jobId); }));
     await maintain();
-    await gc();
+    await gc().catch(() => { /* Unrelated storage retirement cannot invalidate the returned result. */ });
   };
   const compute = async (identity: string | null | undefined, execute: (signal: AbortSignal, executionId: string) => Promise<CachedReview>, options: CacheComputeOptions = {}): Promise<CacheComputation> => {
       assertOpen();
@@ -343,6 +360,8 @@ export function openIdentityCache({ directory = identityCacheDirectory(), maxByt
           options.onState?.(creator ? 'executing' : 'coalesced', jobId);
           for (;;) {
             options.signal?.throwIfAborted();
+            const failed = pendingFailures.get(jobId);
+            if (failed) throw error(failed.code, 'Shared computation could not publish its result.');
             const row = await retry(() => db.prepare('SELECT * FROM cache_jobs WHERE id=?').get(jobId), options.signal);
             if (!row) throw error('CACHE_JOB_LOST', 'Shared computation record disappeared.');
             if (row.state === 'COMPLETED') return { entry: decode(row)!, disposition: creator ? 'executed' : 'coalesced' };
@@ -387,7 +406,11 @@ export function openIdentityCache({ directory = identityCacheDirectory(), maxByt
         return Number(db.prepare('DELETE FROM cache_entries WHERE identity=?').run(identity).changes);
       }));
     },
-    gc,
+    noteUsed(identities: Iterable<string>) {
+      assertOpen();
+      for (const identity of identities) { validateCacheIdentity(identity); touch(identity); }
+    },
+    gc(options?: { limit?: number }) { assertOpen(); return gc(options); },
     async drain(scope?: string) { await Promise.allSettled([...owned.values()].filter(task => scope === undefined || task.scope === scope).map(task => task.promise)); },
     close(): Promise<void> {
       if(closePromise) return closePromise;
@@ -398,11 +421,17 @@ export function openIdentityCache({ directory = identityCacheDirectory(), maxByt
       // Local subscriptions are detached first. Remote subscribers
       // keep the computation alive while the owner gracefully drains.
       await Promise.allSettled([...owned.values()].map(task => task.promise));
-      clearInterval(maintenance);
-      while (maintaining) await delay(5);
+      const deadline = performance.now() + 5500;
+      while (maintaining) {
+        if (performance.now() >= deadline) throw error('CACHE_BUSY', 'Cache shutdown is waiting for terminal bookkeeping; retry close.');
+        await delay(5);
+      }
       await maintain();
+      if (pendingFailures.size) throw error('CACHE_BUSY', 'Cache shutdown must finish pending terminal transitions.');
+      clearInterval(maintenance);
       db.close(); closed = true;
       })();
+      void closePromise.catch(() => { closePromise = undefined; });
       return closePromise;
     },
   };
