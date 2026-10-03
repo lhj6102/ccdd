@@ -28,3 +28,5 @@ jobs:
           path: ${{ runner.temp }}/source
           if-no-files-found: error
           retention-days: 1
+
+# Export the current integration head; remove this temporary workflow before merge.
