@@ -32,12 +32,18 @@ jobs:
           branch=feat/project-independent-identity-cache
           test "$(git ls-remote origin "refs/heads/$branch" | cut -f1)" = "$EXPECTED_HEAD"
           python3 - <<'PY'
-          import base64, hashlib, json, os, pathlib, zlib
+          import base64, hashlib, json, os, pathlib, re, zlib
           data = pathlib.Path('scripts/.identity-cache-progress.patch').read_bytes()
           if data.startswith(b'{'):
               envelope = json.loads(data)
+              encoded = envelope.get('gzipBase64')
+              if encoded is None:
+                  parts = envelope['parts']
+                  if not 1 <= len(parts) <= 64 or not all(re.fullmatch(r'scripts/\.identity-cache-parts/[0-9]{2}', p) for p in parts):
+                      raise ValueError('Invalid patch parts')
+                  encoded = ''.join(pathlib.Path(p).read_text() for p in parts)
               decoder = zlib.decompressobj(31)
-              data = decoder.decompress(base64.b64decode(envelope['gzipBase64'], validate=True), 2097152)
+              data = decoder.decompress(base64.b64decode(encoded, validate=True), 2097152)
               if not decoder.eof or decoder.unused_data or hashlib.sha256(data).hexdigest() != envelope['sha256']:
                   raise ValueError('Patch integrity or size check failed')
           pathlib.Path(os.environ['RUNNER_TEMP'], 'changes.patch').write_bytes(data)
@@ -45,6 +51,7 @@ jobs:
           git apply --unidiff-zero --check "$RUNNER_TEMP/changes.patch"
           git apply --unidiff-zero --index "$RUNNER_TEMP/changes.patch"
           git rm scripts/.identity-cache-progress.patch
+          if [ -d scripts/.identity-cache-parts ]; then git rm -r scripts/.identity-cache-parts; fi
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git commit -m 'feat: apply incremental identity-cache implementation and regression tests'
