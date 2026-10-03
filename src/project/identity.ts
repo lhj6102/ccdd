@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto';
 import { createReadStream } from 'node:fs';
 import { lstat, readdir, readlink } from 'node:fs/promises';
 import path from 'node:path';
-import type { RepoConfig, WorkspaceIntegrity } from '../contracts.js';
+import type { ArtifactDefinition, RepoConfig, WorkspaceIntegrity } from '../contracts.js';
 import { createGraphDefinition, stronglyConnectedComponents } from '../broker/graph.js';
 import { resolveScopePath } from '../artifact-scope.js';
 import type { ProjectSelection, ProjectSnapshot, ValidationInput } from './types.js';
@@ -83,6 +83,16 @@ function familyExclusions(config: RepoConfig, name: string, folder: string): Fam
   return result;
 }
 
+/** Run one owner identity function under its weighted machine identity lease. */
+export async function computeOwnerIdentity(resources: Pick<ReturnType<typeof openResources>, 'acquire'>, root: string, id: string, artifact: ArtifactDefinition, signal: AbortSignal): Promise<string> {
+  const strategy = artifact.stale;
+  if (strategy?.kind !== 'identity') throw new Error('Invalid owner identity strategy.');
+  const lease = await resources.acquire({ requestId: id, runId: '', kind: 'identity', repo: canonicalRepositoryId(root), identityWeight: strategy.weight ?? 25 }, { signal, waiting() {} });
+  try {
+    return (await executionScope.run({ runtimeRoot: root, declaredPaths: [], trackChild: pid => lease.trackChild(pid) }, () => ownerIdentity(root, artifact.path, id, strategy, signal, artifact.family))).value;
+  } finally { await lease.release(); }
+}
+
 export interface SnapshotOptions { identityConcurrency?: number }
 export function positiveConcurrency(value: number, name: string): number {
   if (!Number.isSafeInteger(value) || value < 1) throw new Error(`${name} must be a positive integer.`);
@@ -115,14 +125,8 @@ export async function createProjectSnapshot(config: RepoConfig, root: string, sn
   const workers = Array.from({ length: parallelism }, async () => {
     while (!identitySignal.aborted && nextOwner < owners.length) {
     const [id, artifact] = owners[nextOwner++];
-    try {
-      if (artifact.stale?.kind !== 'identity') throw new Error('Invalid owner identity strategy.');
-      const lease = await resources!.acquire({ requestId: id, runId: '', kind: 'identity', repo: canonicalRepositoryId(root), identityWeight: artifact.stale.weight ?? 25 }, { signal: identitySignal, waiting() {} });
-      try {
-        const { value } = await executionScope.run({ runtimeRoot: root, declaredPaths: [], trackChild: pid => lease.trackChild(pid) }, () => ownerIdentity(root, artifact.path, id, artifact.stale as Extract<NonNullable<typeof artifact.stale>, { kind: 'identity' }>, identitySignal, artifact.family));
-        values.set(id, value);
-      } finally { await lease.release(); }
-    } catch (error) { if (!controller.signal.aborted) controller.abort(error); throw error; }
+    try { values.set(id, await computeOwnerIdentity(resources!, root, id, artifact, identitySignal)); }
+    catch (error) { if (!controller.signal.aborted) controller.abort(error); throw error; }
     }
   });
   await Promise.allSettled(workers);

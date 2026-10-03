@@ -106,6 +106,91 @@ cannot spend the earlier caller's allowance. Provider turn recovery stays inside
 the same bounded review, without resetting its deadline or replaying tools.
 External Provider delivery or charging is not guaranteed exactly-once.
 
+## Integrity of a cache-owned execution
+
+The identity is the whole reuse key, so it is also what a cache-owned execution
+is checked against. The execution reads the supplied workspace in place, as every
+review does, but it starts no workspace watcher and walks no workspace of its own.
+
+**CCDD does not lock the workspace.** Do not edit input that an identity covers
+while an execution of that identity is in flight. CCDD checks for such edits, but
+it cannot prevent them, and it detects only some of them.
+
+After the execution has finished, released its machine resources and closed its
+own store, CCDD runs the owner function again in the same workspace, under the
+same machine identity capacity. That check is the last await before the cache
+publication commit; nothing else runs between them. A different value fails the
+execution with `WORKSPACE_CHANGED` and publishes nothing. The same value
+publishes the result, because by the owner's definition it describes that
+identity. A failed or timed-out identity script fails the execution without
+publishing it. When publication is rejected, the execution's own audit still
+records the reviewer's verdict; the cache job and every subscriber receive the
+failure. The raw GREEN/RED is audit, not proof that publication succeeded.
+
+### Reviewer verdict versus publication
+
+The monitor applies the same derived publication state to Run/request listings,
+overviews and details (including HTTP). Audit-only GREEN/RED is never in its
+success lane: pending is shown as RUNNING with attention, rejected as ERROR with
+attention and its reason. `rawStatus` and the unchanged detail result retain the
+reviewer's verdict; the UI labels these results as audit only.
+
+
+Every cache-owned execution exposes `publication` separately from its raw
+reviewer status/result:
+
+- `accepted`: the cache publication transaction committed. GREEN and RED are
+  eligible historical evidence; RED still fails validation.
+- `pending`: publication has not committed. The raw verdict is audit only.
+- `rejected`: publication failed, with `code` and `message` explaining why
+  (for example `WORKSPACE_CHANGED` or `COMPUTE_OWNER_EXITED`). The raw verdict
+  remains unchanged and is audit only.
+
+`run show`, Run/request summaries, lifecycle pages, result streams, request
+lists and history expose the distinction. `projectHistory` retains raw verdicts
+with their publication state in compact and full output. `queryProject` and
+`planProject` exclude pending/rejected history from matching evidence and REUSE;
+the execution's own validation also reports the pending or failed attempt.
+The execution status in audit output remains the reviewer's original status,
+not a rewritten cache outcome. Normal subscriber receipts report the actual
+published result or publication failure as before.
+
+Readers derive publication from the identity-cache job alongside the execution
+store, not from their environment's state home. Completed/failed jobs remain
+until their execution audit is retired, including for oversized results that
+are not retained as entries. A dead RUNNING owner is reported as rejected on
+readonly inspection, before GC records that same failure. If the cache metadata
+is missing or unreadable, readers fail closed with pending /
+`PUBLICATION_UNAVAILABLE`; they never infer acceptance from a raw verdict.
+Publication and failure remain durable across processes and crashes without
+reopening the execution store for a second write after its final identity check.
+
+| Event | Result |
+| --- | --- |
+| A covered change completed before the completion check | `WORKSPACE_CHANGED`; nothing is published. |
+| A change the identity does not cover | The result is published. |
+| A covered change restored before the completion check | Not detected. |
+| A covered change racing the completion check itself, after the owner function read that input | Not detected. |
+| Human claim preparation | Its final validation re-runs the identity. |
+| Human tool call | No check. |
+| Human result submission | Re-runs the identity before the result is recorded; the completion check runs again before publication. |
+| Human waiting | No workspace monitoring; owner death still fails the execution. |
+
+An owner who needs stronger protection must include that input in the identity
+and keep identity-covered input unchanged until its executions finish.
+
+The submitting Run still observes its own workspace for its receipts and for
+requests without an identity. A change it detects fails that Run and detaches its
+subscriptions; a computation left without subscribers is aborted, while one that
+another subscriber still needs continues under the rule above.
+
+A large submission therefore costs one workspace observer for the submitting
+Run, not one per identity. Subscribers in the owning process wait for the
+execution's own completion instead of polling. Once that computation is aborted,
+they read its stored outcome instead of waiting for its executor. A receipt
+mirrors the execution's state only after its store changes, and one
+machine-resource connection serves every Broker in a process.
+
 ## Public cache operations
 
 These require no repository and always emit JSON:

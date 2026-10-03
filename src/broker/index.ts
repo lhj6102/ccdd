@@ -36,10 +36,12 @@ import { normalizeReviewResult as validateResult, storedObservation } from '../r
 import { createReviewTools, type ToolExecutionDiagnostic } from '../tools/runner.js';
 import { createHumanClaims, HUMAN_PREPARATION_LEASE_MS } from './human-claims.js';
 import { prepareHumanReview } from '../executors/human-preparation.js';
+import { ownerInput } from './owner-input.js';
 import { prepareWorkspace, reopenWorkspace, type WorkspaceDescriptor, type WorkspaceHandle, type WorkspaceIntegrity } from '../workspaces/index.js';
 import { createProjectSnapshot, positiveConcurrency } from '../project/identity.js';
 import { includedCritics, selectedCritics, planProject } from '../project/query.js';
-import { readEvidence, storedRequesterRun } from '../project/store.js';
+import { storedRequesterRun } from '../project/store.js';
+import { executionPublication } from '../project/publication.js';
 import type { ProjectRunDefinition, ProjectSelection } from '../project/types.js';
 import type { RunStatus, ExecutionSource } from '../contracts.js';
 import type { ReviewEnvelope, ReviewRequest, ReviewResult, ReviewStatus, ReviewToolCall, ExecutionContext, ExecutorReadiness, ExecutionEvent } from '../contracts.js';
@@ -66,7 +68,7 @@ export interface RunRecord {
   workerProtocol?: 'resources-1'; maxExecutions?: number; repoExecutorCap?: number; status: RunStatus; coalescingGraceMs?: number; createdAt: string; completedAt?: string; error?: string;
 }
 export interface BrokerEvent { id: number; runId: string; requestId: string | null; createdAt: string; type: string; message: string; data?: unknown }
-export interface RunView extends RunRecord { scope: NonNullable<RunRecord['scope']>; owner: { pid: number; claimedAt: string } | null; requests: ReviewRequest[]; events: BrokerEvent[] }
+export interface RunView extends RunRecord { publication?: import('../project/publication.js').ExecutionPublication; scope: NonNullable<RunRecord['scope']>; owner: { pid: number; claimedAt: string } | null; requests: ReviewRequest[]; events: BrokerEvent[] }
 export interface BrokerExecutors {
   validateWorkspace?(repoPath: string): void | Promise<void>;
   canExecute(request: ReviewRequest): ExecutorReadiness | Promise<ExecutorReadiness>;
@@ -260,6 +262,9 @@ export function createBroker<D extends ResultDetail = 'compact'>({ [executionMod
   const refreshReadinessWithin = (id: string) => readiness.refresh(id);
   const updateRunStatus = (id: string) => readiness.updateRun(id);
 
+  /** Cache-owned requests are bound to their owner identity; other requests reopen their observed workspace. */
+  const identityBound = (request: ReviewRequest) => Boolean(readiness.header(request.runId)?.executionOwned);
+
   function finishWithin(requestId: string, outcome: { result?: ReviewResult; error?: unknown; executionProvenance?: ReviewRequest['executionProvenance'] }, expectedStates: ReviewStatus[] = ['RUNNING', 'WAITING_HUMAN']) {
     const { result, error } = outcome, hasError = Object.hasOwn(outcome, 'error');
     const request = requestHeader(requestId);
@@ -324,7 +329,8 @@ export function createBroker<D extends ResultDetail = 'compact'>({ [executionMod
     if (owner || terminal.has(run.status)) submissionDeadlines.delete(id);
     const events = db.prepare('SELECT * FROM (SELECT * FROM events WHERE run_id = ? ORDER BY id DESC LIMIT 500) ORDER BY id').all(id).map(event => ({ id: Number(event.id), runId: String(event.run_id), requestId: event.request_id === null ? null : String(event.request_id), createdAt: String(event.created_at), type: String(event.type), message: String(event.message), ...(event.data ? { data: parseStored<unknown>(event.data) } : {}) }));
     const view = copy(run);
-    return { ...view, scope: view.scope ?? { kind: view.graph ? 'graph' : 'chain' }, owner: owner ? { pid: owner.pid, claimedAt: owner.claimed_at } : null, requests: runRequests(id), events };
+    const publication = view.executionOwned ? executionPublication(db) : null;
+    return { ...view, scope: view.scope ?? { kind: view.graph ? 'graph' : 'chain' }, owner: owner ? { pid: owner.pid, claimedAt: owner.claimed_at } : null, requests: runRequests(id).map(request => ({ ...request, ...(publication ? { publication } : {}) })), events, ...(publication ? { publication } : {}) };
   }
 
   function failOwned(runId: string, token: string, error: unknown) {
@@ -352,6 +358,12 @@ export function createBroker<D extends ResultDetail = 'compact'>({ [executionMod
     catch { /* Missing diagnostics are explicitly unreported, never invented. */ }
   }
   const mirroredStates = new Map<string,string>();
+  // An owner's state changes only when its store is written. Statting the store files lets
+  // an idle subscription skip opening it, so waiting receipts read nothing (#104).
+  const storeVersion = (directory: string) => ['broker.sqlite', 'broker.sqlite-wal'].map(name => {
+    const info = fs.statSync(path.join(directory, name), { bigint: true, throwIfNoEntry: false });
+    return info ? `${info.ino}:${info.size}:${info.mtimeNs}:${info.ctimeNs}` : '-';
+  }).join('/');
   function mirrorExecution(requestId: string, source: ExecutionSource) {
     if (closed || terminal.has(polling.requestStatus(requestId) ?? 'ERROR')) return;
     const origin = projectRequestState(source.stateDir, source.requestId, false);
@@ -377,7 +389,7 @@ export function createBroker<D extends ResultDetail = 'compact'>({ [executionMod
     if (rawExecution || forced || readiness.header(initial.runId)?.executionOwned || diagnosticScope.getStore() || input?.version !== 4 || !input.cacheIdentity) return executeUncached(requestId, workspace, token, signal);
     const runId = initial.runId, request = copy(required(requestData(requestId), 'Request'));
     const service = sharedCache();
-    let source: ExecutionSource | undefined, mirror: NodeJS.Timeout | undefined, ownFailure: Error | undefined;
+    let source: ExecutionSource | undefined, mirror: NodeJS.Timeout | undefined, mirrored: string | undefined, ownFailure: Error | undefined;
     try {
       signal.throwIfAborted();
       transaction(() => {
@@ -390,7 +402,7 @@ export function createBroker<D extends ResultDetail = 'compact'>({ [executionMod
         const executionState = path.join(service.directory, 'executions', executionId);
         const executor = requireExecutors();
         const owner: ExecutionBroker = createBroker({ repoPath, stateDir: executionState, repoId: 'cache-execution',
-          detail: 'full', [executionMode]: true, workspaceAdapter, maxConcurrentExecutors, admission,
+          detail: 'full', [executionMode]: true, maxConcurrentExecutors, admission,
           executors: { ...executor, notifyHuman: executor.notifyHuman ? (review, context) => executor.notifyHuman!({ ...review,
             executionSource: { stateDir: executionState, runId: executionId, requestId: executionId, executionId, identity: input.cacheIdentity! } }, context) : undefined },
         });
@@ -410,6 +422,13 @@ export function createBroker<D extends ResultDetail = 'compact'>({ [executionMod
           };
         } finally { await owner.close(); }
       }, { signal, scope: runId,
+        // The owner identity is checked after the execution has released its resources and
+        // closed its store, as the last await before publication. CCDD does not lock the
+        // workspace: an edit racing this check itself is not detected (#104).
+        async accept(acceptSignal) {
+          try { await ownerInput(request, resources, acceptSignal).assertUnchanged(); }
+          catch (cause) { ownFailure ??= cause as Error; throw cause; }
+        },
         onState(state, executionId) {
           const handover = source !== undefined && source.executionId !== executionId;
           source = { stateDir: path.join(service.directory, 'executions', executionId), runId: executionId, requestId: executionId, executionId, identity: input.cacheIdentity! };
@@ -424,7 +443,14 @@ export function createBroker<D extends ResultDetail = 'compact'>({ [executionMod
             saveHeader(header);
             appendEvent(runId, requestId, `request.cache.${state}`, 'Subscribed to an explicit-identity computation.', { executionId });
           });
-          mirror ??= setInterval(() => { try { if (source) mirrorExecution(requestId, source); } catch { /* Terminal cache publication remains authoritative. */ } }, 100);
+          mirror ??= setInterval(() => {
+            try {
+              if (!source) return;
+              // Keep the version read before mirroring: a write racing the read changes it again.
+              const version = `${source.stateDir}\0${storeVersion(source.stateDir)}`;
+              if (version !== mirrored) { mirrorExecution(requestId, source); mirrored = version; }
+            } catch { /* Terminal cache publication remains authoritative. */ }
+          }, 100);
         },
       });
       signal.throwIfAborted();
@@ -455,6 +481,10 @@ export function createBroker<D extends ResultDetail = 'compact'>({ [executionMod
   async function executeUncached(requestId: string, workspace: WorkspaceHandle, token: string, signal: AbortSignal) {
     const initial = required(requestHeader(requestId), 'Request');
     const runId = initial.runId;
+    // A cache-owned execution is bound to its owner identity, which its subscriber checks
+    // immediately before publication (see executeOne). Observed Runs keep their workspace
+    // boundaries before execution, around Human notification and after execution.
+    const observed = !readiness.header(runId)?.executionOwned;
     let lease: ResourceLease | undefined;
     let customLease: AdmissionLease | undefined;
     try {
@@ -478,7 +508,7 @@ export function createBroker<D extends ResultDetail = 'compact'>({ [executionMod
     changed();
     try {
       signal.throwIfAborted();
-      await workspace.assertUnchanged();
+      if (observed) await workspace.assertUnchanged();
       const request = required(requestData(requestId), 'Request');
       const runDir = path.join(stateDir, 'runs', runId, request.id);
       fs.mkdirSync(runDir, { recursive: true, mode: 0o700 });
@@ -498,7 +528,7 @@ export function createBroker<D extends ResultDetail = 'compact'>({ [executionMod
         });
         await requireExecutors().notifyHuman!(copy(required(requestData(requestId), 'Request')), { signal });
         signal.throwIfAborted();
-        await workspace.assertUnchanged();
+        if (observed) await workspace.assertUnchanged();
         transaction(() => {
           const current = required(requestData(requestId), 'Request');
           if (current.status !== 'WAITING_HUMAN') return;
@@ -580,7 +610,7 @@ export function createBroker<D extends ResultDetail = 'compact'>({ [executionMod
       })));
       await capture?.verify();
       validateFinalResult(semanticResult(result), request);
-      await workspace.assertUnchanged();
+      if (observed) await workspace.assertUnchanged();
       signal.throwIfAborted();
       transaction(() => { if (ownerData(runId)?.token === token) finishWithin(requestId, { result, executionProvenance: capture?.provenance ?? null }); });
       changed();
@@ -634,8 +664,14 @@ export function createBroker<D extends ResultDetail = 'compact'>({ [executionMod
       const notified = new Set<string>();
       try {
         onStarted?.({ runId, pid: process.pid });
-        workspace = await workspaceAdapter.reopenWorkspace(copy(ownedRun.workspace), { signal: executionSignal });
+        // A cache-owned execution never reopens or watches the workspace (#104).
+        workspace = ownedRun.executionOwned ? ownerInput(required(requestData(runId), 'Request'), resources, executionSignal)
+          : await workspaceAdapter.reopenWorkspace(copy(ownedRun.workspace), { signal: executionSignal });
         const reviewSignal = AbortSignal.any([executionSignal, workspace.signal]);
+        // A cache-owned Run has exactly one request, so it never re-plans while that request
+        // runs; it wakes when the request settles or the Run is canceled (#104).
+        const canceled = ownedRun.executionOwned ? new Promise<never>((_, reject) => reviewSignal.addEventListener('abort', () => reject(reviewSignal.reason), { once: true })) : undefined;
+        canceled?.catch(() => {});
         poll = setInterval(() => {
           if (ownerData(runId)?.token !== token) abort.abort(codedError('Review ownership was lost.', 'RUN_OWNERSHIP_LOST'));
           else if (terminal.has(required(polling.runStatus(runId), 'Run'))) abort.abort(codedError('Review is already complete or canceled.', 'REVIEW_CANCELED'));
@@ -670,7 +706,7 @@ export function createBroker<D extends ResultDetail = 'compact'>({ [executionMod
           }
           if (inFlight.size) {
             // Human alarms and independent evaluations progress together.
-            await Promise.race([...inFlight.values()].map(item => item.promise).concat(delay(50, undefined, { signal: reviewSignal })));
+            await Promise.race([...inFlight.values()].map(item => item.promise).concat(canceled ?? delay(50, undefined, { signal: reviewSignal })));
             continue;
           }
           if (pendingSources.length) {
@@ -685,9 +721,9 @@ export function createBroker<D extends ResultDetail = 'compact'>({ [executionMod
               if (!required(requestData(request.id), 'Request').notifiedAt) throw new Error('Human notification did not complete; submit a new Run to retry.');
               notified.add(request.id);
             }
-            // The workspace observer stays alive with filesystem events and metadata polls.
-            // Notification already crossed its final content boundary; idle waiting
-            // must not rehash the entire workspace on every scheduling iteration.
+            // An observed Run keeps its workspace observer alive with filesystem events and
+            // metadata polls; a cache-owned execution checks its owner identity before publication.
+            // Idle waiting must not rehash the entire workspace on every scheduling iteration.
             brokerTestHooks.onIdleTick?.();
             await delay(100, undefined, { signal: reviewSignal });
             continue;
@@ -832,7 +868,7 @@ export function createBroker<D extends ResultDetail = 'compact'>({ [executionMod
       }, Math.min(5_000, HUMAN_PREPARATION_LEASE_MS / 3));
       try {
         const prepared = await prepareHumanReview(request, request.workspace, path.join(stateDir, 'runs', request.runId, request.id, 'preparation', attempt.id), executionSignal,
-          progress => humanClaims.progress(requestId, reviewerId, attempt.id, progress));
+          progress => humanClaims.progress(requestId, reviewerId, attempt.id, progress), identityBound(request) ? signal => ownerInput(request, resources, signal) : undefined);
         executionSignal.throwIfAborted();
         humanClaims.progress(requestId, reviewerId, attempt.id, { phase: 'confirming-assignment' });
         return humanClaims.confirm(requestId, reviewerId, attempt.id, prepared);
@@ -855,13 +891,14 @@ export function createBroker<D extends ResultDetail = 'compact'>({ [executionMod
         if (!ownerAlive(ownerData(current.runId))) throw new Error('An in-place review requires its monitoring worker to remain alive.');
         return current;
       };
-      const request = assertClaim();
+      const request = assertClaim(), bound = identityBound(request);
       let workspace: WorkspaceHandle | undefined;
       let inputsValidated = false;
       try {
-        workspace = await workspaceAdapter.reopenWorkspace(request.workspace, { signal });
         // Reopening already validates the complete input. The post-tool check below
         // remains mandatory because configuration loading and tool execution can mutate it.
+        // A cache-owned review checks its owner identity once, when its result is submitted.
+        workspace = bound ? ownerInput(request, resources, signal) : await workspaceAdapter.reopenWorkspace(request.workspace, { signal });
         workspace.signal.throwIfAborted();
         inputsValidated = true;
         let timing: ToolExecutionDiagnostic | undefined;
@@ -875,7 +912,8 @@ export function createBroker<D extends ResultDetail = 'compact'>({ [executionMod
           registry.validateArguments(toolName, args);
           assertClaim();
           const attempt = await registry.call(toolName, args).then(result => ({ ok: true as const, result }), error => ({ ok: false as const, error: error as unknown }));
-          await workspace.assertUnchanged(); workspace.signal.throwIfAborted(); assertClaim();
+          if (!bound) await workspace.assertUnchanged();
+          workspace.signal.throwIfAborted(); assertClaim();
           if (timing) {
             const record = () => transaction(() => {
               assertClaim();
@@ -914,9 +952,11 @@ export function createBroker<D extends ResultDetail = 'compact'>({ [executionMod
       let workspace: WorkspaceHandle | undefined;
       let inputsValidated = false;
       try {
-        workspace = await workspaceAdapter.reopenWorkspace(request.workspace);
-        // Reopening validates input under its integrity policy. No asynchronous work or
-        // user code runs between this boundary and committing the submitted result.
+        // Reopening validates input under its integrity policy; a cache-owned review
+        // instead re-runs its owner identity. No other asynchronous work or user code
+        // runs between this boundary and committing the submitted result.
+        if (identityBound(request)) { workspace = ownerInput(request, resources); await workspace.assertUnchanged(); }
+        else workspace = await workspaceAdapter.reopenWorkspace(request.workspace);
         workspace.signal.throwIfAborted(); ensureOpen();
         inputsValidated = true;
         transaction(() => {
@@ -1014,7 +1054,11 @@ export function createBroker<D extends ResultDetail = 'compact'>({ [executionMod
     return { peer, source };
   };
   const viewRun = <T extends Parameters<typeof requesterRun>[0] | null>(value: T) => resultView({ detail }, value, () => value ? storedRequesterRun(db, value.id, stateDir) ?? requesterRun(value, stateDir) : null);
-  const viewRequest = (value: ReviewRequest | null) => resultView({ detail }, value, () => value ? requesterRequest(value, stateDir) : null);
+  const viewRequest = (value: ReviewRequest | null) => {
+    const publication = value && readiness.header(value.runId)?.executionOwned ? executionPublication(db) : null;
+    const audit = value ? { ...value, ...(publication ? { publication } : {}) } : null;
+    return resultView({ detail }, audit, () => audit ? requesterRequest(audit, stateDir) : null);
+  };
   return {
     ...broker,
     async prepareProject(options: Omit<PrepareProjectOptions, 'repoPath' | 'stateDir' | 'repoId' | 'workspaceIntegrity'>) {

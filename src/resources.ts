@@ -54,8 +54,29 @@ export interface ResourceLease extends AdmissionLease { token: string; started(p
 export const resourceTestHooks: { admissionWrite?: () => void; reclaim?: () => void } = {};
 const sqliteBusy = (error: unknown): boolean => !!error && typeof error === 'object' && ((Number((error as { errcode?: number }).errcode) & 255) === 5 || (error as { code?: string }).code === 'SQLITE_BUSY');
 const resourceBusy = (cause: unknown) => Object.assign(new Error('Machine resource storage is busy; retry the operation.', { cause }), { code: 'RESOURCE_BUSY', retryable: true });
-export function openResources() {
+type Resources = ReturnType<typeof connectResources>;
+const connections = new Map<string, { resources: Resources; users: number }>();
+/**
+ * One connection and one reclaim cadence per machine database in this process. Every
+ * transaction is synchronous, so callers cannot interleave inside one. Before #104 each
+ * cache-owned execution opened its own connection and reclaim loop, so every admission
+ * write made hundreds of connections reread the lease table.
+ */
+export function openResources(): Resources {
   const filename = resourcePaths().database;
+  let shared = connections.get(filename);
+  if (!shared) { shared = { resources: connectResources(filename), users: 0 }; connections.set(filename, shared); }
+  shared.users++;
+  const entry = shared;
+  let closed = false;
+  return { ...entry.resources, close() {
+    if (closed) return; closed = true;
+    if (--entry.users) return;
+    if (connections.get(filename) === entry) connections.delete(filename);
+    entry.resources.close();
+  } };
+}
+function connectResources(filename: string) {
   mkdirSync(join(filename, '..'), { recursive: true, mode: 0o700 });
   const db = new DatabaseSync(filename, { timeout: 5000 });
   db.exec(`PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;
@@ -90,6 +111,17 @@ export function openResources() {
     }
   };
   let nextReclaim = 0;
+  // FIFO admission never passes an earlier waiter of the same lane. While an earlier waiter
+  // of this process is blocked, a later one cannot be admitted, so it waits for that waiter
+  // to settle instead of polling (#104). A waiter that has not yet been refused does not
+  // hold its successors back: a burst that fits is admitted as promptly as before.
+  const pendingByLane = new Map<string, Map<number, { settled: Promise<void>; blocked: boolean }>>();
+  const settledOrAborted = (promise: Promise<void>, signal: AbortSignal) => new Promise<void>((resolve, reject) => {
+    if (signal.aborted) { reject(signal.reason); return; }
+    const abort = () => reject(signal.reason);
+    signal.addEventListener('abort', abort, { once: true });
+    void promise.then(() => { signal.removeEventListener('abort', abort); resolve(); });
+  });
   function childrenGone(token: string): boolean {
     const children = db.prepare('SELECT * FROM resource_children WHERE token=?').all(token);
     let gone = true;
@@ -152,17 +184,32 @@ export function openResources() {
     if (request.repoCap !== undefined) integer(request.repoCap, 'Repository executor cap');
     const provider = identity ? null : request.provider ?? '$runtime', model = request.model ?? null;
     const lane = identity ? 'identity' : `provider:${provider}`, token = randomUUID();
-    await retryBusy(() => transaction(() => {
+    const seq = Number(await retryBusy(() => transaction(() => {
       reclaim();
       if (!identity && !db.prepare('SELECT id FROM submissions WHERE id=?').get(request.runId)) throw new Error('Submission has no durable execution budget. Stop old workers and resubmit with the current worker protocol.');
-      db.prepare("INSERT INTO resource_leases(token,pid,process_identity,heartbeat,lane,state,run_id,request_id,provider,model,repo,repo_cap,weight) VALUES(?,?,?,?,?,'waiting',?,?,?,?,?,?,?)")
-        .run(token, process.pid, ownProcessIdentity, Date.now(), lane, identity ? null : request.runId, request.requestId, provider, model, request.repo, request.repoCap ?? null, weight);
-    }), signal);
+      return db.prepare("INSERT INTO resource_leases(token,pid,process_identity,heartbeat,lane,state,run_id,request_id,provider,model,repo,repo_cap,weight) VALUES(?,?,?,?,?,'waiting',?,?,?,?,?,?,?)")
+        .run(token, process.pid, ownProcessIdentity, Date.now(), lane, identity ? null : request.runId, request.requestId, provider, model, request.repo, request.repoCap ?? null, weight).lastInsertRowid;
+    }), signal));
+    const pending = pendingByLane.get(lane) ?? new Map<number, { settled: Promise<void>; blocked: boolean }>();
+    pendingByLane.set(lane, pending);
+    let settle!: () => void;
+    const self = { settled: new Promise<void>(resolve => { settle = resolve; }), blocked: false };
+    pending.set(seq, self);
+    const predecessor = () => {
+      let found: number | undefined;
+      for (const other of pending.keys()) if (other < seq && (found === undefined || other > found)) found = other;
+      const earlier = found === undefined ? undefined : pending.get(found);
+      return earlier?.blocked ? earlier.settled : undefined;
+    };
     let heartbeat: NodeJS.Timeout | undefined;
     try {
       let reported = false;
+      const report = () => { if (!reported) { waiting(identity ? 'Waiting for machine identity capacity (FIFO).' : `Waiting for machine provider capacity: ${provider} (FIFO).`); reported = true; } };
+      try {
       while (true) {
         signal.throwIfAborted();
+        const earlier = predecessor();
+        if (earlier) { report(); await settledOrAborted(earlier, signal); continue; }
         const admitted = await retryBusy(() => {
           // A blocked waiter normally performs reads only. Queue/capacity checks
           // are repeated inside the write transaction; this precheck grants nothing.
@@ -211,8 +258,14 @@ export function openResources() {
           });
         }, signal);
         if (admitted) break;
-        if (!reported) { waiting(identity ? 'Waiting for machine identity capacity (FIFO).' : `Waiting for machine provider capacity: ${provider} (FIFO).`); reported = true; }
+        self.blocked = true;
+        report();
         await delay(40 + Math.floor(Math.random() * 20), undefined, { signal });
+      }
+      } finally {
+        // Admitted or failed, this waiter no longer blocks a later local waiter.
+        settle(); pending.delete(seq);
+        if (!pending.size && pendingByLane.get(lane) === pending) pendingByLane.delete(lane);
       }
       let released = false;
       heartbeat = setInterval(() => { if (!closed) { try { db.prepare('UPDATE resource_leases SET heartbeat=? WHERE token=? AND pid=? AND process_identity IS ?').run(Date.now(), token, process.pid, ownProcessIdentity); } catch { /* A bounded busy failure cannot invalidate a live holder. */ } } }, 2000);

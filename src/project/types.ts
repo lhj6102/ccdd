@@ -19,6 +19,8 @@ export interface ProjectSnapshot {
   workspaceIntegrity?: WorkspaceIntegrity;
 }
 export interface ValidationEvidence {
+  /** Cache-owned audit only: pending/rejected verdicts cannot satisfy validation or reuse. */
+  publication?: import('./publication.js').ExecutionPublication;
   executionProvenance?: import('../provenance.js').ExecutionProvenance | null;
   source?: import('../contracts.js').ExecutionSource;
   profile?: import('../contracts.js').CriticProfile;

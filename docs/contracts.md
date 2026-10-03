@@ -147,6 +147,27 @@ Stored manifests contain only serializable metadata and declarations. Execution 
 
 ## Requester results and audit lookup
 
+The monitor applies the same derived publication state to Run/request listings,
+overviews and details (including HTTP). Audit-only GREEN/RED is never in its
+success lane: pending is shown as RUNNING with attention, rejected as ERROR with
+attention and its reason. `rawStatus` and the unchanged detail result retain the
+reviewer's verdict; the UI labels these results as audit only.
+
+
+A cache-owned execution's raw GREEN/RED verdict is immutable audit, separate
+from `publication: {state: 'accepted' | 'pending' | 'rejected', code?, message?}`.
+Run show, summaries, lifecycle pages/streams, request lists and history expose
+that state. Pending/rejected verdicts never supply matching evidence, validation
+satisfaction or REUSE; history preserves them for inspection instead of deleting
+or rewriting them. Publication is derived readonly from the identity-cache job
+next to the source execution store. Terminal jobs remain until audit storage is
+retired; dead RUNNING owners are rejected even before GC. Missing/unreadable
+publication metadata fails closed as pending / `PUBLICATION_UNAVAILABLE`.
+The identity check stays after execution cleanup/store close and is the last
+await before each cache publication commit attempt. See
+[reviewer verdict versus publication](identity-cache.md#reviewer-verdict-versus-publication).
+
+
 **5.0: breaking default output change.** Requester
 results are compact by default. This is not a 4.x-compatible change; existing
 callers that consume audit fields must explicitly request full detail.
@@ -410,6 +431,17 @@ a semantic `RED`. Monitoring stays alive throughout Human waiting; a dead worker
 invalidates its unfinished Run when inspected. A result retains its input hash,
 but does not preserve old source after later edits.
 
+A cache-owned execution, which serves a request with an explicit identity, is
+the exception. It reads the same supplied workspace but starts no watcher and
+walks nothing. CCDD does not lock the workspace; do not edit identity-covered
+input while an execution of that identity is in flight. After the execution has
+released its resources and closed its store, the owner identity is re-run as the
+last await before publication. A different value fails it with
+`WORKSPACE_CHANGED` and publishes nothing. Changes outside the identity, covered
+changes restored before that check, and covered changes racing the check itself
+are not detected. The submitting Run still observes its workspace. See
+[the identity cache](identity-cache.md#integrity-of-a-cache-owned-execution).
+
 The snapshot hash is SHA-256 over sorted relative paths, entry types, file
 content hashes, executable permission bits, and relative symlink targets.
 Timestamps, inode numbers and write-permission bits are excluded from content
@@ -431,8 +463,10 @@ the canonical supplied path as both `sourcePath` and `path`. Reopening checks
 that same path and its recorded integrity proof. Only the current major state format is accepted; 4.x state is neither read nor migrated.
 
 Acquisition validates input with its observer active. Human claims, registered
-tools and results use that observer; user code is followed by a fresh integrity
-boundary before accepting output. Resuming an already prepared Claim or
+tools and results of an observed Run use that observer; user code is followed by
+a fresh integrity boundary before accepting output. Human claims and results of
+a cache-owned execution re-run its owner identity instead, and its tool calls
+are not followed by a workspace boundary. Resuming an already prepared Claim or
 submitting a result performs no user code between acquisition and handoff;
 Broker completion commits with authoritative transaction checks.
 
@@ -480,8 +514,9 @@ rejected; an explicit new metadata-policy capture is required.
 The Project CLI accepts `--integrity content|metadata` for `verify`, `status`, and
 `plan`; the default is `content`. Integrity is an execution-safety policy, not
 an added cache key. Owners must encode it in their identity when results under
-these policies are not interchangeable. Execution safety independently enforces
-the policy on new computation; a cache hit returns the original result.
+these policies are not interchangeable. An observed Run enforces the policy on
+new computation. A new cache-owned computation is checked against its owner
+identity instead, and a cache hit returns the original result.
 
 ## Broker and Executors
 
@@ -635,11 +670,11 @@ inspect Artifacts, claim the request, and submit
 it and only once. Input integrity is revalidated at completion, and the existing
 worker settles the selected scope using its saved execution configuration.
 
-Human tool execution requires the active claimant and a WAITING_HUMAN request. The Broker reopens and validates the recorded workspace, matches stored Artifact definitions against its config, resolves registered tools, and validates workspace/claim again after execution. Only safe tool name, Artifact ID and operation metadata are persisted. Launch errors do not become RED or complete the review; input mutation invalidates the review with ERROR. Human result submission validates the selected owner response schema exactly. The monitor accepts additional fields as a JSON object; it rejects invalid or oversized input and never truncates it.
+Human tool execution requires the active claimant and a WAITING_HUMAN request. The Broker reopens and validates the recorded workspace, matches stored Artifact definitions against its config, resolves registered tools, and validates workspace/claim again after execution. For a cache-owned execution it validates only the claim around a tool call; result submission re-runs the owner identity. Only safe tool name, Artifact ID and operation metadata are persisted. Launch errors do not become RED or complete the review; input mutation invalidates the review with ERROR. Human result submission validates the selected owner response schema exactly. The monitor accepts additional fields as a JSON object; it rejects invalid or oversized input and never truncates it.
 
-Human waiting keeps its worker and input monitoring alive. Human completion requires a live owner. Changes or owner death invalidate the review. Result files and notification output must be outside the reviewed workspace.
+Human waiting keeps its worker alive, and an observed Run keeps its input monitoring alive. Human completion requires a live owner. Changes or owner death invalidate the review; a cache-owned execution detects changes when its identity is re-run. Result files and notification output must be outside the reviewed workspace.
 
-An idle Human wait uses the live filesystem observer and periodic metadata checks;
+An idle Human wait in an observed Run uses the live filesystem observer and periodic metadata checks;
 it does not perform a full content scan on each Broker scheduling iteration.
 Under the default content policy, full content checks remain at acquisition,
 execution/notification boundaries, explicit Human actions, and result submission. Metadata-policy input uses complete

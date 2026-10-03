@@ -43,6 +43,11 @@ export interface CacheComputeOptions {
   /** Scope is diagnostic/lifetime metadata, never a cache partition. */
   scope?: string;
   onState?: (state: 'executing' | 'coalesced' | 'hit', executionId: string) => void;
+  /**
+   * For the call that starts the computation: runs after `execute` settles, as the last await
+   * before each publication attempt. A rejection fails the computation and publishes nothing.
+   */
+  accept?: (signal: AbortSignal) => Promise<void>;
 }
 export interface CacheComputation { entry: CacheEntry; disposition: 'executed' | 'coalesced' | 'hit' | 'uncached' }
 type Owner = { pid: number; process_identity: string | null };
@@ -50,6 +55,13 @@ const alive = (owner: Owner) => ownerAlive({ ...owner, run_id: '', token: '', cl
 const digest = (text: string) => createHash('sha256').update(text, 'utf8').digest('hex');
 const busy = (error: unknown) => !!error && typeof error === 'object' && ((Number((error as { errcode?: number }).errcode) & 255) === 5 || (error as { code?: string }).code === 'SQLITE_BUSY');
 const error = (code: string, message: string) => Object.assign(new Error(message), { code });
+/** Resolve when `promise` settles; reject with the reason if `signal` aborts first. */
+const settled = (promise: Promise<unknown>, signal?: AbortSignal) => new Promise<void>((resolve, reject) => {
+  if (signal?.aborted) { reject(signal.reason); return; }
+  const abort = () => reject(signal!.reason);
+  signal?.addEventListener('abort', abort, { once: true });
+  void promise.then(() => {}, () => {}).then(() => { signal?.removeEventListener('abort', abort); resolve(); });
+});
 const format = (db: DatabaseSync) => {
   if (Number(db.prepare('PRAGMA user_version').get()!.user_version) !== 1 || Number(db.prepare('PRAGMA application_id').get()!.application_id) !== 1128481859) throw error('CACHE_FORMAT_UNSUPPORTED', 'Unsupported identity cache format; do not relabel or import legacy project keys.');
 };
@@ -152,7 +164,7 @@ export function openIdentityCache({ directory = identityCacheDirectory(), maxByt
     chmodSync(join(directory, 'cache.sqlite'), 0o600);
   } catch (cause) { try { db.exec('ROLLBACK'); } catch {} db.close(); throw cause; }
   let closed = false, closing = false, closePromise: Promise<void> | undefined;
-  const owned = new Map<string, { controller: AbortController; promise: Promise<void>; scope?: string }>();
+  const owned = new Map<string, { controller: AbortController; promise: Promise<void>; wake: Promise<void>; scope?: string }>();
   const subscribers = new Set<string>();
   const pendingFailures = new Map<string, { identity: string; code: string }>();
   // Subscriptions whose removal could not commit yet; maintenance retries them.
@@ -191,6 +203,9 @@ export function openIdentityCache({ directory = identityCacheDirectory(), maxByt
     subscriberCursor = owners.length === 256 && last ? { pid: last.pid, identity: last.process_identity ?? '' } : undefined;
   };
   const removeJob = (jobId: string) => {
+    // Keep publication authoritative for any surviving audit (even an oversized result
+    // with no cache entry). Storage retirement deletes the job only after removing it.
+    if (existsSync(join(directory, 'executions', jobId))) return;
     db.prepare("DELETE FROM cache_jobs WHERE id=? AND state!='RUNNING' AND NOT EXISTS(SELECT 1 FROM cache_subscribers WHERE job_id=?)").run(jobId, jobId);
   };
   const publishFailure = (jobId: string, identity: string, code: string) => transaction(() => {
@@ -213,10 +228,15 @@ export function openIdentityCache({ directory = identityCacheDirectory(), maxByt
         pendingDetaches.delete(subscriber);
       }
       if (performance.now() - lastReap > 1000) { await retry(reapSubscribers); lastReap = performance.now(); }
-      for (const [id, task] of owned) {
-        const row = db.prepare('SELECT state FROM cache_jobs WHERE id=?').get(id);
-        if (row?.state !== 'RUNNING') task.controller.abort(error('CACHE_OWNERSHIP_LOST', 'Shared computation ownership was lost.'));
-        else if (!db.prepare('SELECT 1 FROM cache_subscribers WHERE job_id=? LIMIT 1').get(id)) {
+      // One statement per pass, not two per owned computation: a large submission owns
+      // hundreds, and maintenance also runs after every completion and detach (#104).
+      const jobs = owned.size ? db.prepare(`SELECT e.value AS id,j.state,EXISTS(SELECT 1 FROM cache_subscribers s WHERE s.job_id=e.value) AS subscribed
+        FROM json_each(?) e LEFT JOIN cache_jobs j ON j.id=e.value`).all(JSON.stringify([...owned.keys()])) : [];
+      for (const job of jobs) {
+        const id = String(job.id), task = owned.get(id);
+        if (!task) continue;
+        if (job.state !== 'RUNNING') task.controller.abort(error('CACHE_OWNERSHIP_LOST', 'Shared computation ownership was lost.'));
+        else if (!job.subscribed) {
           // Fence the abandoned alias before aborting. A later subscriber must
           // not join a computation whose cancellation is already irreversible.
           const abandoned = await retry(() => transaction(() => {
@@ -238,7 +258,8 @@ export function openIdentityCache({ directory = identityCacheDirectory(), maxByt
   const retireStorage = async (limit: number): Promise<number> => {
     const candidates = await retry(() => transaction(() => {
       const rows = db.prepare(`SELECT * FROM cache_execution_storage s WHERE
-        NOT EXISTS(SELECT 1 FROM cache_jobs WHERE id=s.id) AND
+        NOT EXISTS(SELECT 1 FROM cache_jobs WHERE id=s.id AND state='RUNNING') AND
+        NOT EXISTS(SELECT 1 FROM cache_subscribers WHERE job_id=s.id) AND
         NOT EXISTS(SELECT 1 FROM cache_entries WHERE json_extract(data,'$.executionId')=s.id) LIMIT ?`).all(limit);
       return { rows: rows.filter(row => {
         if (row.retire_pid != null && alive({pid: Number(row.retire_pid), process_identity: row.retire_identity as string | null})) return false;
@@ -261,7 +282,10 @@ export function openIdentityCache({ directory = identityCacheDirectory(), maxByt
           await rename(target,quarantine);
         }
         await rm(quarantine,{recursive:true,force:true});
-        await retry(() => db.prepare('DELETE FROM cache_execution_storage WHERE id=? AND retire_pid=? AND retire_identity IS ?').run(id,process.pid,ownProcessIdentity));
+        await retry(() => transaction(() => {
+          db.prepare('DELETE FROM cache_execution_storage WHERE id=? AND retire_pid=? AND retire_identity IS ?').run(id,process.pid,ownProcessIdentity);
+          removeJob(id);
+        }));
       } catch (cause) {
         await retry(() => db.prepare('UPDATE cache_execution_storage SET retire_pid=NULL,retire_identity=NULL WHERE id=? AND retire_pid=? AND retire_identity IS ?').run(id,process.pid,ownProcessIdentity));
         throw cause;
@@ -290,7 +314,7 @@ export function openIdentityCache({ directory = identityCacheDirectory(), maxByt
           db.prepare('DELETE FROM cache_entries WHERE identity=?').run(row.identity); bytes -= Number(row.bytes); count--; removed++;
         }
       }
-      const deadJobs = db.prepare("SELECT id FROM cache_jobs j WHERE state!='RUNNING' AND NOT EXISTS(SELECT 1 FROM cache_subscribers WHERE job_id=j.id) LIMIT ?").all(limit);
+      const deadJobs = db.prepare("SELECT id FROM cache_jobs j WHERE state!='RUNNING' AND NOT EXISTS(SELECT 1 FROM cache_subscribers WHERE job_id=j.id) AND NOT EXISTS(SELECT 1 FROM cache_entries WHERE json_extract(data,'$.executionId')=j.id) LIMIT ?").all(limit);
       for (const row of deadJobs) removeJob(String(row.id));
       return { removed, bytes: Number(bytes), entries: Number(count), needsMore: bytes > maxBytes || count > maxEntries || jobs.length === limit || deadJobs.length === limit,
         nextJobCursor: jobs.length === limit ? String(jobs.at(-1)!.id) : '' };
@@ -302,14 +326,14 @@ export function openIdentityCache({ directory = identityCacheDirectory(), maxByt
     const { nextJobCursor: _cursor, ...publicResult } = result;
     return { ...publicResult, needsMore: publicResult.needsMore || retired === limit };
   };
-  const start = (jobId: string, identity: string, execute: (signal: AbortSignal, executionId: string) => Promise<CachedReview>, scope?: string) => {
+  const start = (jobId: string, identity: string, execute: (signal: AbortSignal, executionId: string) => Promise<CachedReview>, scope?: string, accept?: CacheComputeOptions['accept']) => {
     const controller = new AbortController();
     const promise = (async () => {
       try {
         const value = await execute(controller.signal, jobId);
         controller.signal.throwIfAborted();
         const row = encoded(identity, jobId, value);
-        await retry(() => transaction(() => {
+        const publish = () => transaction(() => {
           controller.signal.throwIfAborted();
           const job = db.prepare("SELECT pid,process_identity FROM cache_jobs WHERE id=? AND state='RUNNING'").get(jobId);
           if (!job || job.pid !== process.pid || job.process_identity !== ownProcessIdentity || db.prepare('SELECT job_id FROM cache_active WHERE identity=?').get(identity)?.job_id !== jobId) throw error('CACHE_OWNERSHIP_LOST', 'Shared computation ownership was lost before publication.');
@@ -317,7 +341,17 @@ export function openIdentityCache({ directory = identityCacheDirectory(), maxByt
           if (row.bytes <= maxEntryBytes && row.bytes <= maxBytes) db.prepare('INSERT INTO cache_entries VALUES(?,?,?,?,?,?) ON CONFLICT(identity) DO UPDATE SET data=excluded.data,digest=excluded.digest,bytes=excluded.bytes,created_at=excluded.created_at,accessed_at=excluded.accessed_at').run(identity, row.data, row.digest, row.bytes, Date.now(), Date.now());
           db.prepare("UPDATE cache_jobs SET state='COMPLETED',data=?,digest=? WHERE id=?").run(row.data, row.digest, jobId);
           db.prepare('DELETE FROM cache_active WHERE identity=? AND job_id=?').run(identity, jobId);
-        }));
+        });
+        // The acceptance check is the last await before every commit attempt, including a
+        // retry after a busy writer, so no other work runs between them (#104).
+        const deadline = performance.now() + 5000; let pause = 10;
+        for (;;) {
+          await accept?.(controller.signal);
+          controller.signal.throwIfAborted();
+          try { publish(); break; }
+          catch (cause) { if (!busy(cause)) throw cause; if (performance.now() >= deadline) throw error('CACHE_BUSY', 'Identity cache is busy; retry the operation.'); }
+          await delay(Math.min(pause, Math.max(1, deadline - performance.now())) + Math.floor(Math.random() * 10), undefined, { signal: controller.signal }); pause = Math.min(200, pause * 2);
+        }
       } catch (cause) {
         // Operational errors are visible only to this attempt's subscribers. They
         // never become identity->result entries or negative-cache future requests.
@@ -333,8 +367,10 @@ export function openIdentityCache({ directory = identityCacheDirectory(), maxByt
         await gc().catch(() => { /* Explicit GC reports maintenance errors; do not replace a completed result. */ });
       }
     })();
+    // Local subscribers wake when the task settles or maintenance aborts it.
+    const wake = new Promise<void>(resolve => { controller.signal.addEventListener('abort', () => resolve(), { once: true }); void promise.then(() => resolve(), () => resolve()); });
     // Execute is asynchronous; install the owner before its first continuation.
-    owned.set(jobId, { controller, promise, scope });
+    owned.set(jobId, { controller, promise, wake, scope });
     void promise.catch(() => { /* Subscribers observe the persisted outcome or owner liveness. */ });
     startMaintenance();
   };
@@ -357,6 +393,7 @@ export function openIdentityCache({ directory = identityCacheDirectory(), maxByt
         const executionId = randomUUID(), signal = options.signal ?? new AbortController().signal;
         options.onState?.('executing', executionId);
         const value = await execute(signal, executionId); signal.throwIfAborted();
+        await options.accept?.(signal); signal.throwIfAborted();
         return { entry: decode(encoded(null, executionId, value))!, disposition: 'uncached' };
       }
       validateCacheIdentity(identity);
@@ -386,7 +423,7 @@ export function openIdentityCache({ directory = identityCacheDirectory(), maxByt
           if ('wait' in attached) { await delay(50, undefined, { signal: options.signal }); continue; }
           if ('hit' in attached && attached.hit) { touch(identity); options.onState?.('hit', attached.hit.executionId); return { entry: attached.hit, disposition: 'hit' }; }
           jobId = attached.jobId!; creator = Boolean(attached.own); subscribers.add(subscriber);
-          if (creator) start(jobId, identity, execute, options.scope);
+          if (creator) start(jobId, identity, execute, options.scope, options.accept);
           options.onState?.(creator ? 'executing' : 'coalesced', jobId);
           for (;;) {
             options.signal?.throwIfAborted();
@@ -400,7 +437,13 @@ export function openIdentityCache({ directory = identityCacheDirectory(), maxByt
               throw error(String(row.error_code), String(row.error_message));
             }
             if (!alive(row as unknown as Owner)) { await detach(subscriber, jobId); break; }
-            await delay(50, undefined, { signal: options.signal });
+            // A running computation owned by this process wakes its subscribers when its task
+            // settles or maintenance aborts it, so they need not poll (#104). Once aborted, its
+            // terminal record may already be committed while the executor has not settled: the
+            // store, not the executor, decides, so poll it like a computation of another owner.
+            const local = owned.get(jobId);
+            if (local && !local.controller.signal.aborted) await settled(local.wake, options.signal);
+            else await delay(50, undefined, { signal: options.signal });
           }
         }
       } catch (cause) { throw options.signal?.aborted ? options.signal.reason : cause; }

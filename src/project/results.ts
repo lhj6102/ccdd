@@ -6,6 +6,7 @@ import { readChanges, type ChangeOptions } from '../broker/changes.js';
 import { reviewReference } from '../result-view.js';
 import { readAttemptSummary } from '../broker/attempt-summary.js';
 import type { ReviewRequest } from '../contracts.js';
+import { executionPublication } from './publication.js';
 
 /** Read-only lifecycle pages, with immutable per-attempt attribution. No worker is started. */
 export function projectChanges(stateDir: string, runId: string, options: ChangeOptions = {}) {
@@ -14,7 +15,10 @@ export function projectChanges(stateDir: string, runId: string, options: ChangeO
 export function projectRunState(stateDir: string, runId: string) {
   return withProjectStore(stateDir, db => {
     const row=db.prepare('SELECT status FROM runs WHERE id=?').get(runId);
-    return row ? String(row.status) : null;
+    if(!row)return null;
+    const publication=executionPublication(db);
+    return publication && publication.state!=='accepted' && ['GREEN','RED'].includes(String(row.status))
+      ? publication.state==='rejected' ? 'ERROR' : 'RUNNING' : String(row.status);
   }, null);
 }
 export interface ResultStreamOptions extends ChangeOptions { signal?: AbortSignal; timeoutMs?: number; pollIntervalMs?: number }
@@ -54,7 +58,8 @@ export function projectRequestSummary(stateDir: string, requestId: string) {
       return {attemptId,...summary,usageState:usage ? 'reported' as const : 'unreported' as const,...(usage ? {usage:JSON.parse(String(usage.data))} : {})};
     }) : [];
     const wallMs=Math.max(0,Date.parse(header.completedAt ?? new Date().toISOString())-Date.parse(header.createdAt))||0;
-    return {requestId,runId:String(header.runId),criticId:String(header.criticId),status:String(header.status),wallMs,
+    const publication=executionPublication(db);
+    return {requestId,runId:String(header.runId),criticId:String(header.criticId),status:String(header.status),...(publication ? {publication} : {}),wallMs,
       executorStarts:attempts.reduce((sum,a)=>sum+a.executorStarts,0),attempts,
       executionSource:header.executionSource ?? null,sourceSummary:header.sourceSummary ?? null,
       usageState:attempts.some(a=>a.usageState==='reported') ? attempts.some(a=>a.usageState==='unreported') ? 'partial' as const : 'reported' as const : 'unreported' as const};
@@ -83,7 +88,8 @@ export function projectRunSummary(stateDir: string, runId: string) {
     }
     const missing=hasSummaries ? Number(db.prepare("SELECT count(*) AS n FROM requests r WHERE r.run_id=? AND json_extract(r.data,'$.attemptId') IS NOT NULL AND NOT EXISTS(SELECT 1 FROM attempt_summaries a WHERE a.request_id=r.id AND a.attempt_id=json_extract(r.data,'$.attemptId')) AND json_extract(r.data,'$.cacheDisposition') IS NULL").get(runId)!.n) : Number(db.prepare("SELECT count(*) AS n FROM requests WHERE run_id=? AND json_extract(data,'$.attemptId') IS NOT NULL").get(runId)!.n);
     const wallMs=Math.max(0,Date.parse(run.completedAt ?? new Date().toISOString())-Date.parse(run.createdAt))||0;
-    return {runId,status:run.status,wallMs,executorStarts,attempts,toolCalls,counts:Object.fromEntries(states.map(row=>[String(row.state),Number(row.n)])),
+    const publication=executionPublication(db);
+    return {runId,status:run.status,...(publication ? {publication} : {}),wallMs,executorStarts,attempts,toolCalls,counts:Object.fromEntries(states.map(row=>[String(row.state),Number(row.n)])),
       usageState:reported ? unreported||missing ? 'partial' as const : 'reported' as const : 'unreported' as const,
       reportedAttempts:reported,unreportedAttempts:unreported+missing,...(reported ? {usage:totals} : {})};
   },null);

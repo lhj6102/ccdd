@@ -119,9 +119,12 @@ test('prepared submission reuses identity values in one session and rejects chan
   const prepared=await a.broker.prepareProject({selection:{kind:'all'}});
   assert.equal((await readFile(identityCalls,'utf8')).trim(),'identity');
   prepared.plan.selection={kind:'critic',criticId:'not/a-critic'};
-  const run=await a.broker.submitPrepared(prepared);await a.broker.run(run.id);
+  const run=await a.broker.submitPrepared(prepared);
+  assert.equal((await readFile(identityCalls,'utf8')).trim(),'identity','submission reuses the prepared identity');
+  await a.broker.run(run.id);
   assert.equal(a.broker.getRun(run.id)!.status,'GREEN');
-  assert.equal((await readFile(identityCalls,'utf8')).trim(),'identity');
+  // The cache-owned execution re-runs its identity once, before accepting its result.
+  assert.equal((await readFile(identityCalls,'utf8')).trim(),'identity\nidentity');
   await assert.rejects(a.broker.submitPrepared(structuredClone(prepared)),/Unknown or disposed/);
   const before=a.broker.listRuns().length;
   await writeFile(join(a.repoPath,'new-material'),'changed');

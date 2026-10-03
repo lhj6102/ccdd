@@ -10,6 +10,7 @@ import { currentProjectPlan } from './store.js';
 import type { ProjectSelection } from './types.js';
 
 export type * from './types.js';
+export type { ExecutionPublication } from './publication.js';
 export { createProjectSnapshot, type SnapshotOptions } from './identity.js';
 export type * from '../result-view.js';
 

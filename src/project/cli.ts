@@ -98,7 +98,7 @@ function parse(argv: string[]) {
   return { options, positional };
 }
 
-const exitFor = (run: ProjectRunView) => run.status === 'GREEN' ? 0 : run.status === 'RED' ? 1 : run.status === 'INCOMPLETE' ? 4 : 2;
+const exitFor = (run: ProjectRunView) => run.publication && run.publication.state !== 'accepted' ? 2 : run.status === 'GREEN' ? 0 : run.status === 'RED' ? 1 : run.status === 'INCOMPLETE' ? 4 : 2;
 function planText(plan: RequesterPlan): string {
   const target = plan.selection.kind === 'artifact' ? plan.selection.artifactId : plan.selection.kind === 'critic' ? plan.selection.criticId : 'Project';
   // Project queries expose only the selection's required dependency closure.
@@ -193,12 +193,12 @@ export async function main(argv = process.argv.slice(2), { stdout = process.stdo
         if (stdout.write(JSON.stringify(result)+'\n') === false && 'once' in stdout) await once(stdout as unknown as NodeJS.EventEmitter,'drain',{signal});
       }
       const run = projectRun(context.stateDir,id)!;
-      stdout.write(JSON.stringify({type:'run',runId:id,status:run.status})+'\n');
+      stdout.write(JSON.stringify({type:'run',runId:id,status:run.status,...(run.publication ? {publication:run.publication} : {})})+'\n');
       return exitFor(run);
     });
     const verifySelection = command === 'verify' ? select(true) : undefined;
     const runOutput = (run: ProjectRunView) => full ? { ...run, workspaceIntegrity: run.workspace?.integrity ?? 'content' } : requesterRun(run, context.stateDir);
-    const printRun = (run: ProjectRunView) => print(runOutput(run), full ? undefined : `Run: ${run.id}\nExecution: ${run.status}\nIntegrity: ${run.workspace?.integrity ?? 'content'}${run.validation ? `\n${planText(requesterPlan(run.validation, context.stateDir))}` : ''}`);
+    const printRun = (run: ProjectRunView) => print(runOutput(run), full ? undefined : `Run: ${run.id}\nExecution: ${run.status}${run.publication ? `\nPublication: ${run.publication.state}${run.publication.code ? ` (${run.publication.code})` : ''}` : ''}\nIntegrity: ${run.workspace?.integrity ?? 'content'}${run.validation ? `\n${planText(requesterPlan(run.validation, context.stateDir))}` : ''}`);
     const wait = async (id: string): Promise<number> => {
       const deadline = Date.now() + timeoutMs;
       for (;;) {
@@ -243,7 +243,7 @@ export async function main(argv = process.argv.slice(2), { stdout = process.stdo
       const current = familyNames ? await readWorkspaceConfig(context.repoPath).then(({ config }) => new Map(Object.entries(config.artifacts).flatMap(([id, artifact]) => artifact.family ? [[id, artifact.family.name] as const] : [])), () => new Map<string, string>()) : new Map<string, string>();
       const entries = history.filter(e => selection.kind === 'all' || selection.kind === 'critic' && e.criticId === selection.criticId || selection.kind === 'critics' && selection.criticIds.includes(e.criticId)
         || names.includes(e.input.target.id) || [families.get(e.requestId), current.get(e.input.target.id)].some(family => family !== undefined && names.includes(family)));
-      print(full ? entries : entries.map(e => requesterEvidence(e, context.stateDir)), full ? undefined : entries.map(e => `${e.completedAt} ${e.criticId} ${e.verdict} · ${e.requestId}\n  ${JSON.stringify(e.result)}`).join('\n') || 'No recorded validation evidence.'); return 0;
+      print(full ? entries : entries.map(e => requesterEvidence(e, context.stateDir)), full ? undefined : entries.map(e => `${e.completedAt} ${e.criticId} ${e.verdict} · ${e.requestId}${e.publication ? ` · publication: ${e.publication.state}${e.publication.code ? ` (${e.publication.code})` : ''}` : ''}\n  ${JSON.stringify(e.result)}`).join('\n') || 'No recorded validation evidence.'); return 0;
     }
     if (command === 'run' || command === 'request') {
       const [action, id] = positional;
