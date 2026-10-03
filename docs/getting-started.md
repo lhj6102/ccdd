@@ -40,7 +40,7 @@ does not install default-tools. Keep each directly imported module declared.
 
 ## Resource settings and upgrades
 
-Use matching 7.x packages for this source contract. Do not mix major versions.
+Use matching package versions (7.1.0 for this release). Do not mix major versions.
 Stop earlier workers before upgrading and follow [7.x migration](migration-v7.md).
 
 All processes share the machine resource authority when using the same local

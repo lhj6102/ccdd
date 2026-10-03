@@ -114,7 +114,7 @@ See [Contributing](CONTRIBUTING.md), [the context map](CONTEXT-MAP.md), [detaile
 
 [MIT](LICENSE).
 
-**CCDD 7.0.0:** only an explicit owner identity function makes a result reusable, and the same identity shares completed or in-flight work across repositories, paths, Critic IDs and profiles. This is a breaking change; see the [migration](docs/migration-v7.md) and [release notes](docs/releases/v7.0.0.md).
+**CCDD 7.1.0:** large cached submissions no longer create a workspace observer per owner. The owner identity is re-run before publication, and `publication` separates accepted evidence from pending or rejected audit verdicts. Callers must keep identity-covered input unchanged while execution is in flight; see the [integrity contract](docs/identity-cache.md#integrity-of-a-cache-owned-execution) and [release notes](docs/releases/v7.1.0.md).
 
 
 ### Existing Pi AI API
