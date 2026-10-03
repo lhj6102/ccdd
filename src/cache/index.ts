@@ -203,6 +203,9 @@ export function openIdentityCache({ directory = identityCacheDirectory(), maxByt
     subscriberCursor = owners.length === 256 && last ? { pid: last.pid, identity: last.process_identity ?? '' } : undefined;
   };
   const removeJob = (jobId: string) => {
+    // Keep publication authoritative for any surviving audit (even an oversized result
+    // with no cache entry). Storage retirement deletes the job only after removing it.
+    if (existsSync(join(directory, 'executions', jobId))) return;
     db.prepare("DELETE FROM cache_jobs WHERE id=? AND state!='RUNNING' AND NOT EXISTS(SELECT 1 FROM cache_subscribers WHERE job_id=?)").run(jobId, jobId);
   };
   const publishFailure = (jobId: string, identity: string, code: string) => transaction(() => {
@@ -255,7 +258,8 @@ export function openIdentityCache({ directory = identityCacheDirectory(), maxByt
   const retireStorage = async (limit: number): Promise<number> => {
     const candidates = await retry(() => transaction(() => {
       const rows = db.prepare(`SELECT * FROM cache_execution_storage s WHERE
-        NOT EXISTS(SELECT 1 FROM cache_jobs WHERE id=s.id) AND
+        NOT EXISTS(SELECT 1 FROM cache_jobs WHERE id=s.id AND state='RUNNING') AND
+        NOT EXISTS(SELECT 1 FROM cache_subscribers WHERE job_id=s.id) AND
         NOT EXISTS(SELECT 1 FROM cache_entries WHERE json_extract(data,'$.executionId')=s.id) LIMIT ?`).all(limit);
       return { rows: rows.filter(row => {
         if (row.retire_pid != null && alive({pid: Number(row.retire_pid), process_identity: row.retire_identity as string | null})) return false;
@@ -278,7 +282,10 @@ export function openIdentityCache({ directory = identityCacheDirectory(), maxByt
           await rename(target,quarantine);
         }
         await rm(quarantine,{recursive:true,force:true});
-        await retry(() => db.prepare('DELETE FROM cache_execution_storage WHERE id=? AND retire_pid=? AND retire_identity IS ?').run(id,process.pid,ownProcessIdentity));
+        await retry(() => transaction(() => {
+          db.prepare('DELETE FROM cache_execution_storage WHERE id=? AND retire_pid=? AND retire_identity IS ?').run(id,process.pid,ownProcessIdentity);
+          removeJob(id);
+        }));
       } catch (cause) {
         await retry(() => db.prepare('UPDATE cache_execution_storage SET retire_pid=NULL,retire_identity=NULL WHERE id=? AND retire_pid=? AND retire_identity IS ?').run(id,process.pid,ownProcessIdentity));
         throw cause;
@@ -307,7 +314,7 @@ export function openIdentityCache({ directory = identityCacheDirectory(), maxByt
           db.prepare('DELETE FROM cache_entries WHERE identity=?').run(row.identity); bytes -= Number(row.bytes); count--; removed++;
         }
       }
-      const deadJobs = db.prepare("SELECT id FROM cache_jobs j WHERE state!='RUNNING' AND NOT EXISTS(SELECT 1 FROM cache_subscribers WHERE job_id=j.id) LIMIT ?").all(limit);
+      const deadJobs = db.prepare("SELECT id FROM cache_jobs j WHERE state!='RUNNING' AND NOT EXISTS(SELECT 1 FROM cache_subscribers WHERE job_id=j.id) AND NOT EXISTS(SELECT 1 FROM cache_entries WHERE json_extract(data,'$.executionId')=j.id) LIMIT ?").all(limit);
       for (const row of deadJobs) removeJob(String(row.id));
       return { removed, bytes: Number(bytes), entries: Number(count), needsMore: bytes > maxBytes || count > maxEntries || jobs.length === limit || deadJobs.length === limit,
         nextJobCursor: jobs.length === limit ? String(jobs.at(-1)!.id) : '' };

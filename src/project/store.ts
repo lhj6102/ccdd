@@ -13,8 +13,10 @@ import type { RunRecord, RunView } from '../broker/index.js';
 import type { ValidationEvidence, ProjectPlan } from './types.js';
 import { planProject } from './query.js';
 import { findCoalescibleRequest } from '../broker/coalescing.js';
+import { executionPublication, type ExecutionPublication } from './publication.js';
 
-export function readEvidence(database: DatabaseSync, runId?: string): ValidationEvidence[] {
+export function readEvidence(database: DatabaseSync, runId?: string, publication = executionPublication(database)): ValidationEvidence[] {
+  // Preserve the raw verdict for audit, with publication eligibility alongside it.
   const store = records(database);
   const rows = runId === undefined
     ? database.prepare("SELECT data FROM requests WHERE status IN ('GREEN','RED') ORDER BY json_extract(data,'$.completedAt'),rowid").all()
@@ -25,7 +27,7 @@ export function readEvidence(database: DatabaseSync, runId?: string): Validation
     const input = store.get<ValidationEvidence['input']>(header.inputRef), result = store.get<ReviewRequest['result']>(header.semanticRef);
     if (!result || result.verdict !== header.status) throw new Error('Stored result/status mismatch.');
     if (![3, 4].includes(input.version) || typeof input.key !== 'string') return [];
-    return [{ source: header.executionSource, profile: header.profile, executionProvenance: header.executionProvenance ?? null, requestId: header.id, runId: header.runId, criticId: header.criticId, input, completedAt: header.completedAt, verdict: result.verdict, result: semanticResult(result) as NonNullable<ReviewRequest['result']> }];
+    return [{ source: header.executionSource, profile: header.profile, executionProvenance: header.executionProvenance ?? null, requestId: header.id, runId: header.runId, criticId: header.criticId, input, completedAt: header.completedAt, verdict: result.verdict, result: semanticResult(result) as NonNullable<ReviewRequest['result']>, ...(publication ? { publication } : {}) }];
   });
 }
 
@@ -52,7 +54,7 @@ export function evidenceFamilies(stateDir: string, evidence: readonly Pick<Valid
 }
 export function projectHistory<D extends ResultDetail = 'compact'>(stateDir: string, options: ResultOptions<D> = {}) { return withProjectStore(stateDir, db => readEvidence(db).map(evidence => resultView(options, evidence, () => requesterEvidence(evidence, stateDir))), []); }
 
-export type ProjectRunView = RunView & { validation?: ProjectPlan };
+export type ProjectRunView = RunView & { validation?: ProjectPlan; publication?: ExecutionPublication };
 // Compact/status consumers do not hydrate request manifests or duplicated Run
 // templates/graph. Full audit lookup reconstructs the admitted current-format record.
 const requestProjection = "json_remove(data, '$.artifacts', '$.configManifest', '$.payload', '$.references')";
@@ -63,8 +65,14 @@ function readRun(database: DatabaseSync, id: string, full: boolean): ProjectRunV
   const shared = (run.project?.coalescedRequestIds ?? []).map(id => store.request(id, false)!);
   const events = full ? database.prepare('SELECT * FROM (SELECT * FROM events WHERE run_id = ? ORDER BY id DESC LIMIT 500) ORDER BY id').all(id).map(event => ({ id: Number(event.id), runId: String(event.run_id), requestId: event.request_id === null ? null : String(event.request_id), createdAt: String(event.created_at), type: String(event.type), message: String(event.message), ...(event.data ? { data: JSON.parse(String(event.data)) as unknown } : {}) })) : [];
   const owner = database.prepare('SELECT pid, claimed_at FROM run_owners WHERE run_id = ?').get(id);
-  return { ...run, scope: run.scope ?? { kind: run.graph ? 'graph' : 'chain' }, requests, events, owner: owner ? { pid: Number(owner.pid), claimedAt: String(owner.claimed_at) } : null,
-    ...(run.project?.version === 3 ? { validation: planProject(run.project.snapshot, readEvidence(database, id).filter(e => !run.project!.evidenceRequestIds || run.project!.evidenceRequestIds.includes(e.requestId)), { selection: run.project.selection, recursive: run.project.recursive, force: run.project.force, ignoreGates: run.project.ignoreGates, runId: id, coalescedRequestIds: run.project.coalescedRequestIds, attempts: [...requests, ...shared] }) } : {}) };
+  // The reviewer's verdict stays in requests as audit. Validation reports an unpublished
+  // verdict as an in-progress or failed attempt, never as matching evidence.
+  const publication = run.executionOwned ? executionPublication(database) ?? undefined : undefined;
+  const unpublished = (request: ReviewRequest): ReviewRequest => !publication || publication.state === 'accepted' || !['GREEN', 'RED'].includes(request.status) ? request
+    : { ...request, status: publication.state === 'pending' ? 'RUNNING' : 'ERROR', error: publication.message ?? null, errorCode: publication.code ?? null };
+  return { ...run, scope: run.scope ?? { kind: run.graph ? 'graph' : 'chain' }, requests: requests.map(request => ({ ...request, ...(publication ? { publication } : {}) })), events, owner: owner ? { pid: Number(owner.pid), claimedAt: String(owner.claimed_at) } : null,
+    ...(publication ? { publication } : {}),
+    ...(run.project?.version === 3 ? { validation: planProject(run.project.snapshot, readEvidence(database, id, publication ?? null).filter(e => !run.project!.evidenceRequestIds || run.project!.evidenceRequestIds.includes(e.requestId)), { selection: run.project.selection, recursive: run.project.recursive, force: run.project.force, ignoreGates: run.project.ignoreGates, runId: id, coalescedRequestIds: run.project.coalescedRequestIds, attempts: [...requests.map(unpublished), ...shared] }) } : {}) };
 }
 export function storedRun(database: DatabaseSync, id: string): ProjectRunView | null { return readRun(database, id, true); }
 export function storedRequesterRun(database: DatabaseSync, id: string, stateDir: string) {
@@ -75,9 +83,9 @@ export function projectRun(stateDir: string, id: string): ProjectRunView | null 
 export function projectRuns<D extends ResultDetail = 'compact'>(stateDir: string, options: ResultOptions<D> = {}) { return withProjectStore(stateDir, db => db.prepare('SELECT id FROM runs ORDER BY created_at DESC, rowid DESC').all().map(row => { const run = readRun(db, String(row.id), options.detail === 'full')!; return resultView(options, run, () => requesterRun(run, stateDir)); }), []); }
 export function projectRequests<D extends ResultDetail = 'compact'>(stateDir: string, runId?: string, options: ResultOptions<D> = {}) {
   return withProjectStore(stateDir, db => {
-    const store = records(db);
+    const store = records(db), publication = executionPublication(db);
     return (runId ? db.prepare('SELECT id FROM requests WHERE run_id=? ORDER BY ordinal').all(runId) : db.prepare('SELECT id FROM requests ORDER BY rowid').all()).map(row => {
-      const request = store.request(String(row.id), options.detail === 'full')!;
+      const request = { ...store.request(String(row.id), options.detail === 'full')!, ...(publication ? { publication } : {}) };
       return resultView(options, request, () => requesterRequest(request, stateDir));
     });
   }, []);
@@ -92,7 +100,10 @@ export function currentProjectPlan(stateDir: string, snapshot: Parameters<typeof
 
 /** The stored envelope of one request, read without mutating its state. */
 export function projectRequestData(stateDir: string, requestId: string): ReviewRequest | null {
-  return withProjectStore(stateDir, db => records(db).request(requestId) as ReviewRequest | null, null);
+  return withProjectStore(stateDir, db => {
+    const request = records(db).request(requestId), publication = executionPublication(db);
+    return request ? { ...request, ...(publication ? { publication } : {}) } : null;
+  }, null);
 }
 
 /** Scalar execution state for subscribers. No manifests, workspaces or input trees are hydrated. */

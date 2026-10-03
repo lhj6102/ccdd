@@ -47,7 +47,7 @@ export function queryProject(snapshot: ProjectSnapshot, history: readonly Valida
   createGraphDefinition(snapshot.config, false);
   const selection = options.selection ?? { kind: 'all' }, required = requiredArtifacts(snapshot, selection);
   const byKey = new Map<string, ValidationEvidence>(), byRunKey = new Map<string, ValidationEvidence>(), byCritic = new Map<string, ValidationEvidence>();
-  for (const evidence of [...history].filter(e => e.input.version === 3 || e.input.version === 4).sort((a, b) => a.completedAt.localeCompare(b.completedAt))) {
+  for (const evidence of [...history].filter(e => (!e.publication || e.publication.state === 'accepted') && (e.input.version === 3 || e.input.version === 4)).sort((a, b) => a.completedAt.localeCompare(b.completedAt))) {
     const key = `${evidence.criticId}:${evidence.input.key}`;
     if (evidence.input.version === 4 && evidence.cacheLookup && evidence.input.cacheIdentity) byKey.set(evidence.input.cacheIdentity, evidence);
     byCritic.set(evidence.criticId, evidence);

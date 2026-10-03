@@ -20,6 +20,9 @@ instruction relations define a finite graph. SCCs support cycles and execution
 gates, not hidden cache-key salts. The owner function alone defines reuse; no
 function means no reusable cache. Same identities are shared without repo or
 worktree registration. Project receipts retain their actual historical results.
+Cache-owned audit keeps the raw verdict and exposes publication separately;
+pending/rejected verdicts cannot satisfy validation or REUSE. The cache job
+remains authoritative until its execution audit is retired.
 
 Artifact Runner reconnects the pinned manifest and supplied workspace into
 scoped reviewer tools. It validates arguments, content and observations; outputs

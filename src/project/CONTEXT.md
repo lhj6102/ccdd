@@ -22,3 +22,5 @@ against the unchanged workspace on submission. Profile variants are execution
 settings, not cache salts. Public read-only result/cursor/summary/comparison APIs
 keep consumers independent of SQLite internals. History from previous input
 versions is readable where supported but never reused or resumed.
+
+Cache-owned history preserves the raw reviewer verdict with accepted/pending/rejected publication state. Query and plan exclude pending/rejected verdicts from matching evidence and REUSE. Audit reads resolve the durable cache job next to the execution store without reconciliation or writes.

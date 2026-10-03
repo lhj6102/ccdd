@@ -147,6 +147,20 @@ Stored manifests contain only serializable metadata and declarations. Execution 
 
 ## Requester results and audit lookup
 
+A cache-owned execution's raw GREEN/RED verdict is immutable audit, separate
+from `publication: {state: 'accepted' | 'pending' | 'rejected', code?, message?}`.
+Run show, summaries, lifecycle pages/streams, request lists and history expose
+that state. Pending/rejected verdicts never supply matching evidence, validation
+satisfaction or REUSE; history preserves them for inspection instead of deleting
+or rewriting them. Publication is derived readonly from the identity-cache job
+next to the source execution store. Terminal jobs remain until audit storage is
+retired; dead RUNNING owners are rejected even before GC. Missing/unreadable
+publication metadata fails closed as pending / `PUBLICATION_UNAVAILABLE`.
+The identity check stays after execution cleanup/store close and is the last
+await before each cache publication commit attempt. See
+[reviewer verdict versus publication](identity-cache.md#reviewer-verdict-versus-publication).
+
+
 **5.0: breaking default output change.** Requester
 results are compact by default. This is not a 4.x-compatible change; existing
 callers that consume audit fields must explicitly request full detail.

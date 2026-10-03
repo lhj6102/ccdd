@@ -40,7 +40,8 @@ import { ownerInput } from './owner-input.js';
 import { prepareWorkspace, reopenWorkspace, type WorkspaceDescriptor, type WorkspaceHandle, type WorkspaceIntegrity } from '../workspaces/index.js';
 import { createProjectSnapshot, positiveConcurrency } from '../project/identity.js';
 import { includedCritics, selectedCritics, planProject } from '../project/query.js';
-import { readEvidence, storedRequesterRun } from '../project/store.js';
+import { storedRequesterRun } from '../project/store.js';
+import { executionPublication } from '../project/publication.js';
 import type { ProjectRunDefinition, ProjectSelection } from '../project/types.js';
 import type { RunStatus, ExecutionSource } from '../contracts.js';
 import type { ReviewEnvelope, ReviewRequest, ReviewResult, ReviewStatus, ReviewToolCall, ExecutionContext, ExecutorReadiness, ExecutionEvent } from '../contracts.js';
@@ -67,7 +68,7 @@ export interface RunRecord {
   workerProtocol?: 'resources-1'; maxExecutions?: number; repoExecutorCap?: number; status: RunStatus; coalescingGraceMs?: number; createdAt: string; completedAt?: string; error?: string;
 }
 export interface BrokerEvent { id: number; runId: string; requestId: string | null; createdAt: string; type: string; message: string; data?: unknown }
-export interface RunView extends RunRecord { scope: NonNullable<RunRecord['scope']>; owner: { pid: number; claimedAt: string } | null; requests: ReviewRequest[]; events: BrokerEvent[] }
+export interface RunView extends RunRecord { publication?: import('../project/publication.js').ExecutionPublication; scope: NonNullable<RunRecord['scope']>; owner: { pid: number; claimedAt: string } | null; requests: ReviewRequest[]; events: BrokerEvent[] }
 export interface BrokerExecutors {
   validateWorkspace?(repoPath: string): void | Promise<void>;
   canExecute(request: ReviewRequest): ExecutorReadiness | Promise<ExecutorReadiness>;
@@ -328,7 +329,8 @@ export function createBroker<D extends ResultDetail = 'compact'>({ [executionMod
     if (owner || terminal.has(run.status)) submissionDeadlines.delete(id);
     const events = db.prepare('SELECT * FROM (SELECT * FROM events WHERE run_id = ? ORDER BY id DESC LIMIT 500) ORDER BY id').all(id).map(event => ({ id: Number(event.id), runId: String(event.run_id), requestId: event.request_id === null ? null : String(event.request_id), createdAt: String(event.created_at), type: String(event.type), message: String(event.message), ...(event.data ? { data: parseStored<unknown>(event.data) } : {}) }));
     const view = copy(run);
-    return { ...view, scope: view.scope ?? { kind: view.graph ? 'graph' : 'chain' }, owner: owner ? { pid: owner.pid, claimedAt: owner.claimed_at } : null, requests: runRequests(id), events };
+    const publication = view.executionOwned ? executionPublication(db) : null;
+    return { ...view, scope: view.scope ?? { kind: view.graph ? 'graph' : 'chain' }, owner: owner ? { pid: owner.pid, claimedAt: owner.claimed_at } : null, requests: runRequests(id).map(request => ({ ...request, ...(publication ? { publication } : {}) })), events, ...(publication ? { publication } : {}) };
   }
 
   function failOwned(runId: string, token: string, error: unknown) {
@@ -1052,7 +1054,11 @@ export function createBroker<D extends ResultDetail = 'compact'>({ [executionMod
     return { peer, source };
   };
   const viewRun = <T extends Parameters<typeof requesterRun>[0] | null>(value: T) => resultView({ detail }, value, () => value ? storedRequesterRun(db, value.id, stateDir) ?? requesterRun(value, stateDir) : null);
-  const viewRequest = (value: ReviewRequest | null) => resultView({ detail }, value, () => value ? requesterRequest(value, stateDir) : null);
+  const viewRequest = (value: ReviewRequest | null) => {
+    const publication = value && readiness.header(value.runId)?.executionOwned ? executionPublication(db) : null;
+    const audit = value ? { ...value, ...(publication ? { publication } : {}) } : null;
+    return resultView({ detail }, audit, () => audit ? requesterRequest(audit, stateDir) : null);
+  };
   return {
     ...broker,
     async prepareProject(options: Omit<PrepareProjectOptions, 'repoPath' | 'stateDir' | 'repoId' | 'workspaceIntegrity'>) {

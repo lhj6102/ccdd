@@ -4,12 +4,14 @@ import { resolve } from 'node:path';
 import type { ReviewRequest } from './contracts.js';
 import type { RunView } from './broker/index.js';
 import type { CriticValidation, ProjectPlan, ProjectQuery, ValidationEvidence } from './project/types.js';
+import type { ExecutionPublication } from './project/publication.js';
 
 export type ResultDetail = 'compact' | 'full';
 export interface ResultOptions<D extends ResultDetail = 'compact'> { detail?: D }
 export type ResultView<D extends ResultDetail, Full, Compact> = D extends 'full' ? Full : Compact;
 export interface ReviewReference { runId: string; requestId: string | null; stateDir: string }
 export interface RequesterResult {
+  publication?: ExecutionPublication;
   executionProvenance: ExecutionProvenance | null; verdict: 'GREEN' | 'RED'; reference: ReviewReference; reusedFrom?: ReviewReference; [field: string]: unknown;
 }
 export interface RequesterRequest {
@@ -19,6 +21,7 @@ export interface RequesterRequest {
   profile: ReviewRequest['profile']; requestedProfile?: ReviewRequest['profile']; executionSource?: ReviewRequest['executionSource']; cacheDisposition?: ReviewRequest['cacheDisposition'];
   inputKey: string | null; reference: ReviewReference; result: RequesterResult | null;
   error?: string | null; errorCode?: string | null; blockedReason?: string | null;
+  publication?: ExecutionPublication;
 }
 export interface ResultReference { requestId: string; executionProvenance: ExecutionProvenance | null }
 export type RequesterCritic = Omit<CriticValidation, 'input' | 'result'> & { inputKey: string; result: ResultReference | null };
@@ -29,6 +32,8 @@ export interface RequesterRun {
   reference: ReviewReference; results: RequesterResult[];
   requests: (Omit<RequesterRequest, 'result'> & { result: ResultReference | null })[];
   validation?: Omit<RequesterPlan, 'results'>; error?: string;
+  /** Cache-owned execution stores only: whether the identity cache published this verdict. */
+  publication?: ExecutionPublication;
 }
 
 export const reviewReference = (stateDir: string, runId: string, requestId: string | null): ReviewReference => ({ runId, requestId, stateDir: resolve(stateDir) });
@@ -37,13 +42,15 @@ export const reviewReference = (stateDir: string, runId: string, requestId: stri
 export function requesterEvidence(evidence: ValidationEvidence, stateDir: string): RequesterResult {
   return { ...semanticResult(evidence.result), executionProvenance: evidence.executionProvenance ?? null, verdict: evidence.verdict,
     profile: evidence.profile, reference: evidence.cacheLookup && evidence.source ? reviewReference(evidence.source.stateDir,evidence.source.runId,evidence.source.requestId) : reviewReference(stateDir, evidence.runId, evidence.requestId),
-    ...(evidence.source ? { reusedFrom: reviewReference(evidence.source.stateDir,evidence.source.runId,evidence.source.requestId) } : {}) };
+    ...(evidence.source ? { reusedFrom: reviewReference(evidence.source.stateDir,evidence.source.runId,evidence.source.requestId) } : {}),
+    ...(evidence.publication ? { publication: evidence.publication } : {}) };
 }
-export function requesterRequest(request: ReviewRequest, stateDir: string): RequesterRequest {
+export function requesterRequest(request: ReviewRequest & { publication?: ExecutionPublication }, stateDir: string): RequesterRequest {
   const reference = reviewReference(stateDir, request.runId, request.id), inputKey = request.validationInput?.key ?? null;
   return { usageState: request.usage ? 'reported' : 'unreported', ...(request.usage ? { usage: structuredClone(request.usage) } : {}), id: request.id, runId: request.runId, criticId: request.criticId, target: request.target, status: request.status, profile: structuredClone(request.profile), requestedProfile: request.requestedProfile, executionSource: request.executionSource, cacheDisposition: request.cacheDisposition,
     attemptId: request.attemptId ?? null, executionProvenance: request.executionProvenance ?? null, inputKey, reference, error: request.error, errorCode: request.errorCode, blockedReason: request.blockedReason,
-    result: request.result ? { ...semanticResult(request.result), executionProvenance: request.executionProvenance ?? null, verdict: request.result.verdict, profile: structuredClone(request.profile), reference, ...(request.executionSource ? { reusedFrom: reviewReference(request.executionSource.stateDir,request.executionSource.runId,request.executionSource.requestId) } : {}) } : null };
+    ...(request.publication ? { publication: request.publication } : {}),
+    result: request.result ? { ...semanticResult(request.result), executionProvenance: request.executionProvenance ?? null, verdict: request.result.verdict, profile: structuredClone(request.profile), reference, ...(request.executionSource ? { reusedFrom: reviewReference(request.executionSource.stateDir,request.executionSource.runId,request.executionSource.requestId) } : {}), ...(request.publication ? { publication: request.publication } : {}) } : null };
 }
 function requesterCritic<T extends CriticValidation>(critic: T): Omit<T, 'input' | 'result'> & RequesterCritic {
   const { input, result, ...rest } = critic;
@@ -56,15 +63,15 @@ export function requesterQuery(query: ProjectQuery, stateDir: string): Requester
 export function requesterPlan(plan: ProjectPlan, stateDir: string): RequesterPlan {
   return { ...plan, ...requesterQuery(plan, stateDir), items: plan.items.map(critic => requesterCritic(critic)) };
 }
-export function requesterRun(run: Pick<RunView, 'id' | 'status' | 'workspace' | 'requests' | 'error'> & { validation?: ProjectPlan }, stateDir: string): RequesterRun {
-  const requests = run.requests.map(request => requesterRequest(request, stateDir));
+export function requesterRun(run: Pick<RunView, 'id' | 'status' | 'workspace' | 'requests' | 'error'> & { validation?: ProjectPlan; publication?: ExecutionPublication }, stateDir: string): RequesterRun {
+  const requests = run.requests.map(request => requesterRequest({ ...request, ...(run.publication ? { publication: run.publication } : {}) }, stateDir));
   const plan = run.validation ? requesterPlan(run.validation, stateDir) : undefined;
   const { results: validationResults = [], ...validation } = plan ?? {};
   return { id: run.id, status: run.status, workspaceIntegrity: run.workspace?.integrity ?? 'content',
     reference: reviewReference(stateDir, run.id, null), error: run.error,
     results: uniqueResults([...requests.flatMap(request => request.result ? [request.result] : []), ...validationResults]).map(result => result.reference.runId === run.id ? result : { ...result, reusedFrom: result.reference }),
     requests: requests.map(({ result, ...request }) => ({ ...request, result: result ? { requestId: request.id, executionProvenance: result.executionProvenance } : null })),
-    ...(plan ? { validation: validation as Omit<RequesterPlan, 'results'> } : {}) };
+    ...(plan ? { validation: validation as Omit<RequesterPlan, 'results'> } : {}), ...(run.publication ? { publication: run.publication } : {}) };
 }
 function uniqueResults(results: RequesterResult[]): RequesterResult[] {
   return [...new Map(results.map(result => [result.reference.requestId, result])).values()];

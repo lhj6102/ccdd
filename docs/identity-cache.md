@@ -125,7 +125,38 @@ publishes the result, because by the owner's definition it describes that
 identity. A failed or timed-out identity script fails the execution without
 publishing it. When publication is rejected, the execution's own audit still
 records the reviewer's verdict; the cache job and every subscriber receive the
-failure.
+failure. The raw GREEN/RED is audit, not proof that publication succeeded.
+
+### Reviewer verdict versus publication
+
+Every cache-owned execution exposes `publication` separately from its raw
+reviewer status/result:
+
+- `accepted`: the cache publication transaction committed. GREEN and RED are
+  eligible historical evidence; RED still fails validation.
+- `pending`: publication has not committed. The raw verdict is audit only.
+- `rejected`: publication failed, with `code` and `message` explaining why
+  (for example `WORKSPACE_CHANGED` or `COMPUTE_OWNER_EXITED`). The raw verdict
+  remains unchanged and is audit only.
+
+`run show`, Run/request summaries, lifecycle pages, result streams, request
+lists and history expose the distinction. `projectHistory` retains raw verdicts
+with their publication state in compact and full output. `queryProject` and
+`planProject` exclude pending/rejected history from matching evidence and REUSE;
+the execution's own validation also reports the pending or failed attempt.
+The execution status in audit output remains the reviewer's original status,
+not a rewritten cache outcome. Normal subscriber receipts report the actual
+published result or publication failure as before.
+
+Readers derive publication from the identity-cache job alongside the execution
+store, not from their environment's state home. Completed/failed jobs remain
+until their execution audit is retired, including for oversized results that
+are not retained as entries. A dead RUNNING owner is reported as rejected on
+readonly inspection, before GC records that same failure. If the cache metadata
+is missing or unreadable, readers fail closed with pending /
+`PUBLICATION_UNAVAILABLE`; they never infer acceptance from a raw verdict.
+Publication and failure remain durable across processes and crashes without
+reopening the execution store for a second write after its final identity check.
 
 | Event | Result |
 | --- | --- |
