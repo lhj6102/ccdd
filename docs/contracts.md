@@ -136,11 +136,10 @@ crashes, malformed results and arbitrary stderr still use credential-safe generi
 diagnostics, even if stdout contains an error-shaped value. Audit persistence
 must succeed before an authored error can reach a reviewer.
 
-This stdout/result contract does not change script stdin. Under default identity,
-changing a script changes its execution input hash and consumer keys. Under
-owner identity, the returned value alone controls the local identity. Timing,
-error messages and result flags do not contribute to identity. ValidationInput
-is version 3 and has no package/runtime version salt.
+This stdout/result contract does not change script stdin. Only an explicit
+owner identity enables reuse; script bytes and execution metadata do not add
+hidden key salts. Current ValidationInput is version 4. See the local compute
+contract below for the breaking historical-key boundary.
 
 Each invocation gets private external output, temporary, home and cache directories. Provider secrets and Node preload hooks are not inherited. Timeouts, cancellation, output limits and process-group cleanup remain mandatory. Main-process exit also cleans surviving descendants. Desktop launchers deliberately hand an application session to the reviewer; launch is not a verdict. Custom scripts are trusted workspace code, not an OS sandbox, and must honor their scope and keep input unchanged.
 
@@ -256,10 +255,10 @@ Public requester surfaces:
   observation tools only, not requester review results; its tool protocol and
   audit recording are unchanged.
 
-CCDD 6.0.0 requires a fresh state directory: all store entry points reject
-previous-major/unmarked state without reading or migrating its records. ValidationInput
-version 3 is a one-time key transition; package/runtime version changes alone do
-not invalidate identity thereafter. See [migration](migration-v5.md).
+State format 6 retains its historical records where readable. Current input
+version 4 does not reuse or resume prior composite input versions. Older state
+formats remain rejected; there is no silent conversion of their keys. See
+[7.x migration](migration-v7.md).
 
 ### Result checks
 
@@ -299,15 +298,20 @@ verdict, a local path or file system error text.
 
 ## Input identity and evidence
 
-Local material identity hashes content, names, entry types, executable bits and empty directories. Separate child Artifacts are hashed through their relations rather than twice as parent material. `.git` and installed `node_modules` are excluded from default Artifact material; the complete workspace still has its independent integrity proof. Declare used installed runtimes in `executionPaths`.
+CCDD 7 is a project-independent local computing resource: **explicit identity ->
+completed result**. The cache is shared under `$CCDD_STATE_HOME/identity-cache`
+(or the default local user state home). Project `stateDir`, repo, path, worktree,
+Critic ID, profile and dependency layout do not partition it. Without an explicit
+identity function, execute and return without reusable caching or coalescing.
 
-A family instance's own material is its shared folder, without the declaration, the instance list or any instance's listed material, plus its own listed material. Its resolved definition, Critics and a hash of its entry (merged `params` and `material`) replace the raw declaration bytes; changing a default or variant therefore invalidates exactly the instances whose merged parameters change. So editing one instance's material or entry, or adding another instance with new material, leaves the other instances' evidence current, while changing the shared declaration, scripts or unlisted files invalidates every instance. Material that no instance lists any longer becomes shared again. Shared family material records a directory only when it is empty and does not contain declared instance material; file names already imply nonempty directories. So whether a folder for instance material is empty or filled never changes a sibling, while other files and unrelated empty directories remain shared material. Declaring material inside a previously empty shared directory removes that shared entry once, which does change siblings.
-
-`stale: {"kind":"file-hash","paths":[...]}` narrows material to literal owner-relative files/directories, without globs. In a family it narrows the shared material; a narrowed path inside any instance's material is not shared, and each instance's listed material remains an input. Missing selected paths have a distinct identity. Config, local view entry files, Runtime test entry files and result check scripts remain mandatory inputs. Environment scripts and their declared `inputs`, view execution inputs, and typed child/mount/instruction relations also participate. Dynamic imports or other files beyond these boundaries must be declared; mutable external services need an appropriate conservative strategy.
+Content hashes, finite SCC fingerprints and workspace descriptors continue to
+support execution integrity, graph traversal and diagnostics. They do not make
+implicit reusable keys. Omitted `stale`, `file-hash`, and `always` all mean no
+reusable identity. No fallback occurs when an explicit identity function fails.
 
 ### Owner-defined identity
 
-An owner can replace all automatic local identity inputs with an opaque equivalence string:
+The owner declares an opaque result-equivalence function:
 
 ```json
 "stale": {
@@ -324,94 +328,68 @@ Supported commands are `node` with an owner-relative entry file as the first arg
 
 Stdin is `{"version":1,"artifactId":"..."}`, adding `"family":{"name","material"}` for a family instance. A family's identity strategy runs once per selected instance, so one shared script computes each instance's value from its own material. Scripts that ignore stdin are unaffected. Listed instance material is checked like declared `inputs`: it must exist inside the owner folder without symlinks.
 
-Moving an Artifact with owner identity into a family preserves its evidence. Its own hash remains `inputHash({id, value})` and its Critic hash depends only on the qualified Critic ID, so an instance with the same name, the same Critic local ID, the same relations and an identity script that returns the same value keeps the same ValidationInput key. Default (file-hash) identity hashes the folder layout and definition, so moving such an Artifact into a family requires new reviews once.
-
 Scripts use the environment-requirement executor: owner cwd, a credential-filtered environment, external temporary/output directories, bounded output, process-group cleanup, cancellation and a timeout. On timeout or cancellation the executor signals the script's process group, waits a 500 ms grace, then stops reading its output and fails; it never waits on pipes a descendant keeps open. A descendant that detaches into its own process group can outlive the script: full descendant cleanup would need OS-level isolation, which this executor does not provide. `timeoutMs` is an integer from 1 to 900000, default 30000. Temporary output is removed after each invocation. The workspace must remain unchanged; the normal workspace integrity checks still apply. These are trusted owner scripts, not an OS sandbox, and must treat the workspace as read-only.
 
 Stdout must contain exactly 1–128 characters from `[A-Za-z0-9._:-]`, optionally followed by one LF newline. Empty output, whitespace, CRLF, extra lines, invalid bytes, excessive output, a nonzero exit or timeout fail current-input validation with an Artifact-specific error. No default-identity fallback occurs. Stderr is not part of the value and is not forwarded as an identity diagnostic. Output the script leaves that cannot be removed fails validation with the fixed `Identity script for Artifact <id> failed: Identity validation failed.` error, after cancellation and the script's own failure in precedence, never with file system text or local paths.
 
-The own hash is `inputHash({id, value})`, where `value` is stdout without its
-optional final LF. Only the owner's value and Artifact ID participate locally.
-No Artifact/Critic definition, identity script, declared input, tool/profile,
-environment, criteria, integrity policy, package version or runtime version is
-automatically mixed back in. The owner must encode every distinction that should
-invalidate review in the returned value. Identical output deliberately permits
-reuse despite such changes. Safety, scoping and workspace-integrity checks still
-run; identity does not bypass execution safety.
-
-Dependency identities and cycle connectivity still propagate. A changed required
-dependency invalidates its consumers. Default identity retains material,
-configuration, owned Critic definitions, declared execution/environment inputs
-and integrity policy coverage; only package/runtime version salts are removed.
+The returned value, with its optional LF removed, is the entire reusable key.
+No Artifact ID, Critic ID, dependency, definition, profile, integrity policy or
+version is mixed into it. The function defines result substitutability globally
+within the local user's state home. The same Artifact value is used by its
+Critics; distinct reviews given that same value are deliberately interchangeable.
+Function inputs and script bytes are execution-safety inputs, not hidden salts.
 
 Current `plan`/`status` and saved Run validation artifacts expose `identity: "script"` and `value`, in JSON and plain text. Run snapshots retain `artifactIdentities` so even a fully reused Run records the equivalence decision. Stored Run queries never re-execute the identity script. Current-input preparation computes identities and validation inputs only for the selected targets and their dependency closure; JSON and plain-text validation output use that same scope. A whole-project selection prepares every Artifact. Scoped hashes are identical to the corresponding whole-project hashes. Preparation does execute opted-in identity scripts, including for `status`/`plan` and explicit monitor inspection, but static `config check`, `graph`, config discovery and monitor GETs do not. Foreground CLI preparation handles SIGINT/SIGTERM through cancellation: it terminates identity process groups, removes disposable output and exits with code 2 and `Project validation cancelled.`. Replay-validated reuse and tool-result replay receipts are separate ideas, not part of this mode.
 
-Strongly connected components group cycles into a finite condensation graph. Hash each component's sorted members, local identities, internal relationships and dependency-component hashes; derive each Artifact's identity from its canonical name and component hash. Changes to a referenced component invalidate its consumers. Unrelated Artifact changes preserve evidence. Neither review IDs nor completion times contribute to input identity. Repeating an unchanged review therefore does not invalidate consumers.
+Validation inputs use version 4 and carry explicit cache eligibility. Earlier
+composite input versions are historical-only: never relabel or silently import
+their keys. Equal explicit identities can return a completed result even after
+the source repo and its project state are deleted. GREEN and RED are equally
+cacheable; operational failures and cancellation are not. The cached original
+profile/result/provenance remains attributable, and current requested settings
+do not become hidden hit filters. Profile, criteria, schema or dependency
+changes matter only if the owner's output distinguishes them.
 
-A version 3 ValidationInput key is `inputHash({version: 3, criticId, target, deps})`: only the Critic ID and current target/dependency Artifact identities are inputs. Default Artifacts carry definition and integrity coverage inside their identities; owner Artifacts use their returned values. Package version, Node version, platform and architecture are not automatic salts. `stale: {"kind":"always"}` permits only current-request evidence for that Artifact and its consumers. `--force` similarly requires a new review for selected Critics while preserving applicable dependency evidence.
-
-Only actual semantic GREEN/RED results with the current input version are evidence. The latest semantic verdict for a matching input wins; RED is not hidden by an earlier GREEN. Operational ERROR is not a semantic verdict. Matching GREEN and RED are both reused without executing again. RED remains unsatisfied. Use `--force` for a fresh review; ERROR is never reused. State from 4.x is rejected on opening; use a fresh state directory.
-
-A Critic's PASS describes its matching actual result. Final Artifact/project satisfaction separately requires every owned Critic and every required Artifact in the dependency closure. Explicit bases need no fabricated review. A cycle is not evidence: all non-basis members still need matching actual PASS results. Traversal uses visited sets and per-query memoization, with no persistent stale flag or invalidation queue.
+Force bypasses reads, in-flight sharing and publication for that request; it
+does not replace the shared entry. GC is capacity/recent-use storage management,
+not semantic staleness. Complete details, limits and public cache APIs are in
+[the local compute contract](identity-cache.md).
 
 ## Selection and scheduling
 
-In 6.0, selected Critics execute only after dependency Critics outside the same SCC have current GREEN evidence, unless `ignoreGates` / `--ignore-gates` is explicit. Basis/no-Critic dependencies do not gate. RED yields BLOCKED; operational failure yields WAIT_DEPENDENCY, without executing or fabricating a child verdict. SCC peers execute together after external gates pass. `--recursive` includes Critics across the required dependency closure, including cycles. `--all` covers every Artifact. Multiple evaluations run concurrently within the Broker's executor limit.
+Individual verification executes selected Critics, while recursive verification
+includes their required dependency closure. Missing final evidence produces
+INCOMPLETE without discarding selected results. GREEN evidence gates dependent
+execution outside an SCC by default; `ignoreGates` explicitly bypasses it.
+Cycle peers have no internal execution gate, but final satisfaction still needs
+all required matching GREEN results. An ordinary no-Critic Artifact is
+UNREVIEWED; `basis` is explicit.
 
-Successful selected results are preserved if other required evidence is missing; the Run is INCOMPLETE. The same result can satisfy a later request after the remaining evidence arrives. Run status distinguishes review execution (`QUEUED`, `RUNNING`, `WAITING_HUMAN`, `ERROR`) from semantic results (`GREEN`, `RED`) and unfinished validation obligations (`INCOMPLETE`). No blocked or reused ticket is fabricated. Identical active Critic/input requests across Runs in the same state directory coalesce: the follower waits for and adopts the original request result. Its cancellation does not cancel the source. Source cancellation/error fails the follower without fabricating a verdict. A
-follower never executes or hosts another Run. It coalesces only onto a request
-with a live Run owner, or an unowned QUEUED request inside its submission grace
-lease. `createBroker({coalescingGraceMs})` configures that lease for newly submitted
-Runs (integer 0–300000 ms). The default is 15000 ms: enough for the CLI worker's
-15-second startup budget while bounding abandonment; normal SDK/CLI callers
-start within milliseconds. The persisted source Run's submission time and lease
-control eligibility, not the follower's configuration or arrival time. Zero grace
-disables unowned coalescing. Invalid/missing lease metadata or a future submission
-time expires eligibility immediately. Each Broker also bounds observed remaining
-grace with a monotonic deadline, so a wall-clock rollback cannot prolong its wait.
+Prepared current input checks the independent cache: completed evidence gives
+REUSE, a live matching computation gives COALESCE, otherwise the selected Critic
+needs execution. No identity means EXECUTE on every new submission. A Run's own
+completed noncached result still counts toward that Run. A plan is an observation,
+not a result/budget reservation; submission rechecks current cache and admission.
 
-When the lease expires without an owner, the follower removes that shared
-reference and replans inside a write transaction. It first checks for another
-owned/leased matching active request; otherwise it creates a ticket in its own
-Run. Racing followers therefore share one execution. The abandoned source's
-records remain untouched. If its caller later runs it, its already-queued ticket
-may execute again (even if matching evidence now exists); cancel abandoned Runs
-rather than revive them when that is not desired. New submissions reuse matching
-GREEN/RED evidence normally. A dead source worker is reconciled as WORKER_EXITED;
-partial execution is not replayed. `--force` opts out of both stored-result reuse and active coalescing.
+Shared computation owns a separate execution record under the cache, not the
+first caller's Run. Canceling one subscriber does not cancel remaining callers.
+Human claims, tools and completion are forwarded to the true execution record.
+Dead owners are reclaimed and late publication is fenced. Errors do not create
+semantic entries. A replacement execution must respect the receiving request's
+budget, deadline and cancellation; it cannot borrow an earlier Run's allowance.
+Cache hits and followers consume no new executor starts. `maxExecutions: 0`
+therefore permits only existing reusable results or active shared computation.
 
-Current-input inspection (`inspectProject`, CLI `plan`/`status`, and explicit
-monitor inspection) reads completed evidence and matching active requests in one
-readonly transaction. Plan items use `COALESCE` when submission would adopt an
-active request instead of creating a ticket. The item's existing `requestId`
-identifies that source; an unowned leased source additionally has
-`leaseExpiresAt`, the ISO UTC submission-time-plus-grace deadline. Compact output
-keeps only these references, not a source envelope or duplicate result. The
-`counts.coalesce` counter counts these items; `counts.execute` counts only new
-executions. `ACTIVE` continues to describe attempts already attached to a saved
-Run, not prospective adoption by a new submission. Forced Critics remain
-`EXECUTE`. Matching completed evidence still takes precedence as `REUSE`.
+Project Run receipts/history remain separately addressable. Readonly stored
+queries do not execute scripts, start workers or reconcile state. Current-input
+preparation executes only explicitly declared identity functions in the selected
+dependency scope. Static graph/config discovery and monitor GETs remain inert.
+Session-only prepared submissions reuse that preparation, recheck unchanged
+workspace input and cannot be forged by modifying their public plan.
 
-Inspection and submission share candidate matching/order and one Broker-owned
-eligibility function: matching version-3 Critic/input, nonterminal source Run,
-live PID/process-identity owner, or unowned QUEUED source within its valid lease.
-Owned RUNNING and WAITING_HUMAN requests are also eligible. Inspection performs
-only the liveness check: a dead owner is treated as ineligible as if reconciled,
-but no status, owner, event or scheduling revision is written. Submission still
-persists WORKER_EXITED and removes the dead owner's token under its transaction.
-Zero grace, future/invalid timestamps and invalid/missing lease metadata fail
-closed in both paths.
-
-A plan is a point-in-time quote, not a reservation. Source completion, owner
-exit, lease expiry, or clock changes before submission can change the answer.
-`leaseExpiresAt` is the wall-clock upper bound; a waiting Broker additionally
-retains its own monotonic bound, which can expire sooner after clock rollback.
-A fresh readonly inspection has no access to another Broker's process-local
-lease observations and never renews or persists a lease. Pure `planProject`
-continues to use only its supplied history/attempts; use `inspectProject` for a
-current-state coalescing quote.
-
-Project queries compare prepared current input and actual evidence in a readonly transaction. They create no database, ticket or alarm and execute no review tools or Providers. Preparing an opted-in owner identity runs its script with disposable external output; other current-input preparation remains script-free. Completed Runs reference the evidence they consumed, preserving their historical interpretation. `run show` and stored-result queries do not need the current workspace or reconcile owners. A terminal INCOMPLETE Run does not add omitted Critics when resumed; submit a new request.
+See [Project interfaces](project-validation.md) for profile variants, cursor/NDJSON
+results, attempt summaries and comparisons, and [migration](migration-v7.md) for
+the breaking historical-state boundary.
 
 ## Workspace contract
 
@@ -500,14 +478,14 @@ source descriptor. Reopening a strict descriptor with a metadata override is
 rejected; an explicit new metadata-policy capture is required.
 
 The Project CLI accepts `--integrity content|metadata` for `verify`, `status`, and
-`plan`; the default is `content`. Default Artifact identity includes integrity policy, so content and metadata
-reviews have distinct keys. Owner identity controls this distinction itself;
-encode policy in its value when reviews should not be considered equivalent.
-Execution safety always enforces the requested policy independently of reuse.
+`plan`; the default is `content`. Integrity is an execution-safety policy, not
+an added cache key. Owners must encode it in their identity when results under
+these policies are not interchangeable. Execution safety independently enforces
+the policy on new computation; a cache hit returns the original result.
 
 ## Broker and Executors
 
-The Broker owns SQLite tickets, claims, events, results and process ownership. A request-scoped worker owns one Run. Only its live process identity/token may execute requests; cancellation and owner death become operational failures. Independent Runs can inspect the same unchanged workspace with independent external output. There is no daemon, automatic queue scanner or remote transfer service.
+The Broker owns SQLite tickets, claims, events, results and process ownership. A worker owns each Run record; shared computation uses a separate cache-owned Run, independent of subscriber receipts. Only its live process identity/token may execute requests; cancellation and owner death become operational failures. Independent Runs can inspect the same unchanged workspace with independent external output. There is no daemon, automatic queue scanner or remote transfer service.
 
 Runtime currently supports fixed `node --test` entry paths. Paths are owner-relative logical paths, including mounts; the Executor resolves them to real files and runs with the owner's cwd. Actual assertion failure returns RED; missing input, unsupported profile, process failure or broken execution is ERROR. Standard output and diagnostics are bounded. State, caches and temporary paths stay external through the supplied environment.
 
@@ -530,9 +508,9 @@ and is not a cost budget. A Provider that reports no usage counts as zero, so
 `PROVIDER_BUDGET_EXCEEDED`, an operational ERROR, never a verdict; calls made before the
 limit stay in the request's tool-call record. A review already cancelled or past its
 deadline keeps that error rather than a budget error. Like
-`timeoutMs`, the budget is part of the Critic declaration: default identity hashes
-`ccdd.json`, so editing a budget reviews again, and owner identity ignores it unless the
-returned value encodes it.
+`timeoutMs`, the budget is part of the execution declaration. No identity
+function means no reuse. With explicit identity, the owner encodes any budget
+or profile distinction required for substitutability.
 
 ### Final Agent response recovery
 
@@ -591,9 +569,8 @@ the invocation ends. Successful final results are stored as before; invalid raw
 responses and repair prompts are never stored.
 
 Repair activity is diagnostic history, not an additional evaluation or evidence.
-It does not add repair state to version 3 reuse keys. Package/runtime version
-changes alone do not invalidate identity.
-No package version is changed by this feature patch. A repaired GREEN/RED result
+It does not add repair state to the explicit reusable identity. Package/runtime
+version changes alone do not invalidate that identity. A repaired GREEN/RED result
 is reusable under normal identity rules; an ERROR is never semantic evidence.
 Reused evidence points to its original evaluation/run, whose audit events describe
 the repair; a reuse-only run does not invent repair or usage events.

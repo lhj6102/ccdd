@@ -12,11 +12,13 @@ function graph(count: number): GraphDefinition {
     views: { agentTools: { read: { metadata: { description: 'x'.repeat(12000), inputSchema: { type: 'object' }, resultKinds: ['text'], observation: 'content' }, script: { command: 'node', args: ['read.mjs'] } } } },
   }])), critics: ids.map(id => ({ id: `${id}/review`, title: 'Review', target: id, deps: [], kind: 'human' })), relations: [] };
 }
-test('compact graph preserves all 2000 instances and Critics without repeated execution definitions', () => {
+test('compact graph preserves all 2000 instances and Critics without repeated execution definitions', t => {
   const original = graph(2000), compact = compactGraphDefinition(original);
   assert.equal(compact.artifacts.length, 2000); assert.equal(compact.critics.length, 2000);
   assert.deepEqual(compact.critics, original.critics); assert.deepEqual(compact.relations, original.relations);
-  assert.ok(Buffer.byteLength(JSON.stringify(compact)) < Buffer.byteLength(JSON.stringify(original)) / 10);
+  const fullBytes = Buffer.byteLength(JSON.stringify(original)), compactBytes = Buffer.byteLength(JSON.stringify(compact));
+  assert.ok(compactBytes < fullBytes / 10);
+  t.diagnostic(`2000 Artifacts: full=${fullBytes} bytes, compact=${compactBytes} bytes, reduction=${(100*(1-compactBytes/fullBytes)).toFixed(2)}%.`);
   assert.ok(!JSON.stringify(compact).includes('inputSchema'));
   compact.critics[0].deps.push('changed'); assert.equal(original.critics[0].deps.length, 0);
   const projection = projectGraph(original, []); assert.equal(projection.artifacts[1999].criticIds[0], 'item-1999/review');

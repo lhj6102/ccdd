@@ -7,7 +7,7 @@ export interface ValidationInput {
   cacheIdentity?: string;
   target: { id: string; hash: string }; deps: { id: string; hash: string }[];
   reusable: boolean;
-  /** Omitted for default content verification. Included in default Artifact identity. */
+  /** Omitted for default content verification. Execution integrity metadata; never an additional cache key. */
   workspaceIntegrity?: WorkspaceIntegrity;
 }
 export interface ArtifactIdentity { identity: 'script'; value: string }

@@ -47,7 +47,7 @@ export { loadCheck, type LoadCheckOptions, type LoadCheckProject, type LoadCheck
 
 export { compactGraphDefinition, type CompactGraphDefinition } from '../broker/graph.js';
 
-// Local-compute cache API; the legacy project adapter migration is tracked in PR #100.
+// Project-independent local-compute cache API, also used by the Project/Broker paths.
 export { openIdentityCache, readIdentityCache, identityCacheDirectory, type CacheOptions, type CacheEntry, type CacheComputation, type CachedReview } from '../cache/index.js';
 export { listIdentityCache, cachedResultView, compareIdentityCache, type CachePageOptions } from '../cache/query.js';
 

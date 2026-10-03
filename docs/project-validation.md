@@ -1,155 +1,141 @@
-# Project Validation
+# Project validation and result interfaces
 
-CCDD 6.0 requires fresh format-6 state and gates execution on dependency GREEN
-evidence by default. Review the [6.0 migration guide](migration-v6.md) for gated
-plan states, `retryRequest`, cursor-based live reads and the admission hook.
+The Project adapter discovers static Artifact declarations, derives relationships
+and obtains actual results from the local compute service. It does not decide
+whether two explicit identities are equivalent. See [identity caching](identity-cache.md)
+and [7.x migration](migration-v7.md) before upgrading an existing installation.
 
-Current validation is computed from folder material and actual review records. `status` and `plan` read JSON, derive identities and read history; they do not create state or schedule reviews. They execute owner identity scripts only when explicitly configured with `stale.kind: "identity"`; view tools, environment requirements and Providers remain unexecuted. `config check` and `graph` always remain script-free.
-
-## Commands
-
-```sh
-ccdd-project config check
-ccdd-project status [ARTIFACT | --critic ARTIFACT/CRITIC]
-ccdd-project plan (ARTIFACT | --critic ARTIFACT/CRITIC | --all) [--recursive] [--force] [--ignore-gates]
-ccdd-project verify (ARTIFACT | --critic ARTIFACT/CRITIC | --all) [--recursive] [--force] [--ignore-gates] [--wait]
-ccdd-project graph [ARTIFACT]
-ccdd-project history [ARTIFACT | --critic ARTIFACT/CRITIC]
-```
-
-Common options are `--repo PATH`, external `--state-dir PATH`, and `--json`. Review-result commands also accept `--full`. `ccdd` is an alias for this same command set; old `ccdd run --critic` and demo selectors are removed.
-
-## Compact review results (5.0)
-
-**Breaking change:** requester results default to `{verdict, ...ownerFields,
-reference, reusedFrom?}`, not the full audit. There is no built-in reason,
-summary or evidence. Runs/plans emit each result once in top-level `results`;
-requests, Critics and plan items refer to it with `{requestId}`. Standalone
-requests contain the compact result directly. `inputKey` stays on its wrapper.
-Plain-text output shows owner result JSON and its audit reference.
+## Select and execute
 
 ```sh
-# Normal requester result: verdict, owner fields and audit reference.
-ccdd-project verify --all --wait --json
-ccdd-project request show REQUEST_ID --json
-
-# Explicit full payload and complete audit lookup.
-ccdd-project verify --all --wait --json --full
-ccdd-project request show REQUEST_ID --json --full
-ccdd-project run show RUN_ID --state-dir /external/state --json
+ccdd config check --repo ./project
+ccdd graph --repo ./project --compact --json
+ccdd plan implementation --recursive
+ccdd verify implementation --recursive --wait
+ccdd verify --critics-file critics.json --wait
+ccdd verify --artifacts-file artifacts.txt --recursive --wait
 ```
 
-`reference` contains `{runId, requestId, stateDir}`. `run show` always returns the
-full stored Run (also without `--json`), including request tool calls/arguments,
-observation receipts, criteria snapshots and event telemetry. A reused result
-references the original review. A Run reference without a particular review has
-`requestId: null`. Readonly lookups continue working if the original workspace
-was removed. State is still local; no new remote endpoint or upload is involved.
+Selector files accept a JSON string array or one ID per line, including a UTF-8
+BOM and CRLF. Empty lines are ignored and IDs are stably deduplicated. Invalid
+IDs use ordinary selection validation. Conflicting selectors fail rather than
+silently merging different scopes. Reads and catalog expansion are bounded.
 
-Programmatic callers can create a full-detail Broker with
-`createBroker({repoPath, stateDir, detail: "full", executors})`. Stored lookup is
-`projectRun(stateDir, runId)`. `inspectProject` returns only `{plan}` by default;
-add `detail: "full"` if you need its prepared snapshot. Pure `queryProject` and
-`planProject` now require `stateDir` in their options and consume full semantic
-history from `projectHistory(stateDir, {detail: "full"})`. See the
-[complete surface contract](contracts.md#requester-results-and-audit-lookup).
+Individual verification runs selected Critics. Recursive verification includes
+their required dependency closure. Missing other required results makes final
+validation INCOMPLETE without discarding completed selected results. GREEN
+dependency gates apply outside a strongly connected component; cycle peers can
+run together. `--ignore-gates` explicitly bypasses those execution gates.
 
-Stored audit is not removed, and required observation checks are unchanged.
-Start with a fresh state directory for 5.0: 4.x state is rejected, not migrated.
-ValidationInput version 3 is a one-time transition. Package and runtime upgrades
-alone no longer invalidate review keys. See [migration](migration-v5.md).
+The same explicit identity reuses GREEN or RED across different repositories,
+paths and profiles; RED remains unsatisfied. No identity function means no
+reusable result. A Run can still use its own freshly completed noncached result
+for final satisfaction. `--force` starts a new uncached execution and does not
+replace a shared result. Completed cached evidence takes precedence over an
+active matching job; otherwise a matching active identity is quoted as COALESCE.
+A plan is a point-in-time observation, never a reservation of a result or budget.
 
-## Selection and evidence
+## Prepare once, then submit
 
-Selecting a Critic executes only that Critic; selecting an Artifact executes its owned Critics. Input-ready Critics do not wait for dependencies to PASS. `--recursive` includes all Critics in the required child/mount/instruction dependency closure. `--all` includes every Artifact. `--force` requests fresh evidence for selected Critics, while applicable dependency evidence remains reusable. Matching GREEN and RED are both reused; RED still fails satisfaction. Identical active requests across Runs in one state directory coalesce and share the original review result. Force bypasses coalescing. Follower cancellation leaves the source running; source cancellation or error fails the waiting follower without a semantic verdict.
+```ts
+import { prepareProject, disposePreparedProject, createBroker, createExecutorRegistry } from '@ccdd/ccdd/project';
 
-Final satisfaction still requires the selected Artifact's complete criteria and its required dependency scope. Selected GREEN results remain evidence when the Run is INCOMPLETE. For a cycle A ↔ B, verifying A alone runs A and reports INCOMPLETE until B has matching evidence. Verifying B next can complete the required scope; recursive verification can run both concurrently. A cycle is never treated as a PASS.
-
-An explicit `basis: true` has no Critics. Other no-Critic Artifacts are UNREVIEWED. A basis with an unmet dependency is INCOMPLETE. Review completion alone does not alter input identity. SCC hashing includes material, config, view/runtime entries, declared execution inputs and relationships; it excludes verdict IDs and times. Unrelated changes preserve reuse. The latest actual semantic result for identical input wins.
-
-`stale: {"kind":"always"}` requires evidence from the current validation request and propagates through consuming identities. Narrow `file-hash` material paths are owner-relative, but cannot exclude configuration or script entry files. See [identity contracts](contracts.md#input-identity-and-evidence).
-
-## Planning active work
-
-`inspectProject` and CLI `plan`/`status` compare completed evidence and active
-requests in the same readonly store transaction. `REUSE` consumes a matching
-completed result. `COALESCE` means a new submission would wait for an identical
-active request, identified by the item's `requestId`, with no new ticket or
-execution. `counts.coalesce` counts these items; `counts.execute` counts only
-new executions. `ACTIVE` remains the action for an attempt already attached to a
-saved Run. `--force` keeps forced Critics at `EXECUTE` and bypasses coalescing.
-
-A live source owner makes QUEUED, RUNNING and WAITING_HUMAN requests eligible.
-Without an owner, only a QUEUED source inside its persisted submission lease is
-eligible; its item also includes `leaseExpiresAt` (ISO UTC). Zero grace,
-expired/future/invalid timestamps and invalid/missing grace fail closed. A dead
-owner is ineligible even within that lease. Inspection uses the same eligibility
-rule as submission but does not persist reconciliation: source records, owner
-rows, events and scheduling revisions stay unchanged. Actual submission still
-reconciles the dead worker before creating replacement work.
-
-This is a point-in-time quote, not a reservation or a guarantee of future reuse.
-If a lease expires or its owner exits before submission, new execution may be
-needed. The deadline is a wall-clock upper bound; a Broker that has already
-observed the source also retains a monotonic bound, which may expire sooner
-after a backward clock adjustment. Readonly inspection has no access to another
-Broker's private observation history. Pure `planProject(snapshot, history, ...)`
-uses only its supplied data; use `inspectProject` to quote current active work.
-
-## Owner-defined equivalence
-
-```json
-"stale": {
-  "kind": "identity",
-  "script": { "command": "node", "args": ["identity.mjs"] },
-  "inputs": ["identity-rules.json"],
-  "timeoutMs": 30000
+const prepared = await prepareProject({
+  repoPath: '/absolute/project', stateDir: '/absolute/external-state',
+  selection: { kind: 'all' }, recursive: true,
+});
+console.log(prepared.plan);
+const broker = createBroker({ repoPath: '/absolute/project', stateDir: '/absolute/external-state', executors: createExecutorRegistry() });
+try {
+  const run = await broker.submitPrepared(prepared, { requesterId: 'local', maxExecutions: 4 });
+  await broker.run(run.id);
+} finally {
+  disposePreparedProject(prepared);
+  await broker.close();
 }
 ```
 
-The script returns an opaque string of 1–128 characters from `[A-Za-z0-9._:-]`, with at most one trailing LF newline. CCDD does not interpret it. A repeated `verify` reuses matching prior actual evidence when the value and other identity conditions are unchanged, even after material or shared runtime changes. Add `--force` to require a new review of the selected Critics despite an unchanged value.
+The handle is valid only in its creating session. Mutation of the public plan
+cannot change its internal frozen input. Submission verifies the workspace and
+rechecks cache/admission state without invoking the identity script a second
+time. A changed or forged preparation is rejected. This is not a persistent
+cache of identity-function outputs.
 
-The entry file and declared `inputs` remain owner-relative and scoped, but are not automatically hashed. Only the returned value and Artifact ID define local owner identity. The owner must encode relevant script, criteria, tool/profile, environment and integrity differences in that value. Dependency identities still propagate. Default Artifacts retain automatic definition/material/execution/environment/integrity coverage. No package/runtime version salt is added in either mode.
+## Select a declared profile
 
-Use `node` with the entry file first in `args`, followed by any script arguments, or an owner-relative executable as `command`. Inline Node programs, flags before the entry, absolute commands and PATH interpreter lookup are unsupported. Scripts use owner cwd and the environment-check executor with read-only workspace obligations, cancellation and disposable external output. Optional `timeoutMs` defaults to 30000 (range 1–900000). Optional `inputs` accepts up to 64 unique literal files/directories; unknown fields fail validation. Invalid/empty stdout, nonzero exit, timeout or workspace mutation fails validation, never falling back to ordinary file hashing.
+A Critic can provide `profileVariants` in addition to its default `profile`:
 
-`plan`, `status` and `run show` display `identity: script` and the value. Their JSON artifact entries include `identity` and `value`; persisted snapshots also retain the values for fully reused Runs. Saved Run inspection does not execute the function again. See the complete [owner identity contract](contracts.md#owner-defined-identity).
-
-## Workspace and execution
-
-Supply an unchanged workspace; CCDD does not create a worktree, copy or virtual mount directory. A detached worker owns the Run and monitors all input, including ignored files, installed dependencies and Human waiting. State and output remain external. A wait timeout leaves that worker running.
-
-`--integrity content|metadata` is available on verify/status/plan. Content is the default. Metadata is an explicit weaker filesystem assumption after an initial full capture; default identity distinguishes it from content-policy evidence; owner identity must encode that distinction itself when desired. See [the policy](contracts.md#optional-metadata-integrity).
-
-## Saved results and Human actions
-
-```sh
-ccdd-project run list
-ccdd-project run show RUN_ID [--wait]
-ccdd-project run resume RUN_ID [--wait]
-ccdd-project run cancel RUN_ID
-ccdd-project request list [--run RUN_ID]
-ccdd-project request show REQUEST_ID
-ccdd-project request claim REQUEST_ID --reviewer ID
-ccdd-project request tool REQUEST_ID --reviewer ID --tool NAME --args JSON
-ccdd-project request submit REQUEST_ID --reviewer ID --result-file /external/result.json
+```json
+"profileVariants": {
+  "careful": { "kind": "agent", "provider": "YOUR_PROVIDER", "model": "YOUR_MODEL", "reasoning": "high", "timeoutMs": 120000 }
+}
 ```
 
-Queries of stored runs/requests do not need current source or reconcile ownership. Only current-major state is accepted; 4.x directories fail closed with an instruction to use a fresh directory. A terminal INCOMPLETE Run keeps its original scope; submit a new verification to add missing evaluations. Completed Runs retain references to the evidence they consumed.
+Use `verify ... --profile careful`, or SDK `profile: 'careful'`. The SDK also
+accepts a map of qualified Critic IDs to declared names. Unknown names and
+out-of-scope mappings fail before submission. Each selected variant is a full
+validated profile, not an arbitrary source-file patch. A shared identity hit
+returns the original execution's profile; the selected profile is recorded as
+`requestedProfile`. Encode profile distinctions in identity when required.
 
-Human preparation checks admitted environment requirements and static tool definitions before confirming a claim. Only the claimant may call tools and submit a result; the worker must remain alive. See [reviewers](reviewers.md).
+## Read results without internal DB access
 
-## Diagnostics and monitor
+```sh
+ccdd run show RUN_ID --state-dir STATE
+ccdd request show REQUEST_ID --state-dir STATE
+ccdd run stream RUN_ID --state-dir STATE --after 0
+ccdd verify --all --recursive --wait --stream
+ccdd run summary RUN_ID --state-dir STATE
+ccdd request summary REQUEST_ID --state-dir STATE
+ccdd run compare LEFT_RUN RIGHT_RUN --state-dir STATE
+```
 
-`doctor --critic ARTIFACT/CRITIC` diagnoses readiness. Agent diagnostics make a real Provider call using a private nonce, never a project verdict. `tools check --artifact ID --for agent|human` lists definitions; add `--tool NAME --execute --args JSON` for actual execution. `tools check --critic ARTIFACT/CRITIC` lists the tools of that Critic's admitted Artifacts and, for an Agent Critic, the static `prompt` size in bytes. `monitor` displays saved graphs and Human actions. GETs never execute scripts, reconcile owners or mutate state; explicit current-input inspection uses POST and returns a query-derived answer.
+`--stream` emits NDJSON and is separate from the existing single JSON/full output
+modes. `verify --stream` requires `--wait`. `run stream` follows an existing Run
+without invoking its worker. API clients can apply backpressure directly:
 
-## Exit codes
+```ts
+import { streamProjectResults, projectRunSummary } from '@ccdd/ccdd/project';
+for await (const event of streamProjectResults(stateDir, runId, { after: savedCursor, signal })) {
+  await consume(event);
+  savedCursor = event.cursor;
+}
+console.log(projectRunSummary(stateDir, runId));
+```
 
-With `verify --wait` or `run show --wait`: 0 means the scope is fulfilled, 1 means RED, 2 means ERROR, 3 means wait timeout and 4 means INCOMPLETE. Without waiting, 0 means accepted or already fulfilled; inspect the reported status. Immediate incomplete/error results return 4/2. `status` returns 1 when not satisfied; `plan` reports a valid plan with 0 even when work remains. Use `--json` for structured results.
+A result event includes cursor, Run/request references, terminal state, semantic
+fields where present and original-execution attribution. Consumers deduplicate
+by cursor when resuming. Returning, timing out or aborting this iterator does
+not cancel the computation. Explicit `run cancel` detaches the Run's subscriber;
+other subscribers keep their shared computation.
 
-## Machine scheduling and execution evidence
+`projectChanges` returns bounded read-only lifecycle pages. Telemetry callbacks
+do not flood that lifecycle cursor. `projectRequestSummary` reports all recorded
+attempts; `projectRunSummary` counts actual starts, tool calls and reported usage
+without billing a reused/coalesced execution again. `sourceSummary` attributes
+shared work. Missing usage is `unreported`, or `partial` when mixed with reported
+attempts, never fabricated zero usage. `compareProjectRuns` accepts two stored
+Run references, including separate state directories; it is read-only and does
+not automatically classify a changed verdict as a code regression.
 
-See [review management](review-management.md) for local identity capacity and
-weights, provider pools, root gate policy, durable `maxExecutions`, original
-`executionProvenance`, and the isolated offline load check. Stop old workers
-before upgrading; removed identity concurrency options fail explicitly.
+Current `plan`/`status` preparation can execute explicit identity functions in
+the selected dependency scope. Static discovery, `config check`, `graph`, stored
+Run/history reads and monitor GET requests do not run them. Original records
+remain readable after their repository is removed. Historical audit references
+into the cache are subject to its storage lifetime, not guaranteed permanence.
+
+## Large graphs and execution safety
+
+`graph --compact --json` is an opt-in projection without duplicated execution
+schemas; the original `graph --json` remains available. The monitor groups
+families by default, pages their member list in groups of 100 and prevents
+expanding more than 200 members into the graph at once. Individual instances
+remain accessible from the paged list. Layout runs outside the main browser
+thread where Worker is available.
+
+Reviews use the supplied unchanged workspace, including during Human waiting.
+CCDD does not create/link worktrees or lock external editors. Output and state
+must remain outside reviewed input. `--integrity metadata` is an explicit weaker
+filesystem validation assumption, not a different cache key. Tool permissions,
+Human claim ownership, observation requirements and result validation remain in
+force for actual executions.

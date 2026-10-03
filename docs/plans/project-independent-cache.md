@@ -1,59 +1,75 @@
-# Project-independent identity cache
+# Project-independent identity cache delivery
 
-## Owner decision
+## Approved contract
 
-CCDD behaves as a local computing resource. The reusable cache contract is `identity -> completed result`.
+CCDD is a local computing resource: explicit `identity -> completed result`,
+independent of project, repo, path, worktree, Critic, profile and runtime. No
+identity function means no reusable cache, including no automatic file-hash
+fallback. Owner functions define substitutability; CCDD owns admission,
+in-flight subscriptions, ownership fencing, Provider recovery and cache GC.
 
-- No explicit identity function means execute and return without reading or populating a reusable cache. There must be no implicit file-hash fallback.
-- Equal explicit identities reuse across repositories, paths, worktrees, Critic IDs and profiles, without registration or linking.
-- The identity function defines result substitutability. Criteria, model/profile, schema and other distinctions belong in its output only when the owner requires them.
-- Ownership, accounting, diagnostics and garbage-collection metadata must not become extra cache keys or hidden eligibility rules.
-- Complete GREEN and RED results are equally cacheable. Operational failures and cancellation are not completed semantic results.
-- CCDD owns admission, duplicate in-flight work, cleanup, bounded Provider recovery and cache GC. Authentication/account intervention and quota exhaustion may require the user; ordinary transient recovery must not require project-side retry code.
+PR #100 implements the TypeScript changes for #90, #92, #93, #94, #95, #97, #98
+and #99 together. Rust implementation is a separate follow-up in #101. The
+owner decision replaces workspace linking (#99), cache-layer workspace-update
+leases (#95-A), profile drift invalidation (#95-C), and unverified persistent
+identity-function memoization (#95-G). It does not remove execution safety.
 
-## Single implementation PR and separate Rust issue
+## Implementation map
 
-PR #100 contains the current TypeScript work for #90, #92, #93, #94, #95, #97, #98 and #99. Rust migration is tracked separately in #101 and is not a prerequisite for these fixes.
+| Issue / area | Implementation and regression evidence |
+| --- | --- |
+| #90 | Bounded identity workers, read-before-write admission with atomic revalidation, throttled owner cleanup and bounded SQLite BUSY retry. `local-resource-regressions`, `resources`, and the two-process scale acceptance cover contention and capacity. |
+| #92 | Bounded JSON/line selector files with ordinary ID validation, stable deduplication and conflict rejection; `selection-file` tests. |
+| #93 | Worker initialization via IPC rather than argv, with bounded startup/disconnect; scale acceptance actually selects and completes 1,101 Critics using a >128 KiB scenario. |
+| #94 | Opt-in compact graph, indexed projection, default family grouping, 100-member pages and guarded large-family expansion. `compact-graph` tests measure transfer size; the real GraphView template/ELK host-render test traverses 1,101 members without rendering them all at once. |
+| #97 | Deterministic concurrency barrier retains both reaching the configured concurrency and never exceeding it. |
+| #98 | Full original profiles in stored/compact views; old incomplete headers use their own immutable envelope, never current definitions. Reused receipts distinguish actual and requested profile. |
+| #99 / cache | Production Broker, Project planning/status/evidence and Human paths use the global explicit-identity cache. No linking or repo partitioning of the cache. `shared-cache-integration` tests cover unrelated repos, removed source repo/state, noncached calls, profiles and source cancellation. |
+| #95-B/G | Validated declared profile variants plus session-only prepared submissions. A prepared handle is opaque, detaches caller data and verifies unchanged input without recalculating identity. |
+| #95-D/E/F/I | Public cursor/result streams, NDJSON, request/Run attempt summaries, current cached-result queries and read-only comparisons; shared-source attribution and missing usage are explicit. |
+| #95-H | Real Pi turn wrapper has bounded automatic recovery, one deadline, no partial-output/tool replay and no model substitution; shared account cooldown/auth-quota stops and explicit Provider resume. |
+| GC / failures | Bounded incremental scans, independent subscribers, dead-owner recovery, late-owner fencing, result integrity, retired execution cleanup and oversized-result non-retention. Maintenance tests cover long writer contention and scanning past live owners. |
 
-The approved direction supersedes workspace linking in #99, a cache-layer workspace-update lease in #95-A, profile drift as an invalidation policy in #95-C, and unverified persistent identity-function memoization in #95-G. Execution safety and project graphs may remain in adapters, but they cannot partition the result cache.
+## Acceptance commands
 
-## Current implementation status
+Use the locked dependencies and supported Node 22 runtime:
 
-This is a **Draft integration, not a completed implementation of the owner contract**. In particular, the legacy Project/Broker `verify` path still uses its existing snapshot/composite identity and project history. The new cache is implemented and publicly exposed, but switching all existing submission, planning, status and Human execution paths to it remains a merge blocker. Do not claim cross-repository `verify` reuse or no-default-identity behavior is complete merely because the cache module passes its own tests.
+```sh
+npm ci --ignore-scripts --no-audit --no-fund
+npm test
+npm run test:scale
+npm run test:packages
+```
 
-### Pushed implementation
+The final PR validation runs the complete language/build/unit suite, offline
+scale acceptance and actual tarball installations as separate read-only jobs.
+Check the exact head commit and each job result rather than a badge on an earlier
+patch-transport run. Installation tests exercise default/custom Project setups
+and the umbrella package with npm and pnpm, including installed cache behavior.
+They do not publish packages or modify credentials.
 
-- #90: bounded local identity workers, read-before-write admission prechecks with atomic revalidation, throttled dead-owner cleanup, short async SQLite BUSY waits and bounded retry. SQLITE_LOCKED is not blindly treated as BUSY.
-- #93: large load-check scenarios transferred over IPC rather than argv; bounded initialization/disconnect; larger synthetic request range. The regression transports more than 1,000 result entries but selects one real Critic; this is not the full selected-catalog acceptance.
-- #97: a deterministic first-wave barrier retains both reaching four concurrent executors and never exceeding four.
-- #98: full original execution profiles in stored/compact requests; old incomplete headers recover from their own immutable envelopes, not current definitions. Tests now explicitly allow the public profile while still excluding audit payloads.
-- #92: `--critics-file` and `--artifacts-file`, JSON arrays or line-delimited IDs, BOM/CRLF, bounded reads, stable deduplication and conflicting-selector rejection.
-- Cache foundation: explicit identities only, uncached calls without identity, cross-process in-flight sharing, independent subscriber cancellation, dead-owner recovery, late-owner fencing, cache-owned JSON results, integrity checks, bounded GC and oversized-result non-retention.
-- Cache CLI/API: `cache show`, paginated `cache list`, read-only `cache compare`, explicit `cache gc` and `cache delete`. Reads require no repository and do not create state or update access metadata. Original profile/result/provenance and unreported usage are exposed. These are not yet the replacement for all legacy status/history paths.
-- #94: opt-in `graph --compact --json` without repeated view definitions; indexed graph projection; 100-member family pages and guarded graph expansion above 200 members. All instances remain accessible through pages.
-- #95-H initial production integration: Pi turn recovery before any content or positive usage was delivered; bounded attempts and one review deadline; Retry-After handling; unchanged model, session and tools; quota distinguished from transient rate limits; retry events report usage as unreported. Completed tools and partially delivered turns are not replayed. Shared provider/account cooldown and run-level auth/quota suspension are still pending.
+Observed scale fixture: 1,101 selected Critics, 235,658 serialized scenario
+bytes, 1,101 completed guarded tool calls, configured concurrency 32. Two
+processes each prepare 180 identities under the same capacity-100 resource
+manager. Timing is measured at execution and is not a machine-independent SLA.
+The graph fixture measures 2,000 Artifact definitions and compact payload bytes.
+The UI test uses Vue's host renderer and real ELK layout with a replacement
+third-party canvas host; it is not an interactive browser/GPU benchmark.
 
-### Validation actually performed
+These diagnostics do not invoke live Providers and cannot supply production
+semantic evidence. Live account access, remote billing and exactly-once external
+Provider execution are not proven by offline tests. Automatic transient recovery
+is bounded; auth/quota can require account intervention and explicit resume.
 
-Using the locked dependencies and Node 22.23.3, language checking and the complete build, including UI typing, passed locally. The latest full local suite reports **645 tests: 630 passed, 15 failed**. The remaining failures also reproduce on the unchanged source snapshot: permission-sensitive cleanup and child-process/cancellation checks. This comparison does not make the failing suite acceptable for merge.
+## Migration and boundaries
 
-Targeted checks include 98 passing Provider/Pi/Broker tests and 16 passing cache/query/process tests. Earlier graph/profile checks passed as well. These sets overlap with the full suite and must not be added as independent coverage counts. No live Provider/model review or completed packaged-install acceptance is claimed.
+The coordinated package version is 7.0.0 because reuse semantics changed.
+See [the cache contract](../identity-cache.md), [migration](../migration-v7.md)
+and [Project interfaces](../project-validation.md). No release or merge is
+performed by this PR's verification jobs.
 
-Remote builds caught a patch-transfer truncation in cache comparison; the missing closing delimiter was restored. The development workflow now checks the exact applied commit and explicitly fails on language, build, process exit or nonzero TAP failure counts. A workflow badge is not a substitute for reading the test result. Full passing CI is still required.
-
-## Remaining merge blockers
-
-- [ ] Integrate the explicit-identity cache with all existing submission, planning, status/history, dependency and Human review paths. Remove implicit reusable identities without weakening execution integrity.
-- [ ] Separate shared computation lifetime/audit from any one caller Run; preserve cancellation, ownership, actual observations, budget admission and coalesced origin attribution end to end.
-- [ ] Prepared identity/request flow and request-time profile selection without shared template rewrites.
-- [ ] Terminal-result API iterator/NDJSON and complete attempt-aware request/Run summaries, including shared-execution attribution and missing usage.
-- [ ] Shared provider/account cooldown and explicit auth/quota pause/resume policy without project-side retry layers.
-- [ ] Multi-process full-catalog admission acceptance and more than 1,000 actually selected Critics in load-check.
-- [ ] Browser/network/layout measurements for the large family monitor, not just pure projection/pagination tests.
-- [ ] Cache fault/long-contention handling, bounded shutdown and GC review under production integration.
-- [ ] Major-contract migration documentation, public package tests, full green CI and independent review.
-- [ ] Remove the temporary workbench and development patch-transport workflows before merge.
-
-## Migration boundary
-
-This changes the cache contract, not merely its language or storage location. Existing implicit/composite keys must not be relabeled as explicit owner identities or silently imported. Preserve old audit records where supported, but do not claim their keys satisfy the new contract. Cache GC is storage management, not semantic staleness or guaranteed permanent audit retention.
+Old composite keys are history-only, never relabeled/imported as owner identities.
+Run history and cache retention are separate contracts. Cache JSON budgets are
+not a hard cap on live execution scratch disk; cache audit is not a permanent
+archive. Arbitrary file paths in owner JSON are not automatically made portable.
+Workspace protection remains in the actual execution adapter, not hit eligibility.

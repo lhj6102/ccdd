@@ -1,10 +1,12 @@
-# Releases and npm installation
+# Releases
+
+The current source branch targets **7.0.0** with a breaking [identity-cache contract](identity-cache.md). See [migration](migration-v7.md). The 6.6.0 section below documents the preceding release; this PR does not publish packages or tags.
 
 CCDD packages are distributed through npm. GitHub Releases announce each version with an installation command, npm package links, and release notes. They do not host installation tarballs. GitHub still supplies automatic Source code archives; those contain source, not installable packages.
 
-See [getting started](getting-started.md) for setup and [v6.6.0 release notes](releases/v6.6.0.md) for current changes.
+See [getting started](getting-started.md) for setup and [v6.6.0 release notes](releases/v6.6.0.md) for the preceding release changes.
 
-## Current release: 6.6.0
+## Previous release: 6.6.0
 
 A `ccdd.json` with `family` declares many Artifacts that share one folder, view
 scripts and Critics through a static instance list. Defaults, named variants and

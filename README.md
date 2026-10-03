@@ -35,6 +35,15 @@ flowchart LR
 
 These relationships define required input, verification and default dependency-GREEN gates. A Critic waits for current GREEN evidence from dependencies outside its cycle. Mutual dependencies are allowed: Critics in the same cycle may run together after external gates pass, and final validation requires all matching results. Child Artifact folders are automatic dependencies. Logical `mounts` connect other folders without copies or symlinks.
 
+## Local computing, explicit caching
+
+CCDD 7 reuses **identity -> completed result** across repositories, paths and
+profiles. Your identity function defines whether results are interchangeable.
+Without an explicit function, every submission executes without reusable caching.
+CCDD manages shared executions, Provider recovery and cache GC. See the
+[cache contract](docs/identity-cache.md) and [7.x migration](docs/migration-v7.md).
+This branch targets 7.0.0; it does not imply that a registry release is published.
+
 ## Start with a runtime check
 
 Use Node.js 22 LTS, version 22.19.0 or later.
@@ -75,7 +84,7 @@ The [getting-started guide](docs/getting-started.md) includes a complete runnabl
 
 Every actual review returns a verdict and any owner-defined fields required by its optional passSchema/failSchema. There is no built-in summary or evidence field. GREEN means its criteria were met; RED means they were not. Execution problems produce ERROR. Final validation needs matching PASS evidence for all required Critics and dependencies. A folder without Critics stays UNREVIEWED unless explicitly declared `basis: true`.
 
-By default, Critics wait for current GREEN evidence from dependency Critics outside their strongly connected component. RED dependencies block descendants; operational failures leave them waiting without a fabricated verdict. Use `--ignore-gates` only when intentionally reviewing despite dependency verdicts. If other required evidence is missing, their results are saved and the request is INCOMPLETE. Add `--recursive` to include those other evaluations. CCDD reuses both matching GREEN and RED results (RED remains unsatisfied), coalesces identical active requests across Runs, and computes freshness when queried; it does not store stale flags.
+By default, Critics wait for current GREEN evidence from dependency Critics outside their strongly connected component. RED dependencies block descendants; operational failures leave them waiting without a fabricated verdict. Use `--ignore-gates` only when intentionally reviewing despite dependency verdicts. If other required evidence is missing, their results are saved and the request is INCOMPLETE. Add `--recursive` to include those other evaluations. With an explicit identity, CCDD reuses GREEN and RED results (RED remains unsatisfied) and shares active computations across projects. Without identity, inspect the completed Run to read its noncached result. No stale flags are stored.
 
 Reviews run in the workspace you supply. Keep it unchanged until completion, including Human waiting. Records, caches and generated output live outside it. To keep editing elsewhere, create your own worktree and pass it with `--repo`.
 

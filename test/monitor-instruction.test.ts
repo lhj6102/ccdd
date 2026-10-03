@@ -14,6 +14,10 @@ import '../src/monitor/ui/tool-input.js';
 import '../src/monitor/ui/tool-content.js';
 import '../src/monitor/ui/critic-presentation.js';
 import '../src/monitor/ui/format.js';
+import '../src/monitor/ui/family-groups.js';
+import '../src/monitor/ui/family-pagination.js';
+import '../src/monitor/ui/graph-layout.js';
+import { projectGraph, type GraphDefinition } from '../src/broker/graph.js';
 
 type Node = {
   type: string; text: string; props: Record<string, any>; children: Node[]; parent: Node | null;
@@ -24,6 +28,7 @@ type Node = {
 const documentState = { activeElement: null as Node | null, hidden: false, addEventListener() {}, removeEventListener() {}, body: { classList: { add() {}, remove() {} } } };
 function browserGlobals(t: TestContext): void {
   for (const [key, value] of Object.entries({ document: documentState, Document: class {}, ShadowRoot: class {}, HTMLInputElement: class {}, HTMLElement: class {},
+    matchMedia: () => ({ matches: false, addEventListener() {}, removeEventListener() {} }),
     window: { addEventListener() {}, removeEventListener() {} }, location: { hash: '#project/request', pathname: '/' },
     history: { replaceState() {} }, localStorage: { getItem: () => 'kanban' } })) {
     const previous = Object.getOwnPropertyDescriptor(globalThis, key);
@@ -74,8 +79,15 @@ async function componentUrl(name: string): Promise<string> {
   let code = stripTypeScriptTypes(script.content, { mode: 'transform' });
   code = code.replace(/from (['"])vue\1/g, `from ${JSON.stringify(import.meta.resolve('vue'))}`);
   code = code.replace(/from (['"])@lucide\/vue\1/g, `from ${JSON.stringify(import.meta.resolve('@lucide/vue'))}`);
+  if (name === 'GraphView') {
+    // Exercise the real GraphView template, family state and ELK layout; only
+    // the third-party canvas host is replaced by this test renderer's element.
+    const canvas = `import { h } from ${JSON.stringify(import.meta.resolve('vue'))}; export const MarkerType={ArrowClosed:'arrowclosed'}; export const VueFlow={props:['nodes'],setup:props=>()=>h('flow-canvas',{'node-count':props.nodes.length})}; export const Background={render:()=>null};`;
+    const canvasUrl = `data:text/javascript;base64,${Buffer.from(canvas).toString('base64')}`;
+    code = code.replace(/from (['"])@vue-flow\/(?:core|background)\1/g, `from ${JSON.stringify(canvasUrl)}`);
+  }
   for (const match of [...code.matchAll(/from ['"]\.\/([A-Za-z]+)\.vue['"]/g)]) {
-    const url = ['ToolOutput', 'ArtifactBrowser'].includes(match[1]) ? 'data:text/javascript,export default {render:()=>null}' : await componentUrl(match[1]);
+    const url = ['ToolOutput', 'ArtifactBrowser', ...(name === 'GraphView' ? ['ArtifactFlowNode', 'GraphFlowEdge'] : [])].includes(match[1]) ? 'data:text/javascript,export default {render:()=>null}' : await componentUrl(match[1]);
     code = code.replace(match[0], `from ${JSON.stringify(url)}`);
   }
   code = code.replace(/from (['"])(\.{1,2}\/[^'"]+)\1/g, (_whole, _quote, path: string) => {
@@ -393,4 +405,44 @@ test('rendered Critic status distinguishes omitted, claimed, blocked, failed and
     assert.equal(blocked.props['data-state'], 'requested');
     assert.match(blocked.props['aria-label'], /Blocked.*Dependency failed/);
   } finally { app.unmount(); }
+});
+
+
+test('rendered large-family graph pages all 1101 instances and keeps its real layout collapsed', async t => {
+  browserGlobals(t);
+  Object.setPrototypeOf(window, globalThis);
+  const ids = Array.from({ length: 1101 }, (_, i) => `item-${String(i).padStart(4, '0')}`);
+  const definition: GraphDefinition = { version: 2, artifacts: Object.fromEntries(ids.map(id => [id, {
+    name: id, path: 'catalog', children: {}, mounts: {}, views: {},
+    family: { name: 'catalog', entry: '0'.repeat(64), material: [] },
+  }])), critics: ids.map(id => ({ id: `${id}/review`, title: `Review ${id}`, target: id, deps: [], kind: 'human' })), relations: [] };
+  const response = { available: true, unavailableReason: null, project: { id: 'project', name: 'Project', path: '/repo' },
+    run: { id: 'run', projectId: 'project', status: 'INCOMPLETE', scope: { kind: 'project' }, snapshotHash: 'snapshot', graphAvailable: true },
+    graph: projectGraph(definition, []), requests: [], observedAt: '2026-01-01T00:00:00.000Z' };
+  let reads = 0;
+  t.mock.method(globalThis, 'fetch', async () => { reads++; return new Response(JSON.stringify(response), { status: 200 }); });
+  const host = node('root'), { app } = mount(await component('GraphView'), { projectId: 'project', runId: 'run' }, host);
+  t.after(() => app.unmount());
+  const started = performance.now();
+  while (!all(host).some(child => child.type === 'flow-canvas' && child.props['node-count'] === 1)) {
+    assert.ok(performance.now() - started < 10000, 'Actual collapsed ELK layout did not complete');
+    await new Promise(resolve => setTimeout(resolve, 10)); await nextTick();
+  }
+  assert.equal(matching(host, 'button', 'Show instances in graph').props.disabled, true);
+  const found: string[] = [];
+  for (let page = 0; page < 12; page++) {
+    const list = all(host).find(child => child.type === 'ul' && child.props['aria-label'] === 'catalog instances')!;
+    assert.ok(list);
+    const labels = all(list).filter(child => child.type === 'strong').map(text);
+    assert.equal(labels.length, page === 11 ? 1 : 100);
+    found.push(...labels);
+    assert.match(text(host), new RegExp(`Page ${page + 1} / 12`));
+    const next = matching(host, 'button', 'Next');
+    assert.equal(next.props.disabled, page === 11);
+    if (page < 11) { next.props.onClick(); await nextTick(); }
+  }
+  assert.deepEqual(found, ids);
+  assert.equal(all(host).find(child => child.type === 'flow-canvas')!.props['node-count'], 1);
+  assert.equal(reads, 1, 'Paging and member selection must not re-fetch the entire graph');
+  t.diagnostic(`1101 instances: ${Buffer.byteLength(JSON.stringify(response))} response bytes, at most 100 rendered members, one ELK node; host-rendered paging completed in ${(performance.now()-started).toFixed(1)}ms.`);
 });

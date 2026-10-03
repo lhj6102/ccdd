@@ -1,6 +1,6 @@
 {
   "name": "@ccdd/project",
-  "version": "6.6.0",
+  "version": "7.0.0",
   "license": "MIT",
   "publishConfig": {
     "access": "public",
@@ -41,7 +41,7 @@
     "prepack": "npm run build"
   },
   "peerDependencies": {
-    "@ccdd/core": ">=6.1.0 <7"
+    "@ccdd/core": ">=7.0.0 <8"
   },
   "dependencies": {
     "@earendil-works/pi-agent-core": "1.0.0",
