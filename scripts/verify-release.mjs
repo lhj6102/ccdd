@@ -151,6 +151,7 @@ function fixtureConfig(withDefaults) {
 
 export async function verifyInstallation({ scratch, outputDirectory, packages, version, withDefaults, environment }) {
   const name = withDefaults ? 'core-and-default-tools' : 'core-only-custom-tool';
+  environment = { ...environment, CCDD_STATE_HOME: join(scratch, `${name}-machine-state`) };
   const project = join(scratch, name);
   const input = join(project, 'review-input');
   const state = join(scratch, `${name}-state`);
@@ -211,8 +212,7 @@ process.stdout.write(JSON.stringify({content:[{type:'text',text}],observation:{k
   const validationArgs = ['verify', '--critic', 'spec/package-runtime', '--repo', input, '--state-dir', state, '--wait', '--timeout-ms', '120000', '--json'];
   const reviewed = await jsonCommand(projectCli, validationArgs, { cwd: project, env: environment });
   assert.equal(reviewed.status, 'GREEN'); assert.equal(reviewed.requests.length, 1);
-  const reused = await jsonCommand(projectCli, validationArgs, { cwd: project, env: environment });
-  assert.equal(reused.status, 'GREEN'); assert.equal(reused.requests.length, 0); assert.equal(reused.validation.counts.reuse, 1);
+  await verifyInstalledCacheContract({ cli: projectCli, args: validationArgs, input, state, project, environment });
   const examples = [];
   for (const [example, artifact, tool, args] of [
     ['custom-text-reader', 'spec', 'read', { startLine: 1, lineCount: 20 }],
@@ -244,6 +244,35 @@ process.stdout.write(JSON.stringify({content:[{type:'text',text}],observation:{k
   return { name, productionInstall: true, installScripts: false, cliHelpVersion: version, defaultToolsInstalled: withDefaults, tool: toolName, actualToolExecution: true, workspace: 'in-place', projectValidation: true, runtime: 'GREEN', examples };
 }
 
+/** Exercise the public installed CLI, not internal cache helpers or invented evidence. */
+async function verifyInstalledCacheContract({ cli, args, input, state, project, environment }) {
+  const invoke = argv => jsonCommand(cli, argv, { cwd: project, env: environment });
+  const uncached = await invoke(args);
+  assert.equal(uncached.status, 'GREEN');
+  assert.equal(uncached.requests.length, 1, 'No identity must execute again.');
+  assert.equal(uncached.validation.counts.reuse, 0);
+  const declaration = JSON.parse(await readFile(join(input, 'ccdd.json'), 'utf8'));
+  declaration.stale = { kind: 'identity', script: { command: 'node', args: ['identity.mjs'] } };
+  await writeFile(join(input, 'identity.mjs'), `import {createHash} from 'node:crypto';import {readFile} from 'node:fs/promises';const hash=createHash('sha256');for(const path of ['ccdd.json','spec.md'])hash.update(await readFile(new URL(path,import.meta.url)));console.log(hash.digest('hex'));\n`);
+  await writeFile(join(input, 'ccdd.json'), JSON.stringify(declaration));
+  const actual = await invoke(args);
+  assert.equal(actual.status, 'GREEN'); assert.equal(actual.requests.length, 1);
+  assert.equal(actual.requests[0].cacheDisposition, 'executed');
+  const reused = await invoke([...args, '--max-executions', '0']);
+  assert.equal(reused.status, 'GREEN'); assert.equal(reused.requests[0].cacheDisposition, 'hit');
+  assert.equal(reused.requests[0].executionSource.executionId, actual.requests[0].executionSource.executionId);
+  const copy = `${input}-independent`, copyState = `${state}-independent`;
+  await cp(input, copy, { recursive: true });
+  await removeScratch(input); await removeScratch(state);
+  const crossRepoArgs = args.map((value, i) => args[i - 1] === '--repo' ? copy : args[i - 1] === '--state-dir' ? copyState : value);
+  const crossRepo = await invoke([...crossRepoArgs, '--max-executions', '0']);
+  assert.equal(crossRepo.status, 'GREEN'); assert.equal(crossRepo.requests[0].cacheDisposition, 'hit');
+  assert.equal(crossRepo.requests[0].executionSource.executionId, actual.requests[0].executionSource.executionId);
+  const stored = await invoke(['cache', 'show', actual.requests[0].inputKey, '--json']);
+  assert.equal(stored.result.verdict, 'GREEN');
+  assert.equal(stored.executionId, actual.requests[0].executionSource.executionId);
+}
+
 /** Install only the umbrella against exact tarballs, without rewriting their dependencies. */
 export async function verifyUmbrellaInstallation({ scratch, outputDirectory, packages, version, environment, manager }) {
   const { createServer } = await import('node:http');
@@ -265,7 +294,7 @@ export async function verifyUmbrellaInstallation({ scratch, outputDirectory, pac
   });
   await new Promise((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
   origin = `http://127.0.0.1:${server.address().port}`;
-  const env = { ...environment, PATH: `${join(project, 'node_modules/.bin')}${delimiter}${environment.PATH ?? ''}` };
+  const env = { ...environment, CCDD_STATE_HOME: join(scratch, `${name}-machine-state`), PATH: `${join(project, 'node_modules/.bin')}${delimiter}${environment.PATH ?? ''}` };
   const pnpm = join(sourceDirectory, 'node_modules/pnpm/bin/pnpm.cjs');
   const runManager = args => manager === 'npm' ? command('npm', args, { cwd: project, env }) : command(process.execPath, [pnpm, ...args], { cwd: project, env });
   try {
@@ -275,9 +304,9 @@ export async function verifyUmbrellaInstallation({ scratch, outputDirectory, pac
     const manifest = JSON.parse(await readFile(join(project, 'package.json'), 'utf8'));
     assert.deepEqual(Object.keys(manifest.dependencies), [umbrellaName]);
     if (manager === 'pnpm') for (const dependency of [coreName, projectName, toolsName]) await assert.rejects(lstat(join(project, 'node_modules', dependency)), { code: 'ENOENT' });
-    await writeFile(join(project, 'imports.mjs'), `import assert from 'node:assert/strict';import * as root from '@ccdd/ccdd';import * as core from '@ccdd/ccdd/core';import {createBroker} from '@ccdd/ccdd/project';import {agent,scriptRequest} from '@ccdd/ccdd/tools';assert.equal(root.resolveScopePath,core.resolveScopePath);assert.equal(typeof createBroker,'function');assert.equal(typeof agent.text.read,'function');assert.equal(typeof scriptRequest,'function');globalThis.fetch=()=>{throw Error('No network allowed in catalog exposure check')};const {getSupportedThinkingLevels}=await import('@ccdd/ccdd/pi');const {builtinModels,builtinProviders}=await import('@ccdd/ccdd/pi/providers/all');const models=builtinModels();for(const name of ['getProviders','getModels','getModel','checkAuth','login','logout','streamSimple'])assert.equal(typeof models[name],'function');assert.ok(builtinProviders().some(p=>p.id==='opencode-go'));assert.equal(models.getModel('opencode-go','deepseek-v4.1-flash').id,'deepseek-v4.1-flash');assert.ok(getSupportedThinkingLevels(models.getModel('openai-codex','gpt-6-luna')).includes('xhigh'));`);
+    await writeFile(join(project, 'imports.mjs'), `import assert from 'node:assert/strict';import * as root from '@ccdd/ccdd';import * as core from '@ccdd/ccdd/core';import {createBroker,openIdentityCache,prepareProject,streamProjectResults,projectRunSummary,compareProjectRuns,providerStatus} from '@ccdd/ccdd/project';import {agent,scriptRequest} from '@ccdd/ccdd/tools';assert.equal(root.resolveScopePath,core.resolveScopePath);for(const fn of [createBroker,openIdentityCache,prepareProject,streamProjectResults,projectRunSummary,compareProjectRuns,providerStatus])assert.equal(typeof fn,'function');assert.equal(typeof agent.text.read,'function');assert.equal(typeof scriptRequest,'function');globalThis.fetch=()=>{throw Error('No network allowed in catalog exposure check')};const {getSupportedThinkingLevels}=await import('@ccdd/ccdd/pi');const {builtinModels,builtinProviders}=await import('@ccdd/ccdd/pi/providers/all');const models=builtinModels();for(const name of ['getProviders','getModels','getModel','checkAuth','login','logout','streamSimple'])assert.equal(typeof models[name],'function');assert.ok(builtinProviders().some(p=>p.id==='opencode-go'));assert.equal(models.getModel('opencode-go','deepseek-v4.1-flash').id,'deepseek-v4.1-flash');assert.ok(getSupportedThinkingLevels(models.getModel('openai-codex','gpt-6-luna')).includes('xhigh'));`);
     await command(process.execPath, [join(project, 'imports.mjs')], { cwd: project, env });
-    await writeFile(join(project, 'imports.ts'), `import type {ArtifactManifest} from '@ccdd/ccdd';import type {ToolResult} from '@ccdd/ccdd/core';import {createBroker} from '@ccdd/ccdd/project';import {agent,scriptRequest} from '@ccdd/ccdd/tools';const artifact:ArtifactManifest={name:'test'};const result:ToolResult={content:[]};import type {Models,AuthInteraction,CredentialStore} from '@ccdd/ccdd/pi';import {builtinModels,builtinProviders} from '@ccdd/ccdd/pi/providers/all';const models:Models=builtinModels();type Interaction=AuthInteraction;type Store=CredentialStore;void [artifact,result,createBroker,agent,scriptRequest,models,builtinProviders];`);
+    await writeFile(join(project, 'imports.ts'), `import type {ArtifactManifest} from '@ccdd/ccdd';import type {ToolResult} from '@ccdd/ccdd/core';import {createBroker,openIdentityCache,prepareProject,streamProjectResults,projectRunSummary,compareProjectRuns,providerStatus} from '@ccdd/ccdd/project';import {agent,scriptRequest} from '@ccdd/ccdd/tools';const artifact:ArtifactManifest={name:'test'};const result:ToolResult={content:[]};import type {Models,AuthInteraction,CredentialStore} from '@ccdd/ccdd/pi';import {builtinModels,builtinProviders} from '@ccdd/ccdd/pi/providers/all';const models:Models=builtinModels();type Interaction=AuthInteraction;type Store=CredentialStore;void [artifact,result,createBroker,openIdentityCache,prepareProject,streamProjectResults,projectRunSummary,compareProjectRuns,providerStatus,agent,scriptRequest,models,builtinProviders];`);
     await command(process.execPath, [join(sourceDirectory, 'node_modules/typescript/bin/tsc'), '--noEmit', '--strict', '--skipLibCheck', '--target', 'es2023', '--module', 'nodenext', '--moduleResolution', 'nodenext', join(project, 'imports.ts')], { cwd: project, env });
     for (const bin of ['ccdd', 'ccdd-project']) assert.match((await runManager(manager === 'npm' ? ['exec', '--offline', '--', bin, 'help'] : ['exec', bin, 'help'])).stdout, /CCDD Project/);
     await writeFile(join(project, 'forwarding.mjs'), `import assert from 'node:assert/strict';import {execFile} from 'node:child_process';import {promisify} from 'node:util';const exec=promisify(execFile);const cli=new URL('./node_modules/@ccdd/ccdd/dist/cli.js',import.meta.url).pathname;try{await exec(process.execPath,[cli,'not-a-command','--json']);assert.fail('Unknown command must fail');}catch(error){assert.equal(error.code,2);assert.equal(typeof JSON.parse(error.stdout).error,'string');}`);
@@ -297,7 +326,7 @@ export async function verifyUmbrellaInstallation({ scratch, outputDirectory, pac
     }
     const args = ['verify', '--repo', input, '--state-dir', state, '--critic', 'spec/runtime', '--wait', '--json'];
     const actual = await jsonCommand(cli, args, { cwd: project, env }); assert.equal(actual.status, 'GREEN');
-    const reused = await jsonCommand(cli, [...args, '--max-executions', '0'], { cwd: project, env }); assert.equal(reused.status, 'GREEN'); assert.equal(reused.requests.length, 0);
+    await verifyInstalledCacheContract({ cli, args, input, state, project, environment: env });
     return { name, productionInstall: true, installScripts: false, onlyDirectDependency: umbrellaName, cliHelpVersion: version, publicImports: true, typeImports: true, piPublicApi: true, defaultToolExecution: true, customToolExecution: true, binExecution: true, runtime: 'GREEN', projectValidation: true };
   } finally { await new Promise(resolve => server.close(resolve)); }
 }
