@@ -368,7 +368,7 @@ export function createBroker<D extends ResultDetail = 'compact'>({ [executionMod
   async function executeOne(requestId: string, workspace: WorkspaceHandle, token: string, signal: AbortSignal) {
     const initial = required(requestHeader(requestId), 'Request');
     const input = initial.inputRef ? store.get<import('../project/types.js').ValidationInput>(initial.inputRef) : null;
-    if (rawExecution || readiness.header(initial.runId)?.executionOwned || diagnosticScope.getStore() || input?.version !== 4 || !input.cacheIdentity) return executeUncached(requestId, workspace, token, signal);
+    if (rawExecution || readiness.header(initial.runId)?.project.force || readiness.header(initial.runId)?.executionOwned || diagnosticScope.getStore() || input?.version !== 4 || !input.cacheIdentity) return executeUncached(requestId, workspace, token, signal);
     const runId = initial.runId, request = copy(required(requestData(requestId), 'Request'));
     const service = sharedCache();
     let source: ExecutionSource | undefined, mirror: NodeJS.Timeout | undefined;
@@ -424,7 +424,7 @@ export function createBroker<D extends ResultDetail = 'compact'>({ [executionMod
         header.executionProvenance = outcome.entry.value.executionProvenance;
         header.sourceSummary = outcome.entry.value.summary;
         saveHeader(header);
-        if (outcome.entry.value.usage && header.attemptId) addUsage(requestId, header.attemptId, outcome.entry.value.usage);
+        if (outcome.entry.value.usage && header.attemptId) db.prepare('INSERT INTO request_usage VALUES(?,?,?) ON CONFLICT(request_id,attempt_id) DO UPDATE SET data=excluded.data').run(requestId, header.attemptId, JSON.stringify(outcome.entry.value.usage));
         // The owner already validated its schema and input. Applying a different
         // subscriber schema here would silently introduce another cache key.
         finishWithin(requestId, { result: outcome.entry.value.result, executionProvenance: outcome.entry.value.executionProvenance });

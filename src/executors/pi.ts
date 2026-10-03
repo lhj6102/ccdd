@@ -1,3 +1,4 @@
+import { openProviderCoordinator, providerLane, type ProviderCoordinator } from './provider-coordinator.js';
 import { recoveringProviderStream, providerUsageUnreported } from './provider-recovery.js';
 import { randomUUID } from 'node:crypto';
 import { Agent, type AgentTool, type StreamFn } from '@earendil-works/pi-agent-core';
@@ -95,6 +96,7 @@ export async function invokePi({ request, worktreePath, runDir, schema, inspectR
   const abort = () => { controller.abort(); agent?.abort(); };
   if (signal?.aborted) abort();
   signal?.addEventListener('abort', abort, { once: true });
+  let coordinator: ProviderCoordinator | undefined;
   const deadline = performance.now() + (profile.timeoutMs ?? 240_000);
   let completed = false;
   const timer = setTimeout(() => { timedOut = true; abort(); }, profile.timeoutMs ?? 240_000);
@@ -156,6 +158,7 @@ export async function invokePi({ request, worktreePath, runDir, schema, inspectR
       const models = builtinModels({ credentials });
       try {
         const auth = await models.getAuth(model, { signal: controller.signal });
+        if (auth) coordinator = openProviderCoordinator(model.provider, providerLane(model.provider,auth.auth));
         if (!auth) throw new PiAuthError('AUTHENTICATION_UNAVAILABLE', 'Pi Provider authentication is not configured.', 'Configure a Provider API key or an explicit Pi/Codex authentication file.');
       } catch (error) { checkAbort(); throw providerFailure(error); }
       invoke = (selectedModel, context, options) => models.streamSimple(selectedModel, context, options);
@@ -164,7 +167,7 @@ export async function invokePi({ request, worktreePath, runDir, schema, inspectR
     await onEvent({ type: 'artifact.tools.ready', tools: registry.tools.map(({ name, description }) => ({ name, description })) });
     checkAbort();
     const inspectFinal = createFinalResultInspector(schema);
-    invoke = recoveringProviderStream(invoke!, { signal: controller.signal, deadline, onRetry: event => emitTelemetry({ type: 'executor.provider.retry', provider: model.provider, model: model.id, ...event }) });
+    invoke = recoveringProviderStream(invoke!, { signal: controller.signal, deadline, coordinator, onRetry: event => emitTelemetry({ type: 'executor.provider.retry', provider: model.provider, model: model.id, ...event }) });
     agent = new Agent({
       sessionId: request.id ?? randomUUID(),
       streamFn: (selectedModel, context, options) => invoke!(selectedModel,
@@ -256,6 +259,7 @@ export async function invokePi({ request, worktreePath, runDir, schema, inspectR
     // Evaluation has finished: diagnostic latency must not consume its execution deadline.
     completed = true;
     clearTimeout(timer);
+    coordinator?.close();
     await Promise.all(telemetryWrites);
     checkAbort();
     return { final, toolCalls: observedCalls };
@@ -267,6 +271,7 @@ export async function invokePi({ request, worktreePath, runDir, schema, inspectR
     throw providerFailure(error);
   } finally {
     clearTimeout(timer);
+    coordinator?.close();
     // Each optional write has its own short bound and cannot replace a primary failure.
     await Promise.all(telemetryWrites);
     signal?.removeEventListener('abort', abort);

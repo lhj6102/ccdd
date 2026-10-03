@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+import { providerStatus, resumeProvider } from '../executors/provider-coordinator.js';
+import { streamProjectResults, projectRunSummary, projectRequestSummary, compareProjectRuns } from './results.js';
+import { once } from 'node:events';
 import { cacheCommand } from '../cache/cli.js';
 import { rejectIdentityConcurrency, validateMaxExecutions } from '../resources.js';
 import { readSelectionFile } from './selection-file.js';
@@ -30,8 +33,8 @@ import { claimHumanFromCli } from '../review/local-claim.js';
 
 type Output = { write(value: string): unknown };
 const terminal = new Set(['GREEN', 'RED', 'ERROR', 'INCOMPLETE']);
-const flags = new Set(['--compact', '--all', '--recursive', '--force', '--ignore-gates', '--wait', '--json', '--full', '--help', '--human-inbox']);
-const values = new Set(['--profile', '--repo', '--state-dir', '--critic', '--timeout-ms', '--requester', '--reviewer', '--result-file', '--tool', '--args', '--run', '--pi-auth-file', '--codex-auth-file', '--integrity', '--concurrency', '--identity-concurrency', '--max-executions', '--requests', '--output-dir', '--critics', '--artifacts', '--critics-file', '--artifacts-file', '--scenario-file', '--processes', '--resource-mode']);
+const flags = new Set(['--stream','--compact', '--all', '--recursive', '--force', '--ignore-gates', '--wait', '--json', '--full', '--help', '--human-inbox']);
+const values = new Set(['--after','--profile', '--repo', '--state-dir', '--critic', '--timeout-ms', '--requester', '--reviewer', '--result-file', '--tool', '--args', '--run', '--pi-auth-file', '--codex-auth-file', '--integrity', '--concurrency', '--identity-concurrency', '--max-executions', '--requests', '--output-dir', '--critics', '--artifacts', '--critics-file', '--artifacts-file', '--scenario-file', '--processes', '--resource-mode']);
 const help = `CCDD Project — pull validation and explicit review execution
 
   ccdd-project cache show ID | list | compare LEFT RIGHT | gc | delete ID [--cache-dir PATH] [--json]
@@ -61,6 +64,10 @@ Dependency Critics must have current GREEN evidence before execution. RED blocks
 Queries never create review tickets, send alarms or execute review tools or Providers.
 Reviews run in the supplied workspace. Keep it unchanged until completion.
 State and review output must stay outside the repository.
+provider status|resume NAME inspects cooldowns or resumes after account intervention.
+verify --stream emits terminal NDJSON results; run stream ID --after N resumes a subscription.
+run summary ID, request summary ID and run diff LEFT RIGHT are read-only queries.
+--force bypasses caching for one execution and never replaces a shared result.
 verify accepts --max-executions N (durable submission starts; 0 means reuse-only).
 verify accepts optional --concurrency N as a tighter cap; it never raises machine capacity.
 Identity scheduling uses local resources.json identityCapacity and Artifact stale.weight.
@@ -109,6 +116,12 @@ export async function main(argv = process.argv.slice(2), { stdout = process.stdo
   const print = (value: unknown, plain?: string) => stdout.write((!json && plain !== undefined ? plain : JSON.stringify(value, null, 2)) + '\n');
   try {
     const command = argv[0] ?? 'help';
+    if (command === 'provider') {
+      const parts = argv.slice(1).filter(part => part !== '--json');
+      if (parts.length === 1 && parts[0] === 'status') { print(providerStatus()); return 0; }
+      if (parts.length === 2 && parts[0] === 'resume') { print({ provider: parts[1], resumed: resumeProvider(parts[1]) }); return 0; }
+      throw new Error('Use provider status or provider resume NAME.');
+    }
     if (command === 'cache') return await cacheCommand(argv.slice(1), stdout);
     if (['doctor', 'tools', 'monitor', 'prepare-demo'].includes(command)) return await diagnosticsMain(argv, { stdout, stderr });
     const { options, positional } = parse(argv.slice(1)); json = Boolean(options['--json']);
@@ -128,8 +141,8 @@ export async function main(argv = process.argv.slice(2), { stdout = process.stdo
     const permitted = new Set([...common, ...(['status', 'plan', 'verify', 'history', 'run', 'request'].includes(command) ? ['--full'] : []), ...(['status', 'plan', 'verify', 'history'].includes(command) ? ['--critic', '--critics', '--artifacts', '--critics-file', '--artifacts-file', '--all'] : []),
       ...(['status', 'plan', 'verify'].includes(command) ? ['--integrity', '--identity-concurrency', '--profile'] : []),
       ...(['plan', 'verify'].includes(command) ? ['--recursive', '--force', '--ignore-gates'] : []),
-      ...(command === 'verify' ? ['--max-executions', '--concurrency', '--wait', '--timeout-ms', '--requester', '--human-inbox', '--pi-auth-file', '--codex-auth-file'] : []),
-      ...(command === 'run' ? ['--wait', '--timeout-ms'] : []),
+      ...(command === 'verify' ? ['--stream', '--max-executions', '--concurrency', '--wait', '--timeout-ms', '--requester', '--human-inbox', '--pi-auth-file', '--codex-auth-file'] : []),
+      ...(command === 'run' ? ['--after', '--wait', '--timeout-ms'] : []),
       ...(command === 'graph' ? ['--compact'] : []),
       ...(command === 'request' ? ['--run', '--reviewer', '--result-file', '--tool', '--args'] : [])]);
     for (const key of Object.keys(options)) if (!permitted.has(key)) throw new Error(`${key} is not supported by ${command}.`);
@@ -173,6 +186,14 @@ export async function main(argv = process.argv.slice(2), { stdout = process.stdo
       if (required && !options['--all']) throw new Error('An Artifact, --critic ID, or --all is required.');
       return { kind: 'all' };
     };
+    const stream = async (id: string) => withCliCancellation('Result subscription cancelled; execution continues.', async signal => {
+      for await (const result of streamProjectResults(context.stateDir,id,{after:Number(get('--after') ?? 0),timeoutMs,signal})) {
+        if (stdout.write(JSON.stringify(result)+'\n') === false && 'once' in stdout) await once(stdout as unknown as NodeJS.EventEmitter,'drain',{signal});
+      }
+      const run = projectRun(context.stateDir,id)!;
+      stdout.write(JSON.stringify({type:'run',runId:id,status:run.status})+'\n');
+      return exitFor(run);
+    });
     const verifySelection = command === 'verify' ? select(true) : undefined;
     const runOutput = (run: ProjectRunView) => full ? { ...run, workspaceIntegrity: run.workspace?.integrity ?? 'content' } : requesterRun(run, context.stateDir);
     const printRun = (run: ProjectRunView) => print(runOutput(run), full ? undefined : `Run: ${run.id}\nExecution: ${run.status}\nIntegrity: ${run.workspace?.integrity ?? 'content'}${run.validation ? `\n${planText(requesterPlan(run.validation, context.stateDir))}` : ''}`);
@@ -224,9 +245,12 @@ export async function main(argv = process.argv.slice(2), { stdout = process.stdo
     }
     if (command === 'run' || command === 'request') {
       const [action, id] = positional;
-      const actions = command === 'run' ? ['list', 'show', 'resume', 'cancel'] : ['list', 'show', 'claim', 'tool', 'submit'];
-      if (!actions.includes(action) || positional.length !== (action === 'list' ? 1 : 2)) throw new Error(`Use ${command} ${actions.join('|')} with the appropriate ID.`);
+      const actions = command === 'run' ? ['list', 'show', 'resume', 'cancel', 'stream', 'summary', 'diff'] : ['list', 'show', 'claim', 'tool', 'submit', 'summary'];
+      if (!actions.includes(action) || positional.length !== (action === 'list' ? 1 : action === 'diff' ? 3 : 2)) throw new Error(`Use ${command} ${actions.join('|')} with the appropriate ID.`);
       if (command === 'run' && options['--wait'] && !['show', 'resume'].includes(action)) throw new Error('--wait requires run show or run resume.');
+      if (action === 'stream') return await stream(id);
+      if (action === 'summary') { const summary = command === 'run' ? projectRunSummary(context.stateDir,id) : projectRequestSummary(context.stateDir,id); if (!summary) throw new Error('Review handle not found.'); print(summary); return 0; }
+      if (action === 'diff') { print(compareProjectRuns({stateDir:context.stateDir,runId:id},{stateDir:context.stateDir,runId:positional[2]})); return 0; }
       if (action === 'list') { print(command === 'run' ? projectRuns(context.stateDir, { detail: full ? 'full' : 'compact' }) : projectRequests(context.stateDir, get('--run'), { detail: full ? 'full' : 'compact' })); return 0; }
       if (action === 'show') {
         if (command === 'run') { if (options['--wait']) return await wait(id); const run = projectRun(context.stateDir, id); if (!run) throw new Error('Review handle not found.'); printRun(run); }
@@ -245,6 +269,7 @@ export async function main(argv = process.argv.slice(2), { stdout = process.stdo
     if (command === 'verify') {
       const run = await withCliCancellation('Project validation cancelled.', signal => broker!.submitProject({ profile: get('--profile'), maxExecutions, selection: verifySelection!, recursive: Boolean(options['--recursive']), force: Boolean(options['--force']), ignoreGates: options['--ignore-gates'] ? true : undefined, requesterId: get('--requester') ?? 'cli', signal }));
       if (!terminal.has(run.status)) await ensureRunWorker({ broker, context, run, initialConfig: { piOptions, humanInbox, maxConcurrentExecutors } });
+      if (options['--stream']) return await stream(run.id);
       if (options['--wait']) return await wait(run.id);
       const view = projectRun(context.stateDir, run.id)!; printRun(view);
       return view.status === 'INCOMPLETE' ? 4 : view.status === 'ERROR' ? 2 : 0;

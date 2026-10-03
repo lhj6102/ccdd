@@ -1,5 +1,6 @@
 import { setTimeout as delay } from 'node:timers/promises';
 import { performance } from 'node:perf_hooks';
+import type { ProviderCoordinator } from './provider-coordinator.js';
 import { createAssistantMessageEventStream, type AssistantMessage, type AssistantMessageEvent, type ProviderResponse } from '@earendil-works/pi-ai';
 import type { StreamFn } from '@earendil-works/pi-agent-core';
 
@@ -40,6 +41,7 @@ export interface RecoveryOptions {
   /** One monotonic deadline for the entire review, including format repair. */
   deadline: number;
   onRetry?: (event: ProviderRetryEvent) => void;
+  coordinator?: ProviderCoordinator;
   /** Internal test controls, not per-project retry policy. */
   maxAttempts?: number;
   initialDelayMs?: number;
@@ -71,6 +73,7 @@ export function recoveringProviderStream(invoke: StreamFn, recovery: RecoveryOpt
       for (let attempt = 1; ; attempt++) {
         signal.throwIfAborted();
         if (performance.now() >= recovery.deadline) { finishError(failureMessage('PROVIDER_TIMEOUT', true)); return; }
+        await recovery.coordinator?.wait(signal,recovery.deadline);
         let response: ProviderResponse | undefined, start: Extract<AssistantMessageEvent, { type: 'start' }> | undefined;
         let delivered = false, failed: AssistantMessage | undefined, cause: unknown;
         try {
@@ -91,10 +94,12 @@ export function recoveringProviderStream(invoke: StreamFn, recovery: RecoveryOpt
         } catch (error) { cause = error; }
         signal.throwIfAborted();
         const classification = classifyProviderFailure(cause, response);
+        if(classification.kind === 'authentication' || classification.kind === 'quota') await recovery.coordinator?.block(classification.kind === 'authentication' ? 'AUTHENTICATION_FAILED' : 'QUOTA_EXHAUSTED');
         const used = failed?.usage;
         const hasUsage = !!used && [used.input, used.output, used.cacheRead, used.cacheWrite, used.totalTokens].some(count => Number(count) > 0);
         const hasContent = !!failed?.content.length || !!start?.partial.content.length;
         const retryMs = Math.max(classification.retryAfterMs ?? 0, Math.min(10000, initialDelayMs * 2 ** (attempt - 1)));
+        if(classification.kind === 'transient') await recovery.coordinator?.defer(retryMs);
         const retry = classification.kind === 'transient' && !delivered && !hasUsage && !hasContent && attempt < maxAttempts && performance.now() + retryMs < recovery.deadline;
         if (!retry) {
           if (start) output.push(start);
@@ -106,7 +111,7 @@ export function recoveringProviderStream(invoke: StreamFn, recovery: RecoveryOpt
         try { recovery.onRetry?.({ attempt, delayMs: retryMs, code: classification.code, usageState: 'unreported' }); } catch {}
         await delay(retryMs, undefined, { signal });
       }
-    })().catch(() => finishError(failureMessage(signal.aborted ? 'ABORTED' : 'PROVIDER_EXECUTION_FAILED', signal.aborted)));
+    })().catch(cause => finishError(failureMessage(signal.aborted ? 'ABORTED' : classifyProviderFailure(cause).code, signal.aborted)));
     return output;
   };
 }

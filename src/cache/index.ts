@@ -1,6 +1,7 @@
 import { DatabaseSync } from 'node:sqlite';
 import { createHash, randomUUID } from 'node:crypto';
 import { chmodSync, existsSync, mkdirSync } from 'node:fs';
+import { lstat, rename, rm } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { performance } from 'node:perf_hooks';
@@ -37,7 +38,7 @@ export interface CacheEntry {
 export interface CacheOptions { directory?: string; maxBytes?: number; maxEntries?: number; maxEntryBytes?: number }
 export interface CacheComputeOptions {
   signal?: AbortSignal;
-  /** Explicitly request a fresh execution, without inventing another semantic key. */
+  /** Bypass reuse for this call only; never replace another caller's shared result. */
   force?: boolean;
   /** Scope is diagnostic/lifetime metadata, never a cache partition. */
   scope?: string;
@@ -133,7 +134,10 @@ export function openIdentityCache({ directory = identityCacheDirectory(), maxByt
         PRAGMA user_version=1; PRAGMA application_id=1128481859;
       `);
     }
-    format(db); db.exec('COMMIT'); db.exec('PRAGMA journal_mode=WAL; PRAGMA busy_timeout=25');
+    format(db);
+    db.exec(`CREATE TABLE IF NOT EXISTS cache_execution_storage(id TEXT PRIMARY KEY,retire_pid INTEGER,retire_identity TEXT);
+      CREATE INDEX IF NOT EXISTS cache_entry_execution ON cache_entries(json_extract(data,'$.executionId'));`);
+    db.exec('COMMIT'); db.exec('PRAGMA journal_mode=WAL; PRAGMA busy_timeout=25');
     chmodSync(join(directory, 'cache.sqlite'), 0o600);
   } catch (cause) { try { db.exec('ROLLBACK'); } catch {} db.close(); throw cause; }
   let closed = false, closing = false;
@@ -187,9 +191,43 @@ export function openIdentityCache({ directory = identityCacheDirectory(), maxByt
   };
   const startMaintenance = () => { maintenance ??= setInterval(() => { void maintain().catch(() => { /* A live owner is never stolen merely for delayed bookkeeping. */ }); }, 100); };
   const touch = (identity: string) => { if (touches.size < 4096) touches.set(identity, Date.now()); startMaintenance(); };
+  const retireStorage = async (limit: number) => {
+    const candidates = await retry(() => transaction(() => {
+      const rows = db.prepare(`SELECT * FROM cache_execution_storage s WHERE
+        NOT EXISTS(SELECT 1 FROM cache_jobs WHERE id=s.id) AND
+        NOT EXISTS(SELECT 1 FROM cache_entries WHERE json_extract(data,'$.executionId')=s.id) LIMIT ?`).all(limit);
+      return rows.filter(row => {
+        if (row.retire_pid != null && alive({pid: Number(row.retire_pid), process_identity: row.retire_identity as string | null})) return false;
+        db.prepare('UPDATE cache_execution_storage SET retire_pid=?,retire_identity=? WHERE id=?').run(process.pid,ownProcessIdentity,row.id);
+        return true;
+      });
+    }));
+    for (const row of candidates) {
+      // Only cache-generated UUID paths can be removed. Rename before walking;
+      // do not hold a SQLite writer while deleting possibly large output trees.
+      const id = String(row.id);
+      if (!/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(id)) continue;
+      const root = join(directory, 'executions'), target = join(root,id), quarantine = join(root,`.gc-${id}`);
+      try {
+        const parent = await lstat(root).catch(cause => { if(cause.code==='ENOENT') return null; throw cause; });
+        if (parent?.isSymbolicLink()) throw error('CACHE_STORAGE_UNSAFE','Cache execution storage cannot be a symbolic link.');
+        const current = await lstat(target).catch(cause => { if(cause.code==='ENOENT') return null; throw cause; });
+        if (current) {
+          if (!current.isDirectory() || current.isSymbolicLink()) throw error('CACHE_STORAGE_UNSAFE','Unexpected cache execution storage.');
+          await rename(target,quarantine);
+        }
+        await rm(quarantine,{recursive:true,force:true});
+        await retry(() => db.prepare('DELETE FROM cache_execution_storage WHERE id=? AND retire_pid=? AND retire_identity IS ?').run(id,process.pid,ownProcessIdentity));
+      } catch (cause) {
+        await retry(() => db.prepare('UPDATE cache_execution_storage SET retire_pid=NULL,retire_identity=NULL WHERE id=? AND retire_pid=? AND retire_identity IS ?').run(id,process.pid,ownProcessIdentity));
+        throw cause;
+      }
+    }
+  };
   const gc = async ({ limit = 128 }: { limit?: number } = {}) => {
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > 1000) throw new Error('GC limit must be 1-1000.');
-    return retry(() => transaction(() => {
+    await retry(reapSubscribers);
+    const result = await retry(() => transaction(() => {
       const jobs = db.prepare("SELECT id,identity,pid,process_identity FROM cache_jobs WHERE state='RUNNING' ORDER BY created_at LIMIT ?").all(limit);
       for (const job of jobs) if (!alive(job as unknown as Owner)) {
         db.prepare("UPDATE cache_jobs SET state='ERROR',error_code='COMPUTE_OWNER_EXITED',error_message='Shared computation owner exited.' WHERE id=? AND state='RUNNING'").run(job.id);
@@ -210,6 +248,8 @@ export function openIdentityCache({ directory = identityCacheDirectory(), maxByt
       for (const row of deadJobs) removeJob(String(row.id));
       return { removed, bytes: Number(bytes), entries: Number(count), needsMore: bytes > maxBytes || count > maxEntries };
     }));
+    await retireStorage(limit);
+    return result;
   };
   const start = (jobId: string, identity: string, execute: (signal: AbortSignal, executionId: string) => Promise<CachedReview>, scope?: string) => {
     const controller = new AbortController();
@@ -257,7 +297,8 @@ export function openIdentityCache({ directory = identityCacheDirectory(), maxByt
       assertOpen();
       options = { ...options, signal: options.signal ? AbortSignal.any([options.signal, shuttingDown.signal]) : shuttingDown.signal };
       options.signal!.throwIfAborted();
-      if (identity == null) {
+      if (identity != null) validateCacheIdentity(identity);
+      if (identity == null || options.force) {
         const executionId = randomUUID(), signal = options.signal ?? new AbortController().signal;
         options.onState?.('executing', executionId);
         const value = await execute(signal, executionId); signal.throwIfAborted();
@@ -281,7 +322,8 @@ export function openIdentityCache({ directory = identityCacheDirectory(), maxByt
             if (!job) {
               const id = randomUUID();
               db.prepare("INSERT INTO cache_jobs(id,identity,pid,process_identity,state,created_at) VALUES(?,?,?,?,'RUNNING',?)").run(id, identity!, process.pid, ownProcessIdentity, Date.now());
-              db.prepare('INSERT INTO cache_active VALUES(?,?)').run(identity!, id); job = { id }; own = true;
+              db.prepare('INSERT INTO cache_active VALUES(?,?)').run(identity!, id);
+              db.prepare('INSERT INTO cache_execution_storage(id) VALUES(?)').run(id); job = { id }; own = true;
             }
             db.prepare('INSERT OR REPLACE INTO cache_subscribers VALUES(?,?,?,?)').run(subscriber, job.id, process.pid, ownProcessIdentity);
             return { jobId: String(job.id), own };

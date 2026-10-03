@@ -55,3 +55,5 @@ export { prepareProject, disposePreparedProject, type PreparedProject, type Prep
 export type { ProfileSelection } from './profiles.js';
 
 export { projectChanges, streamProjectResults, projectRequestSummary, projectRunSummary, compareProjectRuns, type ResultStreamOptions, type RunReference } from './results.js';
+
+export { providerStatus, resumeProvider } from '../executors/provider-coordinator.js';

@@ -23,6 +23,11 @@ process.stdout.write(JSON.stringify({content:[{type:'json',data}],...(data.lineC
 export async function artifactFixture(t: TestContext) {
   const root = await realpath(await mkdtemp(join(tmpdir(), 'ccdd-artifact-'))), repoPath = join(root, 'repo'), stateDir = join(root, 'state');
   await mkdir(repoPath);
+  // A test is one local trust domain; parallel files must not share machine slots or results.
+  const previousHome = process.env.CCDD_STATE_HOME;
+  process.env.CCDD_STATE_HOME = join(root, 'machine');
+  await mkdir(process.env.CCDD_STATE_HOME);
+  t.after(() => { if (previousHome === undefined) delete process.env.CCDD_STATE_HOME; else process.env.CCDD_STATE_HOME = previousHome; });
   const cleanups: (() => unknown | Promise<unknown>)[] = [];
   t.after(async () => { for (const close of cleanups.reverse()) await close(); await rm(root, { recursive: true, force: true }); });
   const cleanup = (close: () => unknown | Promise<unknown>) => { cleanups.push(close); };

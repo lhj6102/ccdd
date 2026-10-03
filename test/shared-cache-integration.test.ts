@@ -95,7 +95,7 @@ test('a shared Human review is claimed and completed from a different repository
   assert.equal(readIdentityCache('shared-human')!.value.profile.kind,'human');
 });
 
-test('force executes actual new work and atomically replaces the reusable result without changing its identity', async t => {
+test('force bypasses one call without replacing another caller identity result', async t => {
   const f=await fixture(t), a=await f.repo('forced','force-value');
   const first=await a.broker.submitProject({selection:{kind:'all'}});await a.broker.run(first.id);
   const original=readIdentityCache('force-value')!;
@@ -103,9 +103,9 @@ test('force executes actual new work and atomically replaces the reusable result
   const forced=await a.broker.submitProject({selection:{kind:'all'},force:true});await a.broker.run(forced.id);
   assert.equal(a.broker.getRun(forced.id)!.status,'RED');
   const replaced=readIdentityCache('force-value')!;
-  assert.equal(replaced.value.result.verdict,'RED');assert.notEqual(replaced.executionId,original.executionId);
+  assert.equal(replaced.value.result.verdict,'GREEN');assert.equal(replaced.executionId,original.executionId);
   const reused=await a.broker.submitProject({selection:{kind:'all'}});
-  assert.equal(reused.status,'RED');assert.equal(reused.requests[0].cacheDisposition,'hit');
+  assert.equal(reused.status,'GREEN');assert.equal(reused.requests[0].cacheDisposition,'hit');
 });
 
 test('prepared submission reuses identity values in one session and rejects changed or forged preparation', async t => {
