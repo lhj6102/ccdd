@@ -42,7 +42,6 @@ profiles. Your identity function defines whether results are interchangeable.
 Without an explicit function, every submission executes without reusable caching.
 CCDD manages shared executions, Provider recovery and cache GC. See the
 [cache contract](docs/identity-cache.md) and [7.x migration](docs/migration-v7.md).
-This branch targets 7.0.0; it does not imply that a registry release is published.
 
 ## Start with a runtime check
 
@@ -115,7 +114,7 @@ See [Contributing](CONTRIBUTING.md), [the context map](CONTEXT-MAP.md), [detaile
 
 [MIT](LICENSE).
 
-**CCDD 6.6.0:** Artifact families declare many Artifacts that share one folder, view scripts and Critics through a static instance list, with per-instance identities so siblings never invalidate each other. Pi is updated to 1.0.0; existing review identities are unchanged. See the [release notes](docs/releases/v6.6.0.md).
+**CCDD 7.0.0:** only an explicit owner identity function makes a result reusable, and the same identity shares completed or in-flight work across repositories, paths, Critic IDs and profiles. This is a breaking change; see the [migration](docs/migration-v7.md) and [release notes](docs/releases/v7.0.0.md).
 
 
 ### Existing Pi AI API

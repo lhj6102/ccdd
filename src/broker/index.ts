@@ -50,7 +50,7 @@ const preparedInput = Symbol('prepared-project');
 const executionMode = Symbol('cache-owned-execution');
 const enqueueExecution = Symbol('enqueue-prepared-execution');
 interface ExecutionBroker {
-  [enqueueExecution](request: ReviewRequest, workspace: WorkspaceDescriptor, id: string, budgetRunId: string): Promise<void>;
+  [enqueueExecution](request: ReviewRequest, workspace: WorkspaceDescriptor, id: string, budgetRunId: string, repoExecutorCap?: number): Promise<void>;
   run(id: string, options?: { signal?: AbortSignal }): Promise<unknown>;
   getRequest(id: string): ReviewRequest | null;
   tryClaimHuman: (...args: any[]) => any; renewHumanTryClaim: (...args: any[]) => any; releaseHumanTryClaim: (...args: any[]) => any;
@@ -377,7 +377,7 @@ export function createBroker<D extends ResultDetail = 'compact'>({ [executionMod
     if (rawExecution || forced || readiness.header(initial.runId)?.executionOwned || diagnosticScope.getStore() || input?.version !== 4 || !input.cacheIdentity) return executeUncached(requestId, workspace, token, signal);
     const runId = initial.runId, request = copy(required(requestData(requestId), 'Request'));
     const service = sharedCache();
-    let source: ExecutionSource | undefined, mirror: NodeJS.Timeout | undefined;
+    let source: ExecutionSource | undefined, mirror: NodeJS.Timeout | undefined, ownFailure: Error | undefined;
     try {
       signal.throwIfAborted();
       transaction(() => {
@@ -395,12 +395,13 @@ export function createBroker<D extends ResultDetail = 'compact'>({ [executionMod
             executionSource: { stateDir: executionState, runId: executionId, requestId: executionId, executionId, identity: input.cacheIdentity! } }, context) : undefined },
         });
         try {
-          await owner[enqueueExecution](request, copy(workspace.descriptor), executionId, runId);
+          await owner[enqueueExecution](request, copy(workspace.descriptor), executionId, runId, readiness.header(runId)?.repoExecutorCap);
           await owner.run(executionId, { signal: executionSignal });
           const completed = required(owner.getRequest(executionId), 'shared execution');
           const summary = projectRequestState(executionState,executionId)?.summary;
-          if (!closed && summary) transaction(() => { const receipt = requestHeader(requestId); if (receipt) { copyExecutionState(receipt,{...completed,summary}); db.prepare('UPDATE requests SET data=? WHERE id=?').run(JSON.stringify(receipt),requestId); } });
-          if (!completed.result) throw codedError(completed.error ?? 'Shared execution did not produce a semantic result.', completed.errorCode ?? 'COMPUTE_FAILED');
+          // A canceled or retried receipt keeps its own history; only the live subscription mirrors the owner.
+          if (!closed && summary) transaction(() => { const receipt = requestHeader(requestId); if (receipt && !terminal.has(receipt.status) && ownerData(runId)?.token === token) { copyExecutionState(receipt,{...completed,summary}); db.prepare('UPDATE requests SET data=? WHERE id=?').run(JSON.stringify(receipt),requestId); } });
+          if (!completed.result) throw ownFailure = codedError(completed.error ?? 'Shared execution did not produce a semantic result.', completed.errorCode ?? 'COMPUTE_FAILED');
           return { result: completed.result, profile: completed.profile, origin: { stateDir: executionState, runId: executionId, requestId: executionId },
             attemptId: completed.attemptId ?? null, executionProvenance: completed.executionProvenance ?? null,
             ...(completed.usage ? { usage: completed.usage } : {}),
@@ -438,7 +439,9 @@ export function createBroker<D extends ResultDetail = 'compact'>({ [executionMod
       changed();
     } catch (cause) {
       if (signal.aborted || fatalExecutionError(cause)) throw signal.aborted ? signal.reason : cause;
-      transaction(() => { if (ownerData(runId)?.token === token) finishWithin(requestId, { error: cause }, ['QUEUED','RUNNING','WAITING_HUMAN']); });
+      // Shared subscribers see a redacted failure; the initiating receipt keeps its own execution's error.
+      const error = ownFailure && (cause as { code?: unknown })?.code === (ownFailure as { code?: unknown }).code ? ownFailure : cause;
+      transaction(() => { if (ownerData(runId)?.token === token) finishWithin(requestId, { error }, ['QUEUED','RUNNING','WAITING_HUMAN']); });
       changed();
     } finally { clearInterval(mirror); mirroredStates.delete(requestId); }
   }
@@ -710,9 +713,9 @@ export function createBroker<D extends ResultDetail = 'compact'>({ [executionMod
   }
 
   const broker = {
-    async [enqueueExecution](request: ReviewRequest, descriptor: WorkspaceDescriptor, id: string, budgetRunId: string): Promise<void> {
+    async [enqueueExecution](request: ReviewRequest, descriptor: WorkspaceDescriptor, id: string, budgetRunId: string, repoExecutorCap?: number): Promise<void> {
       if (!rawExecution) throw new Error('Only the cache may enqueue an execution record.');
-      const record = executionRecord(copy(request), descriptor, id, budgetRunId);
+      const record = executionRecord(copy(request), descriptor, id, budgetRunId, repoExecutorCap);
       const prepared = await store.prepareRun(record);
       resources.registerSubmission(id, undefined);
       transaction(() => {
@@ -959,6 +962,8 @@ export function createBroker<D extends ResultDetail = 'compact'>({ [executionMod
         db.prepare('UPDATE runs SET status=?,data=? WHERE id=?').run(run.status, JSON.stringify(run), run.id);
         const gate = db.prepare('SELECT unmet,red FROM gate_counts WHERE run_id=? AND critic_id=?').get(request.runId,request.criticId);
         request.status = Number(gate?.unmet ?? 0) ? Number(gate?.red ?? 0) ? 'BLOCKED' : 'WAIT_DEPENDENCY' : 'QUEUED'; request.error = null; request.errorCode = null; request.resultRef = null; request.semanticRef = null; request.startedAt = null; request.completedAt = null; delete request.executionProvenance; delete request.attemptId; delete request.executionSource; delete request.cacheDisposition; delete request.sourceSummary;
+        // A subscriber mirrored the shared owner's profile; retry with its own request.
+        if (request.requestedProfile) { request.profile = request.requestedProfile; delete request.requestedProfile; }
         saveHeader(request);
         // The new attempt starts without a record; the failed one is no longer shown.
         db.prepare('DELETE FROM tool_call_records WHERE request_id=?').run(request.id);
@@ -1030,11 +1035,11 @@ export function createBroker<D extends ResultDetail = 'compact'>({ [executionMod
       const target = humanPeer(args[0]);
       if (!target) return viewRequest(await broker.completeHuman(...args));
       await target.peer.completeHuman(target.source.requestId,...args.slice(1));
+      // One shared execution serves one Human result; release its handles.
+      if (peers.get(target.source.stateDir) === target.peer) { peers.delete(target.source.stateDir); await target.peer.close(); }
+      // The result is recorded. A slow subscriber worker publishes it later; report the current receipt.
       const deadline = performance.now() + 5000;
-      while (!terminal.has(polling.requestStatus(args[0]) ?? 'ERROR')) {
-        if (performance.now() > deadline) throw codedError('The Human result is recorded; shared publication is still pending.', 'CACHE_BUSY');
-        await delay(25);
-      }
+      while (!terminal.has(polling.requestStatus(args[0]) ?? 'ERROR') && performance.now() < deadline) await delay(25);
       return viewRequest(requestData(args[0]));
     },
     failRun: (...args: Parameters<typeof broker.failRun>) => viewRun(broker.failRun(...args)),

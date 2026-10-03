@@ -42,7 +42,6 @@ does not install default-tools. Keep each directly imported module declared.
 
 Use matching 7.x packages for this source contract. Do not mix major versions.
 Stop earlier workers before upgrading and follow [7.x migration](migration-v7.md).
-Registry publication is a separate release step.
 
 All processes share the machine resource authority when using the same local
 configuration and state root. Defaults are identity capacity 100 and provider
@@ -92,7 +91,7 @@ npx ccdd-project status implementation
 npx ccdd-project history implementation
 ```
 
-The first verify executes real tests. A second unchanged verify reuses its evidence without executing another review. Change addition to subtraction to produce a real RED result. Restoring the exact earlier input can reuse the earlier matching PASS. A failed process or broken configuration is an operational error, not a semantic failure.
+The first verify executes real tests. This example declares no [identity function](identity-cache.md), so every verify executes again and no result is reused; add `stale.kind: "identity"` to share results across Runs. Change addition to subtraction to produce a real RED result. A failed process or broken configuration is an operational error, not a semantic failure.
 
 State defaults to `~/.local/state/ccdd/<workspace-path-hash>`. Use `--state-dir /absolute/external/path` to choose another location. Output, caches, result files and state must remain outside the workspace. Do not edit input while a review is active. A user-created worktree passed with `--repo` lets development continue elsewhere.
 

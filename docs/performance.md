@@ -28,7 +28,8 @@ the timed comparisons.
 integrity. These policies have different guarantees.** The default remains
 content integrity. Metadata mode hashes bytes at initial capture, then relies on
 complete metadata and structure checks at later boundaries. It assumes trustworthy
-filesystem metadata, and its evidence cannot satisfy a content-policy query.
+filesystem metadata. In 6.x its evidence could not satisfy a content-policy query;
+from 7.0 the integrity policy is not part of an explicit identity cache key.
 See the [integrity contract](contracts.md#optional-metadata-integrity).
 
 | Workflow | Baseline median | Candidate median | Time remaining | Speedup | Below 10% |

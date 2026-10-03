@@ -3,6 +3,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import { readFile, readdir } from 'node:fs/promises';
 import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import { describeReviewTools } from '../tools/runner.js';
+import { projectRequestData } from '../project/store.js';
 import type { MonitorStoredRequest } from './store.js';
 import { createMonitorStore } from './store.js';
 import { inspectProject } from '../project/index.js';
@@ -153,7 +154,10 @@ async function decorateDetail(detail: MonitorDetail, record: MonitorStoredReques
   if (detail.request.kind === 'human' && record.request.configManifest?.version === 2) {
     try {
       // GET projects saved declarations only. It never reads config or executes scripts.
-      detail.tools = describeReviewTools({ artifacts: record.request.artifacts, configManifest: record.request.configManifest, audience: 'human' })
+      // A shared subscriber's tools route to the cache owner's envelope; describe that one.
+      const source = record.request.executionSource;
+      const envelope = source && source.stateDir !== record.stateDir ? projectRequestData(source.stateDir, source.requestId) ?? record.request : record.request;
+      detail.tools = describeReviewTools({ artifacts: envelope.artifacts, configManifest: envelope.configManifest, audience: 'human' })
         .map(tool => ({ name: tool.name, artifactId: tool.artifactId, operation: tool.operation, description: tool.description, inputSchema: tool.inputSchema }));
     } catch { detail.toolIssue = 'Unable to read tool declarations for this review.'; }
   }

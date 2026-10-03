@@ -73,7 +73,7 @@ verify accepts optional --concurrency N as a tighter cap; it never raises machin
 Identity scheduling uses local resources.json identityCapacity and Artifact stale.weight.
 verify/status/plan accept --integrity content|metadata (default: content).
 metadata trusts unchanged filesystem metadata to reuse captured content identity;
-it is opt-in, weaker than full content checks, and its evidence cannot satisfy content verification.
+it is opt-in and weaker than full content checks; it is not part of an identity cache key.
 Graph: graph --compact --json omits per-instance view definitions.
 Selection: --critics-file PATH or --artifacts-file PATH (JSON array or one ID per line).
 File selections cannot be combined with other selectors. Families are Artifact selectors.
@@ -187,7 +187,9 @@ export async function main(argv = process.argv.slice(2), { stdout = process.stdo
       return { kind: 'all' };
     };
     const stream = async (id: string) => withCliCancellation('Result subscription cancelled; execution continues.', async signal => {
-      for await (const result of streamProjectResults(context.stateDir,id,{after:Number(get('--after') ?? 0),timeoutMs,signal})) {
+      const after = Number(get('--after') ?? 0);
+      if (!Number.isSafeInteger(after) || after < 0) throw new Error('--after must be a non-negative integer cursor.');
+      for await (const result of streamProjectResults(context.stateDir,id,{after,timeoutMs,signal})) {
         if (stdout.write(JSON.stringify(result)+'\n') === false && 'once' in stdout) await once(stdout as unknown as NodeJS.EventEmitter,'drain',{signal});
       }
       const run = projectRun(context.stateDir,id)!;

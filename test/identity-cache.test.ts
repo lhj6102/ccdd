@@ -154,3 +154,45 @@ test('a lost owner cannot publish over a replacement result', async t => {
   assert.equal(cache.get('fenced')!.executionId, replacement.entry.executionId);
   assert.equal(cache.get('fenced')!.value.result.verdict, 'GREEN');
 });
+
+test('bounded GC reports remaining execution storage as more work', async t => {
+  const { root, cache } = await fixture(t);
+  for (const identity of ['one', 'two', 'three']) await cache.compute(identity, async (_signal, id) => { await mkdir(join(root, 'cache', 'executions', id), { recursive: true }); return value(); });
+  for (const identity of ['one', 'two', 'three']) await cache.delete(identity);
+  assert.equal((await cache.gc({ limit: 1 })).needsMore, true);
+  let collected; do collected = await cache.gc({ limit: 1 }); while (collected.needsMore);
+  const db = new DatabaseSync(join(root, 'cache', 'cache.sqlite'), { readOnly: true });
+  try { assert.equal(db.prepare('SELECT count(*) AS n FROM cache_execution_storage').get()!.n, 0); } finally { db.close(); }
+});
+
+test('a cancellation that cannot commit under contention still releases the computation', { timeout: 30000 }, async t => {
+  const { root, cache } = await fixture(t);
+  const blocker = new DatabaseSync(join(root, 'cache', 'cache.sqlite')); t.after(() => blocker.close());
+  const abort = new AbortController(), held = barrier(); let started = false, aborted = false;
+  const pending = cache.compute('contended', async signal => { started = true; signal.addEventListener('abort', () => { aborted = true; held.release(); }); await held.promise; return value(); }, { signal: abort.signal });
+  await until(() => started);
+  blocker.exec('BEGIN IMMEDIATE'); abort.abort(Error('caller canceled'));
+  await assert.rejects(pending, /caller canceled/);
+  await delay(300); blocker.exec('ROLLBACK');
+  const deadline = Date.now() + 10000;
+  while (!aborted || blocker.prepare('SELECT count(*) AS n FROM cache_subscribers').get()!.n !== 0) { if (Date.now() > deadline) throw Error('Pending detach was not retried.'); await delay(20); }
+  await cache.drain();
+  assert.equal(cache.get('contended'), null);
+});
+
+test('closing an owner with a remaining subscriber hands the identity over after a bounded drain', { timeout: 30000 }, async t => {
+  const { root } = await fixture(t);
+  const directory = join(root, 'shared'), owner = openIdentityCache({ directory, drainMs: 100 }), follower = openIdentityCache({ directory });
+  t.after(async () => { await follower.close(); });
+  let started = false;
+  const owned = owner.compute('handover', async signal => { started = true; await new Promise((_resolve, reject) => signal.addEventListener('abort', () => reject(signal.reason))); return value(); });
+  await until(() => started);
+  let state = '';
+  const joined = follower.compute('handover', async () => value('RED'), { onState(next) { state = next; } });
+  await until(() => state === 'coalesced');
+  const closing = owner.close();
+  await assert.rejects(owned);
+  await closing;
+  const result = await joined;
+  assert.equal(result.entry.value.result.verdict, 'RED'); assert.equal(result.disposition, 'executed');
+});
